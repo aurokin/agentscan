@@ -1126,6 +1126,23 @@ fn infer_title_status(provider: Option<Provider>, title: &str) -> PaneStatus {
         }
     }
 
+    if matches!(provider, Some(Provider::Opencode))
+        && let Some(rest) = stripped.strip_prefix("OC | ")
+    {
+        if rest == "Working" || rest.starts_with("Working ") {
+            return PaneStatus {
+                kind: StatusKind::Busy,
+                source: StatusSource::TmuxTitle,
+            };
+        }
+        if rest == "Ready" || rest.starts_with("Ready ") {
+            return PaneStatus {
+                kind: StatusKind::Idle,
+                source: StatusSource::TmuxTitle,
+            };
+        }
+    }
+
     PaneStatus {
         kind: StatusKind::Unknown,
         source: StatusSource::NotChecked,
@@ -1721,6 +1738,10 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/cache_snapshot_v1.json"
     ));
+    const TMUX_METADATA_FIXTURE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/tmux_snapshot_with_metadata.txt"
+    ));
 
     #[allow(unused_imports)]
     use super::{
@@ -1846,6 +1867,17 @@ mod tests {
 
         assert_eq!(busy.kind, StatusKind::Busy);
         assert_eq!(idle.kind, StatusKind::Idle);
+    }
+
+    #[test]
+    fn opencode_status_uses_title_prefix_when_present() {
+        let busy = infer_title_status(Some(Provider::Opencode), "OC | Working");
+        let idle = infer_title_status(Some(Provider::Opencode), "OC | Ready");
+        let unknown = infer_title_status(Some(Provider::Opencode), "OC | Query planner");
+
+        assert_eq!(busy.kind, StatusKind::Busy);
+        assert_eq!(idle.kind, StatusKind::Idle);
+        assert_eq!(unknown.kind, StatusKind::Unknown);
     }
 
     #[test]
@@ -2033,6 +2065,23 @@ mod tests {
             Some(ClassificationMatchKind::PaneMetadata)
         );
         assert_eq!(pane.agent_metadata.provider.as_deref(), Some("claude"));
+        assert_eq!(pane.agent_metadata.session_id.as_deref(), Some("sess-123"));
+    }
+
+    #[test]
+    fn fixture_snapshot_with_metadata_parses_wrapper_fields() {
+        let rows = parse_pane_rows(TMUX_METADATA_FIXTURE).expect("metadata fixture should parse");
+        let panes: Vec<_> = rows.into_iter().map(pane_from_row).collect();
+
+        let pane = pane_by_id(&panes, "%400");
+        assert_eq!(pane.provider, Some(Provider::Claude));
+        assert_eq!(pane.display.label, "Wrapped Claude Task");
+        assert_eq!(pane.status.kind, StatusKind::Busy);
+        assert_eq!(pane.status.source, super::StatusSource::PaneMetadata);
+        assert_eq!(
+            pane.agent_metadata.cwd.as_deref(),
+            Some("/tmp/wrapper-meta")
+        );
         assert_eq!(pane.agent_metadata.session_id.as_deref(), Some("sess-123"));
     }
 

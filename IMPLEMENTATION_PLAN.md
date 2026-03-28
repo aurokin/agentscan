@@ -59,6 +59,7 @@ Completed baseline work:
 - formatting, lint, complexity, and unit-test checks now run clean locally
 - CI runs format, lint, complexity, and unit-test checks
 - fixture-backed tests now cover representative tmux title snapshots and cache snapshot deserialization
+- fixture-backed tests now cover both legacy 10-field and current 15-field tmux row shapes
 - property tests now cover parser round-trips and normalization invariants
 - benchmark tooling now measures snapshot parsing, row-to-pane conversion, cache deserialization, and popup entry generation
 - canonical pane model and snapshot envelope are implemented
@@ -70,7 +71,7 @@ Completed baseline work:
 - cache reads now validate schema version before consumers use cached state
 - `agentscan tmux popup` provides dedicated structured popup output
 - a thin repo-local `scripts/agentscan-popup.sh` wrapper renders cached popup rows and calls `focus`
-- title-driven status heuristics now cover the current observed Codex, Claude, and Gemini title patterns
+- title-driven status heuristics now cover the current observed Codex, Claude, Gemini, and basic OpenCode title patterns
 - `agentscan focus` supports client-aware tmux switching and has been validated against the current pane workflow
 - scanner and daemon snapshot ingestion now consume pane-local `@agent.*` wrapper metadata when present
 - `agentscan tmux set-metadata` and `tmux clear-metadata` provide repo-local helpers for managing pane-local `@agent.*` metadata

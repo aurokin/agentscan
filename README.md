@@ -76,7 +76,7 @@ It can:
 It does not yet:
 
 - validate `focus` beyond the current single-client tmux workflow
-- broaden title-driven status logic beyond the current Codex, Claude, and Gemini heuristics
+- broaden title-driven status logic beyond the current Codex, Claude, Gemini, and basic OpenCode heuristics
 
 ## Reference Behavior
 
