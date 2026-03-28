@@ -175,6 +175,8 @@ enum TmuxCommands {
     Popup(TmuxPopupArgs),
     /// Publish explicit pane metadata for wrappers.
     SetMetadata(TmuxSetMetadataArgs),
+    /// Clear explicit pane metadata.
+    ClearMetadata(TmuxClearMetadataArgs),
 }
 
 #[derive(Args, Debug)]
@@ -215,6 +217,17 @@ struct TmuxSetMetadataArgs {
     session_id: Option<String>,
 }
 
+#[derive(Args, Debug)]
+struct TmuxClearMetadataArgs {
+    /// The tmux pane id to target. Defaults to the current pane when inside tmux.
+    #[arg(long)]
+    pane_id: Option<String>,
+
+    /// Clear only specific metadata fields. Defaults to all fields.
+    #[arg(long, value_enum)]
+    field: Vec<TmuxMetadataField>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum OutputFormat {
     Text,
@@ -225,6 +238,15 @@ enum OutputFormat {
 enum PopupOutputFormat {
     Tsv,
     Json,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum TmuxMetadataField {
+    Provider,
+    Label,
+    Cwd,
+    State,
+    SessionId,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
@@ -500,6 +522,7 @@ fn command_tmux(args: &TmuxArgs) -> Result<()> {
     match &args.command {
         TmuxCommands::Popup(args) => command_tmux_popup(args),
         TmuxCommands::SetMetadata(args) => command_tmux_set_metadata(args),
+        TmuxCommands::ClearMetadata(args) => command_tmux_clear_metadata(args),
     }
 }
 
@@ -528,10 +551,7 @@ fn command_tmux_popup(args: &TmuxPopupArgs) -> Result<()> {
 }
 
 fn command_tmux_set_metadata(args: &TmuxSetMetadataArgs) -> Result<()> {
-    let pane_id = match args.pane_id.as_deref() {
-        Some(pane_id) if !pane_id.trim().is_empty() => pane_id.trim().to_string(),
-        _ => current_pane_id()?.context("`tmux set-metadata` requires --pane-id outside tmux")?,
-    };
+    let pane_id = resolve_tmux_target_pane(args.pane_id.as_deref(), "set-metadata")?;
 
     let updates = tmux_metadata_updates(args);
     if updates.is_empty() {
@@ -539,16 +559,22 @@ fn command_tmux_set_metadata(args: &TmuxSetMetadataArgs) -> Result<()> {
     }
 
     for (option_name, value) in updates {
-        let status = Command::new("tmux")
-            .args(["set-option", "-p", "-t", &pane_id, option_name, &value])
-            .status()
-            .with_context(|| format!("failed to set tmux option {option_name} on {pane_id}"))?;
-        if !status.success() {
-            bail!("tmux set-option failed for {option_name} on {pane_id}");
-        }
+        set_tmux_pane_option(&pane_id, option_name, &value)?;
     }
 
     println!("updated pane metadata for {pane_id}");
+    Ok(())
+}
+
+fn command_tmux_clear_metadata(args: &TmuxClearMetadataArgs) -> Result<()> {
+    let pane_id = resolve_tmux_target_pane(args.pane_id.as_deref(), "clear-metadata")?;
+    let fields = tmux_metadata_fields_to_clear(&args.field);
+
+    for option_name in fields {
+        unset_tmux_pane_option(&pane_id, option_name)?;
+    }
+
+    println!("cleared pane metadata for {pane_id}");
     Ok(())
 }
 
@@ -1443,6 +1469,14 @@ fn current_pane_id() -> Result<Option<String>> {
     }
 }
 
+fn resolve_tmux_target_pane(pane_id: Option<&str>, command_name: &str) -> Result<String> {
+    match pane_id {
+        Some(pane_id) if !pane_id.trim().is_empty() => Ok(pane_id.trim().to_string()),
+        _ => current_pane_id()?
+            .with_context(|| format!("`tmux {command_name}` requires --pane-id outside tmux")),
+    }
+}
+
 fn current_client_tty() -> Result<Option<String>> {
     if env::var_os("TMUX").is_none() {
         return Ok(None);
@@ -1589,6 +1623,53 @@ fn tmux_metadata_updates(args: &TmuxSetMetadataArgs) -> Vec<(&'static str, Strin
     updates
 }
 
+fn tmux_metadata_fields_to_clear(fields: &[TmuxMetadataField]) -> Vec<&'static str> {
+    if fields.is_empty() {
+        return vec![
+            "@agent.provider",
+            "@agent.label",
+            "@agent.cwd",
+            "@agent.state",
+            "@agent.session_id",
+        ];
+    }
+
+    fields
+        .iter()
+        .map(|field| match field {
+            TmuxMetadataField::Provider => "@agent.provider",
+            TmuxMetadataField::Label => "@agent.label",
+            TmuxMetadataField::Cwd => "@agent.cwd",
+            TmuxMetadataField::State => "@agent.state",
+            TmuxMetadataField::SessionId => "@agent.session_id",
+        })
+        .collect()
+}
+
+fn set_tmux_pane_option(pane_id: &str, option_name: &str, value: &str) -> Result<()> {
+    let status = Command::new("tmux")
+        .args(["set-option", "-p", "-t", pane_id, option_name, value])
+        .status()
+        .with_context(|| format!("failed to set tmux option {option_name} on {pane_id}"))?;
+    if !status.success() {
+        bail!("tmux set-option failed for {option_name} on {pane_id}");
+    }
+
+    Ok(())
+}
+
+fn unset_tmux_pane_option(pane_id: &str, option_name: &str) -> Result<()> {
+    let status = Command::new("tmux")
+        .args(["set-option", "-p", "-u", "-t", pane_id, option_name])
+        .status()
+        .with_context(|| format!("failed to clear tmux option {option_name} on {pane_id}"))?;
+    if !status.success() {
+        bail!("tmux set-option -u failed for {option_name} on {pane_id}");
+    }
+
+    Ok(())
+}
+
 fn format_provider_counts(counts: &[(Provider, usize)]) -> String {
     if counts.is_empty() {
         return "none".to_string();
@@ -1645,10 +1726,11 @@ mod tests {
     use super::{
         CACHE_RELATIVE_PATH, CACHE_SCHEMA_VERSION, CLAUDE_SPINNER_GLYPHS, ClassificationMatchKind,
         DAEMON_SUBSCRIPTION_FORMAT, IDLE_GLYPHS, PaneRecord, Provider, SnapshotEnvelope,
-        SourceKind, StatusKind, classify_provider, infer_status, infer_title_status,
-        looks_like_codex_title, notification_name, pane_from_row, parse_pane_rows, popup_entries,
-        should_refresh_from_notification, status_kind_name, strip_known_status_glyph,
-        summarize_snapshot, tmux_metadata_updates, tsv_escape, validate_snapshot,
+        SourceKind, StatusKind, TmuxMetadataField, classify_provider, infer_status,
+        infer_title_status, looks_like_codex_title, notification_name, pane_from_row,
+        parse_pane_rows, popup_entries, should_refresh_from_notification, status_kind_name,
+        strip_known_status_glyph, summarize_snapshot, tmux_metadata_fields_to_clear,
+        tmux_metadata_updates, tsv_escape, validate_snapshot,
     };
 
     #[test]
@@ -1798,6 +1880,32 @@ mod tests {
                 ("@agent.state", "busy".to_string()),
                 ("@agent.session_id", "sess-123".to_string()),
             ]
+        );
+    }
+
+    #[test]
+    fn tmux_metadata_fields_to_clear_defaults_to_all_fields() {
+        assert_eq!(
+            tmux_metadata_fields_to_clear(&[]),
+            vec![
+                "@agent.provider",
+                "@agent.label",
+                "@agent.cwd",
+                "@agent.state",
+                "@agent.session_id",
+            ]
+        );
+    }
+
+    #[test]
+    fn tmux_metadata_fields_to_clear_maps_selected_fields() {
+        assert_eq!(
+            tmux_metadata_fields_to_clear(&[
+                TmuxMetadataField::Provider,
+                TmuxMetadataField::State,
+                TmuxMetadataField::SessionId,
+            ]),
+            vec!["@agent.provider", "@agent.state", "@agent.session_id"]
         );
     }
 

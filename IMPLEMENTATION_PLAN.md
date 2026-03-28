@@ -73,7 +73,7 @@ Completed baseline work:
 - title-driven status heuristics now cover the current observed Codex, Claude, and Gemini title patterns
 - `agentscan focus` supports client-aware tmux switching and has been validated against the current pane workflow
 - scanner and daemon snapshot ingestion now consume pane-local `@agent.*` wrapper metadata when present
-- `agentscan tmux set-metadata` provides a repo-local helper for wrappers to publish pane-local `@agent.*` metadata
+- `agentscan tmux set-metadata` and `tmux clear-metadata` provide repo-local helpers for managing pane-local `@agent.*` metadata
 - daemon control-mode subscriptions now watch pane-local `@agent.*` metadata fields in addition to pane titles
 
 Still pending in Phase 1:
