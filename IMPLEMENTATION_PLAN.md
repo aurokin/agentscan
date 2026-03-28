@@ -63,10 +63,11 @@ Completed baseline work:
 - benchmark tooling now measures snapshot parsing, row-to-pane conversion, cache deserialization, and popup entry generation
 - canonical pane model and snapshot envelope are implemented
 - `agentscan scan`, `agentscan list`, and `agentscan inspect` are implemented
-- `agentscan cache path` is implemented with XDG default plus override support
+- `agentscan cache path`, `cache show`, and `cache validate` are implemented with XDG default plus override support
 - title-first metadata classification is wired into snapshot ingestion
 - `agentscan daemon run` writes a daemon-marked cache from tmux control mode
 - `list` and `inspect` now read cache-backed state by default
+- cache reads now validate schema version before consumers use cached state
 - `agentscan tmux popup` provides dedicated structured popup output
 - a thin repo-local `scripts/agentscan-popup.sh` wrapper renders cached popup rows and calls `focus`
 - title-driven status heuristics now cover the current observed Codex, Claude, and Gemini title patterns

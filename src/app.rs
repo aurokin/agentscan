@@ -14,6 +14,7 @@ use time::format_description::well_known::Rfc3339;
 const PANE_DELIM: char = '\u{001f}';
 const CACHE_ENV_VAR: &str = "AGENTSCAN_CACHE_PATH";
 const CACHE_RELATIVE_PATH: &str = "agentscan/cache-v1.json";
+const CACHE_SCHEMA_VERSION: u32 = 1;
 const CLAUDE_SPINNER_GLYPHS: &[char] = &[
     '⠁', '⠂', '⠄', '⡀', '⢀', '⠠', '⠐', '⠈', '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏', '⣾',
     '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷',
@@ -122,6 +123,24 @@ struct TmuxArgs {
 enum CacheCommands {
     /// Print the cache path.
     Path,
+    /// Show cache contents or summary information.
+    Show(CacheShowArgs),
+    /// Validate the current cache file.
+    Validate(CacheValidateArgs),
+}
+
+#[derive(Args, Debug)]
+struct CacheShowArgs {
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    format: OutputFormat,
+}
+
+#[derive(Args, Debug)]
+struct CacheValidateArgs {
+    /// Fail if the cache is older than this many seconds.
+    #[arg(long)]
+    max_age_seconds: Option<u64>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -301,6 +320,15 @@ struct PaneDiagnostics {
     cache_origin: String,
 }
 
+#[derive(Debug)]
+struct CacheSummary {
+    generated_at: OffsetDateTime,
+    pane_count: usize,
+    agent_pane_count: usize,
+    provider_counts: Vec<(Provider, usize)>,
+    status_counts: Vec<(StatusKind, usize)>,
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct PopupEntry {
     pane_id: String,
@@ -391,6 +419,19 @@ fn command_cache(args: &CacheArgs) -> Result<()> {
     match args.command {
         CacheCommands::Path => {
             println!("{}", cache_path()?.display());
+        }
+        CacheCommands::Show(ref args) => {
+            let snapshot = read_snapshot_from_cache()?;
+            match args.format {
+                OutputFormat::Text => print_cache_summary_text(&snapshot)?,
+                OutputFormat::Json => print_json(&snapshot)?,
+            }
+        }
+        CacheCommands::Validate(ref args) => {
+            let path = cache_path()?;
+            let snapshot = read_snapshot_from_cache()?;
+            let summary = validate_snapshot(&snapshot, args.max_age_seconds)?;
+            print_cache_validate_text(&path, &snapshot, &summary, args.max_age_seconds);
         }
     }
 
@@ -519,12 +560,59 @@ fn print_json<T: Serialize>(value: &T) -> Result<()> {
     Ok(())
 }
 
+fn print_cache_summary_text(snapshot: &SnapshotEnvelope) -> Result<()> {
+    let path = cache_path()?;
+    let summary = summarize_snapshot(snapshot)?;
+
+    println!("path: {}", path.display());
+    println!("schema_version: {}", snapshot.schema_version);
+    println!("generated_at: {}", snapshot.generated_at);
+    println!("source: {:?}", snapshot.source.kind);
+    println!(
+        "tmux_version: {}",
+        snapshot
+            .source
+            .tmux_version
+            .as_deref()
+            .unwrap_or("<unknown>")
+    );
+    println!("pane_count: {}", summary.pane_count);
+    println!("agent_pane_count: {}", summary.agent_pane_count);
+    println!(
+        "providers: {}",
+        format_provider_counts(&summary.provider_counts)
+    );
+    println!("statuses: {}", format_status_counts(&summary.status_counts));
+
+    Ok(())
+}
+
+fn print_cache_validate_text(
+    path: &Path,
+    snapshot: &SnapshotEnvelope,
+    summary: &CacheSummary,
+    max_age_seconds: Option<u64>,
+) {
+    println!("cache_valid: yes");
+    println!("path: {}", path.display());
+    println!("schema_version: {}", snapshot.schema_version);
+    println!("generated_at: {}", snapshot.generated_at);
+    println!("source: {:?}", snapshot.source.kind);
+    println!("pane_count: {}", summary.pane_count);
+
+    if let Some(max_age_seconds) = max_age_seconds {
+        let age_seconds = cache_age_seconds(summary.generated_at);
+        println!("age_seconds: {age_seconds}");
+        println!("max_age_seconds: {max_age_seconds}");
+    }
+}
+
 fn snapshot_from_tmux() -> Result<SnapshotEnvelope> {
     let rows = tmux_list_panes()?;
     let panes = rows.into_iter().map(pane_from_row).collect();
 
     Ok(SnapshotEnvelope {
-        schema_version: 1,
+        schema_version: CACHE_SCHEMA_VERSION,
         generated_at: now_rfc3339()?,
         source: SnapshotSource {
             kind: SourceKind::Snapshot,
@@ -543,8 +631,11 @@ fn read_snapshot_from_cache() -> Result<SnapshotEnvelope> {
         )
     })?;
 
-    serde_json::from_str(&contents)
-        .with_context(|| format!("failed to parse cache at {}", path.display()))
+    let snapshot: SnapshotEnvelope = serde_json::from_str(&contents)
+        .with_context(|| format!("failed to parse cache at {}", path.display()))?;
+    validate_snapshot(&snapshot, None)
+        .with_context(|| format!("cache validation failed for {}", path.display()))?;
+    Ok(snapshot)
 }
 
 fn write_snapshot_to_cache(snapshot: &SnapshotEnvelope) -> Result<()> {
@@ -935,6 +1026,91 @@ fn now_rfc3339() -> Result<String> {
         .context("failed to format current time")
 }
 
+fn validate_snapshot(
+    snapshot: &SnapshotEnvelope,
+    max_age_seconds: Option<u64>,
+) -> Result<CacheSummary> {
+    if snapshot.schema_version != CACHE_SCHEMA_VERSION {
+        bail!(
+            "unsupported cache schema version {} (expected {})",
+            snapshot.schema_version,
+            CACHE_SCHEMA_VERSION
+        );
+    }
+
+    let summary = summarize_snapshot(snapshot)?;
+    if let Some(max_age_seconds) = max_age_seconds {
+        let age_seconds = cache_age_seconds(summary.generated_at);
+        if age_seconds > max_age_seconds {
+            bail!(
+                "cache is stale: age {}s exceeds max {}s",
+                age_seconds,
+                max_age_seconds
+            );
+        }
+    }
+
+    Ok(summary)
+}
+
+fn summarize_snapshot(snapshot: &SnapshotEnvelope) -> Result<CacheSummary> {
+    let generated_at = OffsetDateTime::parse(&snapshot.generated_at, &Rfc3339)
+        .context("generated_at was not valid RFC3339")?;
+
+    let pane_count = snapshot.panes.len();
+    let agent_pane_count = snapshot
+        .panes
+        .iter()
+        .filter(|pane| pane.provider.is_some())
+        .count();
+
+    let provider_counts = [
+        Provider::Codex,
+        Provider::Claude,
+        Provider::Gemini,
+        Provider::Opencode,
+    ]
+    .into_iter()
+    .filter_map(|provider| {
+        let count = snapshot
+            .panes
+            .iter()
+            .filter(|pane| pane.provider == Some(provider))
+            .count();
+        (count > 0).then_some((provider, count))
+    })
+    .collect();
+
+    let status_counts = [StatusKind::Busy, StatusKind::Idle, StatusKind::Unknown]
+        .into_iter()
+        .filter_map(|status| {
+            let count = snapshot
+                .panes
+                .iter()
+                .filter(|pane| pane.status.kind == status)
+                .count();
+            (count > 0).then_some((status, count))
+        })
+        .collect();
+
+    Ok(CacheSummary {
+        generated_at,
+        pane_count,
+        agent_pane_count,
+        provider_counts,
+        status_counts,
+    })
+}
+
+fn cache_age_seconds(generated_at: OffsetDateTime) -> u64 {
+    let age_seconds = (OffsetDateTime::now_utc() - generated_at).whole_seconds();
+    if age_seconds.is_negative() {
+        0
+    } else {
+        age_seconds as u64
+    }
+}
+
 fn daemon_run() -> Result<()> {
     let mut snapshot = snapshot_from_tmux()?;
     snapshot.source.kind = SourceKind::Daemon;
@@ -1132,6 +1308,30 @@ fn status_kind_name(status: StatusKind) -> &'static str {
     }
 }
 
+fn format_provider_counts(counts: &[(Provider, usize)]) -> String {
+    if counts.is_empty() {
+        return "none".to_string();
+    }
+
+    counts
+        .iter()
+        .map(|(provider, count)| format!("{provider}={count}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn format_status_counts(counts: &[(StatusKind, usize)]) -> String {
+    if counts.is_empty() {
+        return "none".to_string();
+    }
+
+    counts
+        .iter()
+        .map(|(status, count)| format!("{}={count}", status_kind_name(*status)))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn tsv_escape(value: &str) -> String {
     value.replace(['\t', '\n', '\r'], " ")
 }
@@ -1162,11 +1362,11 @@ mod tests {
 
     #[allow(unused_imports)]
     use super::{
-        CACHE_RELATIVE_PATH, CLAUDE_SPINNER_GLYPHS, ClassificationMatchKind, IDLE_GLYPHS,
-        PaneRecord, Provider, SnapshotEnvelope, SourceKind, StatusKind, classify_provider,
-        infer_status, looks_like_codex_title, notification_name, pane_from_row, parse_pane_rows,
-        popup_entries, should_refresh_from_notification, status_kind_name,
-        strip_known_status_glyph, tsv_escape,
+        CACHE_RELATIVE_PATH, CACHE_SCHEMA_VERSION, CLAUDE_SPINNER_GLYPHS, ClassificationMatchKind,
+        IDLE_GLYPHS, PaneRecord, Provider, SnapshotEnvelope, SourceKind, StatusKind,
+        classify_provider, infer_status, looks_like_codex_title, notification_name, pane_from_row,
+        parse_pane_rows, popup_entries, should_refresh_from_notification, status_kind_name,
+        strip_known_status_glyph, summarize_snapshot, tsv_escape, validate_snapshot,
     };
 
     #[test]
@@ -1358,11 +1558,51 @@ mod tests {
         let snapshot: SnapshotEnvelope =
             serde_json::from_str(CACHE_SNAPSHOT_FIXTURE).expect("cache fixture should parse");
 
-        assert_eq!(snapshot.schema_version, 1);
+        assert_eq!(snapshot.schema_version, CACHE_SCHEMA_VERSION);
         assert_eq!(snapshot.source.kind, SourceKind::Daemon);
         assert_eq!(snapshot.panes.len(), 1);
         assert_eq!(snapshot.panes[0].pane_id, "%67");
         assert_eq!(snapshot.panes[0].status.kind, StatusKind::Idle);
+    }
+
+    #[test]
+    fn cache_summary_counts_fixture_contents() {
+        let snapshot: SnapshotEnvelope =
+            serde_json::from_str(CACHE_SNAPSHOT_FIXTURE).expect("cache fixture should parse");
+
+        let summary = summarize_snapshot(&snapshot).expect("cache fixture should summarize");
+        assert_eq!(summary.pane_count, 1);
+        assert_eq!(summary.agent_pane_count, 1);
+        assert_eq!(summary.provider_counts, vec![(Provider::Codex, 1)]);
+        assert_eq!(summary.status_counts, vec![(StatusKind::Idle, 1)]);
+    }
+
+    #[test]
+    fn validate_snapshot_rejects_unsupported_schema_version() {
+        let mut snapshot: SnapshotEnvelope =
+            serde_json::from_str(CACHE_SNAPSHOT_FIXTURE).expect("cache fixture should parse");
+        snapshot.schema_version = CACHE_SCHEMA_VERSION + 1;
+
+        let error = validate_snapshot(&snapshot, None).expect_err("schema mismatch should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported cache schema version"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_snapshot_rejects_stale_cache_when_max_age_is_exceeded() {
+        let mut snapshot: SnapshotEnvelope =
+            serde_json::from_str(CACHE_SNAPSHOT_FIXTURE).expect("cache fixture should parse");
+        snapshot.generated_at = "2020-01-01T00:00:00Z".to_string();
+
+        let error = validate_snapshot(&snapshot, Some(1)).expect_err("stale cache should fail");
+        assert!(
+            error.to_string().contains("cache is stale"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

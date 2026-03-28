@@ -63,13 +63,14 @@ It can:
 
 - run an explicit daemon baseline with tmux control mode
 - persist and read a local JSON cache
+- show and validate the local JSON cache
 - list panes through the default `list` flow
 - inspect a pane by `pane_id`
 - focus a pane by `pane_id`
 - emit dedicated popup-oriented tmux output
 - infer likely agent panes from tmux metadata
 - emit canonical snapshot JSON
-- print the planned cache path
+- print the cache path
 
 It does not yet:
 
