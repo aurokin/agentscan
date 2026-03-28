@@ -41,6 +41,10 @@ Current local baseline:
 - `cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_arguments`
 - `cargo test`
 
+Current test coverage also includes committed file-based fixtures for representative
+tmux title snapshots and cache snapshots, so parser and schema regressions can be
+checked against stable real-world-shaped inputs.
+
 ## Current scope
 
 The first pass implements a snapshot scanner backed by:

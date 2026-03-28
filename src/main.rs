@@ -1150,11 +1150,20 @@ mod tests {
 
     use anyhow::Context;
 
+    const TMUX_SNAPSHOT_FIXTURE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/tmux_snapshot_titles.txt"
+    ));
+    const CACHE_SNAPSHOT_FIXTURE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/cache_snapshot_v1.json"
+    ));
+
     use super::{
-        CACHE_RELATIVE_PATH, ClassificationMatchKind, Provider, SourceKind, StatusKind,
-        classify_provider, infer_status, looks_like_codex_title, notification_name, pane_from_row,
-        parse_pane_rows, popup_entries, should_refresh_from_notification, status_kind_name,
-        strip_known_status_glyph, tsv_escape,
+        CACHE_RELATIVE_PATH, ClassificationMatchKind, PaneRecord, Provider, SnapshotEnvelope,
+        SourceKind, StatusKind, classify_provider, infer_status, looks_like_codex_title,
+        notification_name, pane_from_row, parse_pane_rows, popup_entries,
+        should_refresh_from_notification, status_kind_name, strip_known_status_glyph, tsv_escape,
     };
 
     #[test]
@@ -1306,6 +1315,54 @@ mod tests {
     }
 
     #[test]
+    fn fixture_snapshot_parses_expected_provider_cases() {
+        let rows = parse_pane_rows(TMUX_SNAPSHOT_FIXTURE).expect("fixture snapshot should parse");
+        let panes: Vec<_> = rows.into_iter().map(pane_from_row).collect();
+
+        let codex_working = pane_by_id(&panes, "%191");
+        assert_eq!(codex_working.provider, Some(Provider::Codex));
+        assert_eq!(codex_working.status.kind, StatusKind::Busy);
+        assert_eq!(codex_working.display.label, "agentscan | Working");
+
+        let codex_ready = pane_by_id(&panes, "%67");
+        assert_eq!(codex_ready.status.kind, StatusKind::Idle);
+
+        let claude_idle = pane_by_id(&panes, "%41");
+        assert_eq!(claude_idle.provider, Some(Provider::Claude));
+        assert_eq!(claude_idle.status.kind, StatusKind::Idle);
+        assert_eq!(claude_idle.display.label, "Review and summarize todo list");
+
+        let claude_busy = pane_by_id(&panes, "%223");
+        assert_eq!(claude_busy.status.kind, StatusKind::Busy);
+
+        let opencode = pane_by_id(&panes, "%301");
+        assert_eq!(opencode.provider, Some(Provider::Opencode));
+    }
+
+    #[test]
+    fn fixture_snapshot_preserves_wrapper_prefixes() {
+        let rows = parse_pane_rows(TMUX_SNAPSHOT_FIXTURE).expect("fixture snapshot should parse");
+        let panes: Vec<_> = rows.into_iter().map(pane_from_row).collect();
+
+        let wrapped_codex = pane_by_id(&panes, "%89");
+        assert_eq!(wrapped_codex.provider, Some(Provider::Codex));
+        assert_eq!(wrapped_codex.display.label, "(bront) parallel-n64: codex");
+        assert_eq!(wrapped_codex.status.kind, StatusKind::Unknown);
+    }
+
+    #[test]
+    fn cache_fixture_deserializes_into_current_schema() {
+        let snapshot: SnapshotEnvelope =
+            serde_json::from_str(CACHE_SNAPSHOT_FIXTURE).expect("cache fixture should parse");
+
+        assert_eq!(snapshot.schema_version, 1);
+        assert_eq!(snapshot.source.kind, SourceKind::Daemon);
+        assert_eq!(snapshot.panes.len(), 1);
+        assert_eq!(snapshot.panes[0].pane_id, "%67");
+        assert_eq!(snapshot.panes[0].status.kind, StatusKind::Idle);
+    }
+
+    #[test]
     fn tsv_escape_removes_control_whitespace() {
         assert_eq!(tsv_escape("a\tb\nc\rd"), "a b c d");
     }
@@ -1344,5 +1401,12 @@ mod tests {
 
         let home = home.context("missing home")?;
         Ok(Path::new(home).join(".cache").join(CACHE_RELATIVE_PATH))
+    }
+
+    fn pane_by_id<'a>(panes: &'a [PaneRecord], pane_id: &str) -> &'a PaneRecord {
+        panes
+            .iter()
+            .find(|pane| pane.pane_id == pane_id)
+            .unwrap_or_else(|| panic!("missing pane fixture entry {pane_id}"))
     }
 }

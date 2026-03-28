@@ -1,0 +1,9 @@
+agentchat_parallel11%1782278670codexWorking/dev/pts/12/home/auro/code/agentchat/parallel_prepeditor
+agentscan11%1913075750codex⠹ agentscan | Working/dev/pts/129/home/auro/code/agentscaneditor
+midnight11%67768342codexReady/dev/pts/48/home/auro/code/auro_midnighteditor
+notes41%41324026claude✳ Review and summarize todo list/dev/pts/44/home/auro/notesai
+dotfiles41%223430857claude⠐ Evaluate tmux plugins for Twigsmux improvements/dev/pts/62/home/auro/.dotfilesai
+parallel11%893220759codex(bront) parallel-n64: /home/auro/.zshrc.d/scripts/lgpt.sh/dev/pts/86/home/auro/code/parallel-n64editor
+webmux11%2404212996codexWorking/dev/pts/150/home/auro/code/webmuxeditor
+gemini_proj11%300555000gemini-cliReady/dev/pts/200/home/auro/code/gemini_projeditor
+opencode_proj11%301555001zshOC | Query planner/dev/pts/201/home/auro/code/opencode_projai

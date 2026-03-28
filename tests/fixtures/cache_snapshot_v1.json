@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-03-28T00:00:00Z",
+  "source": {
+    "kind": "daemon",
+    "tmux_version": "3.6a"
+  },
+  "panes": [
+    {
+      "pane_id": "%67",
+      "location": {
+        "session_name": "midnight",
+        "window_index": 1,
+        "pane_index": 1,
+        "window_name": "editor"
+      },
+      "tmux": {
+        "pane_pid": 768342,
+        "pane_tty": "/dev/pts/48",
+        "pane_current_path": "/home/auro/code/auro_midnight",
+        "pane_current_command": "codex",
+        "pane_title_raw": "Ready"
+      },
+      "display": {
+        "label": "Ready",
+        "activity_label": null
+      },
+      "provider": "codex",
+      "status": {
+        "kind": "idle",
+        "source": "tmux_title"
+      },
+      "classification": {
+        "matched_by": "pane_current_command",
+        "confidence": "medium",
+        "reasons": [
+          "pane_current_command=codex"
+        ]
+      },
+      "agent_metadata": {
+        "provider": null,
+        "label": null,
+        "cwd": null,
+        "state": null
+      },
+      "diagnostics": {
+        "cache_origin": "direct_snapshot"
+      }
+    }
+  ]
+}

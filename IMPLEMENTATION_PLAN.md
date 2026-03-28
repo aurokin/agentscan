@@ -58,6 +58,7 @@ Completed baseline work:
 
 - formatting, lint, complexity, and unit-test checks now run clean locally
 - CI runs format, lint, complexity, and unit-test checks
+- fixture-backed tests now cover representative tmux title snapshots and cache snapshot deserialization
 - canonical pane model and snapshot envelope are implemented
 - `agentscan scan`, `agentscan list`, and `agentscan inspect` are implemented
 - `agentscan cache path` is implemented with XDG default plus override support
@@ -244,7 +245,7 @@ Phase 3 hardens the product and expands ergonomics once the main architecture is
 These are good next-layer quality investments after the current fmt, lint, complexity,
 and unit-test baseline:
 
-- fixture-heavy tests for real tmux title samples and cache snapshots
+- broader fixture-heavy tests for real tmux title samples and cache snapshots
 - property tests for parser and normalization behavior
 - benchmarking for snapshot parsing, cache reads, and popup-oriented output
 - simple performance regression checks around title-first detection and daemon refresh behavior
