@@ -15,8 +15,8 @@ const PANE_DELIM: char = '\u{001f}';
 const CACHE_ENV_VAR: &str = "AGENTSCAN_CACHE_PATH";
 const CACHE_RELATIVE_PATH: &str = "agentscan/cache-v1.json";
 const CLAUDE_SPINNER_GLYPHS: &[char] = &[
-    '⠁', '⠂', '⠄', '⡀', '⢀', '⠠', '⠐', '⠈', '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦',
-    '⠧', '⠇', '⠏', '⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷',
+    '⠁', '⠂', '⠄', '⡀', '⢀', '⠠', '⠐', '⠈', '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏', '⣾',
+    '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷',
 ];
 const IDLE_GLYPHS: &[char] = &['✳'];
 const PANE_FORMAT: &str = concat!(
@@ -471,8 +471,14 @@ fn print_inspect_text(pane: &PaneRecord) {
         "command: {}",
         default_if_empty(&pane.tmux.pane_current_command, "<empty>")
     );
-    println!("title_raw: {}", default_if_empty(&pane.tmux.pane_title_raw, "<empty>"));
-    println!("cwd: {}", default_if_empty(&pane.tmux.pane_current_path, "<empty>"));
+    println!(
+        "title_raw: {}",
+        default_if_empty(&pane.tmux.pane_title_raw, "<empty>")
+    );
+    println!(
+        "cwd: {}",
+        default_if_empty(&pane.tmux.pane_current_path, "<empty>")
+    );
     println!("tty: {}", default_if_empty(&pane.tmux.pane_tty, "<empty>"));
 
     if pane.classification.reasons.is_empty() {
@@ -572,7 +578,8 @@ fn filter_snapshot(snapshot: &mut SnapshotEnvelope, include_all: bool) {
 }
 
 fn popup_entries(panes: &[PaneRecord]) -> Vec<PopupEntry> {
-    panes.iter()
+    panes
+        .iter()
         .map(|pane| PopupEntry {
             pane_id: pane.pane_id.clone(),
             provider: pane.provider,
@@ -605,7 +612,11 @@ fn pane_from_row(row: TmuxPaneRow) -> PaneRecord {
             pane_title_raw: row.pane_title_raw.clone(),
         },
         display: DisplayMetadata {
-            label: display_label(&row.pane_title_raw, &row.pane_current_command, &row.window_name),
+            label: display_label(
+                &row.pane_title_raw,
+                &row.pane_current_command,
+                &row.window_name,
+            ),
             activity_label: None,
         },
         provider,
@@ -863,10 +874,10 @@ fn has_idle_glyph(title: &str) -> bool {
 }
 
 fn normalize_codex_invocation_in_title(title: &str) -> String {
-    if title.contains("lgpt.sh") || title.ends_with(": gpt") || title.ends_with(": codex") {
-        if let Some((prefix, _)) = title.rsplit_once(':') {
-            return format!("{}: codex", prefix.trim_end());
-        }
+    if (title.contains("lgpt.sh") || title.ends_with(": gpt") || title.ends_with(": codex"))
+        && let Some((prefix, _)) = title.rsplit_once(':')
+    {
+        return format!("{}: codex", prefix.trim_end());
     }
 
     title.to_string()
@@ -946,8 +957,10 @@ fn daemon_run() -> Result<()> {
         stdin,
         "refresh-client -B agentscan:%*:#{{pane_id}}:#{{pane_title}}"
     )
-        .context("failed to subscribe to pane title updates")?;
-    stdin.flush().context("failed to flush tmux control commands")?;
+    .context("failed to subscribe to pane title updates")?;
+    stdin
+        .flush()
+        .context("failed to flush tmux control commands")?;
 
     let stdout = child
         .stdout
@@ -985,7 +998,8 @@ fn default_session_target() -> Result<String> {
             .output()
             .context("failed to query current tmux session")?;
         if output.status.success() {
-            let stdout = String::from_utf8(output.stdout).context("current session was not UTF-8")?;
+            let stdout =
+                String::from_utf8(output.stdout).context("current session was not UTF-8")?;
             let session = stdout.trim();
             if !session.is_empty() {
                 return Ok(session.to_string());
@@ -1092,7 +1106,9 @@ fn should_refresh_from_notification(line: &str) -> bool {
 }
 
 fn notification_name(line: &str) -> Option<&str> {
-    line.split_whitespace().next().filter(|token| token.starts_with('%'))
+    line.split_whitespace()
+        .next()
+        .filter(|token| token.starts_with('%'))
 }
 
 fn cache_path() -> Result<PathBuf> {
@@ -1145,7 +1161,10 @@ mod tests {
     fn classifies_from_command() {
         let matched = classify_provider("codex", "").expect("should match codex");
         assert_eq!(matched.provider, Provider::Codex);
-        assert_eq!(matched.matched_by, ClassificationMatchKind::PaneCurrentCommand);
+        assert_eq!(
+            matched.matched_by,
+            ClassificationMatchKind::PaneCurrentCommand
+        );
     }
 
     #[test]
@@ -1193,13 +1212,18 @@ mod tests {
     #[test]
     fn daemon_notifications_trigger_refresh() {
         assert!(should_refresh_from_notification("%window-add @1"));
-        assert!(should_refresh_from_notification("%subscription-changed agentscan %1 : value"));
+        assert!(should_refresh_from_notification(
+            "%subscription-changed agentscan %1 : value"
+        ));
         assert!(!should_refresh_from_notification("%begin 1 1 0"));
     }
 
     #[test]
     fn detects_notification_names() {
-        assert_eq!(notification_name("%window-renamed @1 editor"), Some("%window-renamed"));
+        assert_eq!(
+            notification_name("%window-renamed @1 editor"),
+            Some("%window-renamed")
+        );
         assert_eq!(notification_name("plain output"), None);
     }
 
@@ -1230,7 +1254,9 @@ mod tests {
     #[test]
     fn detects_codex_titles() {
         assert!(looks_like_codex_title("(repo) task: codex"));
-        assert!(looks_like_codex_title("(repo) task: /home/auro/.zshrc.d/scripts/lgpt.sh"));
+        assert!(looks_like_codex_title(
+            "(repo) task: /home/auro/.zshrc.d/scripts/lgpt.sh"
+        ));
         assert!(!looks_like_codex_title("(repo) task: shell"));
     }
 
@@ -1245,12 +1271,18 @@ mod tests {
     fn cache_path_defaults_to_xdg_location() {
         let actual = cache_path_for_test(None, Some("/tmp/cache"), Some("/tmp/home"))
             .expect("xdg cache path should work");
-        assert_eq!(actual, PathBuf::from("/tmp/cache").join(CACHE_RELATIVE_PATH));
+        assert_eq!(
+            actual,
+            PathBuf::from("/tmp/cache").join(CACHE_RELATIVE_PATH)
+        );
     }
 
     #[test]
     fn source_kind_supports_daemon() {
-        assert_eq!(serde_json::to_string(&SourceKind::Daemon).unwrap(), "\"daemon\"");
+        assert_eq!(
+            serde_json::to_string(&SourceKind::Daemon).unwrap(),
+            "\"daemon\""
+        );
     }
 
     #[test]

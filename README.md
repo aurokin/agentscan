@@ -32,6 +32,14 @@ remain unchanged until `agentscan` is ready to replace it.
 - `ROADMAP.md`: intended behavior, architecture, and migration plan
 - `IMPLEMENTATION_PLAN.md`: concrete milestones, task breakdown, and execution plan
 
+## Quality Gates
+
+Current local baseline:
+
+- `cargo fmt --all --check`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+- `cargo test`
+
 ## Current scope
 
 The first pass implements a snapshot scanner backed by:
