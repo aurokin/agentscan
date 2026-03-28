@@ -40,6 +40,8 @@ The first pass implements a snapshot scanner backed by:
 
 It can:
 
+- run an explicit daemon baseline with tmux control mode
+- persist and read a local JSON cache
 - list panes through the default `list` flow
 - inspect a pane by `pane_id`
 - infer likely agent panes from tmux metadata
@@ -48,10 +50,10 @@ It can:
 
 It does not yet:
 
-- run a persistent tmux control-mode client
-- write or read a persistent cache
-- parse incremental pane output
-- track agent busy/idle state
+- expose dedicated popup-oriented tmux output
+- publish or consume explicit wrapper metadata
+- validate `focus` against broader tmux workflows
+- track richer provider-specific busy/idle state from title metadata
 
 ## Reference Behavior
 

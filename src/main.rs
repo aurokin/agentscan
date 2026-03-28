@@ -1,11 +1,13 @@
 use std::env;
 use std::fmt;
+use std::fs;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
@@ -54,6 +56,8 @@ enum Commands {
     Inspect(InspectArgs),
     /// Focus a pane by pane id.
     Focus(FocusArgs),
+    /// Run daemon-related commands.
+    Daemon(DaemonArgs),
     /// Inspect cache-related paths.
     Cache(CacheArgs),
 }
@@ -91,10 +95,22 @@ struct CacheArgs {
     command: CacheCommands,
 }
 
+#[derive(Args, Debug)]
+struct DaemonArgs {
+    #[command(subcommand)]
+    command: DaemonCommands,
+}
+
 #[derive(Subcommand, Debug)]
 enum CacheCommands {
     /// Print the cache path.
     Path,
+}
+
+#[derive(Subcommand, Debug)]
+enum DaemonCommands {
+    /// Run the long-lived daemon loop.
+    Run,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -103,7 +119,7 @@ enum OutputFormat {
     Json,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum Provider {
     Codex,
@@ -125,13 +141,14 @@ impl fmt::Display for Provider {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum SourceKind {
     Snapshot,
+    Daemon,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum StatusKind {
     Idle,
@@ -139,7 +156,7 @@ enum StatusKind {
     Unknown,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum StatusSource {
     TmuxTitle,
@@ -147,7 +164,7 @@ enum StatusSource {
 }
 
 #[allow(dead_code)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum ClassificationConfidence {
     High,
@@ -155,14 +172,14 @@ enum ClassificationConfidence {
     Low,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum ClassificationMatchKind {
     PaneCurrentCommand,
     PaneTitle,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct SnapshotEnvelope {
     schema_version: u32,
     generated_at: String,
@@ -170,13 +187,13 @@ struct SnapshotEnvelope {
     panes: Vec<PaneRecord>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct SnapshotSource {
     kind: SourceKind,
     tmux_version: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct PaneRecord {
     pane_id: String,
     location: PaneLocation,
@@ -195,7 +212,7 @@ impl PaneRecord {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct PaneLocation {
     session_name: String,
     window_index: u32,
@@ -203,7 +220,7 @@ struct PaneLocation {
     window_name: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct TmuxPaneMetadata {
     pane_pid: u32,
     pane_tty: String,
@@ -212,26 +229,26 @@ struct TmuxPaneMetadata {
     pane_title_raw: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct DisplayMetadata {
     label: String,
     activity_label: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct PaneStatus {
     kind: StatusKind,
     source: StatusSource,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct PaneClassification {
     matched_by: Option<ClassificationMatchKind>,
     confidence: Option<ClassificationConfidence>,
     reasons: Vec<String>,
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 struct AgentMetadata {
     provider: Option<String>,
     label: Option<String>,
@@ -239,7 +256,7 @@ struct AgentMetadata {
     state: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct PaneDiagnostics {
     cache_origin: String,
 }
@@ -274,6 +291,7 @@ fn main() -> Result<()> {
         Some(Commands::List(args)) => command_list(&args),
         Some(Commands::Inspect(args)) => command_inspect(&args),
         Some(Commands::Focus(args)) => command_focus(&args),
+        Some(Commands::Daemon(args)) => command_daemon(&args),
         Some(Commands::Cache(args)) => command_cache(&args),
         None => command_list(&cli.list_args),
     }
@@ -286,13 +304,13 @@ fn command_scan(args: &ListArgs) -> Result<()> {
 }
 
 fn command_list(args: &ListArgs) -> Result<()> {
-    let mut snapshot = snapshot_from_tmux()?;
+    let mut snapshot = read_snapshot_from_cache()?;
     filter_snapshot(&mut snapshot, args.all);
     emit_snapshot(&snapshot, args.format)
 }
 
 fn command_inspect(args: &InspectArgs) -> Result<()> {
-    let snapshot = snapshot_from_tmux()?;
+    let snapshot = read_snapshot_from_cache()?;
     let pane = snapshot
         .panes
         .into_iter()
@@ -318,6 +336,12 @@ fn command_focus(args: &FocusArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn command_daemon(args: &DaemonArgs) -> Result<()> {
+    match args.command {
+        DaemonCommands::Run => daemon_run(),
+    }
 }
 
 fn command_cache(args: &CacheArgs) -> Result<()> {
@@ -419,6 +443,43 @@ fn snapshot_from_tmux() -> Result<SnapshotEnvelope> {
         },
         panes,
     })
+}
+
+fn read_snapshot_from_cache() -> Result<SnapshotEnvelope> {
+    let path = cache_path()?;
+    let contents = fs::read_to_string(&path).with_context(|| {
+        format!(
+            "failed to read cache at {}. Run `agentscan daemon run` first",
+            path.display()
+        )
+    })?;
+
+    serde_json::from_str(&contents)
+        .with_context(|| format!("failed to parse cache at {}", path.display()))
+}
+
+fn write_snapshot_to_cache(snapshot: &SnapshotEnvelope) -> Result<()> {
+    let path = cache_path()?;
+    let parent = path
+        .parent()
+        .context("cache path did not have a parent directory")?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("failed to create cache directory {}", parent.display()))?;
+
+    let temp_path = path.with_extension("tmp");
+    let contents =
+        serde_json::to_vec_pretty(snapshot).context("failed to serialize cache snapshot")?;
+    fs::write(&temp_path, contents)
+        .with_context(|| format!("failed to write temporary cache {}", temp_path.display()))?;
+    fs::rename(&temp_path, &path).with_context(|| {
+        format!(
+            "failed to move temporary cache {} into place at {}",
+            temp_path.display(),
+            path.display()
+        )
+    })?;
+
+    Ok(())
 }
 
 fn filter_snapshot(snapshot: &mut SnapshotEnvelope, include_all: bool) {
@@ -723,6 +784,113 @@ fn now_rfc3339() -> Result<String> {
         .context("failed to format current time")
 }
 
+fn daemon_run() -> Result<()> {
+    let mut snapshot = snapshot_from_tmux()?;
+    snapshot.source.kind = SourceKind::Daemon;
+    write_snapshot_to_cache(&snapshot)?;
+
+    let session_target = default_session_target()?;
+    let mut child = Command::new("tmux")
+        .args(["-C", "attach-session", "-t", &session_target])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .context("failed to start tmux control-mode client")?;
+
+    let mut stdin = child
+        .stdin
+        .take()
+        .context("tmux control-mode client did not provide stdin")?;
+    writeln!(
+        stdin,
+        "refresh-client -B agentscan:%*:#{{pane_id}}:#{{pane_title}}"
+    )
+        .context("failed to subscribe to pane title updates")?;
+    stdin.flush().context("failed to flush tmux control commands")?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .context("tmux control-mode client did not provide stdout")?;
+    let reader = BufReader::new(stdout);
+
+    for line in reader.lines() {
+        let line = line.context("failed to read tmux control-mode output")?;
+        if should_refresh_from_notification(&line) {
+            let mut snapshot = snapshot_from_tmux()?;
+            snapshot.source.kind = SourceKind::Daemon;
+            write_snapshot_to_cache(&snapshot)?;
+        }
+
+        if line.starts_with("%exit") {
+            break;
+        }
+    }
+
+    let status = child
+        .wait()
+        .context("failed while waiting for tmux control-mode client to exit")?;
+    if !status.success() {
+        bail!("tmux control-mode client exited with status {status}");
+    }
+
+    Ok(())
+}
+
+fn default_session_target() -> Result<String> {
+    if env::var_os("TMUX").is_some() {
+        let output = Command::new("tmux")
+            .args(["display-message", "-p", "#{session_id}"])
+            .output()
+            .context("failed to query current tmux session")?;
+        if output.status.success() {
+            let stdout = String::from_utf8(output.stdout).context("current session was not UTF-8")?;
+            let session = stdout.trim();
+            if !session.is_empty() {
+                return Ok(session.to_string());
+            }
+        }
+    }
+
+    let output = Command::new("tmux")
+        .args(["list-sessions", "-F", "#{session_id}"])
+        .output()
+        .context("failed to list tmux sessions")?;
+    if !output.status.success() {
+        bail!("tmux list-sessions failed with status {}", output.status);
+    }
+
+    let stdout = String::from_utf8(output.stdout).context("tmux sessions output was not UTF-8")?;
+    let session = stdout
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .context("no tmux sessions available for daemon attach")?;
+    Ok(session.trim().to_string())
+}
+
+fn should_refresh_from_notification(line: &str) -> bool {
+    matches!(
+        notification_name(line),
+        Some(
+            "%subscription-changed"
+                | "%sessions-changed"
+                | "%session-changed"
+                | "%session-renamed"
+                | "%session-window-changed"
+                | "%layout-change"
+                | "%window-add"
+                | "%window-close"
+                | "%window-pane-changed"
+                | "%window-renamed"
+        )
+    )
+}
+
+fn notification_name(line: &str) -> Option<&str> {
+    line.split_whitespace().next().filter(|token| token.starts_with('%'))
+}
+
 fn cache_path() -> Result<PathBuf> {
     if let Some(path) = env::var_os(CACHE_ENV_VAR) {
         return Ok(PathBuf::from(path));
@@ -751,8 +919,9 @@ mod tests {
     use anyhow::Context;
 
     use super::{
-        CACHE_RELATIVE_PATH, ClassificationMatchKind, Provider, StatusKind, classify_provider,
-        infer_status, looks_like_codex_title, pane_from_row, parse_pane_rows,
+        CACHE_RELATIVE_PATH, ClassificationMatchKind, Provider, SourceKind, StatusKind,
+        classify_provider, infer_status, looks_like_codex_title, notification_name, pane_from_row,
+        parse_pane_rows, should_refresh_from_notification,
     };
 
     #[test]
@@ -805,6 +974,19 @@ mod tests {
     }
 
     #[test]
+    fn daemon_notifications_trigger_refresh() {
+        assert!(should_refresh_from_notification("%window-add @1"));
+        assert!(should_refresh_from_notification("%subscription-changed agentscan %1 : value"));
+        assert!(!should_refresh_from_notification("%begin 1 1 0"));
+    }
+
+    #[test]
+    fn detects_notification_names() {
+        assert_eq!(notification_name("%window-renamed @1 editor"), Some("%window-renamed"));
+        assert_eq!(notification_name("plain output"), None);
+    }
+
+    #[test]
     fn infers_status_from_title_only() {
         let status = infer_status(Some(Provider::Gemini), "Working");
         assert_eq!(status.kind, StatusKind::Busy);
@@ -829,6 +1011,11 @@ mod tests {
         let actual = cache_path_for_test(None, Some("/tmp/cache"), Some("/tmp/home"))
             .expect("xdg cache path should work");
         assert_eq!(actual, PathBuf::from("/tmp/cache").join(CACHE_RELATIVE_PATH));
+    }
+
+    #[test]
+    fn source_kind_supports_daemon() {
+        assert_eq!(serde_json::to_string(&SourceKind::Daemon).unwrap(), "\"daemon\"");
     }
 
     fn cache_path_for_test(

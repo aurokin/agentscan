@@ -60,13 +60,14 @@ Completed baseline work:
 - `agentscan scan`, `agentscan list`, and `agentscan inspect` are implemented
 - `agentscan cache path` is implemented with XDG default plus override support
 - title-first metadata classification is wired into snapshot ingestion
+- `agentscan daemon run` writes a daemon-marked cache from tmux control mode
+- `list` and `inspect` now read cache-backed state by default
 
 Still pending in Phase 1:
 
-- daemon runtime and control-mode ingestion
-- cache writes and reads
 - `agentscan focus` validation in normal tmux workflows
 - dedicated popup-oriented tmux subcommand and thin integration wrapper
+- more robust title-driven status logic across providers
 
 ## Phase 1
 
