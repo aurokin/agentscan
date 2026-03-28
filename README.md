@@ -38,6 +38,7 @@ Current local baseline:
 
 - `cargo fmt --all --check`
 - `cargo clippy --all-targets --all-features -- -D warnings`
+- `cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_arguments`
 - `cargo test`
 
 ## Current scope

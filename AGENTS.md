@@ -9,13 +9,14 @@
 | Format | `cargo fmt --all` |
 | Format check | `cargo fmt --all --check` |
 | Lint | `cargo clippy --all-targets --all-features -- -D warnings` |
+| Complexity check | `cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_arguments` |
 | Test | `cargo test` |
 | Run scanner | `cargo run -- --format text` |
 | Run JSON output | `cargo run -- --format json` |
 
 ## Quality Baseline
-- Keep `cargo fmt --all --check`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test` passing.
-- Complexity and coverage tooling are not part of the baseline yet; add them intentionally rather than ad hoc.
+- Keep `cargo fmt --all --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_arguments`, and `cargo test` passing.
+- Coverage tooling is not part of the baseline yet; add it intentionally rather than ad hoc.
 
 ## Commit Attribution
 - AI commits MUST include:
