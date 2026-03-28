@@ -1149,6 +1149,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use anyhow::Context;
+    use proptest::{prelude::*, string::string_regex};
 
     const TMUX_SNAPSHOT_FIXTURE: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -1160,10 +1161,11 @@ mod tests {
     ));
 
     use super::{
-        CACHE_RELATIVE_PATH, ClassificationMatchKind, PaneRecord, Provider, SnapshotEnvelope,
-        SourceKind, StatusKind, classify_provider, infer_status, looks_like_codex_title,
-        notification_name, pane_from_row, parse_pane_rows, popup_entries,
-        should_refresh_from_notification, status_kind_name, strip_known_status_glyph, tsv_escape,
+        CACHE_RELATIVE_PATH, CLAUDE_SPINNER_GLYPHS, ClassificationMatchKind, IDLE_GLYPHS,
+        PaneRecord, Provider, SnapshotEnvelope, SourceKind, StatusKind, classify_provider,
+        infer_status, looks_like_codex_title, notification_name, pane_from_row, parse_pane_rows,
+        popup_entries, should_refresh_from_notification, status_kind_name,
+        strip_known_status_glyph, tsv_escape,
     };
 
     #[test]
@@ -1401,6 +1403,75 @@ mod tests {
 
         let home = home.context("missing home")?;
         Ok(Path::new(home).join(".cache").join(CACHE_RELATIVE_PATH))
+    }
+
+    proptest! {
+        #[test]
+        fn parse_pane_rows_roundtrips_generated_rows(
+            session_name in safe_tmux_field(),
+            window_index in 0_u32..1000,
+            pane_index in 0_u32..1000,
+            pane_pid in 1_u32..u32::MAX,
+            pane_current_command in safe_tmux_field(),
+            pane_title_raw in safe_tmux_field(),
+            pane_tty in safe_tmux_field(),
+            pane_current_path in safe_tmux_field(),
+            window_name in safe_tmux_field(),
+        ) {
+            let pane_id = format!("%{pane_pid}");
+            let line = format!(
+                "{session_name}\u{1f}{window_index}\u{1f}{pane_index}\u{1f}{pane_id}\u{1f}{pane_pid}\u{1f}{pane_current_command}\u{1f}{pane_title_raw}\u{1f}{pane_tty}\u{1f}{pane_current_path}\u{1f}{window_name}"
+            );
+
+            let rows = parse_pane_rows(&line).expect("generated tmux row should parse");
+            prop_assert_eq!(rows.len(), 1);
+
+            let row = &rows[0];
+            prop_assert_eq!(&row.session_name, &session_name);
+            prop_assert_eq!(row.window_index, window_index);
+            prop_assert_eq!(row.pane_index, pane_index);
+            prop_assert_eq!(&row.pane_id, &pane_id);
+            prop_assert_eq!(row.pane_pid, pane_pid);
+            prop_assert_eq!(&row.pane_current_command, &pane_current_command);
+            prop_assert_eq!(&row.pane_title_raw, &pane_title_raw);
+            prop_assert_eq!(&row.pane_tty, &pane_tty);
+            prop_assert_eq!(&row.pane_current_path, &pane_current_path);
+            prop_assert_eq!(&row.window_name, &window_name);
+        }
+
+        #[test]
+        fn tsv_escape_is_idempotent_and_removes_control_whitespace(value in any::<String>()) {
+            let escaped = tsv_escape(&value);
+
+            prop_assert!(!escaped.contains('\t'));
+            prop_assert!(!escaped.contains('\n'));
+            prop_assert!(!escaped.contains('\r'));
+            prop_assert_eq!(tsv_escape(&escaped), escaped);
+        }
+
+        #[test]
+        fn known_status_glyphs_strip_to_trimmed_tail(
+            glyph in known_status_glyph(),
+            padding in 0_usize..4,
+            tail in any::<String>(),
+        ) {
+            let input = format!("{glyph}{}{tail}", " ".repeat(padding));
+            prop_assert_eq!(strip_known_status_glyph(&input), tail.trim_start());
+        }
+    }
+
+    fn safe_tmux_field() -> impl Strategy<Value = String> {
+        string_regex(r"[A-Za-z0-9_./()|: -]{0,32}").expect("safe tmux field regex should compile")
+    }
+
+    fn known_status_glyph() -> impl Strategy<Value = char> {
+        prop::sample::select(
+            CLAUDE_SPINNER_GLYPHS
+                .iter()
+                .copied()
+                .chain(IDLE_GLYPHS.iter().copied())
+                .collect::<Vec<_>>(),
+        )
     }
 
     fn pane_by_id<'a>(panes: &'a [PaneRecord], pane_id: &str) -> &'a PaneRecord {

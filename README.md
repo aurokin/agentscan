@@ -42,8 +42,9 @@ Current local baseline:
 - `cargo test`
 
 Current test coverage also includes committed file-based fixtures for representative
-tmux title snapshots and cache snapshots, so parser and schema regressions can be
-checked against stable real-world-shaped inputs.
+tmux title snapshots and cache snapshots, plus property tests for parser and
+normalization invariants, so parser and schema regressions can be checked against
+both stable examples and generated inputs.
 
 ## Current scope
 
