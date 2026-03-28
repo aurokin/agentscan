@@ -27,6 +27,11 @@ status_label() {
 
 keys=(1 2 3 4 5 6 7 8 9 0 q w e r t y u i o p)
 declare -A key_targets=()
+client_tty=''
+
+if command -v tmux >/dev/null 2>&1 && [[ -n "${TMUX:-}" ]]; then
+  client_tty="$(tmux display-message -p '#{client_tty}' 2>/dev/null || true)"
+fi
 
 mapfile -t rows < <(agentscan_cmd tmux popup --format tsv)
 
@@ -66,5 +71,9 @@ printf '%s' 'Select pane key, or press any other key to close: '
 IFS= read -r -s -n 1 key || exit 0
 
 if [[ -n "${key_targets[$key]-}" ]]; then
-  agentscan_cmd focus "${key_targets[$key]}"
+  if [[ -n "$client_tty" ]]; then
+    agentscan_cmd focus --client-tty "$client_tty" "${key_targets[$key]}"
+  else
+    agentscan_cmd focus "${key_targets[$key]}"
+  fi
 fi

@@ -94,6 +94,10 @@ struct InspectArgs {
 struct FocusArgs {
     /// The tmux pane id, for example `%42`.
     pane_id: String,
+
+    /// The tmux client tty to target when switching panes.
+    #[arg(long)]
+    client_tty: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -374,16 +378,7 @@ fn command_inspect(args: &InspectArgs) -> Result<()> {
 }
 
 fn command_focus(args: &FocusArgs) -> Result<()> {
-    let status = Command::new("tmux")
-        .args(["switch-client", "-t", &args.pane_id])
-        .status()
-        .context("failed to execute tmux switch-client")?;
-
-    if !status.success() {
-        bail!("tmux switch-client failed with status {status}");
-    }
-
-    Ok(())
+    focus_tmux_pane(&args.pane_id, args.client_tty.as_deref())
 }
 
 fn command_daemon(args: &DaemonArgs) -> Result<()> {
@@ -1014,6 +1009,70 @@ fn default_session_target() -> Result<String> {
     Ok(session.trim().to_string())
 }
 
+fn current_client_tty() -> Result<Option<String>> {
+    if env::var_os("TMUX").is_none() {
+        return Ok(None);
+    }
+
+    let output = Command::new("tmux")
+        .args(["display-message", "-p", "#{client_tty}"])
+        .output()
+        .context("failed to query current tmux client tty")?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let stdout =
+        String::from_utf8(output.stdout).context("current client tty output was not UTF-8")?;
+    let tty = stdout.trim();
+    if tty.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(tty.to_string()))
+    }
+}
+
+fn focus_tmux_pane(pane_id: &str, client_tty: Option<&str>) -> Result<()> {
+    let client_tty = match client_tty {
+        Some(tty) if !tty.trim().is_empty() => Some(tty.trim().to_string()),
+        _ => current_client_tty()?,
+    };
+
+    let status = if let Some(client_tty) = client_tty.as_deref() {
+        let status = Command::new("tmux")
+            .args(["switch-client", "-Z", "-c", client_tty, "-t", pane_id])
+            .status()
+            .context("failed to execute tmux switch-client with client tty")?;
+        if status.success() {
+            status
+        } else {
+            Command::new("tmux")
+                .args(["switch-client", "-c", client_tty, "-t", pane_id])
+                .status()
+                .context("failed to execute tmux switch-client fallback with client tty")?
+        }
+    } else {
+        let status = Command::new("tmux")
+            .args(["switch-client", "-Z", "-t", pane_id])
+            .status()
+            .context("failed to execute tmux switch-client")?;
+        if status.success() {
+            status
+        } else {
+            Command::new("tmux")
+                .args(["switch-client", "-t", pane_id])
+                .status()
+                .context("failed to execute tmux switch-client fallback")?
+        }
+    };
+
+    if !status.success() {
+        bail!("tmux switch-client failed with status {status}");
+    }
+
+    Ok(())
+}
+
 fn should_refresh_from_notification(line: &str) -> bool {
     matches!(
         notification_name(line),
@@ -1078,8 +1137,8 @@ mod tests {
     use super::{
         CACHE_RELATIVE_PATH, ClassificationMatchKind, Provider, SourceKind, StatusKind,
         classify_provider, infer_status, looks_like_codex_title, notification_name, pane_from_row,
-        parse_pane_rows, popup_entries, should_refresh_from_notification, strip_known_status_glyph,
-        tsv_escape,
+        parse_pane_rows, popup_entries, should_refresh_from_notification, status_kind_name,
+        strip_known_status_glyph, tsv_escape,
     };
 
     #[test]
@@ -1217,6 +1276,13 @@ mod tests {
     #[test]
     fn tsv_escape_removes_control_whitespace() {
         assert_eq!(tsv_escape("a\tb\nc\rd"), "a b c d");
+    }
+
+    #[test]
+    fn status_names_match_serialized_values() {
+        assert_eq!(status_kind_name(StatusKind::Busy), "busy");
+        assert_eq!(status_kind_name(StatusKind::Idle), "idle");
+        assert_eq!(status_kind_name(StatusKind::Unknown), "unknown");
     }
 
     #[test]

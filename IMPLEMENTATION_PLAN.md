@@ -65,10 +65,11 @@ Completed baseline work:
 - `agentscan tmux popup` provides dedicated structured popup output
 - a thin repo-local `scripts/agentscan-popup.sh` wrapper renders cached popup rows and calls `focus`
 - title-driven status heuristics now cover the current observed Codex, Claude, and Gemini title patterns
+- `agentscan focus` supports client-aware tmux switching and has been validated against the current pane workflow
 
 Still pending in Phase 1:
 
-- `agentscan focus` validation in normal tmux workflows
+- broader focus validation beyond the current single-client tmux workflow
 - broader title-driven status coverage and more fixture samples across providers
 
 ## Phase 1
