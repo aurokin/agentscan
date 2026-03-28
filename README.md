@@ -44,13 +44,13 @@ It can:
 - persist and read a local JSON cache
 - list panes through the default `list` flow
 - inspect a pane by `pane_id`
+- emit dedicated popup-oriented tmux output
 - infer likely agent panes from tmux metadata
 - emit canonical snapshot JSON
 - print the planned cache path
 
 It does not yet:
 
-- expose dedicated popup-oriented tmux output
 - publish or consume explicit wrapper metadata
 - validate `focus` against broader tmux workflows
 - track richer provider-specific busy/idle state from title metadata

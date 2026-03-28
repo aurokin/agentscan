@@ -58,6 +58,8 @@ enum Commands {
     Focus(FocusArgs),
     /// Run daemon-related commands.
     Daemon(DaemonArgs),
+    /// tmux-facing helper commands.
+    Tmux(TmuxArgs),
     /// Inspect cache-related paths.
     Cache(CacheArgs),
 }
@@ -101,6 +103,12 @@ struct DaemonArgs {
     command: DaemonCommands,
 }
 
+#[derive(Args, Debug)]
+struct TmuxArgs {
+    #[command(subcommand)]
+    command: TmuxCommands,
+}
+
 #[derive(Subcommand, Debug)]
 enum CacheCommands {
     /// Print the cache path.
@@ -113,9 +121,32 @@ enum DaemonCommands {
     Run,
 }
 
+#[derive(Subcommand, Debug)]
+enum TmuxCommands {
+    /// Emit popup-oriented pane output.
+    Popup(TmuxPopupArgs),
+}
+
+#[derive(Args, Debug)]
+struct TmuxPopupArgs {
+    /// Include all tmux panes, not only likely agent panes.
+    #[arg(long)]
+    all: bool,
+
+    /// Output format for popup consumers.
+    #[arg(long, value_enum, default_value_t = PopupOutputFormat::Tsv)]
+    format: PopupOutputFormat,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum OutputFormat {
     Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum PopupOutputFormat {
+    Tsv,
     Json,
 }
 
@@ -261,6 +292,17 @@ struct PaneDiagnostics {
     cache_origin: String,
 }
 
+#[derive(Debug, Serialize)]
+struct PopupEntry {
+    pane_id: String,
+    provider: Option<Provider>,
+    status: StatusKind,
+    session_name: String,
+    window_index: u32,
+    pane_index: u32,
+    display_label: String,
+}
+
 #[derive(Debug)]
 struct TmuxPaneRow {
     session_name: String,
@@ -292,6 +334,7 @@ fn main() -> Result<()> {
         Some(Commands::Inspect(args)) => command_inspect(&args),
         Some(Commands::Focus(args)) => command_focus(&args),
         Some(Commands::Daemon(args)) => command_daemon(&args),
+        Some(Commands::Tmux(args)) => command_tmux(&args),
         Some(Commands::Cache(args)) => command_cache(&args),
         None => command_list(&cli.list_args),
     }
@@ -354,6 +397,12 @@ fn command_cache(args: &CacheArgs) -> Result<()> {
     Ok(())
 }
 
+fn command_tmux(args: &TmuxArgs) -> Result<()> {
+    match &args.command {
+        TmuxCommands::Popup(args) => command_tmux_popup(args),
+    }
+}
+
 fn emit_snapshot(snapshot: &SnapshotEnvelope, format: OutputFormat) -> Result<()> {
     match format {
         OutputFormat::Text => {
@@ -361,6 +410,20 @@ fn emit_snapshot(snapshot: &SnapshotEnvelope, format: OutputFormat) -> Result<()
             Ok(())
         }
         OutputFormat::Json => print_json(snapshot),
+    }
+}
+
+fn command_tmux_popup(args: &TmuxPopupArgs) -> Result<()> {
+    let mut snapshot = read_snapshot_from_cache()?;
+    filter_snapshot(&mut snapshot, args.all);
+    let entries = popup_entries(&snapshot.panes);
+
+    match args.format {
+        PopupOutputFormat::Tsv => {
+            print_popup_tsv(&entries);
+            Ok(())
+        }
+        PopupOutputFormat::Json => print_json(&entries),
     }
 }
 
@@ -419,6 +482,26 @@ fn print_inspect_text(pane: &PaneRecord) {
         for reason in &pane.classification.reasons {
             println!("  - {reason}");
         }
+    }
+}
+
+fn print_popup_tsv(entries: &[PopupEntry]) {
+    for entry in entries {
+        println!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            tsv_escape(&entry.pane_id),
+            tsv_escape(
+                &entry
+                    .provider
+                    .map(|provider| provider.to_string())
+                    .unwrap_or_default()
+            ),
+            tsv_escape(status_kind_name(entry.status)),
+            tsv_escape(&entry.session_name),
+            entry.window_index,
+            entry.pane_index,
+            tsv_escape(&entry.display_label)
+        );
     }
 }
 
@@ -486,6 +569,20 @@ fn filter_snapshot(snapshot: &mut SnapshotEnvelope, include_all: bool) {
     if !include_all {
         snapshot.panes.retain(|pane| pane.provider.is_some());
     }
+}
+
+fn popup_entries(panes: &[PaneRecord]) -> Vec<PopupEntry> {
+    panes.iter()
+        .map(|pane| PopupEntry {
+            pane_id: pane.pane_id.clone(),
+            provider: pane.provider,
+            status: pane.status.kind,
+            session_name: pane.location.session_name.clone(),
+            window_index: pane.location.window_index,
+            pane_index: pane.location.pane_index,
+            display_label: pane.display.label.clone(),
+        })
+        .collect()
 }
 
 fn pane_from_row(row: TmuxPaneRow) -> PaneRecord {
@@ -904,6 +1001,18 @@ fn cache_path() -> Result<PathBuf> {
     Ok(Path::new(&home).join(".cache").join(CACHE_RELATIVE_PATH))
 }
 
+fn status_kind_name(status: StatusKind) -> &'static str {
+    match status {
+        StatusKind::Idle => "idle",
+        StatusKind::Busy => "busy",
+        StatusKind::Unknown => "unknown",
+    }
+}
+
+fn tsv_escape(value: &str) -> String {
+    value.replace(['\t', '\n', '\r'], " ")
+}
+
 fn default_if_empty<'a>(value: &'a str, fallback: &'a str) -> &'a str {
     if value.trim().is_empty() {
         fallback
@@ -921,7 +1030,7 @@ mod tests {
     use super::{
         CACHE_RELATIVE_PATH, ClassificationMatchKind, Provider, SourceKind, StatusKind,
         classify_provider, infer_status, looks_like_codex_title, notification_name, pane_from_row,
-        parse_pane_rows, should_refresh_from_notification,
+        parse_pane_rows, popup_entries, should_refresh_from_notification, tsv_escape,
     };
 
     #[test]
@@ -1016,6 +1125,31 @@ mod tests {
     #[test]
     fn source_kind_supports_daemon() {
         assert_eq!(serde_json::to_string(&SourceKind::Daemon).unwrap(), "\"daemon\"");
+    }
+
+    #[test]
+    fn popup_entries_include_location_and_status() {
+        let pane = pane_from_row(super::TmuxPaneRow {
+            session_name: "notes".to_string(),
+            window_index: 4,
+            pane_index: 1,
+            pane_id: "%41".to_string(),
+            pane_pid: 324026,
+            pane_current_command: "claude".to_string(),
+            pane_title_raw: "Working".to_string(),
+            pane_tty: "/dev/pts/44".to_string(),
+            pane_current_path: "/home/auro/notes".to_string(),
+            window_name: "ai".to_string(),
+        });
+
+        let entries = popup_entries(&[pane]);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].session_name, "notes");
+    }
+
+    #[test]
+    fn tsv_escape_removes_control_whitespace() {
+        assert_eq!(tsv_escape("a\tb\nc\rd"), "a b c d");
     }
 
     fn cache_path_for_test(

@@ -62,11 +62,12 @@ Completed baseline work:
 - title-first metadata classification is wired into snapshot ingestion
 - `agentscan daemon run` writes a daemon-marked cache from tmux control mode
 - `list` and `inspect` now read cache-backed state by default
+- `agentscan tmux popup` provides dedicated structured popup output
+- a thin repo-local `scripts/agentscan-popup.sh` wrapper renders cached popup rows and calls `focus`
 
 Still pending in Phase 1:
 
 - `agentscan focus` validation in normal tmux workflows
-- dedicated popup-oriented tmux subcommand and thin integration wrapper
 - more robust title-driven status logic across providers
 
 ## Phase 1
