@@ -163,6 +163,8 @@ enum DaemonCommands {
 enum TmuxCommands {
     /// Emit popup-oriented pane output.
     Popup(TmuxPopupArgs),
+    /// Publish explicit pane metadata for wrappers.
+    SetMetadata(TmuxSetMetadataArgs),
 }
 
 #[derive(Args, Debug)]
@@ -174,6 +176,33 @@ struct TmuxPopupArgs {
     /// Output format for popup consumers.
     #[arg(long, value_enum, default_value_t = PopupOutputFormat::Tsv)]
     format: PopupOutputFormat,
+}
+
+#[derive(Args, Debug)]
+struct TmuxSetMetadataArgs {
+    /// The tmux pane id to target. Defaults to the current pane when inside tmux.
+    #[arg(long)]
+    pane_id: Option<String>,
+
+    /// Explicit provider published by the wrapper.
+    #[arg(long, value_enum)]
+    provider: Option<Provider>,
+
+    /// User-facing short label published by the wrapper.
+    #[arg(long)]
+    label: Option<String>,
+
+    /// Explicit working directory published by the wrapper.
+    #[arg(long)]
+    cwd: Option<String>,
+
+    /// Optional explicit state published by the wrapper.
+    #[arg(long, value_enum)]
+    state: Option<StatusKind>,
+
+    /// Optional provider-specific session identifier.
+    #[arg(long)]
+    session_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -188,7 +217,7 @@ enum PopupOutputFormat {
     Json,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
 #[serde(rename_all = "snake_case")]
 enum Provider {
     Codex,
@@ -217,7 +246,7 @@ enum SourceKind {
     Daemon,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
 #[serde(rename_all = "snake_case")]
 enum StatusKind {
     Idle,
@@ -460,6 +489,7 @@ fn command_cache(args: &CacheArgs) -> Result<()> {
 fn command_tmux(args: &TmuxArgs) -> Result<()> {
     match &args.command {
         TmuxCommands::Popup(args) => command_tmux_popup(args),
+        TmuxCommands::SetMetadata(args) => command_tmux_set_metadata(args),
     }
 }
 
@@ -485,6 +515,31 @@ fn command_tmux_popup(args: &TmuxPopupArgs) -> Result<()> {
         }
         PopupOutputFormat::Json => print_json(&entries),
     }
+}
+
+fn command_tmux_set_metadata(args: &TmuxSetMetadataArgs) -> Result<()> {
+    let pane_id = match args.pane_id.as_deref() {
+        Some(pane_id) if !pane_id.trim().is_empty() => pane_id.trim().to_string(),
+        _ => current_pane_id()?.context("`tmux set-metadata` requires --pane-id outside tmux")?,
+    };
+
+    let updates = tmux_metadata_updates(args);
+    if updates.is_empty() {
+        bail!("no metadata fields were provided");
+    }
+
+    for (option_name, value) in updates {
+        let status = Command::new("tmux")
+            .args(["set-option", "-p", "-t", &pane_id, option_name, &value])
+            .status()
+            .with_context(|| format!("failed to set tmux option {option_name} on {pane_id}"))?;
+        if !status.success() {
+            bail!("tmux set-option failed for {option_name} on {pane_id}");
+        }
+    }
+
+    println!("updated pane metadata for {pane_id}");
+    Ok(())
 }
 
 fn print_list_text(panes: &[PaneRecord]) {
@@ -1358,6 +1413,29 @@ fn default_session_target() -> Result<String> {
     Ok(session.trim().to_string())
 }
 
+fn current_pane_id() -> Result<Option<String>> {
+    if env::var_os("TMUX").is_none() {
+        return Ok(None);
+    }
+
+    let output = Command::new("tmux")
+        .args(["display-message", "-p", "#{pane_id}"])
+        .output()
+        .context("failed to query current tmux pane id")?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let stdout =
+        String::from_utf8(output.stdout).context("current pane id output was not UTF-8")?;
+    let pane_id = stdout.trim();
+    if pane_id.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(pane_id.to_string()))
+    }
+}
+
 fn current_client_tty() -> Result<Option<String>> {
     if env::var_os("TMUX").is_none() {
         return Ok(None);
@@ -1467,6 +1545,43 @@ fn status_kind_name(status: StatusKind) -> &'static str {
     }
 }
 
+fn tmux_metadata_updates(args: &TmuxSetMetadataArgs) -> Vec<(&'static str, String)> {
+    let mut updates = Vec::new();
+
+    if let Some(provider) = args.provider {
+        updates.push(("@agent.provider", provider.to_string()));
+    }
+    if let Some(label) = args
+        .label
+        .as_deref()
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+    {
+        updates.push(("@agent.label", label.to_string()));
+    }
+    if let Some(cwd) = args
+        .cwd
+        .as_deref()
+        .map(str::trim)
+        .filter(|cwd| !cwd.is_empty())
+    {
+        updates.push(("@agent.cwd", cwd.to_string()));
+    }
+    if let Some(state) = args.state {
+        updates.push(("@agent.state", status_kind_name(state).to_string()));
+    }
+    if let Some(session_id) = args
+        .session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|session_id| !session_id.is_empty())
+    {
+        updates.push(("@agent.session_id", session_id.to_string()));
+    }
+
+    updates
+}
+
 fn format_provider_counts(counts: &[(Provider, usize)]) -> String {
     if counts.is_empty() {
         return "none".to_string();
@@ -1526,7 +1641,7 @@ mod tests {
         classify_provider, infer_status, infer_title_status, looks_like_codex_title,
         notification_name, pane_from_row, parse_pane_rows, popup_entries,
         should_refresh_from_notification, status_kind_name, strip_known_status_glyph,
-        summarize_snapshot, tsv_escape, validate_snapshot,
+        summarize_snapshot, tmux_metadata_updates, tsv_escape, validate_snapshot,
     };
 
     #[test]
@@ -1645,6 +1760,30 @@ mod tests {
         let idle_from_title = infer_title_status(Some(Provider::Codex), "Ready");
         let still_idle = infer_status(idle_from_title, Some("busy"));
         assert_eq!(still_idle.kind, StatusKind::Idle);
+    }
+
+    #[test]
+    fn tmux_metadata_updates_emit_expected_option_values() {
+        let args = super::TmuxSetMetadataArgs {
+            pane_id: Some("%41".to_string()),
+            provider: Some(Provider::Claude),
+            label: Some("Review notes".to_string()),
+            cwd: Some("/tmp/notes".to_string()),
+            state: Some(StatusKind::Busy),
+            session_id: Some("sess-123".to_string()),
+        };
+
+        let updates = tmux_metadata_updates(&args);
+        assert_eq!(
+            updates,
+            vec![
+                ("@agent.provider", "claude".to_string()),
+                ("@agent.label", "Review notes".to_string()),
+                ("@agent.cwd", "/tmp/notes".to_string()),
+                ("@agent.state", "busy".to_string()),
+                ("@agent.session_id", "sess-123".to_string()),
+            ]
+        );
     }
 
     #[test]
