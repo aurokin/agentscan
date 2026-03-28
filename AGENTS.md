@@ -11,6 +11,7 @@
 | Lint | `cargo clippy --all-targets --all-features -- -D warnings` |
 | Complexity check | `cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_arguments` |
 | Test | `cargo test` |
+| Benchmark | `cargo bench --bench core_paths -- --noplot` |
 | Run scanner | `cargo run -- --format text` |
 | Run JSON output | `cargo run -- --format json` |
 

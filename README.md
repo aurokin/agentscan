@@ -46,6 +46,13 @@ tmux title snapshots and cache snapshots, plus property tests for parser and
 normalization invariants, so parser and schema regressions can be checked against
 both stable examples and generated inputs.
 
+Current performance tooling:
+
+- `cargo bench --bench core_paths -- --noplot`
+
+The initial benchmark target covers snapshot row parsing, row-to-pane conversion,
+cache deserialization, and popup entry generation against committed fixtures.
+
 ## Current scope
 
 The first pass implements a snapshot scanner backed by:
