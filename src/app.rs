@@ -1158,6 +1158,20 @@ fn infer_title_status(provider: Option<Provider>, title: &str) -> PaneStatus {
                 source: StatusSource::TmuxTitle,
             };
         }
+        if let Some(rest) = strip_claude_title_prefix(stripped) {
+            if rest == "Working" || rest.starts_with("Working ") {
+                return PaneStatus {
+                    kind: StatusKind::Busy,
+                    source: StatusSource::TmuxTitle,
+                };
+            }
+            if rest == "Ready" || rest.starts_with("Ready ") {
+                return PaneStatus {
+                    kind: StatusKind::Idle,
+                    source: StatusSource::TmuxTitle,
+                };
+            }
+        }
     }
 
     if matches!(provider, Some(Provider::Codex)) {
@@ -1265,8 +1279,24 @@ fn display_label(
 
 fn normalize_title_for_display(title: &str) -> String {
     let stripped = strip_known_status_glyph(title).trim();
+    if let Some(stripped) = strip_claude_title_prefix(stripped) {
+        return stripped.to_string();
+    }
+    if let Some(stripped) = strip_opencode_title_prefix(stripped) {
+        return stripped.to_string();
+    }
     let codex_normalized = normalize_codex_invocation_in_title(stripped);
     strip_codex_args_from_title(&codex_normalized)
+}
+
+fn strip_claude_title_prefix(title: &str) -> Option<&str> {
+    title
+        .strip_prefix("Claude Code | ")
+        .or_else(|| title.strip_prefix("Claude | "))
+}
+
+fn strip_opencode_title_prefix(title: &str) -> Option<&str> {
+    title.strip_prefix("OC | ")
 }
 
 fn strip_known_status_glyph(title: &str) -> &str {
@@ -1838,13 +1868,13 @@ mod tests {
     #[allow(unused_imports)]
     use super::{
         CACHE_RELATIVE_PATH, CACHE_SCHEMA_VERSION, CLAUDE_SPINNER_GLYPHS, ClassificationMatchKind,
-        DAEMON_SUBSCRIPTION_FORMAT, IDLE_GLYPHS, PaneRecord, Provider, SnapshotEnvelope,
+        Cli, DAEMON_SUBSCRIPTION_FORMAT, IDLE_GLYPHS, PaneRecord, Provider, SnapshotEnvelope,
         SourceKind, StatusKind, TmuxMetadataField, classify_provider, daemon_cache_status,
         daemon_cache_status_name, infer_status, infer_title_status, looks_like_codex_title,
-        notification_name, pane_from_row, parse_pane_rows, popup_entries,
-        should_refresh_from_notification, status_kind_name, strip_known_status_glyph,
-        summarize_snapshot, tmux_metadata_fields_to_clear, tmux_metadata_updates, tsv_escape,
-        validate_snapshot,
+        normalize_title_for_display, notification_name, pane_from_row, parse_pane_rows,
+        popup_entries, should_refresh_from_notification, status_kind_name,
+        strip_known_status_glyph, summarize_snapshot, tmux_metadata_fields_to_clear,
+        tmux_metadata_updates, tsv_escape, validate_snapshot,
     };
 
     #[test]
@@ -1909,7 +1939,7 @@ mod tests {
 
         assert_eq!(pane.provider, Some(Provider::Claude));
         assert_eq!(pane.location.session_name, "notes");
-        assert_eq!(pane.display.label, "Claude Code | Query");
+        assert_eq!(pane.display.label, "Query");
     }
 
     #[test]
@@ -1960,6 +1990,17 @@ mod tests {
 
         assert_eq!(busy.kind, StatusKind::Busy);
         assert_eq!(idle.kind, StatusKind::Idle);
+    }
+
+    #[test]
+    fn claude_status_uses_textual_titles_without_spinner_glyphs() {
+        let busy = infer_title_status(Some(Provider::Claude), "Claude Code | Working");
+        let idle = infer_title_status(Some(Provider::Claude), "Claude Code | Ready");
+        let unknown = infer_title_status(Some(Provider::Claude), "Claude Code | Query");
+
+        assert_eq!(busy.kind, StatusKind::Busy);
+        assert_eq!(idle.kind, StatusKind::Idle);
+        assert_eq!(unknown.kind, StatusKind::Unknown);
     }
 
     #[test]
@@ -2279,6 +2320,28 @@ mod tests {
             strip_known_status_glyph("✳ Review and summarize todo list"),
             "Review and summarize todo list"
         );
+    }
+
+    #[test]
+    fn title_normalization_strips_claude_and_opencode_prefixes() {
+        assert_eq!(normalize_title_for_display("Claude Code | Query"), "Query");
+        assert_eq!(normalize_title_for_display("Claude | Ready"), "Ready");
+        assert_eq!(
+            normalize_title_for_display("OC | Query planner"),
+            "Query planner"
+        );
+    }
+
+    #[test]
+    fn cli_refresh_flag_is_global() {
+        let cli = <Cli as clap::Parser>::parse_from(["agentscan", "-f", "list"]);
+        assert!(cli.refresh);
+
+        let cli = <Cli as clap::Parser>::parse_from(["agentscan", "list", "-f"]);
+        assert!(cli.refresh);
+
+        let cli = <Cli as clap::Parser>::parse_from(["agentscan", "-f"]);
+        assert!(cli.refresh);
     }
 
     fn cache_path_for_test(

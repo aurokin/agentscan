@@ -72,6 +72,7 @@ It can:
 - focus a pane by `pane_id`
 - emit dedicated popup-oriented tmux output
 - infer likely agent panes from tmux metadata
+- normalize noisy provider prefixes out of display labels for title-driven panes
 - publish, clear, and consume explicit wrapper metadata via pane-local `@agent.*` tmux options
 - emit canonical snapshot JSON
 - print the cache path

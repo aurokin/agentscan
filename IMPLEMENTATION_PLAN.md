@@ -75,6 +75,7 @@ Completed baseline work:
 - `agentscan tmux popup` provides dedicated structured popup output
 - a thin repo-local `scripts/agentscan-popup.sh` wrapper renders cached popup rows and calls `focus`
 - title-driven status heuristics now cover the current observed Codex and Claude paths first, with Gemini and basic OpenCode support present but still secondary
+- display normalization now strips noisy provider prefixes from title-driven Claude and OpenCode labels
 - `agentscan focus` supports client-aware tmux switching and has been validated against the current pane workflow
 - scanner and daemon snapshot ingestion now consume pane-local `@agent.*` wrapper metadata when present
 - `agentscan tmux set-metadata` and `tmux clear-metadata` provide repo-local helpers for managing pane-local `@agent.*` metadata
