@@ -74,6 +74,7 @@ It can:
 - infer likely agent panes from tmux metadata
 - normalize noisy provider prefixes out of display labels for title-driven panes
 - publish, clear, and consume explicit wrapper metadata via pane-local `@agent.*` tmux options
+- forward `-f` / `--refresh` through the bundled popup wrapper for on-demand cache refresh
 - emit canonical snapshot JSON
 - print the cache path
 

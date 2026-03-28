@@ -75,6 +75,7 @@ Completed baseline work:
 - cache reads now validate schema version before consumers use cached state
 - `agentscan tmux popup` provides dedicated structured popup output
 - a thin repo-local `scripts/agentscan-popup.sh` wrapper renders cached popup rows and calls `focus`
+- the bundled popup wrapper now forwards `-f` / `--refresh` to the CLI for on-demand cache refresh
 - title-driven status heuristics now cover the current observed Codex and Claude paths first, with Gemini and basic OpenCode support present but still secondary
 - display normalization now strips noisy provider prefixes from title-driven Claude and OpenCode labels
 - `agentscan focus` supports client-aware tmux switching and has been validated against the current pane workflow

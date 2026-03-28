@@ -28,12 +28,26 @@ status_label() {
 keys=(1 2 3 4 5 6 7 8 9 0 q w e r t y u i o p)
 declare -A key_targets=()
 client_tty=''
+popup_args=()
+
+while (($# > 0)); do
+  case "${1:-}" in
+    -f|--refresh)
+      popup_args+=("$1")
+      shift
+      ;;
+    *)
+      echo "usage: $(basename "$0") [-f|--refresh]" >&2
+      exit 2
+      ;;
+  esac
+done
 
 if command -v tmux >/dev/null 2>&1 && [[ -n "${TMUX:-}" ]]; then
   client_tty="$(tmux display-message -p '#{client_tty}' 2>/dev/null || true)"
 fi
 
-mapfile -t rows < <(agentscan_cmd tmux popup --format tsv)
+mapfile -t rows < <(agentscan_cmd "${popup_args[@]}" tmux popup --format tsv)
 
 if ((${#rows[@]} == 0)); then
   echo "No panes available in cache."
