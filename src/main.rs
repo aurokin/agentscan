@@ -14,6 +14,11 @@ use time::format_description::well_known::Rfc3339;
 const PANE_DELIM: char = '\u{001f}';
 const CACHE_ENV_VAR: &str = "AGENTSCAN_CACHE_PATH";
 const CACHE_RELATIVE_PATH: &str = "agentscan/cache-v1.json";
+const CLAUDE_SPINNER_GLYPHS: &[char] = &[
+    '⠁', '⠂', '⠄', '⡀', '⢀', '⠠', '⠐', '⠈', '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦',
+    '⠧', '⠇', '⠏', '⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷',
+];
+const IDLE_GLYPHS: &[char] = &['✳'];
 const PANE_FORMAT: &str = concat!(
     "#{session_name}",
     "\x1f",
@@ -714,7 +719,7 @@ fn provider_from_title(title: &str) -> Option<Provider> {
         return None;
     }
 
-    let stripped = strip_leading_title_glyphs(title);
+    let stripped = strip_known_status_glyph(title);
     if stripped.starts_with("Claude Code | ")
         || stripped.starts_with("Claude | ")
         || stripped == "Claude Code"
@@ -757,13 +762,40 @@ fn provider_from_command(command: &str) -> Option<Provider> {
 
 fn infer_status(provider: Option<Provider>, title: &str) -> PaneStatus {
     let title = title.trim();
-    let stripped = strip_leading_title_glyphs(title);
+    let stripped = strip_known_status_glyph(title);
 
-    if matches!(provider, Some(Provider::Claude)) && stripped != title {
-        return PaneStatus {
-            kind: StatusKind::Busy,
-            source: StatusSource::TmuxTitle,
-        };
+    if matches!(provider, Some(Provider::Claude)) {
+        if has_spinner_glyph(title) {
+            return PaneStatus {
+                kind: StatusKind::Busy,
+                source: StatusSource::TmuxTitle,
+            };
+        }
+        if has_idle_glyph(title) {
+            return PaneStatus {
+                kind: StatusKind::Idle,
+                source: StatusSource::TmuxTitle,
+            };
+        }
+    }
+
+    if matches!(provider, Some(Provider::Codex)) {
+        if stripped == "Working" || stripped.ends_with("| Working") {
+            return PaneStatus {
+                kind: StatusKind::Busy,
+                source: StatusSource::TmuxTitle,
+            };
+        }
+        if stripped == "Ready"
+            || stripped == "Waiting"
+            || stripped.ends_with("| Ready")
+            || stripped.ends_with("| Waiting")
+        {
+            return PaneStatus {
+                kind: StatusKind::Idle,
+                source: StatusSource::TmuxTitle,
+            };
+        }
     }
 
     if matches!(provider, Some(Provider::Gemini)) {
@@ -800,23 +832,39 @@ fn display_label(raw_title: &str, current_command: &str, window_name: &str) -> S
 }
 
 fn normalize_title_for_display(title: &str) -> String {
-    let stripped = strip_leading_title_glyphs(title).trim();
+    let stripped = strip_known_status_glyph(title).trim();
     let codex_normalized = normalize_codex_invocation_in_title(stripped);
     strip_codex_args_from_title(&codex_normalized)
 }
 
-fn strip_leading_title_glyphs(title: &str) -> &str {
+fn strip_known_status_glyph(title: &str) -> &str {
     let trimmed = title.trim_start();
     let Some(first) = trimmed.chars().next() else {
         return trimmed;
     };
 
-    if first.is_alphanumeric() {
+    if !(CLAUDE_SPINNER_GLYPHS.contains(&first) || IDLE_GLYPHS.contains(&first)) {
         return trimmed;
     }
 
     let rest = &trimmed[first.len_utf8()..];
     rest.trim_start()
+}
+
+fn has_spinner_glyph(title: &str) -> bool {
+    title
+        .trim_start()
+        .chars()
+        .next()
+        .is_some_and(|glyph| CLAUDE_SPINNER_GLYPHS.contains(&glyph))
+}
+
+fn has_idle_glyph(title: &str) -> bool {
+    title
+        .trim_start()
+        .chars()
+        .next()
+        .is_some_and(|glyph| IDLE_GLYPHS.contains(&glyph))
 }
 
 fn normalize_codex_invocation_in_title(title: &str) -> String {
@@ -1030,7 +1078,8 @@ mod tests {
     use super::{
         CACHE_RELATIVE_PATH, ClassificationMatchKind, Provider, SourceKind, StatusKind,
         classify_provider, infer_status, looks_like_codex_title, notification_name, pane_from_row,
-        parse_pane_rows, popup_entries, should_refresh_from_notification, tsv_escape,
+        parse_pane_rows, popup_entries, should_refresh_from_notification, strip_known_status_glyph,
+        tsv_escape,
     };
 
     #[test]
@@ -1102,6 +1151,24 @@ mod tests {
     }
 
     #[test]
+    fn codex_status_uses_title_only() {
+        let busy = infer_status(Some(Provider::Codex), "⠹ agentscan | Working");
+        let idle = infer_status(Some(Provider::Codex), "Ready");
+
+        assert_eq!(busy.kind, StatusKind::Busy);
+        assert_eq!(idle.kind, StatusKind::Idle);
+    }
+
+    #[test]
+    fn claude_status_distinguishes_spinner_and_idle_marker() {
+        let busy = infer_status(Some(Provider::Claude), "⠏ Building summary");
+        let idle = infer_status(Some(Provider::Claude), "✳ Review and summarize todo list");
+
+        assert_eq!(busy.kind, StatusKind::Busy);
+        assert_eq!(idle.kind, StatusKind::Idle);
+    }
+
+    #[test]
     fn detects_codex_titles() {
         assert!(looks_like_codex_title("(repo) task: codex"));
         assert!(looks_like_codex_title("(repo) task: /home/auro/.zshrc.d/scripts/lgpt.sh"));
@@ -1150,6 +1217,18 @@ mod tests {
     #[test]
     fn tsv_escape_removes_control_whitespace() {
         assert_eq!(tsv_escape("a\tb\nc\rd"), "a b c d");
+    }
+
+    #[test]
+    fn known_status_glyph_stripping_preserves_normal_prefixes() {
+        assert_eq!(
+            strip_known_status_glyph("(bront) parallel-n64: codex"),
+            "(bront) parallel-n64: codex"
+        );
+        assert_eq!(
+            strip_known_status_glyph("✳ Review and summarize todo list"),
+            "Review and summarize todo list"
+        );
     }
 
     fn cache_path_for_test(

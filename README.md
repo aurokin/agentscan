@@ -53,7 +53,7 @@ It does not yet:
 
 - publish or consume explicit wrapper metadata
 - validate `focus` against broader tmux workflows
-- track richer provider-specific busy/idle state from title metadata
+- broaden title-driven status logic beyond the current Codex, Claude, and Gemini heuristics
 
 ## Reference Behavior
 

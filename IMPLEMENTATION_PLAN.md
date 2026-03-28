@@ -64,11 +64,12 @@ Completed baseline work:
 - `list` and `inspect` now read cache-backed state by default
 - `agentscan tmux popup` provides dedicated structured popup output
 - a thin repo-local `scripts/agentscan-popup.sh` wrapper renders cached popup rows and calls `focus`
+- title-driven status heuristics now cover the current observed Codex, Claude, and Gemini title patterns
 
 Still pending in Phase 1:
 
 - `agentscan focus` validation in normal tmux workflows
-- more robust title-driven status logic across providers
+- broader title-driven status coverage and more fixture samples across providers
 
 ## Phase 1
 
