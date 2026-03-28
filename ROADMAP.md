@@ -336,7 +336,8 @@ Initial snapshot shape:
         "provider": null,
         "label": null,
         "cwd": null,
-        "state": null
+        "state": null,
+        "session_id": null
       },
       "diagnostics": {
         "cache_origin": "direct_snapshot"

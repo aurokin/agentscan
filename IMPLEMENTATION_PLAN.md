@@ -72,6 +72,7 @@ Completed baseline work:
 - a thin repo-local `scripts/agentscan-popup.sh` wrapper renders cached popup rows and calls `focus`
 - title-driven status heuristics now cover the current observed Codex, Claude, and Gemini title patterns
 - `agentscan focus` supports client-aware tmux switching and has been validated against the current pane workflow
+- scanner and daemon snapshot ingestion now consume pane-local `@agent.*` wrapper metadata when present
 
 Still pending in Phase 1:
 

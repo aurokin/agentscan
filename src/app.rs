@@ -39,7 +39,17 @@ const PANE_FORMAT: &str = concat!(
     "\x1f",
     "#{pane_current_path}",
     "\x1f",
-    "#{window_name}"
+    "#{window_name}",
+    "\x1f",
+    "#{@agent.provider}",
+    "\x1f",
+    "#{@agent.label}",
+    "\x1f",
+    "#{@agent.cwd}",
+    "\x1f",
+    "#{@agent.state}",
+    "\x1f",
+    "#{@agent.session_id}"
 );
 
 #[derive(Parser, Debug)]
@@ -218,6 +228,7 @@ enum StatusKind {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum StatusSource {
+    PaneMetadata,
     TmuxTitle,
     NotChecked,
 }
@@ -231,9 +242,11 @@ enum ClassificationConfidence {
     Low,
 }
 
+#[allow(clippy::enum_variant_names)]
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum ClassificationMatchKind {
+    PaneMetadata,
     PaneCurrentCommand,
     PaneTitle,
 }
@@ -313,6 +326,7 @@ struct AgentMetadata {
     label: Option<String>,
     cwd: Option<String>,
     state: Option<String>,
+    session_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -352,6 +366,11 @@ pub(crate) struct TmuxPaneRow {
     pane_tty: String,
     pane_current_path: String,
     window_name: String,
+    agent_provider: Option<String>,
+    agent_label: Option<String>,
+    agent_cwd: Option<String>,
+    agent_state: Option<String>,
+    agent_session_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -508,6 +527,7 @@ fn print_inspect_text(pane: &PaneRecord) {
     );
     println!("display_label: {}", pane.display.label);
     println!("status: {:?}", pane.status.kind);
+    println!("status_source: {:?}", pane.status.source);
     println!(
         "command: {}",
         default_if_empty(&pane.tmux.pane_current_command, "<empty>")
@@ -521,6 +541,47 @@ fn print_inspect_text(pane: &PaneRecord) {
         default_if_empty(&pane.tmux.pane_current_path, "<empty>")
     );
     println!("tty: {}", default_if_empty(&pane.tmux.pane_tty, "<empty>"));
+
+    if pane.agent_metadata.provider.is_some()
+        || pane.agent_metadata.label.is_some()
+        || pane.agent_metadata.cwd.is_some()
+        || pane.agent_metadata.state.is_some()
+        || pane.agent_metadata.session_id.is_some()
+    {
+        println!("agent_metadata:");
+        println!(
+            "  provider: {}",
+            default_if_empty(
+                pane.agent_metadata.provider.as_deref().unwrap_or(""),
+                "<empty>"
+            )
+        );
+        println!(
+            "  label: {}",
+            default_if_empty(
+                pane.agent_metadata.label.as_deref().unwrap_or(""),
+                "<empty>"
+            )
+        );
+        println!(
+            "  cwd: {}",
+            default_if_empty(pane.agent_metadata.cwd.as_deref().unwrap_or(""), "<empty>")
+        );
+        println!(
+            "  state: {}",
+            default_if_empty(
+                pane.agent_metadata.state.as_deref().unwrap_or(""),
+                "<empty>"
+            )
+        );
+        println!(
+            "  session_id: {}",
+            default_if_empty(
+                pane.agent_metadata.session_id.as_deref().unwrap_or(""),
+                "<empty>"
+            )
+        );
+    }
 
     if pane.classification.reasons.is_empty() {
         println!("classification: none");
@@ -684,8 +745,21 @@ pub(crate) fn popup_entries(panes: &[PaneRecord]) -> Vec<PopupEntry> {
 }
 
 pub(crate) fn pane_from_row(row: TmuxPaneRow) -> PaneRecord {
-    let provider_match = classify_provider(&row.pane_current_command, &row.pane_title_raw);
+    let agent_metadata = AgentMetadata {
+        provider: row.agent_provider.clone(),
+        label: row.agent_label.clone(),
+        cwd: row.agent_cwd.clone(),
+        state: row.agent_state.clone(),
+        session_id: row.agent_session_id.clone(),
+    };
+    let provider_match = classify_provider(
+        agent_metadata.provider.as_deref(),
+        &row.pane_current_command,
+        &row.pane_title_raw,
+    );
     let provider = provider_match.as_ref().map(|matched| matched.provider);
+    let title_status = infer_title_status(provider, &row.pane_title_raw);
+    let status = infer_status(title_status, agent_metadata.state.as_deref());
 
     PaneRecord {
         pane_id: row.pane_id,
@@ -704,6 +778,7 @@ pub(crate) fn pane_from_row(row: TmuxPaneRow) -> PaneRecord {
         },
         display: DisplayMetadata {
             label: display_label(
+                agent_metadata.label.as_deref(),
                 &row.pane_title_raw,
                 &row.pane_current_command,
                 &row.window_name,
@@ -711,7 +786,7 @@ pub(crate) fn pane_from_row(row: TmuxPaneRow) -> PaneRecord {
             activity_label: None,
         },
         provider,
-        status: infer_status(provider, &row.pane_title_raw),
+        status,
         classification: PaneClassification {
             matched_by: provider_match.as_ref().map(|matched| matched.matched_by),
             confidence: provider_match.as_ref().map(|matched| matched.confidence),
@@ -719,7 +794,7 @@ pub(crate) fn pane_from_row(row: TmuxPaneRow) -> PaneRecord {
                 .map(|matched| matched.reasons)
                 .unwrap_or_default(),
         },
-        agent_metadata: AgentMetadata::default(),
+        agent_metadata,
         diagnostics: PaneDiagnostics {
             cache_origin: "direct_snapshot".to_string(),
         },
@@ -754,13 +829,26 @@ pub(crate) fn parse_pane_rows(input: &str) -> Result<Vec<TmuxPaneRow>> {
         }
 
         let fields: Vec<_> = line.split(PANE_DELIM).collect();
-        if fields.len() != 10 {
+        if fields.len() != 10 && fields.len() != 15 {
             bail!(
-                "unexpected tmux pane field count on line {}: expected 10, got {}",
+                "unexpected tmux pane field count on line {}: expected 10 or 15, got {}",
                 line_number + 1,
                 fields.len()
             );
         }
+
+        let (agent_provider, agent_label, agent_cwd, agent_state, agent_session_id) =
+            if fields.len() == 15 {
+                (
+                    empty_to_none(fields[10]),
+                    empty_to_none(fields[11]),
+                    empty_to_none(fields[12]),
+                    empty_to_none(fields[13]),
+                    empty_to_none(fields[14]),
+                )
+            } else {
+                (None, None, None, None, None)
+            };
 
         panes.push(TmuxPaneRow {
             session_name: fields[0].to_string(),
@@ -773,6 +861,11 @@ pub(crate) fn parse_pane_rows(input: &str) -> Result<Vec<TmuxPaneRow>> {
             pane_tty: fields[7].to_string(),
             pane_current_path: fields[8].to_string(),
             window_name: fields[9].to_string(),
+            agent_provider,
+            agent_label,
+            agent_cwd,
+            agent_state,
+            agent_session_id,
         });
     }
 
@@ -785,9 +878,30 @@ fn parse_u32(value: &str, field_name: &str, line_number: usize) -> Result<u32> {
     })
 }
 
-fn classify_provider(command: &str, title: &str) -> Option<ProviderMatch> {
+fn empty_to_none(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+fn classify_provider(
+    published_provider: Option<&str>,
+    command: &str,
+    title: &str,
+) -> Option<ProviderMatch> {
     let title = title.trim();
     let command = command.trim();
+
+    if let Some(provider) = provider_from_metadata(published_provider) {
+        return Some(ProviderMatch {
+            provider,
+            matched_by: ClassificationMatchKind::PaneMetadata,
+            confidence: ClassificationConfidence::High,
+            reasons: vec![format!(
+                "agent.provider={}",
+                published_provider.unwrap_or_default().trim()
+            )],
+        });
+    }
 
     if let Some(provider) = provider_from_title(title) {
         return Some(ProviderMatch {
@@ -808,6 +922,17 @@ fn classify_provider(command: &str, title: &str) -> Option<ProviderMatch> {
     }
 
     None
+}
+
+fn provider_from_metadata(provider: Option<&str>) -> Option<Provider> {
+    let normalized = provider?.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "codex" => Some(Provider::Codex),
+        "claude" => Some(Provider::Claude),
+        "gemini" => Some(Provider::Gemini),
+        "opencode" => Some(Provider::Opencode),
+        _ => None,
+    }
 }
 
 fn provider_from_title(title: &str) -> Option<Provider> {
@@ -857,7 +982,7 @@ fn provider_from_command(command: &str) -> Option<Provider> {
     None
 }
 
-fn infer_status(provider: Option<Provider>, title: &str) -> PaneStatus {
+fn infer_title_status(provider: Option<Provider>, title: &str) -> PaneStatus {
     let title = title.trim();
     let stripped = strip_known_status_glyph(title);
 
@@ -916,7 +1041,41 @@ fn infer_status(provider: Option<Provider>, title: &str) -> PaneStatus {
     }
 }
 
-fn display_label(raw_title: &str, current_command: &str, window_name: &str) -> String {
+fn infer_status(title_status: PaneStatus, published_state: Option<&str>) -> PaneStatus {
+    if title_status.kind != StatusKind::Unknown {
+        return title_status;
+    }
+
+    match published_state.map(|value| value.trim().to_ascii_lowercase()) {
+        Some(state) if state == "busy" => PaneStatus {
+            kind: StatusKind::Busy,
+            source: StatusSource::PaneMetadata,
+        },
+        Some(state) if state == "idle" => PaneStatus {
+            kind: StatusKind::Idle,
+            source: StatusSource::PaneMetadata,
+        },
+        Some(state) if state == "unknown" => PaneStatus {
+            kind: StatusKind::Unknown,
+            source: StatusSource::PaneMetadata,
+        },
+        _ => title_status,
+    }
+}
+
+fn display_label(
+    published_label: Option<&str>,
+    raw_title: &str,
+    current_command: &str,
+    window_name: &str,
+) -> String {
+    if let Some(label) = published_label
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+    {
+        return label.to_string();
+    }
+
     let title = raw_title.trim();
     if !title.is_empty() {
         return normalize_title_for_display(title);
@@ -1364,14 +1523,15 @@ mod tests {
     use super::{
         CACHE_RELATIVE_PATH, CACHE_SCHEMA_VERSION, CLAUDE_SPINNER_GLYPHS, ClassificationMatchKind,
         IDLE_GLYPHS, PaneRecord, Provider, SnapshotEnvelope, SourceKind, StatusKind,
-        classify_provider, infer_status, looks_like_codex_title, notification_name, pane_from_row,
-        parse_pane_rows, popup_entries, should_refresh_from_notification, status_kind_name,
-        strip_known_status_glyph, summarize_snapshot, tsv_escape, validate_snapshot,
+        classify_provider, infer_status, infer_title_status, looks_like_codex_title,
+        notification_name, pane_from_row, parse_pane_rows, popup_entries,
+        should_refresh_from_notification, status_kind_name, strip_known_status_glyph,
+        summarize_snapshot, tsv_escape, validate_snapshot,
     };
 
     #[test]
     fn classifies_from_command() {
-        let matched = classify_provider("codex", "").expect("should match codex");
+        let matched = classify_provider(None, "codex", "").expect("should match codex");
         assert_eq!(matched.provider, Provider::Codex);
         assert_eq!(
             matched.matched_by,
@@ -1382,9 +1542,17 @@ mod tests {
     #[test]
     fn classifies_from_title_before_command() {
         let matched =
-            classify_provider("zsh", "Claude Code | Working").expect("should match claude");
+            classify_provider(None, "zsh", "Claude Code | Working").expect("should match claude");
         assert_eq!(matched.provider, Provider::Claude);
         assert_eq!(matched.matched_by, ClassificationMatchKind::PaneTitle);
+    }
+
+    #[test]
+    fn classifies_from_pane_metadata_before_title_and_command() {
+        let matched = classify_provider(Some("codex"), "zsh", "Claude Code | Working")
+            .expect("pane metadata should match codex");
+        assert_eq!(matched.provider, Provider::Codex);
+        assert_eq!(matched.matched_by, ClassificationMatchKind::PaneMetadata);
     }
 
     #[test]
@@ -1414,6 +1582,11 @@ mod tests {
             pane_tty: "/dev/pts/44".to_string(),
             pane_current_path: "/home/auro/notes".to_string(),
             window_name: "ai".to_string(),
+            agent_provider: None,
+            agent_label: None,
+            agent_cwd: None,
+            agent_state: None,
+            agent_session_id: None,
         });
 
         assert_eq!(pane.provider, Some(Provider::Claude));
@@ -1441,14 +1614,14 @@ mod tests {
 
     #[test]
     fn infers_status_from_title_only() {
-        let status = infer_status(Some(Provider::Gemini), "Working");
+        let status = infer_title_status(Some(Provider::Gemini), "Working");
         assert_eq!(status.kind, StatusKind::Busy);
     }
 
     #[test]
     fn codex_status_uses_title_only() {
-        let busy = infer_status(Some(Provider::Codex), "⠹ agentscan | Working");
-        let idle = infer_status(Some(Provider::Codex), "Ready");
+        let busy = infer_title_status(Some(Provider::Codex), "⠹ agentscan | Working");
+        let idle = infer_title_status(Some(Provider::Codex), "Ready");
 
         assert_eq!(busy.kind, StatusKind::Busy);
         assert_eq!(idle.kind, StatusKind::Idle);
@@ -1456,11 +1629,22 @@ mod tests {
 
     #[test]
     fn claude_status_distinguishes_spinner_and_idle_marker() {
-        let busy = infer_status(Some(Provider::Claude), "⠏ Building summary");
-        let idle = infer_status(Some(Provider::Claude), "✳ Review and summarize todo list");
+        let busy = infer_title_status(Some(Provider::Claude), "⠏ Building summary");
+        let idle = infer_title_status(Some(Provider::Claude), "✳ Review and summarize todo list");
 
         assert_eq!(busy.kind, StatusKind::Busy);
         assert_eq!(idle.kind, StatusKind::Idle);
+    }
+
+    #[test]
+    fn metadata_state_fills_unknown_status_without_overriding_title_signal() {
+        let unknown_from_title = infer_title_status(Some(Provider::Codex), "(bront) repo: codex");
+        let busy_from_metadata = infer_status(unknown_from_title, Some("busy"));
+        assert_eq!(busy_from_metadata.kind, StatusKind::Busy);
+
+        let idle_from_title = infer_title_status(Some(Provider::Codex), "Ready");
+        let still_idle = infer_status(idle_from_title, Some("busy"));
+        assert_eq!(still_idle.kind, StatusKind::Idle);
     }
 
     #[test]
@@ -1510,6 +1694,11 @@ mod tests {
             pane_tty: "/dev/pts/44".to_string(),
             pane_current_path: "/home/auro/notes".to_string(),
             window_name: "ai".to_string(),
+            agent_provider: None,
+            agent_label: None,
+            agent_cwd: None,
+            agent_state: None,
+            agent_session_id: None,
         });
 
         let entries = popup_entries(&[pane]);
@@ -1551,6 +1740,38 @@ mod tests {
         assert_eq!(wrapped_codex.provider, Some(Provider::Codex));
         assert_eq!(wrapped_codex.display.label, "(bront) parallel-n64: codex");
         assert_eq!(wrapped_codex.status.kind, StatusKind::Unknown);
+    }
+
+    #[test]
+    fn pane_metadata_overrides_display_provider_and_status_when_title_is_ambiguous() {
+        let pane = pane_from_row(super::TmuxPaneRow {
+            session_name: "wrapper".to_string(),
+            window_index: 1,
+            pane_index: 1,
+            pane_id: "%500".to_string(),
+            pane_pid: 500,
+            pane_current_command: "zsh".to_string(),
+            pane_title_raw: "(bront) ~/code/wrapper".to_string(),
+            pane_tty: "/dev/pts/500".to_string(),
+            pane_current_path: "/home/auro/code/wrapper".to_string(),
+            window_name: "ai".to_string(),
+            agent_provider: Some("claude".to_string()),
+            agent_label: Some("Wrapper Claude Task".to_string()),
+            agent_cwd: Some("/tmp/wrapper".to_string()),
+            agent_state: Some("idle".to_string()),
+            agent_session_id: Some("sess-123".to_string()),
+        });
+
+        assert_eq!(pane.provider, Some(Provider::Claude));
+        assert_eq!(pane.display.label, "Wrapper Claude Task");
+        assert_eq!(pane.status.kind, StatusKind::Idle);
+        assert_eq!(pane.status.source, super::StatusSource::PaneMetadata);
+        assert_eq!(
+            pane.classification.matched_by,
+            Some(ClassificationMatchKind::PaneMetadata)
+        );
+        assert_eq!(pane.agent_metadata.provider.as_deref(), Some("claude"));
+        assert_eq!(pane.agent_metadata.session_id.as_deref(), Some("sess-123"));
     }
 
     #[test]

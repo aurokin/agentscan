@@ -69,12 +69,13 @@ It can:
 - focus a pane by `pane_id`
 - emit dedicated popup-oriented tmux output
 - infer likely agent panes from tmux metadata
+- consume explicit wrapper metadata from pane-local `@agent.*` tmux options
 - emit canonical snapshot JSON
 - print the cache path
 
 It does not yet:
 
-- publish or consume explicit wrapper metadata
+- publish wrapper metadata
 - validate `focus` beyond the current single-client tmux workflow
 - broaden title-driven status logic beyond the current Codex, Claude, and Gemini heuristics
 
