@@ -62,6 +62,7 @@ The first pass implements a snapshot scanner backed by:
 It can:
 
 - run an explicit daemon baseline with tmux control mode
+- report daemon-backed cache health
 - persist and read a local JSON cache
 - show and validate the local JSON cache
 - list panes through the default `list` flow

@@ -65,6 +65,7 @@ Completed baseline work:
 - canonical pane model and snapshot envelope are implemented
 - `agentscan scan`, `agentscan list`, and `agentscan inspect` are implemented
 - `agentscan cache path`, `cache show`, and `cache validate` are implemented with XDG default plus override support
+- `agentscan daemon status` reports daemon-backed cache health and optional staleness
 - title-first metadata classification is wired into snapshot ingestion
 - `agentscan daemon run` writes a daemon-marked cache from tmux control mode
 - `list` and `inspect` now read cache-backed state by default

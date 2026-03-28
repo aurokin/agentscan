@@ -167,6 +167,15 @@ struct CacheValidateArgs {
 enum DaemonCommands {
     /// Run the long-lived daemon loop.
     Run,
+    /// Report daemon-backed cache health.
+    Status(DaemonStatusArgs),
+}
+
+#[derive(Args, Debug)]
+struct DaemonStatusArgs {
+    /// Mark the daemon cache unhealthy if it is older than this many seconds.
+    #[arg(long)]
+    max_age_seconds: Option<u64>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -404,6 +413,13 @@ struct CacheSummary {
     status_counts: Vec<(StatusKind, usize)>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DaemonCacheStatus {
+    Healthy,
+    Stale,
+    Unavailable,
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct PopupEntry {
     pane_id: String,
@@ -492,6 +508,34 @@ fn command_focus(args: &FocusArgs) -> Result<()> {
 fn command_daemon(args: &DaemonArgs) -> Result<()> {
     match args.command {
         DaemonCommands::Run => daemon_run(),
+        DaemonCommands::Status(ref args) => command_daemon_status(args),
+    }
+}
+
+fn command_daemon_status(args: &DaemonStatusArgs) -> Result<()> {
+    let path = cache_path()?;
+    let snapshot = read_snapshot_from_cache()?;
+    let summary = summarize_snapshot(&snapshot)?;
+    let age_seconds = cache_age_seconds(summary.generated_at);
+    let status = daemon_cache_status(&snapshot, age_seconds, args.max_age_seconds);
+
+    println!("daemon_cache_status: {}", daemon_cache_status_name(status));
+    println!("path: {}", path.display());
+    println!("generated_at: {}", snapshot.generated_at);
+    println!("age_seconds: {age_seconds}");
+    println!("source: {:?}", snapshot.source.kind);
+    println!("pane_count: {}", summary.pane_count);
+
+    if let Some(max_age_seconds) = args.max_age_seconds {
+        println!("max_age_seconds: {max_age_seconds}");
+    }
+
+    match status {
+        DaemonCacheStatus::Healthy => Ok(()),
+        DaemonCacheStatus::Stale => bail!("daemon cache is stale"),
+        DaemonCacheStatus::Unavailable => {
+            bail!("daemon cache is unavailable because the cache source is not daemon-backed")
+        }
     }
 }
 
@@ -1378,6 +1422,22 @@ fn cache_age_seconds(generated_at: OffsetDateTime) -> u64 {
     }
 }
 
+fn daemon_cache_status(
+    snapshot: &SnapshotEnvelope,
+    age_seconds: u64,
+    max_age_seconds: Option<u64>,
+) -> DaemonCacheStatus {
+    if snapshot.source.kind != SourceKind::Daemon {
+        return DaemonCacheStatus::Unavailable;
+    }
+
+    if max_age_seconds.is_some_and(|max_age| age_seconds > max_age) {
+        return DaemonCacheStatus::Stale;
+    }
+
+    DaemonCacheStatus::Healthy
+}
+
 fn daemon_run() -> Result<()> {
     let mut snapshot = snapshot_from_tmux()?;
     snapshot.source.kind = SourceKind::Daemon;
@@ -1603,6 +1663,14 @@ fn status_kind_name(status: StatusKind) -> &'static str {
     }
 }
 
+fn daemon_cache_status_name(status: DaemonCacheStatus) -> &'static str {
+    match status {
+        DaemonCacheStatus::Healthy => "healthy",
+        DaemonCacheStatus::Stale => "stale",
+        DaemonCacheStatus::Unavailable => "unavailable",
+    }
+}
+
 fn tmux_metadata_updates(args: &TmuxSetMetadataArgs) -> Vec<(&'static str, String)> {
     let mut updates = Vec::new();
 
@@ -1747,11 +1815,12 @@ mod tests {
     use super::{
         CACHE_RELATIVE_PATH, CACHE_SCHEMA_VERSION, CLAUDE_SPINNER_GLYPHS, ClassificationMatchKind,
         DAEMON_SUBSCRIPTION_FORMAT, IDLE_GLYPHS, PaneRecord, Provider, SnapshotEnvelope,
-        SourceKind, StatusKind, TmuxMetadataField, classify_provider, infer_status,
-        infer_title_status, looks_like_codex_title, notification_name, pane_from_row,
-        parse_pane_rows, popup_entries, should_refresh_from_notification, status_kind_name,
-        strip_known_status_glyph, summarize_snapshot, tmux_metadata_fields_to_clear,
-        tmux_metadata_updates, tsv_escape, validate_snapshot,
+        SourceKind, StatusKind, TmuxMetadataField, classify_provider, daemon_cache_status,
+        daemon_cache_status_name, infer_status, infer_title_status, looks_like_codex_title,
+        notification_name, pane_from_row, parse_pane_rows, popup_entries,
+        should_refresh_from_notification, status_kind_name, strip_known_status_glyph,
+        summarize_snapshot, tmux_metadata_fields_to_clear, tmux_metadata_updates, tsv_escape,
+        validate_snapshot,
     };
 
     #[test]
@@ -1972,6 +2041,33 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&SourceKind::Daemon).unwrap(),
             "\"daemon\""
+        );
+    }
+
+    #[test]
+    fn daemon_cache_status_reports_health_states() {
+        let mut snapshot: SnapshotEnvelope =
+            serde_json::from_str(CACHE_SNAPSHOT_FIXTURE).expect("cache fixture should parse");
+
+        assert_eq!(
+            daemon_cache_status(&snapshot, 10, Some(60)),
+            super::DaemonCacheStatus::Healthy
+        );
+        assert_eq!(
+            daemon_cache_status_name(super::DaemonCacheStatus::Healthy),
+            "healthy"
+        );
+
+        snapshot.source.kind = SourceKind::Snapshot;
+        assert_eq!(
+            daemon_cache_status(&snapshot, 10, Some(60)),
+            super::DaemonCacheStatus::Unavailable
+        );
+
+        snapshot.source.kind = SourceKind::Daemon;
+        assert_eq!(
+            daemon_cache_status(&snapshot, 120, Some(60)),
+            super::DaemonCacheStatus::Stale
         );
     }
 
