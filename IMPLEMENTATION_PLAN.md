@@ -74,6 +74,7 @@ Completed baseline work:
 - `agentscan focus` supports client-aware tmux switching and has been validated against the current pane workflow
 - scanner and daemon snapshot ingestion now consume pane-local `@agent.*` wrapper metadata when present
 - `agentscan tmux set-metadata` provides a repo-local helper for wrappers to publish pane-local `@agent.*` metadata
+- daemon control-mode subscriptions now watch pane-local `@agent.*` metadata fields in addition to pane titles
 
 Still pending in Phase 1:
 

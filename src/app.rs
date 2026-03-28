@@ -51,6 +51,16 @@ const PANE_FORMAT: &str = concat!(
     "\x1f",
     "#{@agent.session_id}"
 );
+const DAEMON_SUBSCRIPTION_FORMAT: &str = concat!(
+    "agentscan:%*:",
+    "#{{pane_id}}:",
+    "#{{pane_title}}:",
+    "#{{@agent.provider}}:",
+    "#{{@agent.label}}:",
+    "#{{@agent.cwd}}:",
+    "#{{@agent.state}}:",
+    "#{{@agent.session_id}}"
+);
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Scan tmux panes for agent sessions")]
@@ -1343,11 +1353,8 @@ fn daemon_run() -> Result<()> {
         .stdin
         .take()
         .context("tmux control-mode client did not provide stdin")?;
-    writeln!(
-        stdin,
-        "refresh-client -B agentscan:%*:#{{pane_id}}:#{{pane_title}}"
-    )
-    .context("failed to subscribe to pane title updates")?;
+    writeln!(stdin, "refresh-client -B {DAEMON_SUBSCRIPTION_FORMAT}")
+        .context("failed to subscribe to pane and metadata updates")?;
     stdin
         .flush()
         .context("failed to flush tmux control commands")?;
@@ -1637,9 +1644,9 @@ mod tests {
     #[allow(unused_imports)]
     use super::{
         CACHE_RELATIVE_PATH, CACHE_SCHEMA_VERSION, CLAUDE_SPINNER_GLYPHS, ClassificationMatchKind,
-        IDLE_GLYPHS, PaneRecord, Provider, SnapshotEnvelope, SourceKind, StatusKind,
-        classify_provider, infer_status, infer_title_status, looks_like_codex_title,
-        notification_name, pane_from_row, parse_pane_rows, popup_entries,
+        DAEMON_SUBSCRIPTION_FORMAT, IDLE_GLYPHS, PaneRecord, Provider, SnapshotEnvelope,
+        SourceKind, StatusKind, classify_provider, infer_status, infer_title_status,
+        looks_like_codex_title, notification_name, pane_from_row, parse_pane_rows, popup_entries,
         should_refresh_from_notification, status_kind_name, strip_known_status_glyph,
         summarize_snapshot, tmux_metadata_updates, tsv_escape, validate_snapshot,
     };
@@ -1716,6 +1723,14 @@ mod tests {
             "%subscription-changed agentscan %1 : value"
         ));
         assert!(!should_refresh_from_notification("%begin 1 1 0"));
+    }
+
+    #[test]
+    fn daemon_subscription_format_includes_wrapper_metadata_fields() {
+        assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{{pane_title}}"));
+        assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{{@agent.provider}}"));
+        assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{{@agent.state}}"));
+        assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{{@agent.session_id}}"));
     }
 
     #[test]
