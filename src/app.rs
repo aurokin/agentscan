@@ -500,11 +500,16 @@ fn command_list(args: &ListArgs, refresh: bool) -> Result<()> {
 
 fn command_inspect(args: &InspectArgs, refresh: bool) -> Result<()> {
     let snapshot = load_snapshot(refresh)?;
+    let snapshot_name = if refresh {
+        "fresh tmux snapshot"
+    } else {
+        "cached snapshot"
+    };
     let pane = snapshot
         .panes
         .into_iter()
         .find(|pane| pane.pane_id == args.pane_id)
-        .with_context(|| format!("pane {} not found in tmux snapshot", args.pane_id))?;
+        .with_context(|| format!("pane {} not found in {snapshot_name}", args.pane_id))?;
 
     match args.format {
         OutputFormat::Text => print_inspect_text(&pane),
@@ -516,7 +521,14 @@ fn command_inspect(args: &InspectArgs, refresh: bool) -> Result<()> {
 
 fn command_focus(args: &FocusArgs, refresh: bool) -> Result<()> {
     if refresh {
-        let _ = refresh_cache_from_tmux()?;
+        let snapshot = refresh_cache_from_tmux()?;
+        let pane_exists = snapshot
+            .panes
+            .iter()
+            .any(|pane| pane.pane_id == args.pane_id);
+        if !pane_exists {
+            bail!("pane {} not found in fresh tmux snapshot", args.pane_id);
+        }
     }
     focus_tmux_pane(&args.pane_id, args.client_tty.as_deref())
 }
@@ -852,7 +864,7 @@ fn read_snapshot_from_cache() -> Result<SnapshotEnvelope> {
     let path = cache_path()?;
     let contents = fs::read_to_string(&path).with_context(|| {
         format!(
-            "failed to read cache at {}. Run `agentscan daemon run` first",
+            "failed to read cache at {}. Run `agentscan daemon run` first or rerun with `-f` to refresh directly from tmux",
             path.display()
         )
     })?;
