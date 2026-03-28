@@ -69,7 +69,7 @@ It can:
 - force a fresh tmux snapshot and cache rewrite for cache-backed pane and cache-inspection commands with `-f` / `--refresh`
 - list panes through the default `list` flow
 - inspect a pane by `pane_id`
-- focus a pane by `pane_id`
+- focus a pane by `pane_id`, with attached-client fallback when no explicit tty is provided
 - emit dedicated popup-oriented tmux output
 - infer likely agent panes from tmux metadata
 - normalize noisy provider prefixes out of display labels for title-driven panes

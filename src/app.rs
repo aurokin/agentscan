@@ -462,6 +462,12 @@ struct ProviderMatch {
     reasons: Vec<String>,
 }
 
+#[derive(Debug)]
+struct TmuxClientRow {
+    client_tty: String,
+    client_activity: i64,
+}
+
 pub(crate) fn run() -> Result<()> {
     let cli = Cli::parse();
 
@@ -1631,10 +1637,75 @@ fn current_client_tty() -> Result<Option<String>> {
     }
 }
 
+fn attached_client_tty() -> Result<Option<String>> {
+    let output = Command::new("tmux")
+        .args(["list-clients", "-F", "#{client_tty}\x1f#{client_activity}"])
+        .output()
+        .context("failed to list tmux clients")?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let stdout = String::from_utf8(output.stdout).context("tmux client output was not UTF-8")?;
+    let clients = parse_tmux_client_rows(&stdout)?;
+    Ok(select_best_client_tty(&clients))
+}
+
+fn parse_tmux_client_rows(input: &str) -> Result<Vec<TmuxClientRow>> {
+    let mut clients = Vec::new();
+
+    for (line_number, line) in input.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let fields: Vec<_> = line.split(PANE_DELIM).collect();
+        if fields.len() != 2 {
+            bail!(
+                "unexpected tmux client field count on line {}: expected 2, got {}",
+                line_number + 1,
+                fields.len()
+            );
+        }
+
+        let client_tty = fields[0].trim();
+        if client_tty.is_empty() {
+            continue;
+        }
+
+        clients.push(TmuxClientRow {
+            client_tty: client_tty.to_string(),
+            client_activity: fields[1].trim().parse::<i64>().with_context(|| {
+                format!(
+                    "failed to parse client_activity as i64 on tmux output line {}",
+                    line_number + 1
+                )
+            })?,
+        });
+    }
+
+    Ok(clients)
+}
+
+fn select_best_client_tty(clients: &[TmuxClientRow]) -> Option<String> {
+    clients
+        .iter()
+        .max_by_key(|client| client.client_activity)
+        .map(|client| client.client_tty.clone())
+}
+
+fn default_focus_client_tty() -> Result<Option<String>> {
+    if let Some(client_tty) = current_client_tty()? {
+        return Ok(Some(client_tty));
+    }
+
+    attached_client_tty()
+}
+
 fn focus_tmux_pane(pane_id: &str, client_tty: Option<&str>) -> Result<()> {
     let client_tty = match client_tty {
         Some(tty) if !tty.trim().is_empty() => Some(tty.trim().to_string()),
-        _ => current_client_tty()?,
+        _ => default_focus_client_tty()?,
     };
 
     let status = if let Some(client_tty) = client_tty.as_deref() {
@@ -1872,9 +1943,10 @@ mod tests {
         SourceKind, StatusKind, TmuxMetadataField, classify_provider, daemon_cache_status,
         daemon_cache_status_name, infer_status, infer_title_status, looks_like_codex_title,
         normalize_title_for_display, notification_name, pane_from_row, parse_pane_rows,
-        popup_entries, should_refresh_from_notification, status_kind_name,
-        strip_known_status_glyph, summarize_snapshot, tmux_metadata_fields_to_clear,
-        tmux_metadata_updates, tsv_escape, validate_snapshot,
+        parse_tmux_client_rows, popup_entries, select_best_client_tty,
+        should_refresh_from_notification, status_kind_name, strip_known_status_glyph,
+        summarize_snapshot, tmux_metadata_fields_to_clear, tmux_metadata_updates, tsv_escape,
+        validate_snapshot,
     };
 
     #[test]
@@ -1915,6 +1987,23 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].pane_id, "%50");
         assert_eq!(rows[1].pane_title_raw, "Claude Code");
+    }
+
+    #[test]
+    fn parses_tmux_client_rows_and_selects_most_recent_tty() {
+        let input = concat!(
+            "/dev/pts/5\x1f1711671000\n",
+            "/dev/pts/7\x1f1711672000\n",
+            "\x1f1711673000\n"
+        );
+
+        let clients = parse_tmux_client_rows(input).expect("tmux client output should parse");
+        assert_eq!(clients.len(), 2);
+        assert_eq!(clients[0].client_tty, "/dev/pts/5");
+        assert_eq!(
+            select_best_client_tty(&clients),
+            Some("/dev/pts/7".to_string())
+        );
     }
 
     #[test]
