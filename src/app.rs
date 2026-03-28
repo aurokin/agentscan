@@ -2263,6 +2263,11 @@ mod tests {
         let codex_ready = pane_by_id(&panes, "%67");
         assert_eq!(codex_ready.status.kind, StatusKind::Idle);
 
+        let codex_waiting = pane_by_id(&panes, "%194");
+        assert_eq!(codex_waiting.provider, Some(Provider::Codex));
+        assert_eq!(codex_waiting.status.kind, StatusKind::Idle);
+        assert_eq!(codex_waiting.display.label, "agentscan | Waiting");
+
         let claude_idle = pane_by_id(&panes, "%41");
         assert_eq!(claude_idle.provider, Some(Provider::Claude));
         assert_eq!(claude_idle.status.kind, StatusKind::Idle);
@@ -2271,8 +2276,19 @@ mod tests {
         let claude_busy = pane_by_id(&panes, "%223");
         assert_eq!(claude_busy.status.kind, StatusKind::Busy);
 
+        let claude_title_busy = pane_by_id(&panes, "%224");
+        assert_eq!(claude_title_busy.provider, Some(Provider::Claude));
+        assert_eq!(claude_title_busy.status.kind, StatusKind::Busy);
+        assert_eq!(claude_title_busy.display.label, "Working");
+
+        let claude_title_idle = pane_by_id(&panes, "%225");
+        assert_eq!(claude_title_idle.provider, Some(Provider::Claude));
+        assert_eq!(claude_title_idle.status.kind, StatusKind::Idle);
+        assert_eq!(claude_title_idle.display.label, "Ready");
+
         let opencode = pane_by_id(&panes, "%301");
         assert_eq!(opencode.provider, Some(Provider::Opencode));
+        assert_eq!(opencode.display.label, "Query planner");
     }
 
     #[test]

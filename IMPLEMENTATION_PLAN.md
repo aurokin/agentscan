@@ -60,6 +60,7 @@ Completed baseline work:
 - CI runs format, lint, complexity, and unit-test checks
 - fixture-backed tests now cover representative tmux title snapshots and cache snapshot deserialization
 - fixture-backed tests now cover both legacy 10-field and current 15-field tmux row shapes
+- fixture-backed title coverage now includes current Codex waiting-state titles and Claude textual `Claude Code | ...` states
 - property tests now cover parser round-trips and normalization invariants
 - benchmark tooling now measures snapshot parsing, row-to-pane conversion, cache deserialization, and popup entry generation
 - canonical pane model and snapshot envelope are implemented
