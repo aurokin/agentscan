@@ -68,11 +68,13 @@ Completed baseline work:
 - `agentscan daemon status` reports daemon-backed cache health and optional staleness
 - title-first metadata classification is wired into snapshot ingestion
 - `agentscan daemon run` writes a daemon-marked cache from tmux control mode
+- the daemon currently fails fast when tmux disappears and leaves restart policy to an external supervisor
 - `list` and `inspect` now read cache-backed state by default
+- cache-backed pane and cache-inspection commands now support `-f` / `--refresh` to take a fresh tmux snapshot and rewrite cache on demand
 - cache reads now validate schema version before consumers use cached state
 - `agentscan tmux popup` provides dedicated structured popup output
 - a thin repo-local `scripts/agentscan-popup.sh` wrapper renders cached popup rows and calls `focus`
-- title-driven status heuristics now cover the current observed Codex, Claude, Gemini, and basic OpenCode title patterns
+- title-driven status heuristics now cover the current observed Codex and Claude paths first, with Gemini and basic OpenCode support present but still secondary
 - `agentscan focus` supports client-aware tmux switching and has been validated against the current pane workflow
 - scanner and daemon snapshot ingestion now consume pane-local `@agent.*` wrapper metadata when present
 - `agentscan tmux set-metadata` and `tmux clear-metadata` provide repo-local helpers for managing pane-local `@agent.*` metadata
@@ -142,7 +144,7 @@ Responsibilities:
 - subscribe to control-mode events
 - update in-memory pane state
 - write the JSON cache after state changes
-- recover cleanly if tmux is briefly unavailable
+- exit clearly when tmux disappears and let an external supervisor own restart policy
 
 Detection posture:
 
@@ -154,7 +156,7 @@ Acceptance criteria:
 
 - daemon can start with a fresh tmux snapshot
 - daemon updates cache after pane topology changes
-- daemon exits with clear errors or retries in defined cases
+- daemon exits with clear errors rather than retrying internally
 
 #### 4. Cache Management
 
@@ -284,6 +286,7 @@ Need to choose:
 Chosen direction:
 
 - explicit daemon startup first, auto-start only if it becomes clearly necessary
+- when tmux disappears, fail fast and rely on an external supervisor rather than retrying internally
 
 ### tmux Control-Mode Ownership
 
@@ -317,6 +320,7 @@ Need to choose:
 Chosen direction:
 
 - start with fixture-driven analysis of real title samples across all supported providers
+- prioritize Codex and Claude coverage first, with Gemini and OpenCode treated as secondary until they justify more depth
 - add pane-content or procfs fallbacks only for concrete unresolved cases
 
 ## Phase 1 Task Breakdown

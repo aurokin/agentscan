@@ -65,6 +65,10 @@ const DAEMON_SUBSCRIPTION_FORMAT: &str = concat!(
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Scan tmux panes for agent sessions")]
 struct Cli {
+    /// Force a fresh tmux snapshot and rewrite the cache before running the command.
+    #[arg(short = 'f', long = "refresh", global = true)]
+    refresh: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 
@@ -462,31 +466,34 @@ pub(crate) fn run() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Scan(args)) => command_scan(&args),
-        Some(Commands::List(args)) => command_list(&args),
-        Some(Commands::Inspect(args)) => command_inspect(&args),
-        Some(Commands::Focus(args)) => command_focus(&args),
+        Some(Commands::Scan(args)) => command_scan(&args, cli.refresh),
+        Some(Commands::List(args)) => command_list(&args, cli.refresh),
+        Some(Commands::Inspect(args)) => command_inspect(&args, cli.refresh),
+        Some(Commands::Focus(args)) => command_focus(&args, cli.refresh),
         Some(Commands::Daemon(args)) => command_daemon(&args),
-        Some(Commands::Tmux(args)) => command_tmux(&args),
-        Some(Commands::Cache(args)) => command_cache(&args),
-        None => command_list(&cli.list_args),
+        Some(Commands::Tmux(args)) => command_tmux(&args, cli.refresh),
+        Some(Commands::Cache(args)) => command_cache(&args, cli.refresh),
+        None => command_list(&cli.list_args, cli.refresh),
     }
 }
 
-fn command_scan(args: &ListArgs) -> Result<()> {
+fn command_scan(args: &ListArgs, refresh: bool) -> Result<()> {
     let mut snapshot = snapshot_from_tmux()?;
+    if refresh {
+        write_snapshot_to_cache(&snapshot)?;
+    }
     filter_snapshot(&mut snapshot, args.all);
     emit_snapshot(&snapshot, args.format)
 }
 
-fn command_list(args: &ListArgs) -> Result<()> {
-    let mut snapshot = read_snapshot_from_cache()?;
+fn command_list(args: &ListArgs, refresh: bool) -> Result<()> {
+    let mut snapshot = load_snapshot(refresh)?;
     filter_snapshot(&mut snapshot, args.all);
     emit_snapshot(&snapshot, args.format)
 }
 
-fn command_inspect(args: &InspectArgs) -> Result<()> {
-    let snapshot = read_snapshot_from_cache()?;
+fn command_inspect(args: &InspectArgs, refresh: bool) -> Result<()> {
+    let snapshot = load_snapshot(refresh)?;
     let pane = snapshot
         .panes
         .into_iter()
@@ -501,7 +508,10 @@ fn command_inspect(args: &InspectArgs) -> Result<()> {
     Ok(())
 }
 
-fn command_focus(args: &FocusArgs) -> Result<()> {
+fn command_focus(args: &FocusArgs, refresh: bool) -> Result<()> {
+    if refresh {
+        let _ = refresh_cache_from_tmux()?;
+    }
     focus_tmux_pane(&args.pane_id, args.client_tty.as_deref())
 }
 
@@ -539,13 +549,13 @@ fn command_daemon_status(args: &DaemonStatusArgs) -> Result<()> {
     }
 }
 
-fn command_cache(args: &CacheArgs) -> Result<()> {
+fn command_cache(args: &CacheArgs, refresh: bool) -> Result<()> {
     match args.command {
         CacheCommands::Path => {
             println!("{}", cache_path()?.display());
         }
         CacheCommands::Show(ref args) => {
-            let snapshot = read_snapshot_from_cache()?;
+            let snapshot = load_snapshot(refresh)?;
             match args.format {
                 OutputFormat::Text => print_cache_summary_text(&snapshot)?,
                 OutputFormat::Json => print_json(&snapshot)?,
@@ -553,7 +563,7 @@ fn command_cache(args: &CacheArgs) -> Result<()> {
         }
         CacheCommands::Validate(ref args) => {
             let path = cache_path()?;
-            let snapshot = read_snapshot_from_cache()?;
+            let snapshot = load_snapshot(refresh)?;
             let summary = validate_snapshot(&snapshot, args.max_age_seconds)?;
             print_cache_validate_text(&path, &snapshot, &summary, args.max_age_seconds);
         }
@@ -562,9 +572,9 @@ fn command_cache(args: &CacheArgs) -> Result<()> {
     Ok(())
 }
 
-fn command_tmux(args: &TmuxArgs) -> Result<()> {
+fn command_tmux(args: &TmuxArgs, refresh: bool) -> Result<()> {
     match &args.command {
-        TmuxCommands::Popup(args) => command_tmux_popup(args),
+        TmuxCommands::Popup(args) => command_tmux_popup(args, refresh),
         TmuxCommands::SetMetadata(args) => command_tmux_set_metadata(args),
         TmuxCommands::ClearMetadata(args) => command_tmux_clear_metadata(args),
     }
@@ -580,8 +590,8 @@ fn emit_snapshot(snapshot: &SnapshotEnvelope, format: OutputFormat) -> Result<()
     }
 }
 
-fn command_tmux_popup(args: &TmuxPopupArgs) -> Result<()> {
-    let mut snapshot = read_snapshot_from_cache()?;
+fn command_tmux_popup(args: &TmuxPopupArgs, refresh: bool) -> Result<()> {
+    let mut snapshot = load_snapshot(refresh)?;
     filter_snapshot(&mut snapshot, args.all);
     let entries = popup_entries(&snapshot.panes);
 
@@ -816,6 +826,20 @@ fn snapshot_from_tmux() -> Result<SnapshotEnvelope> {
         },
         panes,
     })
+}
+
+fn refresh_cache_from_tmux() -> Result<SnapshotEnvelope> {
+    let snapshot = snapshot_from_tmux()?;
+    write_snapshot_to_cache(&snapshot)?;
+    Ok(snapshot)
+}
+
+fn load_snapshot(refresh: bool) -> Result<SnapshotEnvelope> {
+    if refresh {
+        return refresh_cache_from_tmux();
+    }
+
+    read_snapshot_from_cache()
 }
 
 fn read_snapshot_from_cache() -> Result<SnapshotEnvelope> {

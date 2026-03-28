@@ -62,9 +62,11 @@ The first pass implements a snapshot scanner backed by:
 It can:
 
 - run an explicit daemon baseline with tmux control mode
+- fail fast when the daemon loses tmux, leaving restart policy to an external supervisor
 - report daemon-backed cache health
 - persist and read a local JSON cache
 - show and validate the local JSON cache
+- force a fresh tmux snapshot and cache rewrite for cache-backed pane and cache-inspection commands with `-f` / `--refresh`
 - list panes through the default `list` flow
 - inspect a pane by `pane_id`
 - focus a pane by `pane_id`
@@ -77,7 +79,7 @@ It can:
 It does not yet:
 
 - validate `focus` beyond the current single-client tmux workflow
-- broaden title-driven status logic beyond the current Codex, Claude, Gemini, and basic OpenCode heuristics
+- broaden title-driven status logic beyond the current Codex and Claude focus, with Gemini and OpenCode still treated as secondary coverage
 
 ## Reference Behavior
 

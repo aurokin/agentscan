@@ -153,6 +153,7 @@ Implications:
 - popup consumers should read cache, not rescan tmux
 - direct snapshot scans remain useful for debugging and recovery
 - daemon lifecycle behavior must be defined before migration
+- the initial daemon should fail fast when tmux disappears and leave restart policy to an external supervisor
 
 ### Cache Policy
 
@@ -450,16 +451,15 @@ Open point:
 
 - whether wrappers should proactively clear stale `@agent.*` options on exit or whether the daemon should treat pane disappearance as authoritative
 
-## Daemon Lifecycle Questions
+## Daemon Lifecycle Policy
 
-These still need explicit implementation decisions before daemon work begins:
+Current direction:
 
-- cache path
-- pid or lock path
-- single-instance behavior
-- reconnect behavior when tmux restarts
-- behavior when cache exists but daemon is absent
-- whether `list` should auto-start the daemon or remain passive
+- the daemon is an explicit `agentscan daemon run` entrypoint
+- short-lived commands stay passive by default
+- cache-backed pane and cache-inspection commands may force a fresh snapshot with `-f` / `--refresh`
+- when tmux disappears, the daemon exits clearly instead of retrying internally
+- restart policy belongs to an external supervisor until product needs justify a different model
 
 ## Planned Improvements Over Current Workflow
 
