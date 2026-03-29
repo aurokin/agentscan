@@ -88,6 +88,61 @@ fn daemon_updates_cache_when_metadata_changes() -> Result<()> {
 }
 
 #[test]
+fn metadata_helpers_refresh_existing_snapshot_cache_without_daemon() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let pane_id = harness.start_session("metadata-cache", "sh")?;
+    harness.send_title_escape(&pane_id, "metadata-cache")?;
+
+    harness.agentscan(["-f", "cache", "show"])?;
+    harness.wait_for_cache_file(|cache| pane_from_cache(cache, &pane_id).is_some())?;
+
+    harness.agentscan([
+        "tmux",
+        "set-metadata",
+        "--pane-id",
+        &pane_id,
+        "--provider",
+        "claude",
+        "--label",
+        "Snapshot Wrapper Task",
+        "--state",
+        "busy",
+    ])?;
+    harness.wait_for_cache_file(|cache| {
+        let Some(pane) = pane_from_cache(cache, &pane_id) else {
+            return false;
+        };
+        pane["provider"] == "claude"
+            && pane["display"]["label"] == "Snapshot Wrapper Task"
+            && pane["status"]["kind"] == "busy"
+            && pane["status"]["source"] == "pane_metadata"
+    })?;
+
+    harness.agentscan([
+        "tmux",
+        "clear-metadata",
+        "--pane-id",
+        &pane_id,
+        "--field",
+        "provider",
+        "--field",
+        "label",
+        "--field",
+        "state",
+    ])?;
+    harness.wait_for_cache_file(|cache| {
+        let Some(pane) = pane_from_cache(cache, &pane_id) else {
+            return false;
+        };
+        pane["provider"].is_null()
+            && pane["display"]["label"] == "metadata-cache"
+            && pane["status"]["kind"] == "unknown"
+    })?;
+
+    Ok(())
+}
+
+#[test]
 fn daemon_updates_cache_when_panes_are_added() -> Result<()> {
     let harness = TestHarness::new()?;
     let root_pane_id = harness.start_session("pane-add", "sh")?;
@@ -403,6 +458,30 @@ impl TestHarness {
         loop {
             daemon.ensure_running()?;
 
+            if let Ok(contents) = fs::read_to_string(&self.cache_path)
+                && let Ok(cache) = serde_json::from_str::<Value>(&contents)
+                && predicate(&cache)
+            {
+                return Ok(cache);
+            }
+
+            if Instant::now() >= deadline {
+                bail!(
+                    "timed out waiting for cache update at {}",
+                    self.cache_path.display()
+                );
+            }
+
+            sleep(POLL_INTERVAL);
+        }
+    }
+
+    fn wait_for_cache_file<F>(&self, predicate: F) -> Result<Value>
+    where
+        F: Fn(&Value) -> bool,
+    {
+        let deadline = Instant::now() + DAEMON_TIMEOUT;
+        loop {
             if let Ok(contents) = fs::read_to_string(&self.cache_path)
                 && let Ok(cache) = serde_json::from_str::<Value>(&contents)
                 && predicate(&cache)

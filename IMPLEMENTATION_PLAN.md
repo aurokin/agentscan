@@ -87,7 +87,7 @@ Completed baseline work:
 - `agentscan focus` now falls back to the most recently active attached tmux client when no explicit tty is provided
 - scanner and daemon snapshot ingestion now consume pane-local `@agent.*` wrapper metadata when present
 - `agentscan tmux set-metadata` and `tmux clear-metadata` provide repo-local helpers for managing pane-local `@agent.*` metadata
-- repo-local metadata helper writes now refresh the existing cache so wrapper-driven metadata remains visible to cache consumers even outside the daemon path
+- repo-local metadata helper writes now refresh the existing cache so wrapper-driven metadata remains visible to cache consumers for both daemon-backed and forced-snapshot cache states
 - daemon control-mode subscriptions now watch pane-local `@agent.*` metadata fields in addition to pane titles
 
 Still pending in Phase 1:
