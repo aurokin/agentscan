@@ -65,6 +65,7 @@ Completed baseline work:
 - property tests now cover parser round-trips and normalization invariants
 - benchmark tooling now measures snapshot parsing, row-to-pane conversion, cache deserialization, and popup entry generation
 - isolated daemon integration tests now cover title updates, pane/window add-remove topology changes, session add/remove and rename churn, window rename churn, attached-session removal, wrapper-metadata helper flows, and fail-fast tmux server disappearance
+- the runtime is now split by concern under `src/app/` so command dispatch, cache logic, daemon handling, tmux integration, output formatting, and classification logic can evolve independently without continuing to grow a single monolithic file
 - canonical pane model and snapshot envelope are implemented
 - `agentscan scan`, `agentscan list`, and `agentscan inspect` are implemented
 - `agentscan cache path`, `cache show`, and `cache validate` are implemented with XDG default plus override support

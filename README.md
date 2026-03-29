@@ -66,6 +66,7 @@ The current implementation centers on:
 - direct tmux snapshots from `tmux list-panes -a -F ...`
 - a control-mode daemon that maintains a local JSON cache
 - repo-local tmux helpers that stay thin and call the CLI
+- a runtime split by concern under `src/app/` rather than a single monolithic application file
 
 It can:
 

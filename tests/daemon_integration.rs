@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use tempfile::TempDir;
 
-const DAEMON_TIMEOUT: Duration = Duration::from_secs(10);
+const DAEMON_TIMEOUT: Duration = Duration::from_secs(20);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 #[test]

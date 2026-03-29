@@ -1,0 +1,527 @@
+use std::env;
+use std::fmt;
+use std::fs;
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
+use anyhow::{Context, Result, bail};
+use clap::{Args, Parser, Subcommand, ValueEnum};
+use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
+
+mod cache;
+mod classify;
+mod commands;
+mod daemon;
+mod output;
+#[cfg(test)]
+mod tests;
+mod tmux;
+
+#[allow(unused_imports)]
+pub(crate) use cache::popup_entries;
+#[allow(unused_imports)]
+pub(crate) use classify::pane_from_row;
+#[allow(unused_imports)]
+pub(crate) use commands::run;
+#[allow(unused_imports)]
+pub(crate) use tmux::parse_pane_rows;
+
+const PANE_DELIM: char = '\u{001f}';
+const CACHE_ENV_VAR: &str = "AGENTSCAN_CACHE_PATH";
+const CACHE_RELATIVE_PATH: &str = "agentscan/cache-v1.json";
+const CACHE_SCHEMA_VERSION: u32 = 1;
+const CLAUDE_SPINNER_GLYPHS: &[char] = &[
+    '⠁', '⠂', '⠄', '⡀', '⢀', '⠠', '⠐', '⠈', '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏', '⣾',
+    '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷',
+];
+const IDLE_GLYPHS: &[char] = &['✳'];
+const PANE_FORMAT: &str = concat!(
+    "#{session_name}",
+    "\x1f",
+    "#{window_index}",
+    "\x1f",
+    "#{pane_index}",
+    "\x1f",
+    "#{pane_id}",
+    "\x1f",
+    "#{pane_pid}",
+    "\x1f",
+    "#{pane_current_command}",
+    "\x1f",
+    "#{pane_title}",
+    "\x1f",
+    "#{pane_tty}",
+    "\x1f",
+    "#{pane_current_path}",
+    "\x1f",
+    "#{window_name}",
+    "\x1f",
+    "#{@agent.provider}",
+    "\x1f",
+    "#{@agent.label}",
+    "\x1f",
+    "#{@agent.cwd}",
+    "\x1f",
+    "#{@agent.state}",
+    "\x1f",
+    "#{@agent.session_id}"
+);
+const DAEMON_SUBSCRIPTION_FORMAT: &str = concat!(
+    "agentscan:%*:",
+    "#{{pane_id}}:",
+    "#{{pane_title}}:",
+    "#{{@agent.provider}}:",
+    "#{{@agent.label}}:",
+    "#{{@agent.cwd}}:",
+    "#{{@agent.state}}:",
+    "#{{@agent.session_id}}"
+);
+
+#[derive(Parser, Debug)]
+#[command(author, version, about = "Scan tmux panes for agent sessions")]
+struct Cli {
+    /// Force a fresh tmux snapshot and rewrite the cache before running the command.
+    #[arg(short = 'f', long = "refresh", global = true)]
+    refresh: bool,
+
+    #[command(subcommand)]
+    command: Option<Commands>,
+
+    #[command(flatten)]
+    list_args: ListArgs,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Take a direct snapshot from tmux.
+    Scan(ListArgs),
+    /// List panes using the best available state source.
+    List(ListArgs),
+    /// Inspect one pane by pane id.
+    Inspect(InspectArgs),
+    /// Focus a pane by pane id.
+    Focus(FocusArgs),
+    /// Run daemon-related commands.
+    Daemon(DaemonArgs),
+    /// tmux-facing helper commands.
+    Tmux(TmuxArgs),
+    /// Inspect cache-related paths.
+    Cache(CacheArgs),
+}
+
+#[derive(Args, Clone, Debug)]
+struct ListArgs {
+    /// Include all tmux panes, not only likely agent panes.
+    #[arg(long)]
+    all: bool,
+
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    format: OutputFormat,
+}
+
+#[derive(Args, Debug)]
+struct InspectArgs {
+    /// The tmux pane id, for example `%42`.
+    pane_id: String,
+
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    format: OutputFormat,
+}
+
+#[derive(Args, Debug)]
+struct FocusArgs {
+    /// The tmux pane id, for example `%42`.
+    pane_id: String,
+
+    /// The tmux client tty to target when switching panes.
+    #[arg(long)]
+    client_tty: Option<String>,
+}
+
+#[derive(Args, Debug)]
+struct CacheArgs {
+    #[command(subcommand)]
+    command: CacheCommands,
+}
+
+#[derive(Args, Debug)]
+struct DaemonArgs {
+    #[command(subcommand)]
+    command: DaemonCommands,
+}
+
+#[derive(Args, Debug)]
+struct TmuxArgs {
+    #[command(subcommand)]
+    command: TmuxCommands,
+}
+
+#[derive(Subcommand, Debug)]
+enum CacheCommands {
+    /// Print the cache path.
+    Path,
+    /// Show cache contents or summary information.
+    Show(CacheShowArgs),
+    /// Validate the current cache file.
+    Validate(CacheValidateArgs),
+}
+
+#[derive(Args, Debug)]
+struct CacheShowArgs {
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    format: OutputFormat,
+}
+
+#[derive(Args, Debug)]
+struct CacheValidateArgs {
+    /// Fail if the cache is older than this many seconds.
+    #[arg(long)]
+    max_age_seconds: Option<u64>,
+}
+
+#[derive(Subcommand, Debug)]
+enum DaemonCommands {
+    /// Run the long-lived daemon loop.
+    Run,
+    /// Report daemon-backed cache health.
+    Status(DaemonStatusArgs),
+}
+
+#[derive(Args, Debug)]
+struct DaemonStatusArgs {
+    /// Mark the daemon cache unhealthy if it is older than this many seconds.
+    #[arg(long)]
+    max_age_seconds: Option<u64>,
+}
+
+#[derive(Subcommand, Debug)]
+enum TmuxCommands {
+    /// Emit popup-oriented pane output.
+    Popup(TmuxPopupArgs),
+    /// Publish explicit pane metadata for wrappers.
+    SetMetadata(TmuxSetMetadataArgs),
+    /// Clear explicit pane metadata.
+    ClearMetadata(TmuxClearMetadataArgs),
+}
+
+#[derive(Args, Debug)]
+struct TmuxPopupArgs {
+    /// Include all tmux panes, not only likely agent panes.
+    #[arg(long)]
+    all: bool,
+
+    /// Output format for popup consumers.
+    #[arg(long, value_enum, default_value_t = PopupOutputFormat::Tsv)]
+    format: PopupOutputFormat,
+}
+
+#[derive(Args, Debug)]
+struct TmuxSetMetadataArgs {
+    /// The tmux pane id to target. Defaults to the current pane when inside tmux.
+    #[arg(long)]
+    pane_id: Option<String>,
+
+    /// Explicit provider published by the wrapper.
+    #[arg(long, value_enum)]
+    provider: Option<Provider>,
+
+    /// User-facing short label published by the wrapper.
+    #[arg(long)]
+    label: Option<String>,
+
+    /// Explicit working directory published by the wrapper.
+    #[arg(long)]
+    cwd: Option<String>,
+
+    /// Optional explicit state published by the wrapper.
+    #[arg(long, value_enum)]
+    state: Option<StatusKind>,
+
+    /// Optional provider-specific session identifier.
+    #[arg(long)]
+    session_id: Option<String>,
+}
+
+#[derive(Args, Debug)]
+struct TmuxClearMetadataArgs {
+    /// The tmux pane id to target. Defaults to the current pane when inside tmux.
+    #[arg(long)]
+    pane_id: Option<String>,
+
+    /// Clear only specific metadata fields. Defaults to all fields.
+    #[arg(long, value_enum)]
+    field: Vec<TmuxMetadataField>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum OutputFormat {
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum PopupOutputFormat {
+    Tsv,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum TmuxMetadataField {
+    Provider,
+    Label,
+    Cwd,
+    State,
+    SessionId,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
+#[serde(rename_all = "snake_case")]
+enum Provider {
+    Codex,
+    Claude,
+    Gemini,
+    Opencode,
+}
+
+impl fmt::Display for Provider {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            Self::Codex => "codex",
+            Self::Claude => "claude",
+            Self::Gemini => "gemini",
+            Self::Opencode => "opencode",
+        };
+
+        f.write_str(name)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum SourceKind {
+    Snapshot,
+    Daemon,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
+#[serde(rename_all = "snake_case")]
+enum StatusKind {
+    Idle,
+    Busy,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum StatusSource {
+    PaneMetadata,
+    TmuxTitle,
+    NotChecked,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ClassificationConfidence {
+    High,
+    Medium,
+    Low,
+}
+
+#[allow(clippy::enum_variant_names)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ClassificationMatchKind {
+    PaneMetadata,
+    PaneCurrentCommand,
+    PaneTitle,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(crate) struct SnapshotEnvelope {
+    schema_version: u32,
+    generated_at: String,
+    source: SnapshotSource,
+    panes: Vec<PaneRecord>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct SnapshotSource {
+    kind: SourceKind,
+    tmux_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    daemon_generated_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(crate) struct PaneRecord {
+    pane_id: String,
+    location: PaneLocation,
+    tmux: TmuxPaneMetadata,
+    display: DisplayMetadata,
+    provider: Option<Provider>,
+    status: PaneStatus,
+    classification: PaneClassification,
+    agent_metadata: AgentMetadata,
+    diagnostics: PaneDiagnostics,
+}
+
+impl PaneRecord {
+    fn display_label(&self) -> &str {
+        &self.display.label
+    }
+
+    fn location_tag(&self) -> String {
+        self.location.tag()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct PaneLocation {
+    session_name: String,
+    window_index: u32,
+    pane_index: u32,
+    window_name: String,
+}
+
+impl PaneLocation {
+    fn tag(&self) -> String {
+        format!(
+            "{}:{}.{}",
+            self.session_name, self.window_index, self.pane_index
+        )
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct TmuxPaneMetadata {
+    pane_pid: u32,
+    pane_tty: String,
+    pane_current_path: String,
+    pane_current_command: String,
+    pane_title_raw: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct DisplayMetadata {
+    label: String,
+    activity_label: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct PaneStatus {
+    kind: StatusKind,
+    source: StatusSource,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct PaneClassification {
+    matched_by: Option<ClassificationMatchKind>,
+    confidence: Option<ClassificationConfidence>,
+    reasons: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct AgentMetadata {
+    provider: Option<String>,
+    label: Option<String>,
+    cwd: Option<String>,
+    state: Option<String>,
+    session_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct PaneDiagnostics {
+    cache_origin: String,
+}
+
+#[derive(Debug)]
+struct CacheSummary {
+    generated_at: OffsetDateTime,
+    pane_count: usize,
+    agent_pane_count: usize,
+    provider_counts: Vec<(Provider, usize)>,
+    status_counts: Vec<(StatusKind, usize)>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DaemonCacheStatus {
+    Healthy,
+    Stale,
+    Unavailable,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct PopupEntry {
+    pane_id: String,
+    provider: Option<Provider>,
+    status: StatusKind,
+    location_tag: String,
+    session_name: String,
+    window_index: u32,
+    pane_index: u32,
+    display_label: String,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct TmuxPaneRow {
+    session_name: String,
+    window_index: u32,
+    pane_index: u32,
+    pane_id: String,
+    pane_pid: u32,
+    pane_current_command: String,
+    pane_title_raw: String,
+    pane_tty: String,
+    pane_current_path: String,
+    window_name: String,
+    agent_provider: Option<String>,
+    agent_label: Option<String>,
+    agent_cwd: Option<String>,
+    agent_state: Option<String>,
+    agent_session_id: Option<String>,
+}
+
+#[derive(Debug)]
+struct ProviderMatch {
+    provider: Provider,
+    matched_by: ClassificationMatchKind,
+    confidence: ClassificationConfidence,
+    reasons: Vec<String>,
+}
+
+#[derive(Debug)]
+pub(crate) struct TmuxClientRow {
+    client_tty: String,
+    client_activity: i64,
+}
+
+fn status_kind_name(status: StatusKind) -> &'static str {
+    match status {
+        StatusKind::Idle => "idle",
+        StatusKind::Busy => "busy",
+        StatusKind::Unknown => "unknown",
+    }
+}
+
+fn daemon_cache_status_name(status: DaemonCacheStatus) -> &'static str {
+    match status {
+        DaemonCacheStatus::Healthy => "healthy",
+        DaemonCacheStatus::Stale => "stale",
+        DaemonCacheStatus::Unavailable => "unavailable",
+    }
+}
+
+fn default_if_empty<'a>(value: &'a str, fallback: &'a str) -> &'a str {
+    if value.trim().is_empty() {
+        fallback
+    } else {
+        value
+    }
+}

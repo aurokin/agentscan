@@ -1,5 +1,5 @@
 #[allow(dead_code)]
-#[path = "../src/app.rs"]
+#[path = "../src/app/mod.rs"]
 mod app;
 
 use criterion::{Criterion, criterion_group, criterion_main};
