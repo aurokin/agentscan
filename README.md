@@ -76,7 +76,7 @@ It can:
 - force a fresh tmux snapshot and cache rewrite for cache-backed pane and cache-inspection commands with `-f` / `--refresh`
 - list panes through the default `list` flow
 - inspect a pane by `pane_id`
-- focus a pane by `pane_id`, with attached-client fallback when no explicit tty is provided
+- focus a pane by `pane_id`, with attached-client fallback when no explicit tty is provided and tested multi-client selection of the most recent attached client
 - emit dedicated popup-oriented tmux output
 - infer likely agent panes from tmux metadata
 - normalize noisy provider prefixes and wrapper/script suffixes out of display labels for title-driven panes
@@ -89,7 +89,6 @@ It can:
 
 It does not yet:
 
-- validate focus arbitration across multiple simultaneously attached tmux clients
 - broaden title-driven status logic beyond the current Codex and Claude focus, with Gemini and OpenCode still treated as secondary coverage
 
 ## Reference Behavior

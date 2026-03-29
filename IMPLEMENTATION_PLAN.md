@@ -85,7 +85,7 @@ Completed baseline work:
 - `display.activity_label` is now populated for title-driven panes when the title carries useful activity text
 - `agentscan focus` supports client-aware tmux switching and has been validated against the current pane workflow
 - `agentscan focus` now falls back to the most recently active attached tmux client when no explicit tty is provided
-- isolated focus integration tests now validate both explicit `--client-tty` targeting and attached-client fallback behavior
+- isolated focus integration tests now validate explicit `--client-tty` targeting, attached-client fallback behavior, and multi-client arbitration toward the most recent attached client
 - scanner and daemon snapshot ingestion now consume pane-local `@agent.*` wrapper metadata when present
 - `agentscan tmux set-metadata` and `tmux clear-metadata` provide repo-local helpers for managing pane-local `@agent.*` metadata
 - repo-local metadata helper writes now refresh the existing cache so wrapper-driven metadata remains visible to cache consumers for both daemon-backed and forced-snapshot cache states
@@ -93,7 +93,6 @@ Completed baseline work:
 
 Still pending in Phase 1:
 
-- broader focus arbitration validation across multiple simultaneously attached tmux clients
 - broader title-driven status coverage and more fixture samples across providers
 
 ## Phase 1

@@ -169,6 +169,26 @@ fn focus_uses_attached_client_fallback_when_no_tty_is_given() -> Result<()> {
 }
 
 #[test]
+fn focus_prefers_most_recent_attached_client_when_multiple_are_present() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let older_root_pane_id = harness.start_session("focus-multi-older", "sleep 300")?;
+    let _newer_root_pane_id = harness.start_session("focus-multi-newer", "sleep 300")?;
+    let split_pane_id = harness.split_window("focus-multi-newer:0.0", "sleep 300")?;
+    let older_client = harness.attach_client("focus-multi-older")?;
+    let mut newer_client = harness.attach_client("focus-multi-newer")?;
+
+    harness.agentscan(["-f", "focus", &split_pane_id])?;
+    harness.wait_for_client_pane(&mut newer_client, &split_pane_id)?;
+
+    let older_pane_id = harness
+        .client_pane_id(&older_client.tty)?
+        .context("older attached client disappeared before verification")?;
+    assert_eq!(older_pane_id, older_root_pane_id);
+
+    Ok(())
+}
+
+#[test]
 fn daemon_updates_cache_when_panes_are_added() -> Result<()> {
     let harness = TestHarness::new()?;
     let root_pane_id = harness.start_session("pane-add", "sh")?;
@@ -502,6 +522,14 @@ impl TestHarness {
             .into_iter()
             .map(|row| row.client_tty)
             .collect())
+    }
+
+    fn client_pane_id(&self, client_tty: &str) -> Result<Option<String>> {
+        Ok(self
+            .client_rows()?
+            .into_iter()
+            .find(|row| row.client_tty == client_tty)
+            .map(|row| row.pane_id))
     }
 
     fn wait_for_new_client_tty(&self, existing_ttys: &[String]) -> Result<String> {
