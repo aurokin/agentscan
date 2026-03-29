@@ -45,7 +45,7 @@
         "session_id": null
       },
       "diagnostics": {
-        "cache_origin": "direct_snapshot"
+        "cache_origin": "daemon_snapshot"
       }
     }
   ]

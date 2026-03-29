@@ -851,6 +851,7 @@ fn snapshot_from_tmux() -> Result<SnapshotEnvelope> {
 
 fn daemon_snapshot_from_tmux() -> Result<SnapshotEnvelope> {
     let mut snapshot = snapshot_from_tmux()?;
+    set_snapshot_cache_origin(&mut snapshot, "daemon_snapshot");
     mark_snapshot_as_daemon(&mut snapshot)?;
     Ok(snapshot)
 }
@@ -1866,7 +1867,11 @@ fn subscription_changed_pane_id(line: &str) -> Option<&str> {
 }
 
 fn refresh_snapshot_pane(snapshot: &mut SnapshotEnvelope, pane_id: &str) -> Result<()> {
-    let pane = tmux_list_pane(pane_id)?.map(pane_from_row);
+    let pane = tmux_list_pane(pane_id)?.map(|row| {
+        let mut pane = pane_from_row(row);
+        pane.diagnostics.cache_origin = "daemon_update".to_string();
+        pane
+    });
 
     if let Some(index) = snapshot
         .panes
@@ -1889,6 +1894,12 @@ fn mark_snapshot_as_daemon(snapshot: &mut SnapshotEnvelope) -> Result<()> {
     snapshot.generated_at = now_rfc3339()?;
     snapshot.source.kind = SourceKind::Daemon;
     Ok(())
+}
+
+fn set_snapshot_cache_origin(snapshot: &mut SnapshotEnvelope, cache_origin: &str) {
+    for pane in &mut snapshot.panes {
+        pane.diagnostics.cache_origin = cache_origin.to_string();
+    }
 }
 
 fn notification_name(line: &str) -> Option<&str> {
@@ -2472,6 +2483,10 @@ mod tests {
         assert_eq!(snapshot.panes.len(), 1);
         assert_eq!(snapshot.panes[0].pane_id, "%67");
         assert_eq!(snapshot.panes[0].status.kind, StatusKind::Idle);
+        assert_eq!(
+            snapshot.panes[0].diagnostics.cache_origin,
+            "daemon_snapshot"
+        );
     }
 
     #[test]
