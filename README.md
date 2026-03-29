@@ -82,6 +82,7 @@ It can:
 - infer likely agent panes from tmux metadata
 - normalize noisy provider prefixes and wrapper/script suffixes out of display labels for title-driven panes
 - populate `display.activity_label` for title-driven panes when titles include meaningful activity text
+- keep labels conservative: show what tmux metadata actually tells us and avoid inventing richer task names from weak signals
 - publish, clear, and consume explicit wrapper metadata via pane-local `@agent.*` tmux options
 - refresh the existing cache immediately after repo-local metadata helper writes so wrapper-driven metadata changes stay visible to cache consumers whether the cache came from the daemon or a forced snapshot
 - forward `-f` / `--refresh` through the bundled popup wrapper for on-demand cache refresh

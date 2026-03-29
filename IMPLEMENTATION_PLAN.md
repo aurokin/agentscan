@@ -29,6 +29,7 @@ These decisions are already made and should be treated as planning inputs:
 - legacy shell detection bugs are reasons to redesign the detector rather than preserve old heuristics
 - terminal titles and tmux metadata are the default detection path for all providers
 - pane-content inspection is a later fallback only if title and tmux metadata are proven insufficient
+- display labels should stay conservative and reflect only high-signal metadata we actually have, rather than inventing richer labels from weak inference
 
 ## Product Surface
 

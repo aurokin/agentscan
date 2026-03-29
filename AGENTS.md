@@ -34,6 +34,7 @@ Co-Authored-By: <agent name> <email>
 - Treat `/proc` inspection as fallback for ambiguous panes, not the primary detection path.
 - Prefer explicit pane metadata via tmux user options when wrappers can publish it.
 - Keep output formats stable; preserve machine-readable commands even if display labels change.
+- Prefer honest labels from tmux metadata over richer but weakly inferred labels; deeper pane inspection is a later fallback, not a reason to invent display text.
 - Do not use TSV as the canonical cache format; use a versioned JSON snapshot for persisted state and keep TSV as an output adapter only.
 - Avoid editing `~/.dotfiles` integration during core scanner work unless the task explicitly includes migration.
 - Document behavior changes in `ROADMAP.md` when they affect architecture, boundaries, or migration assumptions.
