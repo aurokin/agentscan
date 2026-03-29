@@ -916,6 +916,23 @@ fn filter_snapshot(snapshot: &mut SnapshotEnvelope, include_all: bool) {
     }
 }
 
+fn sort_snapshot_panes(snapshot: &mut SnapshotEnvelope) {
+    snapshot.panes.sort_by(|left, right| {
+        (
+            &left.location.session_name,
+            left.location.window_index,
+            left.location.pane_index,
+            &left.pane_id,
+        )
+            .cmp(&(
+                &right.location.session_name,
+                right.location.window_index,
+                right.location.pane_index,
+                &right.pane_id,
+            ))
+    });
+}
+
 pub(crate) fn popup_entries(panes: &[PaneRecord]) -> Vec<PopupEntry> {
     panes
         .iter()
@@ -1887,6 +1904,7 @@ fn refresh_snapshot_pane(snapshot: &mut SnapshotEnvelope, pane_id: &str) -> Resu
         snapshot.panes.push(pane);
     }
 
+    sort_snapshot_panes(snapshot);
     mark_snapshot_as_daemon(snapshot)
 }
 
@@ -2085,9 +2103,9 @@ mod tests {
         daemon_cache_status_name, display_metadata, infer_status, infer_title_status,
         looks_like_codex_title, normalize_title_for_display, notification_name, pane_from_row,
         parse_pane_rows, parse_tmux_client_rows, popup_entries, select_best_client_tty,
-        should_resnapshot_from_notification, status_kind_name, strip_known_status_glyph,
-        subscription_changed_pane_id, summarize_snapshot, tmux_metadata_fields_to_clear,
-        tmux_metadata_updates, tsv_escape, validate_snapshot,
+        should_resnapshot_from_notification, sort_snapshot_panes, status_kind_name,
+        strip_known_status_glyph, subscription_changed_pane_id, summarize_snapshot,
+        tmux_metadata_fields_to_clear, tmux_metadata_updates, tsv_escape, validate_snapshot,
     };
 
     #[test]
@@ -2499,6 +2517,80 @@ mod tests {
         assert_eq!(summary.agent_pane_count, 1);
         assert_eq!(summary.provider_counts, vec![(Provider::Codex, 1)]);
         assert_eq!(summary.status_counts, vec![(StatusKind::Idle, 1)]);
+    }
+
+    #[test]
+    fn snapshot_sort_orders_panes_by_location() {
+        let mut snapshot = SnapshotEnvelope {
+            schema_version: CACHE_SCHEMA_VERSION,
+            generated_at: "2026-03-28T00:00:00Z".to_string(),
+            source: super::SnapshotSource {
+                kind: SourceKind::Snapshot,
+                tmux_version: None,
+            },
+            panes: vec![
+                pane_from_row(super::TmuxPaneRow {
+                    session_name: "zeta".to_string(),
+                    window_index: 2,
+                    pane_index: 1,
+                    pane_id: "%3".to_string(),
+                    pane_pid: 3,
+                    pane_current_command: "codex".to_string(),
+                    pane_title_raw: "Ready".to_string(),
+                    pane_tty: "/dev/pts/3".to_string(),
+                    pane_current_path: "/tmp/zeta".to_string(),
+                    window_name: "editor".to_string(),
+                    agent_provider: None,
+                    agent_label: None,
+                    agent_cwd: None,
+                    agent_state: None,
+                    agent_session_id: None,
+                }),
+                pane_from_row(super::TmuxPaneRow {
+                    session_name: "alpha".to_string(),
+                    window_index: 1,
+                    pane_index: 2,
+                    pane_id: "%2".to_string(),
+                    pane_pid: 2,
+                    pane_current_command: "claude".to_string(),
+                    pane_title_raw: "✳ Review".to_string(),
+                    pane_tty: "/dev/pts/2".to_string(),
+                    pane_current_path: "/tmp/alpha".to_string(),
+                    window_name: "ai".to_string(),
+                    agent_provider: None,
+                    agent_label: None,
+                    agent_cwd: None,
+                    agent_state: None,
+                    agent_session_id: None,
+                }),
+                pane_from_row(super::TmuxPaneRow {
+                    session_name: "alpha".to_string(),
+                    window_index: 1,
+                    pane_index: 1,
+                    pane_id: "%1".to_string(),
+                    pane_pid: 1,
+                    pane_current_command: "codex".to_string(),
+                    pane_title_raw: "Working".to_string(),
+                    pane_tty: "/dev/pts/1".to_string(),
+                    pane_current_path: "/tmp/alpha".to_string(),
+                    window_name: "editor".to_string(),
+                    agent_provider: None,
+                    agent_label: None,
+                    agent_cwd: None,
+                    agent_state: None,
+                    agent_session_id: None,
+                }),
+            ],
+        };
+
+        sort_snapshot_panes(&mut snapshot);
+
+        let ordered_ids: Vec<_> = snapshot
+            .panes
+            .iter()
+            .map(|pane| pane.pane_id.as_str())
+            .collect();
+        assert_eq!(ordered_ids, vec!["%1", "%2", "%3"]);
     }
 
     #[test]

@@ -75,6 +75,7 @@ Completed baseline work:
 - cache-backed pane and cache-inspection commands now support `-f` / `--refresh` to take a fresh tmux snapshot and rewrite cache on demand
 - cache reads now validate schema version before consumers use cached state
 - pane diagnostics now distinguish direct snapshots, daemon snapshots, and daemon-updated panes
+- snapshot ordering now stays stable after targeted daemon pane refreshes
 - `agentscan tmux popup` provides dedicated structured popup output
 - a thin repo-local `scripts/agentscan-popup.sh` wrapper renders cached popup rows and calls `focus`
 - the bundled popup wrapper now forwards `-f` / `--refresh` to the CLI for on-demand cache refresh
