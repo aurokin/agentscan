@@ -689,6 +689,9 @@ fn print_inspect_text(pane: &PaneRecord) {
             .unwrap_or_else(|| "unknown".to_string())
     );
     println!("display_label: {}", pane.display.label);
+    if let Some(activity_label) = pane.display.activity_label.as_deref() {
+        println!("activity_label: {activity_label}");
+    }
     println!("status: {:?}", pane.status.kind);
     println!("status_source: {:?}", pane.status.source);
     println!(
@@ -953,15 +956,13 @@ pub(crate) fn pane_from_row(row: TmuxPaneRow) -> PaneRecord {
             pane_current_command: row.pane_current_command.clone(),
             pane_title_raw: row.pane_title_raw.clone(),
         },
-        display: DisplayMetadata {
-            label: display_label(
-                agent_metadata.label.as_deref(),
-                &row.pane_title_raw,
-                &row.pane_current_command,
-                &row.window_name,
-            ),
-            activity_label: None,
-        },
+        display: display_metadata(
+            provider,
+            agent_metadata.label.as_deref(),
+            &row.pane_title_raw,
+            &row.pane_current_command,
+            &row.window_name,
+        ),
         provider,
         status,
         classification: PaneClassification {
@@ -1271,28 +1272,42 @@ fn infer_status(title_status: PaneStatus, published_state: Option<&str>) -> Pane
     }
 }
 
-fn display_label(
+fn display_metadata(
+    provider: Option<Provider>,
     published_label: Option<&str>,
     raw_title: &str,
     current_command: &str,
     window_name: &str,
-) -> String {
+) -> DisplayMetadata {
     if let Some(label) = published_label
         .map(str::trim)
         .filter(|label| !label.is_empty())
     {
-        return label.to_string();
+        return DisplayMetadata {
+            label: label.to_string(),
+            activity_label: None,
+        };
     }
 
     let title = raw_title.trim();
     if !title.is_empty() {
-        return normalize_title_for_display(title);
+        let label = normalize_title_for_display(title);
+        return DisplayMetadata {
+            activity_label: infer_activity_label(provider, &label),
+            label,
+        };
     }
     if !window_name.trim().is_empty() {
-        return window_name.trim().to_string();
+        return DisplayMetadata {
+            label: window_name.trim().to_string(),
+            activity_label: None,
+        };
     }
 
-    current_command.trim().to_string()
+    DisplayMetadata {
+        label: current_command.trim().to_string(),
+        activity_label: None,
+    }
 }
 
 fn normalize_title_for_display(title: &str) -> String {
@@ -1315,6 +1330,38 @@ fn strip_claude_title_prefix(title: &str) -> Option<&str> {
 
 fn strip_opencode_title_prefix(title: &str) -> Option<&str> {
     title.strip_prefix("OC | ")
+}
+
+fn infer_activity_label(provider: Option<Provider>, label: &str) -> Option<String> {
+    let label = label.trim();
+    if label.is_empty() {
+        return None;
+    }
+
+    if matches!(provider, Some(Provider::Codex))
+        && let Some((activity, status)) = label.rsplit_once(" | ")
+        && is_generic_status_label(status)
+    {
+        let activity = activity.trim();
+        if !activity.is_empty() {
+            return Some(activity.to_string());
+        }
+    }
+
+    if is_generic_status_label(label) {
+        return None;
+    }
+
+    match provider {
+        Some(Provider::Claude) | Some(Provider::Gemini) | Some(Provider::Opencode) => {
+            Some(label.to_string())
+        }
+        _ => None,
+    }
+}
+
+fn is_generic_status_label(label: &str) -> bool {
+    matches!(label.trim(), "Working" | "Waiting" | "Ready")
 }
 
 fn strip_known_status_glyph(title: &str) -> &str {
@@ -1953,9 +2000,9 @@ mod tests {
         CACHE_RELATIVE_PATH, CACHE_SCHEMA_VERSION, CLAUDE_SPINNER_GLYPHS, ClassificationMatchKind,
         Cli, DAEMON_SUBSCRIPTION_FORMAT, IDLE_GLYPHS, PaneRecord, Provider, SnapshotEnvelope,
         SourceKind, StatusKind, TmuxMetadataField, classify_provider, daemon_cache_status,
-        daemon_cache_status_name, infer_status, infer_title_status, looks_like_codex_title,
-        normalize_title_for_display, notification_name, pane_from_row, parse_pane_rows,
-        parse_tmux_client_rows, popup_entries, select_best_client_tty,
+        daemon_cache_status_name, display_metadata, infer_status, infer_title_status,
+        looks_like_codex_title, normalize_title_for_display, notification_name, pane_from_row,
+        parse_pane_rows, parse_tmux_client_rows, popup_entries, select_best_client_tty,
         should_refresh_from_notification, status_kind_name, strip_known_status_glyph,
         summarize_snapshot, tmux_metadata_fields_to_clear, tmux_metadata_updates, tsv_escape,
         validate_snapshot,
@@ -2041,6 +2088,7 @@ mod tests {
         assert_eq!(pane.provider, Some(Provider::Claude));
         assert_eq!(pane.location.session_name, "notes");
         assert_eq!(pane.display.label, "Query");
+        assert_eq!(pane.display.activity_label.as_deref(), Some("Query"));
     }
 
     #[test]
@@ -2267,40 +2315,9 @@ mod tests {
         let rows = parse_pane_rows(TMUX_SNAPSHOT_FIXTURE).expect("fixture snapshot should parse");
         let panes: Vec<_> = rows.into_iter().map(pane_from_row).collect();
 
-        let codex_working = pane_by_id(&panes, "%191");
-        assert_eq!(codex_working.provider, Some(Provider::Codex));
-        assert_eq!(codex_working.status.kind, StatusKind::Busy);
-        assert_eq!(codex_working.display.label, "agentscan | Working");
-
-        let codex_ready = pane_by_id(&panes, "%67");
-        assert_eq!(codex_ready.status.kind, StatusKind::Idle);
-
-        let codex_waiting = pane_by_id(&panes, "%194");
-        assert_eq!(codex_waiting.provider, Some(Provider::Codex));
-        assert_eq!(codex_waiting.status.kind, StatusKind::Idle);
-        assert_eq!(codex_waiting.display.label, "agentscan | Waiting");
-
-        let claude_idle = pane_by_id(&panes, "%41");
-        assert_eq!(claude_idle.provider, Some(Provider::Claude));
-        assert_eq!(claude_idle.status.kind, StatusKind::Idle);
-        assert_eq!(claude_idle.display.label, "Review and summarize todo list");
-
-        let claude_busy = pane_by_id(&panes, "%223");
-        assert_eq!(claude_busy.status.kind, StatusKind::Busy);
-
-        let claude_title_busy = pane_by_id(&panes, "%224");
-        assert_eq!(claude_title_busy.provider, Some(Provider::Claude));
-        assert_eq!(claude_title_busy.status.kind, StatusKind::Busy);
-        assert_eq!(claude_title_busy.display.label, "Working");
-
-        let claude_title_idle = pane_by_id(&panes, "%225");
-        assert_eq!(claude_title_idle.provider, Some(Provider::Claude));
-        assert_eq!(claude_title_idle.status.kind, StatusKind::Idle);
-        assert_eq!(claude_title_idle.display.label, "Ready");
-
-        let opencode = pane_by_id(&panes, "%301");
-        assert_eq!(opencode.provider, Some(Provider::Opencode));
-        assert_eq!(opencode.display.label, "Query planner");
+        assert_fixture_codex_cases(&panes);
+        assert_fixture_claude_cases(&panes);
+        assert_fixture_opencode_case(&panes);
     }
 
     #[test]
@@ -2450,6 +2467,36 @@ mod tests {
     }
 
     #[test]
+    fn display_metadata_extracts_activity_labels_from_titles() {
+        let codex = display_metadata(
+            Some(Provider::Codex),
+            None,
+            "⠹ agentscan | Working",
+            "codex",
+            "editor",
+        );
+        assert_eq!(codex.label, "agentscan | Working");
+        assert_eq!(codex.activity_label.as_deref(), Some("agentscan"));
+
+        let claude = display_metadata(
+            Some(Provider::Claude),
+            None,
+            "✳ Review and summarize todo list",
+            "claude",
+            "ai",
+        );
+        assert_eq!(claude.label, "Review and summarize todo list");
+        assert_eq!(
+            claude.activity_label.as_deref(),
+            Some("Review and summarize todo list")
+        );
+
+        let generic = display_metadata(Some(Provider::Codex), None, "Ready", "codex", "editor");
+        assert_eq!(generic.label, "Ready");
+        assert_eq!(generic.activity_label, None);
+    }
+
+    #[test]
     fn cli_refresh_flag_is_global() {
         let cli = <Cli as clap::Parser>::parse_from(["agentscan", "-f", "list"]);
         assert!(cli.refresh);
@@ -2476,6 +2523,66 @@ mod tests {
 
         let home = home.context("missing home")?;
         Ok(Path::new(home).join(".cache").join(CACHE_RELATIVE_PATH))
+    }
+
+    fn assert_fixture_codex_cases(panes: &[PaneRecord]) {
+        let codex_working = pane_by_id(panes, "%191");
+        assert_eq!(codex_working.provider, Some(Provider::Codex));
+        assert_eq!(codex_working.status.kind, StatusKind::Busy);
+        assert_eq!(codex_working.display.label, "agentscan | Working");
+        assert_eq!(
+            codex_working.display.activity_label.as_deref(),
+            Some("agentscan")
+        );
+
+        let codex_ready = pane_by_id(panes, "%67");
+        assert_eq!(codex_ready.status.kind, StatusKind::Idle);
+        assert_eq!(codex_ready.display.activity_label, None);
+
+        let codex_waiting = pane_by_id(panes, "%194");
+        assert_eq!(codex_waiting.provider, Some(Provider::Codex));
+        assert_eq!(codex_waiting.status.kind, StatusKind::Idle);
+        assert_eq!(codex_waiting.display.label, "agentscan | Waiting");
+        assert_eq!(
+            codex_waiting.display.activity_label.as_deref(),
+            Some("agentscan")
+        );
+    }
+
+    fn assert_fixture_claude_cases(panes: &[PaneRecord]) {
+        let claude_idle = pane_by_id(panes, "%41");
+        assert_eq!(claude_idle.provider, Some(Provider::Claude));
+        assert_eq!(claude_idle.status.kind, StatusKind::Idle);
+        assert_eq!(claude_idle.display.label, "Review and summarize todo list");
+        assert_eq!(
+            claude_idle.display.activity_label.as_deref(),
+            Some("Review and summarize todo list")
+        );
+
+        let claude_busy = pane_by_id(panes, "%223");
+        assert_eq!(claude_busy.status.kind, StatusKind::Busy);
+
+        let claude_title_busy = pane_by_id(panes, "%224");
+        assert_eq!(claude_title_busy.provider, Some(Provider::Claude));
+        assert_eq!(claude_title_busy.status.kind, StatusKind::Busy);
+        assert_eq!(claude_title_busy.display.label, "Working");
+        assert_eq!(claude_title_busy.display.activity_label, None);
+
+        let claude_title_idle = pane_by_id(panes, "%225");
+        assert_eq!(claude_title_idle.provider, Some(Provider::Claude));
+        assert_eq!(claude_title_idle.status.kind, StatusKind::Idle);
+        assert_eq!(claude_title_idle.display.label, "Ready");
+        assert_eq!(claude_title_idle.display.activity_label, None);
+    }
+
+    fn assert_fixture_opencode_case(panes: &[PaneRecord]) {
+        let opencode = pane_by_id(panes, "%301");
+        assert_eq!(opencode.provider, Some(Provider::Opencode));
+        assert_eq!(opencode.display.label, "Query planner");
+        assert_eq!(
+            opencode.display.activity_label.as_deref(),
+            Some("Query planner")
+        );
     }
 
     proptest! {
