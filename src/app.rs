@@ -633,6 +633,7 @@ fn command_tmux_set_metadata(args: &TmuxSetMetadataArgs) -> Result<()> {
     for (option_name, value) in updates {
         set_tmux_pane_option(&pane_id, option_name, &value)?;
     }
+    refresh_existing_cache_from_tmux()?;
 
     println!("updated pane metadata for {pane_id}");
     Ok(())
@@ -645,6 +646,7 @@ fn command_tmux_clear_metadata(args: &TmuxClearMetadataArgs) -> Result<()> {
     for option_name in fields {
         unset_tmux_pane_option(&pane_id, option_name)?;
     }
+    refresh_existing_cache_from_tmux()?;
 
     println!("cleared pane metadata for {pane_id}");
     Ok(())
@@ -908,6 +910,26 @@ fn write_snapshot_to_cache(snapshot: &SnapshotEnvelope) -> Result<()> {
     })?;
 
     Ok(())
+}
+
+fn refresh_existing_cache_from_tmux() -> Result<()> {
+    let path = cache_path()?;
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let existing = read_snapshot_from_cache()
+        .with_context(|| format!("failed to refresh existing cache at {}", path.display()))?;
+    let mut snapshot = snapshot_from_tmux()?;
+    match existing.source.kind {
+        SourceKind::Daemon => {
+            set_snapshot_cache_origin(&mut snapshot, "daemon_snapshot");
+            snapshot.source.kind = SourceKind::Daemon;
+        }
+        SourceKind::Snapshot => {}
+    }
+
+    write_snapshot_to_cache(&snapshot)
 }
 
 fn filter_snapshot(snapshot: &mut SnapshotEnvelope, include_all: bool) {
@@ -1624,7 +1646,7 @@ fn daemon_run() -> Result<()> {
         .stdin
         .take()
         .context("tmux control-mode client did not provide stdin")?;
-    writeln!(stdin, "refresh-client -B {DAEMON_SUBSCRIPTION_FORMAT}")
+    writeln!(stdin, "refresh-client -B '{DAEMON_SUBSCRIPTION_FORMAT}'")
         .context("failed to subscribe to pane and metadata updates")?;
     stdin
         .flush()
@@ -1639,6 +1661,9 @@ fn daemon_run() -> Result<()> {
     for line in reader.lines() {
         let line = line.context("failed to read tmux control-mode output")?;
         if let Some(pane_id) = subscription_changed_pane_id(&line) {
+            refresh_snapshot_pane(&mut snapshot, pane_id)?;
+            write_snapshot_to_cache(&snapshot)?;
+        } else if let Some(pane_id) = output_title_change_pane_id(&line) {
             refresh_snapshot_pane(&mut snapshot, pane_id)?;
             write_snapshot_to_cache(&snapshot)?;
         } else if should_resnapshot_from_notification(&line) {
@@ -1883,6 +1908,28 @@ fn subscription_changed_pane_id(line: &str) -> Option<&str> {
     pane_id.starts_with('%').then_some(pane_id)
 }
 
+fn output_title_change_pane_id(line: &str) -> Option<&str> {
+    let mut fields = line.splitn(3, ' ');
+    if fields.next()? != "%output" {
+        return None;
+    }
+
+    let pane_id = fields.next()?;
+    let payload = fields.next()?;
+    if !pane_id.starts_with('%') || !contains_title_escape(payload) {
+        return None;
+    }
+
+    Some(pane_id)
+}
+
+fn contains_title_escape(payload: &str) -> bool {
+    payload.contains("\u{1b}]0;")
+        || payload.contains("\u{1b}]2;")
+        || payload.contains("\\033]0;")
+        || payload.contains("\\033]2;")
+}
+
 fn refresh_snapshot_pane(snapshot: &mut SnapshotEnvelope, pane_id: &str) -> Result<()> {
     let pane = tmux_list_pane(pane_id)?.map(|row| {
         let mut pane = pane_from_row(row);
@@ -2101,11 +2148,12 @@ mod tests {
         Cli, DAEMON_SUBSCRIPTION_FORMAT, IDLE_GLYPHS, PaneRecord, Provider, SnapshotEnvelope,
         SourceKind, StatusKind, TmuxMetadataField, classify_provider, daemon_cache_status,
         daemon_cache_status_name, display_metadata, infer_status, infer_title_status,
-        looks_like_codex_title, normalize_title_for_display, notification_name, pane_from_row,
-        parse_pane_rows, parse_tmux_client_rows, popup_entries, select_best_client_tty,
-        should_resnapshot_from_notification, sort_snapshot_panes, status_kind_name,
-        strip_known_status_glyph, subscription_changed_pane_id, summarize_snapshot,
-        tmux_metadata_fields_to_clear, tmux_metadata_updates, tsv_escape, validate_snapshot,
+        looks_like_codex_title, normalize_title_for_display, notification_name,
+        output_title_change_pane_id, pane_from_row, parse_pane_rows, parse_tmux_client_rows,
+        popup_entries, select_best_client_tty, should_resnapshot_from_notification,
+        sort_snapshot_panes, status_kind_name, strip_known_status_glyph,
+        subscription_changed_pane_id, summarize_snapshot, tmux_metadata_fields_to_clear,
+        tmux_metadata_updates, tsv_escape, validate_snapshot,
     };
 
     #[test]
@@ -2209,6 +2257,20 @@ mod tests {
             Some("%251")
         );
         assert_eq!(subscription_changed_pane_id("%window-add @1"), None);
+    }
+
+    #[test]
+    fn output_notifications_expose_title_change_pane_id() {
+        assert_eq!(
+            output_title_change_pane_id(
+                "%output %0 printf '\\033]2;Claude Code | Working\\033\\\\'\r\n"
+            ),
+            Some("%0")
+        );
+        assert_eq!(
+            output_title_change_pane_id("%output %0 plain shell output"),
+            None
+        );
     }
 
     #[test]

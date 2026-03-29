@@ -46,6 +46,11 @@ tmux title snapshots and cache snapshots, plus property tests for parser and
 normalization invariants, so parser and schema regressions can be checked against
 both stable examples and generated inputs.
 
+Daemon reliability is also covered by isolated integration tests that start a
+temporary tmux server, run `agentscan daemon run`, and assert cache behavior for
+title changes, pane add/remove events, wrapper-metadata helper flows, and tmux
+server disappearance.
+
 Current performance tooling:
 
 - `cargo bench --bench core_paths -- --noplot`
@@ -76,6 +81,7 @@ It can:
 - normalize noisy provider prefixes out of display labels for title-driven panes
 - populate `display.activity_label` for title-driven panes when titles include meaningful activity text
 - publish, clear, and consume explicit wrapper metadata via pane-local `@agent.*` tmux options
+- refresh the existing cache immediately after repo-local metadata helper writes so wrapper-driven metadata changes stay visible to cache consumers
 - forward `-f` / `--refresh` through the bundled popup wrapper for on-demand cache refresh
 - emit canonical snapshot JSON
 - print the cache path

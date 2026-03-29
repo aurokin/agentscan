@@ -63,6 +63,7 @@ Completed baseline work:
 - fixture-backed title coverage now includes current Codex waiting-state titles and Claude textual `Claude Code | ...` states
 - property tests now cover parser round-trips and normalization invariants
 - benchmark tooling now measures snapshot parsing, row-to-pane conversion, cache deserialization, and popup entry generation
+- isolated daemon integration tests now cover title updates, pane add/remove topology changes, wrapper-metadata helper flows, and fail-fast tmux server disappearance
 - canonical pane model and snapshot envelope are implemented
 - `agentscan scan`, `agentscan list`, and `agentscan inspect` are implemented
 - `agentscan cache path`, `cache show`, and `cache validate` are implemented with XDG default plus override support
@@ -86,6 +87,7 @@ Completed baseline work:
 - `agentscan focus` now falls back to the most recently active attached tmux client when no explicit tty is provided
 - scanner and daemon snapshot ingestion now consume pane-local `@agent.*` wrapper metadata when present
 - `agentscan tmux set-metadata` and `tmux clear-metadata` provide repo-local helpers for managing pane-local `@agent.*` metadata
+- repo-local metadata helper writes now refresh the existing cache so wrapper-driven metadata remains visible to cache consumers even outside the daemon path
 - daemon control-mode subscriptions now watch pane-local `@agent.*` metadata fields in addition to pane titles
 
 Still pending in Phase 1:
