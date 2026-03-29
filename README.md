@@ -61,15 +61,17 @@ cache deserialization, and popup entry generation against committed fixtures.
 
 ## Current scope
 
-The first pass implements a snapshot scanner backed by:
+The current implementation centers on:
 
-- `tmux list-panes -a -F ...`
+- direct tmux snapshots from `tmux list-panes -a -F ...`
+- a control-mode daemon that maintains a local JSON cache
+- repo-local tmux helpers that stay thin and call the CLI
 
 It can:
 
 - run an explicit daemon baseline with tmux control mode
 - fail fast when the daemon loses tmux, leaving restart policy to an external supervisor
-- refresh individual panes on daemon title and metadata updates instead of full tmux rescans
+- refresh individual panes on daemon title updates and preserve helper-published metadata across unrelated daemon writes
 - report daemon-backed cache health
 - persist and read a local JSON cache
 - show and validate the local JSON cache
@@ -88,6 +90,16 @@ It can:
 - forward `-f` / `--refresh` through the bundled popup wrapper for on-demand cache refresh
 - emit canonical snapshot JSON
 - print the cache path
+
+Key operational commands today:
+
+- `agentscan daemon run`
+- `agentscan daemon status`
+- `agentscan cache show`
+- `agentscan cache validate`
+- `agentscan tmux popup`
+- `agentscan tmux set-metadata`
+- `agentscan tmux clear-metadata`
 
 It does not yet:
 
@@ -118,11 +130,10 @@ The useful design inputs are mostly at the data-model level:
 
 ## Near-term plan
 
-1. Add a long-lived control-mode indexer as the core runtime.
-2. Persist a local JSON cache for popup consumers.
+1. Broaden title-driven status coverage for the current provider set without inventing misleading labels.
+2. Keep hardening daemon/cache consistency and wrapper metadata handling.
 3. Keep tmux popup consumption working from this repo while the product matures.
-4. Let wrappers publish explicit pane metadata into tmux user options.
-5. Fall back to procfs only for ambiguous panes.
+4. Add targeted fallback inspection only for concrete ambiguous cases that tmux metadata cannot resolve.
 
 ## Likely CLI Shape
 

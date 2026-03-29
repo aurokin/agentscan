@@ -485,26 +485,22 @@ Current direction:
 
 ## Migration Plan
 
-### Phase 1
-- Snapshot scanner from `tmux list-panes`
-- Provider inference from tmux metadata and titles
-- Text and JSON output
+Delivered baseline:
 
-### Phase 2
-- Add popup TSV output
-- Add versioned JSON cache snapshot
-- Add pane metadata model for explicit tmux user options
-- Reduce title-based heuristics where wrappers can publish metadata
+- snapshot scanner from `tmux list-panes`
+- provider inference from tmux metadata and titles
+- text and JSON output
+- popup-oriented output and repo-local popup wrapper
+- versioned JSON cache snapshot
+- pane metadata model for explicit tmux user options
+- `daemon` with live cache maintenance from tmux control mode
 
-### Phase 3
-- Add `daemon`
-- Maintain live cache from tmux control mode
-- Update popup consumer to read cached state
+Remaining migration work:
 
-### Phase 4
-- Add targeted `/proc` fallback for ambiguous panes
-- Add optional incremental output parsing for busy or idle detection
-- Remove the old shell scanner from the steady-state path
+- broaden title-driven coverage for current providers without inventing labels from weak signals
+- add targeted `/proc` fallback for ambiguous panes that tmux metadata cannot resolve
+- add optional incremental output parsing only if title and metadata signals remain insufficient
+- remove the old shell scanner from the steady-state path once the new stack is mature
 
 ## Shell Boundary
 

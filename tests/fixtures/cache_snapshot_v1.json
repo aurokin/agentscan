@@ -3,7 +3,8 @@
   "generated_at": "2026-03-28T00:00:00Z",
   "source": {
     "kind": "daemon",
-    "tmux_version": "3.6a"
+    "tmux_version": "3.6a",
+    "daemon_generated_at": "2026-03-28T00:00:00Z"
   },
   "panes": [
     {

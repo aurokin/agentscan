@@ -72,15 +72,15 @@ Completed baseline work:
 - title-first metadata classification is wired into snapshot ingestion
 - `agentscan daemon run` writes a daemon-marked cache from tmux control mode
 - the daemon currently fails fast when tmux disappears and leaves restart policy to an external supervisor
-- daemon title and pane-metadata updates now refresh only the affected pane, while topology changes still resnapshot tmux
+- daemon title updates now refresh only the affected pane, while topology changes still resnapshot tmux
 - `list` and `inspect` now read cache-backed state by default
-- cache-backed pane and cache-inspection commands now support `-f` / `--refresh` to take a fresh tmux snapshot and rewrite cache on demand
+- cache-backed pane and cache-inspection commands now support `-f` / `--refresh` to take a fresh tmux snapshot and rewrite cache on demand without losing the last known daemon refresh timestamp
 - cache reads now validate schema version before consumers use cached state
 - pane diagnostics now distinguish direct snapshots, daemon snapshots, and daemon-updated panes
-- snapshot ordering now stays stable after targeted daemon pane refreshes
+- full snapshots and targeted daemon pane refreshes now keep pane ordering stable
 - `agentscan tmux popup` provides dedicated structured popup output
 - popup JSON and inspect output now expose `session:window.pane` as a first-class location tag
-- a thin repo-local `scripts/agentscan-popup.sh` wrapper renders cached popup rows and calls `focus`
+- a thin repo-local `scripts/agentscan-popup.sh` wrapper renders cached popup rows, supports unlimited numeric selection, and calls `focus`
 - the bundled popup wrapper now forwards `-f` / `--refresh` to the CLI for on-demand cache refresh
 - title-driven status heuristics now cover the current observed Codex and Claude paths first, with Gemini and basic OpenCode support present but still secondary
 - display normalization now strips noisy provider prefixes from title-driven Claude and OpenCode labels and collapses wrapper-heavy Codex titles down to task labels
@@ -90,8 +90,9 @@ Completed baseline work:
 - isolated focus integration tests now validate explicit `--client-tty` targeting, attached-client fallback behavior, and multi-client arbitration toward the most recent attached client
 - scanner and daemon snapshot ingestion now consume pane-local `@agent.*` wrapper metadata when present
 - `agentscan tmux set-metadata` and `tmux clear-metadata` provide repo-local helpers for managing pane-local `@agent.*` metadata
-- repo-local metadata helper writes now refresh the existing cache so wrapper-driven metadata remains visible to cache consumers for both daemon-backed and forced-snapshot cache states
+- repo-local metadata helper writes now rebuild or refresh the existing cache so wrapper-driven metadata remains visible to cache consumers for both daemon-backed and forced-snapshot cache states, even if the prior cache was invalid
 - daemon control-mode subscriptions now watch pane-local `@agent.*` metadata fields in addition to pane titles
+- targeted daemon writes now reconcile helper-published metadata from the current cache so unrelated daemon updates do not erase wrapper state
 
 Still pending in Phase 1:
 

@@ -325,7 +325,7 @@ enum ClassificationMatchKind {
     PaneTitle,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct SnapshotEnvelope {
     schema_version: u32,
     generated_at: String,
@@ -333,13 +333,15 @@ pub(crate) struct SnapshotEnvelope {
     panes: Vec<PaneRecord>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct SnapshotSource {
     kind: SourceKind,
     tmux_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    daemon_generated_at: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct PaneRecord {
     pane_id: String,
     location: PaneLocation,
@@ -362,7 +364,7 @@ impl PaneRecord {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct PaneLocation {
     session_name: String,
     window_index: u32,
@@ -379,7 +381,7 @@ impl PaneLocation {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct TmuxPaneMetadata {
     pane_pid: u32,
     pane_tty: String,
@@ -388,26 +390,26 @@ struct TmuxPaneMetadata {
     pane_title_raw: String,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct DisplayMetadata {
     label: String,
     activity_label: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct PaneStatus {
     kind: StatusKind,
     source: StatusSource,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct PaneClassification {
     matched_by: Option<ClassificationMatchKind>,
     confidence: Option<ClassificationConfidence>,
     reasons: Vec<String>,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 struct AgentMetadata {
     provider: Option<String>,
     label: Option<String>,
@@ -416,7 +418,7 @@ struct AgentMetadata {
     session_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct PaneDiagnostics {
     cache_origin: String,
 }
@@ -558,13 +560,17 @@ fn command_daemon_status(args: &DaemonStatusArgs) -> Result<()> {
     let path = cache_path()?;
     let snapshot = read_snapshot_from_cache()?;
     let summary = summarize_snapshot(&snapshot)?;
-    let age_seconds = cache_age_seconds(summary.generated_at);
-    let status = daemon_cache_status(&snapshot, age_seconds, args.max_age_seconds);
+    let cache_age_seconds = cache_age_seconds(summary.generated_at);
+    let daemon_age_seconds = daemon_age_seconds(&snapshot)?;
+    let status = daemon_cache_status(daemon_age_seconds, args.max_age_seconds);
 
     println!("daemon_cache_status: {}", daemon_cache_status_name(status));
     println!("path: {}", path.display());
     println!("generated_at: {}", snapshot.generated_at);
-    println!("age_seconds: {age_seconds}");
+    println!("cache_age_seconds: {cache_age_seconds}");
+    if let Some(daemon_age_seconds) = daemon_age_seconds {
+        println!("daemon_age_seconds: {daemon_age_seconds}");
+    }
     println!("source: {:?}", snapshot.source.kind);
     println!("pane_count: {}", summary.pane_count);
 
@@ -855,15 +861,18 @@ fn snapshot_from_tmux() -> Result<SnapshotEnvelope> {
     let rows = tmux_list_panes()?;
     let panes = rows.into_iter().map(pane_from_row).collect();
 
-    Ok(SnapshotEnvelope {
+    let mut snapshot = SnapshotEnvelope {
         schema_version: CACHE_SCHEMA_VERSION,
         generated_at: now_rfc3339()?,
         source: SnapshotSource {
             kind: SourceKind::Snapshot,
             tmux_version: tmux_version(),
+            daemon_generated_at: None,
         },
         panes,
-    })
+    };
+    sort_snapshot_panes(&mut snapshot);
+    Ok(snapshot)
 }
 
 fn daemon_snapshot_from_tmux() -> Result<SnapshotEnvelope> {
@@ -874,7 +883,9 @@ fn daemon_snapshot_from_tmux() -> Result<SnapshotEnvelope> {
 }
 
 fn refresh_cache_from_tmux() -> Result<SnapshotEnvelope> {
-    let snapshot = snapshot_from_tmux()?;
+    let existing = read_existing_snapshot_if_valid();
+    let mut snapshot = snapshot_from_tmux()?;
+    preserve_last_daemon_refresh(&mut snapshot, existing.as_ref());
     write_snapshot_to_cache(&snapshot)?;
     Ok(snapshot)
 }
@@ -933,18 +944,31 @@ fn refresh_existing_cache_from_tmux() -> Result<()> {
         return Ok(());
     }
 
-    let existing = read_snapshot_from_cache()
-        .with_context(|| format!("failed to refresh existing cache at {}", path.display()))?;
+    let existing = read_existing_snapshot_if_valid();
     let mut snapshot = snapshot_from_tmux()?;
-    match existing.source.kind {
-        SourceKind::Daemon => {
-            set_snapshot_cache_origin(&mut snapshot, "daemon_snapshot");
-            snapshot.source.kind = SourceKind::Daemon;
-        }
-        SourceKind::Snapshot => {}
-    }
-
+    preserve_last_daemon_refresh(&mut snapshot, existing.as_ref());
     write_snapshot_to_cache(&snapshot)
+}
+
+fn read_existing_snapshot_if_valid() -> Option<SnapshotEnvelope> {
+    let path = cache_path().ok()?;
+    path.exists().then_some(())?;
+    read_snapshot_from_cache().ok()
+}
+
+fn preserve_last_daemon_refresh(
+    snapshot: &mut SnapshotEnvelope,
+    existing: Option<&SnapshotEnvelope>,
+) {
+    snapshot.source.daemon_generated_at = existing
+        .and_then(last_daemon_generated_at)
+        .map(str::to_string);
+}
+
+fn last_daemon_generated_at(snapshot: &SnapshotEnvelope) -> Option<&str> {
+    snapshot.source.daemon_generated_at.as_deref().or_else(|| {
+        (snapshot.source.kind == SourceKind::Daemon).then_some(snapshot.generated_at.as_str())
+    })
 }
 
 fn filter_snapshot(snapshot: &mut SnapshotEnvelope, include_all: bool) {
@@ -1647,13 +1671,12 @@ fn cache_age_seconds(generated_at: OffsetDateTime) -> u64 {
 }
 
 fn daemon_cache_status(
-    snapshot: &SnapshotEnvelope,
-    age_seconds: u64,
+    age_seconds: Option<u64>,
     max_age_seconds: Option<u64>,
 ) -> DaemonCacheStatus {
-    if snapshot.source.kind != SourceKind::Daemon {
+    let Some(age_seconds) = age_seconds else {
         return DaemonCacheStatus::Unavailable;
-    }
+    };
 
     if max_age_seconds.is_some_and(|max_age| age_seconds > max_age) {
         return DaemonCacheStatus::Stale;
@@ -1695,9 +1718,11 @@ fn daemon_run() -> Result<()> {
         let line = line.context("failed to read tmux control-mode output")?;
         if let Some(pane_id) = subscription_changed_pane_id(&line) {
             refresh_snapshot_pane(&mut snapshot, pane_id)?;
+            merge_cached_panes(&mut snapshot, Some(pane_id));
             write_snapshot_to_cache(&snapshot)?;
         } else if let Some(pane_id) = output_title_change_pane_id(&line) {
             refresh_snapshot_pane(&mut snapshot, pane_id)?;
+            merge_cached_panes(&mut snapshot, Some(pane_id));
             write_snapshot_to_cache(&snapshot)?;
         } else if should_resnapshot_from_notification(&line) {
             snapshot = daemon_snapshot_from_tmux()?;
@@ -1992,7 +2017,47 @@ fn refresh_snapshot_pane(snapshot: &mut SnapshotEnvelope, pane_id: &str) -> Resu
 fn mark_snapshot_as_daemon(snapshot: &mut SnapshotEnvelope) -> Result<()> {
     snapshot.generated_at = now_rfc3339()?;
     snapshot.source.kind = SourceKind::Daemon;
+    snapshot.source.daemon_generated_at = Some(snapshot.generated_at.clone());
     Ok(())
+}
+
+fn merge_cached_panes(snapshot: &mut SnapshotEnvelope, excluded_pane_id: Option<&str>) {
+    let Some(existing) = read_existing_snapshot_if_valid() else {
+        return;
+    };
+
+    for pane in &mut snapshot.panes {
+        if excluded_pane_id.is_some_and(|pane_id| pane.pane_id == pane_id) {
+            continue;
+        }
+
+        if let Some(existing_pane) = existing
+            .panes
+            .iter()
+            .find(|cached| cached.pane_id == pane.pane_id)
+            && has_more_recent_helper_state(existing_pane, pane)
+        {
+            *pane = existing_pane.clone();
+        }
+    }
+}
+
+fn has_more_recent_helper_state(existing: &PaneRecord, current: &PaneRecord) -> bool {
+    existing.agent_metadata.provider != current.agent_metadata.provider
+        || existing.agent_metadata.label != current.agent_metadata.label
+        || existing.agent_metadata.cwd != current.agent_metadata.cwd
+        || existing.agent_metadata.state != current.agent_metadata.state
+        || existing.agent_metadata.session_id != current.agent_metadata.session_id
+}
+
+fn daemon_age_seconds(snapshot: &SnapshotEnvelope) -> Result<Option<u64>> {
+    let Some(generated_at) = last_daemon_generated_at(snapshot) else {
+        return Ok(None);
+    };
+
+    let generated_at = OffsetDateTime::parse(generated_at, &Rfc3339)
+        .context("daemon_generated_at was not valid RFC3339")?;
+    Ok(Some(cache_age_seconds(generated_at)))
 }
 
 fn set_snapshot_cache_origin(snapshot: &mut SnapshotEnvelope, cache_origin: &str) {
@@ -2474,7 +2539,7 @@ mod tests {
             serde_json::from_str(CACHE_SNAPSHOT_FIXTURE).expect("cache fixture should parse");
 
         assert_eq!(
-            daemon_cache_status(&snapshot, 10, Some(60)),
+            daemon_cache_status(Some(10), Some(60)),
             super::DaemonCacheStatus::Healthy
         );
         assert_eq!(
@@ -2483,15 +2548,31 @@ mod tests {
         );
 
         snapshot.source.kind = SourceKind::Snapshot;
+        snapshot.source.daemon_generated_at = None;
         assert_eq!(
-            daemon_cache_status(&snapshot, 10, Some(60)),
+            daemon_cache_status(None, Some(60)),
             super::DaemonCacheStatus::Unavailable
         );
 
-        snapshot.source.kind = SourceKind::Daemon;
+        snapshot.source.daemon_generated_at = Some("2026-03-28T00:00:00Z".to_string());
         assert_eq!(
-            daemon_cache_status(&snapshot, 120, Some(60)),
+            daemon_cache_status(Some(120), Some(60)),
             super::DaemonCacheStatus::Stale
+        );
+    }
+
+    #[test]
+    fn daemon_cache_status_uses_last_daemon_refresh_even_after_snapshot_rewrite() {
+        let mut snapshot: SnapshotEnvelope =
+            serde_json::from_str(CACHE_SNAPSHOT_FIXTURE).expect("cache fixture should parse");
+
+        snapshot.source.kind = SourceKind::Snapshot;
+        snapshot.generated_at = "2026-03-29T00:00:00Z".to_string();
+        snapshot.source.daemon_generated_at = Some("2026-03-28T00:00:00Z".to_string());
+
+        assert_eq!(
+            daemon_cache_status(Some(10), Some(60)),
+            super::DaemonCacheStatus::Healthy
         );
     }
 
@@ -2598,6 +2679,10 @@ mod tests {
 
         assert_eq!(snapshot.schema_version, CACHE_SCHEMA_VERSION);
         assert_eq!(snapshot.source.kind, SourceKind::Daemon);
+        assert_eq!(
+            snapshot.source.daemon_generated_at.as_deref(),
+            Some("2026-03-28T00:00:00Z")
+        );
         assert_eq!(snapshot.panes.len(), 1);
         assert_eq!(snapshot.panes[0].pane_id, "%67");
         assert_eq!(snapshot.panes[0].status.kind, StatusKind::Idle);
@@ -2627,6 +2712,7 @@ mod tests {
             source: super::SnapshotSource {
                 kind: SourceKind::Snapshot,
                 tmux_version: None,
+                daemon_generated_at: None,
             },
             panes: vec![
                 pane_from_row(super::TmuxPaneRow {

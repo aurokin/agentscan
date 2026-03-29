@@ -143,6 +143,105 @@ fn metadata_helpers_refresh_existing_snapshot_cache_without_daemon() -> Result<(
 }
 
 #[test]
+fn forced_refresh_preserves_last_daemon_refresh_semantics() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let _pane_id = harness.start_session("refresh-daemon", "sleep 300")?;
+    let mut daemon = harness.start_daemon()?;
+
+    let initial_cache = harness.wait_for_cache(&mut daemon, |_| true)?;
+    let initial_daemon_generated_at = initial_cache["source"]["daemon_generated_at"]
+        .as_str()
+        .context("initial daemon cache was missing daemon_generated_at")?
+        .to_string();
+
+    daemon.shutdown()?;
+    sleep(Duration::from_secs(1));
+    harness.agentscan(["-f", "cache", "show"])?;
+    harness.agentscan(["daemon", "status"])?;
+
+    let refreshed_cache =
+        harness.wait_for_cache_file(|cache| cache["source"]["kind"] == "snapshot")?;
+    assert_eq!(
+        refreshed_cache["source"]["daemon_generated_at"].as_str(),
+        Some(initial_daemon_generated_at.as_str())
+    );
+    Ok(())
+}
+
+#[test]
+fn metadata_helpers_survive_unrelated_daemon_updates() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let metadata_pane_id = harness.start_session("metadata-survives", "sh")?;
+    let trigger_pane_id = harness.start_session("metadata-trigger", "sh")?;
+    harness.send_title_escape(&metadata_pane_id, "metadata-survives")?;
+    let mut daemon = harness.start_daemon()?;
+
+    harness.wait_for_pane(&mut daemon, &metadata_pane_id, |_| true)?;
+    harness.wait_for_pane(&mut daemon, &trigger_pane_id, |_| true)?;
+
+    harness.agentscan([
+        "tmux",
+        "set-metadata",
+        "--pane-id",
+        &metadata_pane_id,
+        "--provider",
+        "codex",
+        "--label",
+        "Persistent Metadata",
+        "--state",
+        "busy",
+    ])?;
+    harness.wait_for_pane(&mut daemon, &metadata_pane_id, |pane| {
+        pane["provider"] == "codex"
+            && pane["display"]["label"] == "Persistent Metadata"
+            && pane["status"]["kind"] == "busy"
+    })?;
+
+    harness.set_pane_title(&trigger_pane_id, "Claude Code | Working")?;
+    harness.wait_for_pane(&mut daemon, &trigger_pane_id, |pane| {
+        pane["provider"] == "claude" && pane["status"]["kind"] == "busy"
+    })?;
+    harness.wait_for_pane(&mut daemon, &metadata_pane_id, |pane| {
+        pane["provider"] == "codex"
+            && pane["display"]["label"] == "Persistent Metadata"
+            && pane["status"]["kind"] == "busy"
+    })?;
+
+    daemon.shutdown()?;
+    Ok(())
+}
+
+#[test]
+fn metadata_helpers_rebuild_cache_when_existing_cache_is_invalid() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let pane_id = harness.start_session("metadata-invalid-cache", "sh")?;
+    fs::write(&harness.cache_path, b"{invalid json").context("failed to seed invalid cache")?;
+
+    harness.agentscan([
+        "tmux",
+        "set-metadata",
+        "--pane-id",
+        &pane_id,
+        "--provider",
+        "claude",
+        "--label",
+        "Recovered Cache",
+        "--state",
+        "idle",
+    ])?;
+    harness.wait_for_cache_file(|cache| {
+        let Some(pane) = pane_from_cache(cache, &pane_id) else {
+            return false;
+        };
+        pane["provider"] == "claude"
+            && pane["display"]["label"] == "Recovered Cache"
+            && pane["status"]["kind"] == "idle"
+    })?;
+
+    Ok(())
+}
+
+#[test]
 fn focus_targets_explicit_client_tty() -> Result<()> {
     let harness = TestHarness::new()?;
     let _root_pane_id = harness.start_session("focus-explicit", "sleep 300")?;
@@ -453,6 +552,10 @@ impl TestHarness {
             &format!("printf '\\033]2;{title}\\033\\\\'"),
             "Enter",
         ])
+    }
+
+    fn set_pane_title(&self, pane_id: &str, title: &str) -> Result<()> {
+        self.tmux(["select-pane", "-t", pane_id, "-T", title])
     }
 
     fn agentscan<I, S>(&self, args: I) -> Result<()>
