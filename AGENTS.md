@@ -13,8 +13,10 @@
 | Test | `cargo test` |
 | Daemon integration test | `cargo test --test daemon_integration` |
 | Benchmark | `cargo bench --bench core_paths -- --noplot` |
-| Run scanner | `cargo run -- --format text` |
-| Run JSON output | `cargo run -- --format json` |
+| Run default list | `cargo run -- --format text` |
+| Run default JSON list | `cargo run -- --format json` |
+| Run direct snapshot | `cargo run -- scan --format text` |
+| Run direct snapshot JSON | `cargo run -- scan --format json` |
 
 ## Quality Baseline
 - Keep `cargo fmt --all --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_arguments`, and `cargo test` passing.

@@ -46,7 +46,7 @@ if command -v tmux >/dev/null 2>&1 && [[ -n "${TMUX:-}" ]]; then
   client_tty="$(tmux display-message -p '#{client_tty}' 2>/dev/null || true)"
 fi
 
-mapfile -t rows < <(agentscan_cmd "${popup_args[@]}" tmux popup --format tsv)
+mapfile -t rows < <(agentscan_cmd tmux popup "${popup_args[@]}" --format tsv)
 
 if ((${#rows[@]} == 0)); then
   echo "No panes available in cache."
@@ -55,7 +55,7 @@ fi
 
 row_count=0
 for row in "${rows[@]}"; do
-  IFS=$'\t' read -r pane_id provider status session_name window_index pane_index display_label <<< "$row"
+  IFS=$'\t' read -r pane_id provider status location_tag session_name window_index pane_index display_label <<< "$row"
   [[ -n "$pane_id" ]] || continue
 
   selection="$((row_count + 1))"
@@ -66,9 +66,7 @@ for row in "${rows[@]}"; do
   printf '%s %s %s:%s.%s - %s\n' \
     "$provider" \
     "$(status_label "$status")" \
-    "$session_name" \
-    "$window_index" \
-    "$pane_index" \
+    "${location_tag:-$session_name:$window_index.$pane_index}" \
     "$display_label"
   ((row_count+=1))
 done

@@ -667,15 +667,63 @@ fn display_metadata_extracts_activity_labels_from_titles() {
 }
 
 #[test]
-fn cli_refresh_flag_is_global() {
-    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "-f", "list"]);
-    assert!(cli.refresh);
+fn cli_refresh_flag_is_supported_only_on_refreshing_commands() {
+    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "-f"]);
+    assert!(cli.list_args.refresh.refresh);
 
     let cli = <Cli as clap::Parser>::parse_from(["agentscan", "list", "-f"]);
-    assert!(cli.refresh);
+    match cli.command {
+        Some(super::Commands::List(args)) => assert!(args.refresh.refresh),
+        other => panic!("expected list command, got {other:?}"),
+    }
 
-    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "-f"]);
-    assert!(cli.refresh);
+    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "scan", "-f"]);
+    match cli.command {
+        Some(super::Commands::Scan(args)) => assert!(args.refresh.refresh),
+        other => panic!("expected scan command, got {other:?}"),
+    }
+
+    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "inspect", "%1", "-f"]);
+    match cli.command {
+        Some(super::Commands::Inspect(args)) => assert!(args.refresh.refresh),
+        other => panic!("expected inspect command, got {other:?}"),
+    }
+
+    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "focus", "%1", "-f"]);
+    match cli.command {
+        Some(super::Commands::Focus(args)) => assert!(args.refresh.refresh),
+        other => panic!("expected focus command, got {other:?}"),
+    }
+
+    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "cache", "show", "-f"]);
+    match cli.command {
+        Some(super::Commands::Cache(args)) => match args.command {
+            super::CacheCommands::Show(show_args) => assert!(show_args.refresh.refresh),
+            other => panic!("expected cache show command, got {other:?}"),
+        },
+        other => panic!("expected cache command, got {other:?}"),
+    }
+
+    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "tmux", "popup", "-f"]);
+    match cli.command {
+        Some(super::Commands::Tmux(args)) => match args.command {
+            super::TmuxCommands::Popup(popup_args) => assert!(popup_args.refresh.refresh),
+            other => panic!("expected tmux popup command, got {other:?}"),
+        },
+        other => panic!("expected tmux command, got {other:?}"),
+    }
+
+    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "-f", "daemon", "status"]);
+    assert!(cli.list_args.refresh.refresh);
+    assert!(super::commands::reject_root_refresh(true, "daemon").is_err());
+
+    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "-f", "cache", "path"]);
+    assert!(cli.list_args.refresh.refresh);
+    assert!(super::commands::reject_root_refresh(true, "cache path").is_err());
+
+    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "-f", "tmux", "set-metadata"]);
+    assert!(cli.list_args.refresh.refresh);
+    assert!(super::commands::reject_root_refresh(true, "tmux set-metadata").is_err());
 }
 
 fn cache_path_for_test(

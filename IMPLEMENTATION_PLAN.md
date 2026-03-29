@@ -75,7 +75,7 @@ Completed baseline work:
 - the daemon currently fails fast when tmux disappears and leaves restart policy to an external supervisor
 - daemon title updates now refresh only the affected pane, while topology changes still resnapshot tmux
 - `list` and `inspect` now read cache-backed state by default
-- cache-backed pane and cache-inspection commands now support `-f` / `--refresh` to take a fresh tmux snapshot and rewrite cache on demand without losing the last known daemon refresh timestamp
+- `scan`, cache-backed pane commands, cache inspection, and popup commands now support `-f` / `--refresh` to take a fresh tmux snapshot and rewrite cache on demand without losing the last known daemon refresh timestamp
 - cache reads now validate schema version before consumers use cached state
 - pane diagnostics now distinguish direct snapshots, daemon snapshots, and daemon-updated panes
 - full snapshots and targeted daemon pane refreshes now keep pane ordering stable
@@ -238,13 +238,13 @@ Phase 2 reduces heuristic dependence by letting wrappers publish pane metadata.
 - tmux user option contract is defined
 - wrappers can publish authoritative provider and label metadata
 - published metadata participates in classification and display generation
+- wrapper adoption and precedence hardening continue from the implemented baseline
 
 ### Workstreams
 
-- define pane option names and value format
-- implement reader support in scanner and daemon paths
-- implement repo-local helper for wrappers to publish metadata
-- document precedence rules between published and inferred values
+- expand wrapper usage on top of the existing metadata contract
+- harden precedence and lifecycle behavior for published metadata
+- document wrapper integration patterns and metadata clearing expectations
 
 ## Phase 3
 

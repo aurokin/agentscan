@@ -76,7 +76,7 @@ It can:
 - report daemon-backed cache health
 - persist and read a local JSON cache
 - show and validate the local JSON cache
-- force a fresh tmux snapshot and cache rewrite for cache-backed pane and cache-inspection commands with `-f` / `--refresh`
+- force a fresh tmux snapshot and cache rewrite for `list`, `scan`, `inspect`, `focus`, `cache show`, `cache validate`, and `tmux popup` with `-f` / `--refresh`
 - list panes through the default `list` flow
 - inspect a pane by `pane_id`
 - focus a pane by `pane_id`, with attached-client fallback when no explicit tty is provided and tested multi-client selection of the most recent attached client
@@ -94,8 +94,13 @@ It can:
 
 Key operational commands today:
 
+- `agentscan scan`
+- `agentscan list`
+- `agentscan inspect <pane_id>`
+- `agentscan focus <pane_id>`
 - `agentscan daemon run`
 - `agentscan daemon status`
+- `agentscan cache path`
 - `agentscan cache show`
 - `agentscan cache validate`
 - `agentscan tmux popup`
@@ -136,9 +141,9 @@ The useful design inputs are mostly at the data-model level:
 3. Keep tmux popup consumption working from this repo while the product matures.
 4. Add targeted fallback inspection only for concrete ambiguous cases that tmux metadata cannot resolve.
 
-## Likely CLI Shape
+## Current CLI Families
 
-The mature CLI will probably center on:
+The current CLI centers on:
 
 - `agentscan daemon` as the primary runtime
 - `agentscan scan` for direct tmux snapshots

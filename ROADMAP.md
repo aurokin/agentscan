@@ -395,13 +395,17 @@ That would be justified by needs such as:
 
 ## Planned Commands
 
-### `agentscan snapshot`
+### `agentscan scan`
 - One-shot scan from tmux metadata
 - Useful for debugging and tests
 
 ### `agentscan list`
 - Read live or cached state
-- Emit `text`, `json`, or popup TSV
+- Emit `text` or `json`
+
+### `agentscan tmux popup`
+- Emit dedicated popup-oriented structured output
+- Keep popup consumers decoupled from human list formatting
 
 ### `agentscan daemon`
 - Maintain long-lived pane index

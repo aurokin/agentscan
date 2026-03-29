@@ -169,6 +169,32 @@ fn forced_refresh_preserves_last_daemon_refresh_semantics() -> Result<()> {
 }
 
 #[test]
+fn scan_refresh_preserves_last_daemon_refresh_semantics() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let _pane_id = harness.start_session("scan-refresh-daemon", "sleep 300")?;
+    let mut daemon = harness.start_daemon()?;
+
+    let initial_cache = harness.wait_for_cache(&mut daemon, |_| true)?;
+    let initial_daemon_generated_at = initial_cache["source"]["daemon_generated_at"]
+        .as_str()
+        .context("initial daemon cache was missing daemon_generated_at")?
+        .to_string();
+
+    daemon.shutdown()?;
+    sleep(Duration::from_secs(1));
+    harness.agentscan(["scan", "-f", "--format", "text"])?;
+    harness.agentscan(["daemon", "status"])?;
+
+    let refreshed_cache =
+        harness.wait_for_cache_file(|cache| cache["source"]["kind"] == "snapshot")?;
+    assert_eq!(
+        refreshed_cache["source"]["daemon_generated_at"].as_str(),
+        Some(initial_daemon_generated_at.as_str())
+    );
+    Ok(())
+}
+
+#[test]
 fn metadata_helpers_survive_unrelated_daemon_updates() -> Result<()> {
     let harness = TestHarness::new()?;
     let metadata_pane_id = harness.start_session("metadata-survives", "sh")?;

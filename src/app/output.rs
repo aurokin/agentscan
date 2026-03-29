@@ -123,7 +123,7 @@ pub(super) fn print_inspect_text(pane: &PaneRecord) {
 pub(super) fn print_popup_tsv(entries: &[PopupEntry]) {
     for entry in entries {
         println!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             tsv_escape(&entry.pane_id),
             tsv_escape(
                 &entry
@@ -132,6 +132,7 @@ pub(super) fn print_popup_tsv(entries: &[PopupEntry]) {
                     .unwrap_or_default()
             ),
             tsv_escape(status_kind_name(entry.status)),
+            tsv_escape(&entry.location_tag),
             tsv_escape(&entry.session_name),
             entry.window_index,
             entry.pane_index,

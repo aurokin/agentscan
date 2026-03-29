@@ -72,7 +72,7 @@ pub(super) fn write_snapshot_to_cache(snapshot: &SnapshotEnvelope) -> Result<()>
     fs::create_dir_all(parent)
         .with_context(|| format!("failed to create cache directory {}", parent.display()))?;
 
-    let temp_path = path.with_extension("tmp");
+    let temp_path = unique_cache_temp_path(&path);
     let contents =
         serde_json::to_vec_pretty(snapshot).context("failed to serialize cache snapshot")?;
     fs::write(&temp_path, contents)
@@ -86,6 +86,20 @@ pub(super) fn write_snapshot_to_cache(snapshot: &SnapshotEnvelope) -> Result<()>
     })?;
 
     Ok(())
+}
+
+fn unique_cache_temp_path(path: &Path) -> PathBuf {
+    let sequence = CACHE_WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let mut extension = match path.extension().and_then(|value| value.to_str()) {
+        Some(existing) if !existing.is_empty() => {
+            format!("{existing}.tmp.{}.{}", std::process::id(), sequence)
+        }
+        _ => format!("tmp.{}.{}", std::process::id(), sequence),
+    };
+    if extension.is_empty() {
+        extension = format!("tmp.{}.{}", std::process::id(), sequence);
+    }
+    path.with_extension(extension)
 }
 
 pub(super) fn refresh_existing_cache_from_tmux() -> Result<()> {

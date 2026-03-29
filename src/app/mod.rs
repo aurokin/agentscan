@@ -4,6 +4,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -33,6 +34,7 @@ const PANE_DELIM: char = '\u{001f}';
 const CACHE_ENV_VAR: &str = "AGENTSCAN_CACHE_PATH";
 const CACHE_RELATIVE_PATH: &str = "agentscan/cache-v1.json";
 const CACHE_SCHEMA_VERSION: u32 = 1;
+static CACHE_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const CLAUDE_SPINNER_GLYPHS: &[char] = &[
     '⠁', '⠂', '⠄', '⡀', '⢀', '⠠', '⠐', '⠈', '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏', '⣾',
     '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷',
@@ -83,10 +85,6 @@ const DAEMON_SUBSCRIPTION_FORMAT: &str = concat!(
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Scan tmux panes for agent sessions")]
 struct Cli {
-    /// Force a fresh tmux snapshot and rewrite the cache before running the command.
-    #[arg(short = 'f', long = "refresh", global = true)]
-    refresh: bool,
-
     #[command(subcommand)]
     command: Option<Commands>,
 
@@ -114,6 +112,9 @@ enum Commands {
 
 #[derive(Args, Clone, Debug)]
 struct ListArgs {
+    #[command(flatten)]
+    refresh: RefreshArgs,
+
     /// Include all tmux panes, not only likely agent panes.
     #[arg(long)]
     all: bool,
@@ -128,6 +129,9 @@ struct InspectArgs {
     /// The tmux pane id, for example `%42`.
     pane_id: String,
 
+    #[command(flatten)]
+    refresh: RefreshArgs,
+
     /// Output format.
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     format: OutputFormat,
@@ -137,6 +141,9 @@ struct InspectArgs {
 struct FocusArgs {
     /// The tmux pane id, for example `%42`.
     pane_id: String,
+
+    #[command(flatten)]
+    refresh: RefreshArgs,
 
     /// The tmux client tty to target when switching panes.
     #[arg(long)]
@@ -173,6 +180,9 @@ enum CacheCommands {
 
 #[derive(Args, Debug)]
 struct CacheShowArgs {
+    #[command(flatten)]
+    refresh: RefreshArgs,
+
     /// Output format.
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     format: OutputFormat,
@@ -180,6 +190,9 @@ struct CacheShowArgs {
 
 #[derive(Args, Debug)]
 struct CacheValidateArgs {
+    #[command(flatten)]
+    refresh: RefreshArgs,
+
     /// Fail if the cache is older than this many seconds.
     #[arg(long)]
     max_age_seconds: Option<u64>,
@@ -212,6 +225,9 @@ enum TmuxCommands {
 
 #[derive(Args, Debug)]
 struct TmuxPopupArgs {
+    #[command(flatten)]
+    refresh: RefreshArgs,
+
     /// Include all tmux panes, not only likely agent panes.
     #[arg(long)]
     all: bool,
@@ -257,6 +273,13 @@ struct TmuxClearMetadataArgs {
     /// Clear only specific metadata fields. Defaults to all fields.
     #[arg(long, value_enum)]
     field: Vec<TmuxMetadataField>,
+}
+
+#[derive(Args, Clone, Copy, Debug, Default)]
+struct RefreshArgs {
+    /// Force a fresh tmux snapshot and rewrite the cache before running the command.
+    #[arg(short = 'f', long = "refresh")]
+    refresh: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
