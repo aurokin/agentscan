@@ -79,7 +79,7 @@ It can:
 - focus a pane by `pane_id`, with attached-client fallback when no explicit tty is provided
 - emit dedicated popup-oriented tmux output
 - infer likely agent panes from tmux metadata
-- normalize noisy provider prefixes out of display labels for title-driven panes
+- normalize noisy provider prefixes and wrapper/script suffixes out of display labels for title-driven panes
 - populate `display.activity_label` for title-driven panes when titles include meaningful activity text
 - publish, clear, and consume explicit wrapper metadata via pane-local `@agent.*` tmux options
 - refresh the existing cache immediately after repo-local metadata helper writes so wrapper-driven metadata changes stay visible to cache consumers

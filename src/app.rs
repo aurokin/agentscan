@@ -1390,8 +1390,9 @@ fn normalize_title_for_display(title: &str) -> String {
     if let Some(stripped) = strip_opencode_title_prefix(stripped) {
         return stripped.to_string();
     }
-    let codex_normalized = normalize_codex_invocation_in_title(stripped);
-    strip_codex_args_from_title(&codex_normalized)
+    let codex_normalized = normalize_codex_wrapper_title(stripped);
+    let codex_normalized = strip_codex_args_from_title(&codex_normalized);
+    strip_codex_provider_suffix(&codex_normalized)
 }
 
 fn strip_claude_title_prefix(title: &str) -> Option<&str> {
@@ -1466,11 +1467,14 @@ fn has_idle_glyph(title: &str) -> bool {
         .is_some_and(|glyph| IDLE_GLYPHS.contains(&glyph))
 }
 
-fn normalize_codex_invocation_in_title(title: &str) -> String {
-    if (title.contains("lgpt.sh") || title.ends_with(": gpt") || title.ends_with(": codex"))
+fn normalize_codex_wrapper_title(title: &str) -> String {
+    if title.contains("lgpt.sh")
         && let Some((prefix, _)) = title.rsplit_once(':')
     {
-        return format!("{}: codex", prefix.trim_end());
+        let prefix = prefix.trim_end();
+        if !prefix.is_empty() {
+            return prefix.to_string();
+        }
     }
 
     title.to_string()
@@ -1479,6 +1483,19 @@ fn normalize_codex_invocation_in_title(title: &str) -> String {
 fn strip_codex_args_from_title(title: &str) -> String {
     if let Some((prefix, _suffix)) = title.split_once(" codex ") {
         return format!("{prefix} codex");
+    }
+
+    title.to_string()
+}
+
+fn strip_codex_provider_suffix(title: &str) -> String {
+    if let Some((prefix, suffix)) = title.rsplit_once(':')
+        && matches!(suffix.trim(), "gpt" | "codex")
+    {
+        let prefix = prefix.trim_end();
+        if !prefix.is_empty() {
+            return prefix.to_string();
+        }
     }
 
     title.to_string()
@@ -2504,7 +2521,7 @@ mod tests {
 
         let wrapped_codex = pane_by_id(&panes, "%89");
         assert_eq!(wrapped_codex.provider, Some(Provider::Codex));
-        assert_eq!(wrapped_codex.display.label, "(bront) parallel-n64: codex");
+        assert_eq!(wrapped_codex.display.label, "(bront) parallel-n64");
         assert_eq!(wrapped_codex.status.kind, StatusKind::Unknown);
     }
 
@@ -2718,6 +2735,16 @@ mod tests {
         assert_eq!(
             normalize_title_for_display("OC | Query planner"),
             "Query planner"
+        );
+        assert_eq!(
+            normalize_title_for_display(
+                "(bront) parallel-n64: /home/auro/.zshrc.d/scripts/lgpt.sh"
+            ),
+            "(bront) parallel-n64"
+        );
+        assert_eq!(
+            normalize_title_for_display("(repo) task: codex --model gpt-5"),
+            "(repo) task"
         );
     }
 
