@@ -1889,6 +1889,7 @@ fn should_resnapshot_from_notification(line: &str) -> bool {
                 | "%layout-change"
                 | "%window-add"
                 | "%window-close"
+                | "%unlinked-window-close"
                 | "%window-pane-changed"
                 | "%window-renamed"
         )
@@ -2242,6 +2243,9 @@ mod tests {
     #[test]
     fn daemon_notifications_trigger_refresh() {
         assert!(should_resnapshot_from_notification("%window-add @1"));
+        assert!(should_resnapshot_from_notification(
+            "%unlinked-window-close @1"
+        ));
         assert!(!should_resnapshot_from_notification(
             "%subscription-changed agentscan $174 @251 1 %251 : %251:Claude Code | Working:claude::::"
         ));

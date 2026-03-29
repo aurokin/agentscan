@@ -161,6 +161,26 @@ fn daemon_updates_cache_when_sessions_are_added_and_removed() -> Result<()> {
 }
 
 #[test]
+fn daemon_updates_cache_when_windows_are_added_and_removed() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let root_pane_id = harness.start_session("window-root", "sleep 300")?;
+    let mut daemon = harness.start_daemon()?;
+
+    harness.wait_for_pane(&mut daemon, &root_pane_id, |_| true)?;
+
+    let added_pane_id = harness.new_window("window-root", "sleep 300")?;
+    harness.wait_for_pane(&mut daemon, &added_pane_id, |_| true)?;
+
+    harness.tmux(["kill-window", "-t", "window-root:1"])?;
+    harness.wait_for_cache(&mut daemon, |cache| {
+        pane_from_cache(cache, &added_pane_id).is_none()
+    })?;
+
+    daemon.shutdown()?;
+    Ok(())
+}
+
+#[test]
 fn daemon_exits_when_tmux_server_disappears() -> Result<()> {
     let harness = TestHarness::new()?;
     let _pane_id = harness.start_session("server-exit", "sleep 300")?;
@@ -228,6 +248,20 @@ impl TestHarness {
             "#{pane_id}",
             "-t",
             target,
+            command,
+        ])?;
+        Ok(output.trim().to_string())
+    }
+
+    fn new_window(&self, session_name: &str, command: &str) -> Result<String> {
+        let output = self.tmux_output([
+            "new-window",
+            "-d",
+            "-P",
+            "-F",
+            "#{pane_id}",
+            "-t",
+            session_name,
             command,
         ])?;
         Ok(output.trim().to_string())

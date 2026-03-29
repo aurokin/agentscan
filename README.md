@@ -48,8 +48,9 @@ both stable examples and generated inputs.
 
 Daemon reliability is also covered by isolated integration tests that start a
 temporary tmux server, run `agentscan daemon run`, and assert cache behavior for
-title changes, pane add/remove events, session add/remove events, attached-session
-removal, wrapper-metadata helper flows, and tmux server disappearance.
+title changes, pane/window add-remove events, session add/remove events,
+attached-session removal, wrapper-metadata helper flows, and tmux server
+disappearance.
 
 Current performance tooling:
 
