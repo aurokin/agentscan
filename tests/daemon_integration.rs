@@ -143,6 +143,32 @@ fn metadata_helpers_refresh_existing_snapshot_cache_without_daemon() -> Result<(
 }
 
 #[test]
+fn focus_targets_explicit_client_tty() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let _root_pane_id = harness.start_session("focus-explicit", "sleep 300")?;
+    let split_pane_id = harness.split_window("focus-explicit:0.0", "sleep 300")?;
+    let mut client = harness.attach_client("focus-explicit")?;
+
+    harness.agentscan(["-f", "focus", "--client-tty", &client.tty, &split_pane_id])?;
+    harness.wait_for_client_pane(&mut client, &split_pane_id)?;
+
+    Ok(())
+}
+
+#[test]
+fn focus_uses_attached_client_fallback_when_no_tty_is_given() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let _root_pane_id = harness.start_session("focus-fallback", "sleep 300")?;
+    let split_pane_id = harness.split_window("focus-fallback:0.0", "sleep 300")?;
+    let mut client = harness.attach_client("focus-fallback")?;
+
+    harness.agentscan(["-f", "focus", &split_pane_id])?;
+    harness.wait_for_client_pane(&mut client, &split_pane_id)?;
+
+    Ok(())
+}
+
+#[test]
 fn daemon_updates_cache_when_panes_are_added() -> Result<()> {
     let harness = TestHarness::new()?;
     let root_pane_id = harness.start_session("pane-add", "sh")?;
@@ -379,6 +405,26 @@ impl TestHarness {
         })
     }
 
+    fn attach_client(&self, session_name: &str) -> Result<AttachedClientHandle> {
+        let existing_ttys = self.client_ttys()?;
+        let child = Command::new("script")
+            .args([
+                "-q",
+                "-c",
+                &format!("tmux attach-session -t {session_name}"),
+                "/dev/null",
+            ])
+            .env_remove("TMUX")
+            .env("TMUX_TMPDIR", &self.tmux_tmpdir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .with_context(|| format!("failed to attach tmux client to {session_name}"))?;
+
+        let tty = self.wait_for_new_client_tty(&existing_ttys)?;
+        Ok(AttachedClientHandle { child, tty })
+    }
+
     fn send_title_escape(&self, pane_id: &str, title: &str) -> Result<()> {
         self.tmux([
             "send-keys",
@@ -448,6 +494,53 @@ impl TestHarness {
         }
 
         String::from_utf8(output.stdout).context("tmux output was not valid UTF-8")
+    }
+
+    fn client_ttys(&self) -> Result<Vec<String>> {
+        Ok(self
+            .client_rows()?
+            .into_iter()
+            .map(|row| row.client_tty)
+            .collect())
+    }
+
+    fn wait_for_new_client_tty(&self, existing_ttys: &[String]) -> Result<String> {
+        let deadline = Instant::now() + DAEMON_TIMEOUT;
+        loop {
+            for row in self.client_rows()? {
+                if !existing_ttys.iter().any(|tty| tty == &row.client_tty) {
+                    return Ok(row.client_tty);
+                }
+            }
+
+            if Instant::now() >= deadline {
+                bail!("timed out waiting for attached tmux client");
+            }
+
+            sleep(POLL_INTERVAL);
+        }
+    }
+
+    fn wait_for_client_pane(&self, client: &mut AttachedClientHandle, pane_id: &str) -> Result<()> {
+        let deadline = Instant::now() + DAEMON_TIMEOUT;
+        loop {
+            client.ensure_running()?;
+
+            for row in self.client_rows()? {
+                if row.client_tty == client.tty && row.pane_id == pane_id {
+                    return Ok(());
+                }
+            }
+
+            if Instant::now() >= deadline {
+                bail!(
+                    "timed out waiting for client {} to focus pane {pane_id}",
+                    client.tty
+                );
+            }
+
+            sleep(POLL_INTERVAL);
+        }
     }
 
     fn wait_for_cache<F>(&self, daemon: &mut DaemonHandle, predicate: F) -> Result<Value>
@@ -525,6 +618,27 @@ impl TestHarness {
         command.env("TMUX_TMPDIR", &self.tmux_tmpdir);
         command
     }
+
+    fn client_rows(&self) -> Result<Vec<TmuxClientRow>> {
+        let output = self.tmux_output(["list-clients", "-F", "#{client_tty}\x1f#{pane_id}"])?;
+        let mut rows = Vec::new();
+        for line in output.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let mut fields = line.split('\x1f');
+            let client_tty = fields.next().unwrap_or_default().trim();
+            let pane_id = fields.next().unwrap_or_default().trim();
+            if client_tty.is_empty() {
+                continue;
+            }
+            rows.push(TmuxClientRow {
+                client_tty: client_tty.to_string(),
+                pane_id: pane_id.to_string(),
+            });
+        }
+        Ok(rows)
+    }
 }
 
 struct DaemonHandle {
@@ -587,6 +701,45 @@ impl Drop for DaemonHandle {
     fn drop(&mut self) {
         let _ = self.shutdown();
     }
+}
+
+struct AttachedClientHandle {
+    child: Child,
+    tty: String,
+}
+
+impl AttachedClientHandle {
+    fn ensure_running(&mut self) -> Result<()> {
+        if let Some(status) = self
+            .child
+            .try_wait()
+            .context("failed to poll attached tmux client")?
+        {
+            bail!("attached tmux client exited unexpectedly with status {status}");
+        }
+        Ok(())
+    }
+
+    fn shutdown(&mut self) -> Result<()> {
+        if self.child.try_wait()?.is_some() {
+            return Ok(());
+        }
+
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        Ok(())
+    }
+}
+
+impl Drop for AttachedClientHandle {
+    fn drop(&mut self) {
+        let _ = self.shutdown();
+    }
+}
+
+struct TmuxClientRow {
+    client_tty: String,
+    pane_id: String,
 }
 
 fn pane_from_cache<'a>(cache: &'a Value, pane_id: &str) -> Option<&'a Value> {

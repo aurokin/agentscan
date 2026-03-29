@@ -89,7 +89,7 @@ It can:
 
 It does not yet:
 
-- validate `focus` beyond the current single-client tmux workflow
+- validate focus arbitration across multiple simultaneously attached tmux clients
 - broaden title-driven status logic beyond the current Codex and Claude focus, with Gemini and OpenCode still treated as secondary coverage
 
 ## Reference Behavior
