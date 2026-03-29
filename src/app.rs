@@ -356,6 +356,10 @@ impl PaneRecord {
     fn display_label(&self) -> &str {
         &self.display.label
     }
+
+    fn location_tag(&self) -> String {
+        self.location.tag()
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -364,6 +368,15 @@ struct PaneLocation {
     window_index: u32,
     pane_index: u32,
     window_name: String,
+}
+
+impl PaneLocation {
+    fn tag(&self) -> String {
+        format!(
+            "{}:{}.{}",
+            self.session_name, self.window_index, self.pane_index
+        )
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -429,6 +442,7 @@ pub(crate) struct PopupEntry {
     pane_id: String,
     provider: Option<Provider>,
     status: StatusKind,
+    location_tag: String,
     session_name: String,
     window_index: u32,
     pane_index: u32,
@@ -684,6 +698,7 @@ fn print_inspect_text(pane: &PaneRecord) {
         pane.location.pane_index,
         pane.location.window_name
     );
+    println!("location_tag: {}", pane.location_tag());
     println!(
         "provider: {}",
         pane.provider
@@ -962,6 +977,7 @@ pub(crate) fn popup_entries(panes: &[PaneRecord]) -> Vec<PopupEntry> {
             pane_id: pane.pane_id.clone(),
             provider: pane.provider,
             status: pane.status.kind,
+            location_tag: pane.location.tag(),
             session_name: pane.location.session_name.clone(),
             window_index: pane.location.window_index,
             pane_index: pane.location.pane_index,
@@ -2501,6 +2517,7 @@ mod tests {
 
         let entries = popup_entries(&[pane]);
         assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].location_tag, "notes:4.1");
         assert_eq!(entries[0].session_name, "notes");
     }
 

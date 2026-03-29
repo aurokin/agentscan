@@ -78,6 +78,7 @@ Completed baseline work:
 - pane diagnostics now distinguish direct snapshots, daemon snapshots, and daemon-updated panes
 - snapshot ordering now stays stable after targeted daemon pane refreshes
 - `agentscan tmux popup` provides dedicated structured popup output
+- popup JSON and inspect output now expose `session:window.pane` as a first-class location tag
 - a thin repo-local `scripts/agentscan-popup.sh` wrapper renders cached popup rows and calls `focus`
 - the bundled popup wrapper now forwards `-f` / `--refresh` to the CLI for on-demand cache refresh
 - title-driven status heuristics now cover the current observed Codex and Claude paths first, with Gemini and basic OpenCode support present but still secondary

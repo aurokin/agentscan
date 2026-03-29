@@ -78,6 +78,7 @@ It can:
 - inspect a pane by `pane_id`
 - focus a pane by `pane_id`, with attached-client fallback when no explicit tty is provided and tested multi-client selection of the most recent attached client
 - emit dedicated popup-oriented tmux output
+- expose `session:window.pane` as a first-class location tag in popup JSON and inspect output
 - infer likely agent panes from tmux metadata
 - normalize noisy provider prefixes and wrapper/script suffixes out of display labels for title-driven panes
 - populate `display.activity_label` for title-driven panes when titles include meaningful activity text
