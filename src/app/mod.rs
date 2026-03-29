@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
+pub mod bench_support;
 mod cache;
 mod classify;
 mod commands;
@@ -21,14 +22,7 @@ mod output;
 mod tests;
 mod tmux;
 
-#[allow(unused_imports)]
-pub(crate) use cache::popup_entries;
-#[allow(unused_imports)]
-pub(crate) use classify::pane_from_row;
-#[allow(unused_imports)]
-pub(crate) use commands::run;
-#[allow(unused_imports)]
-pub(crate) use tmux::parse_pane_rows;
+pub use commands::run;
 
 const PANE_DELIM: char = '\u{001f}';
 const CACHE_ENV_VAR: &str = "AGENTSCAN_CACHE_PATH";
@@ -110,7 +104,7 @@ enum Commands {
     Cache(CacheArgs),
 }
 
-#[derive(Args, Clone, Debug)]
+#[derive(Args, Clone, Copy, Debug)]
 struct ListArgs {
     #[command(flatten)]
     refresh: RefreshArgs,
@@ -481,7 +475,7 @@ enum DaemonCacheStatus {
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct PopupEntry {
+struct PopupEntry {
     pane_id: String,
     provider: Option<Provider>,
     status: StatusKind,
@@ -493,7 +487,7 @@ pub(crate) struct PopupEntry {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct TmuxPaneRow {
+struct TmuxPaneRow {
     session_name: String,
     window_index: u32,
     pane_index: u32,

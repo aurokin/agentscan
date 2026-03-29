@@ -1,44 +1,96 @@
 use super::*;
 
-pub(crate) fn run() -> Result<()> {
+pub fn run() -> Result<()> {
     let cli = Cli::parse();
-    let root_refresh = cli.list_args.refresh.refresh;
+    let root_list_args = cli.list_args;
 
     match cli.command {
         Some(Commands::Scan(mut args)) => {
-            args.refresh.refresh |= root_refresh;
+            merge_list_args(&mut args, &root_list_args);
             command_scan(&args)
         }
         Some(Commands::List(mut args)) => {
-            args.refresh.refresh |= root_refresh;
+            merge_list_args(&mut args, &root_list_args);
             command_list(&args)
         }
         Some(Commands::Inspect(mut args)) => {
-            args.refresh.refresh |= root_refresh;
+            merge_inspect_args(&mut args, &root_list_args)?;
             command_inspect(&args)
         }
         Some(Commands::Focus(mut args)) => {
-            args.refresh.refresh |= root_refresh;
+            merge_focus_args(&mut args, &root_list_args)?;
             command_focus(&args)
         }
         Some(Commands::Daemon(args)) => {
-            reject_root_refresh(root_refresh, "daemon")?;
+            reject_root_list_args(&root_list_args, "daemon")?;
             command_daemon(&args)
         }
-        Some(Commands::Tmux(args)) => command_tmux(&args, root_refresh),
-        Some(Commands::Cache(args)) => command_cache(&args, root_refresh),
-        None => command_list(&cli.list_args),
+        Some(Commands::Tmux(args)) => command_tmux(&args, &root_list_args),
+        Some(Commands::Cache(args)) => command_cache(&args, &root_list_args),
+        None => command_list(&root_list_args),
     }
 }
 
-pub(super) fn reject_root_refresh(root_refresh: bool, command_name: &str) -> Result<()> {
-    if root_refresh {
+pub(super) fn merge_list_args(args: &mut ListArgs, root_list_args: &ListArgs) {
+    args.refresh.refresh |= root_list_args.refresh.refresh;
+    args.all |= root_list_args.all;
+    if args.format == OutputFormat::Text {
+        args.format = root_list_args.format;
+    }
+}
+
+pub(super) fn merge_inspect_args(args: &mut InspectArgs, root_list_args: &ListArgs) -> Result<()> {
+    reject_root_all(root_list_args, "inspect")?;
+    args.refresh.refresh |= root_list_args.refresh.refresh;
+    if args.format == OutputFormat::Text {
+        args.format = root_list_args.format;
+    }
+
+    Ok(())
+}
+
+pub(super) fn merge_focus_args(args: &mut FocusArgs, root_list_args: &ListArgs) -> Result<()> {
+    reject_root_all(root_list_args, "focus")?;
+    reject_root_format(root_list_args, "focus")?;
+    args.refresh.refresh |= root_list_args.refresh.refresh;
+
+    Ok(())
+}
+
+pub(super) fn reject_root_refresh(root_list_args: &ListArgs, command_name: &str) -> Result<()> {
+    if root_list_args.refresh.refresh {
         bail!(
             "`--refresh` is not supported before `{command_name}`; place it on a refresh-capable subcommand or omit it"
         );
     }
 
     Ok(())
+}
+
+pub(super) fn reject_root_all(root_list_args: &ListArgs, command_name: &str) -> Result<()> {
+    if root_list_args.all {
+        bail!(
+            "`--all` is not supported before `{command_name}`; place it on a list-like subcommand or omit it"
+        );
+    }
+
+    Ok(())
+}
+
+pub(super) fn reject_root_format(root_list_args: &ListArgs, command_name: &str) -> Result<()> {
+    if root_list_args.format != OutputFormat::Text {
+        bail!(
+            "`--format` is not supported before `{command_name}`; place it on a format-capable subcommand or omit it"
+        );
+    }
+
+    Ok(())
+}
+
+fn reject_root_list_args(root_list_args: &ListArgs, command_name: &str) -> Result<()> {
+    reject_root_refresh(root_list_args, command_name)?;
+    reject_root_all(root_list_args, command_name)?;
+    reject_root_format(root_list_args, command_name)
 }
 
 fn command_scan(args: &ListArgs) -> Result<()> {
@@ -130,22 +182,38 @@ fn command_daemon_status(args: &DaemonStatusArgs) -> Result<()> {
     }
 }
 
-fn command_cache(args: &CacheArgs, root_refresh: bool) -> Result<()> {
+fn command_cache(args: &CacheArgs, root_list_args: &ListArgs) -> Result<()> {
     match args.command {
         CacheCommands::Path => {
-            reject_root_refresh(root_refresh, "cache path")?;
+            reject_root_list_args(root_list_args, "cache path")?;
             println!("{}", cache::cache_path()?.display());
         }
         CacheCommands::Show(ref args) => {
-            let snapshot = cache::load_snapshot(args.refresh.refresh || root_refresh)?;
+            reject_root_all(root_list_args, "cache show")?;
+            let snapshot =
+                cache::load_snapshot(args.refresh.refresh || root_list_args.refresh.refresh)?;
+            let format = if args.format == OutputFormat::Text {
+                root_list_args.format
+            } else {
+                args.format
+            };
             match args.format {
-                OutputFormat::Text => output::print_cache_summary_text(&snapshot)?,
+                OutputFormat::Text => {
+                    if format == OutputFormat::Text {
+                        output::print_cache_summary_text(&snapshot)?
+                    } else {
+                        output::print_json(&snapshot)?
+                    }
+                }
                 OutputFormat::Json => output::print_json(&snapshot)?,
             }
         }
         CacheCommands::Validate(ref args) => {
+            reject_root_all(root_list_args, "cache validate")?;
+            reject_root_format(root_list_args, "cache validate")?;
             let path = cache::cache_path()?;
-            let snapshot = cache::load_snapshot(args.refresh.refresh || root_refresh)?;
+            let snapshot =
+                cache::load_snapshot(args.refresh.refresh || root_list_args.refresh.refresh)?;
             let summary = cache::validate_snapshot(&snapshot, args.max_age_seconds)?;
             output::print_cache_validate_text(&path, &snapshot, &summary, args.max_age_seconds);
         }
@@ -154,24 +222,30 @@ fn command_cache(args: &CacheArgs, root_refresh: bool) -> Result<()> {
     Ok(())
 }
 
-fn command_tmux(args: &TmuxArgs, root_refresh: bool) -> Result<()> {
+fn command_tmux(args: &TmuxArgs, root_list_args: &ListArgs) -> Result<()> {
     match &args.command {
         TmuxCommands::Popup(args) => {
             let args = TmuxPopupArgs {
                 refresh: RefreshArgs {
-                    refresh: args.refresh.refresh || root_refresh,
+                    refresh: args.refresh.refresh || root_list_args.refresh.refresh,
                 },
-                all: args.all,
-                format: args.format,
+                all: args.all || root_list_args.all,
+                format: if args.format == PopupOutputFormat::Tsv
+                    && root_list_args.format == OutputFormat::Json
+                {
+                    PopupOutputFormat::Json
+                } else {
+                    args.format
+                },
             };
             command_tmux_popup(&args)
         }
         TmuxCommands::SetMetadata(args) => {
-            reject_root_refresh(root_refresh, "tmux set-metadata")?;
+            reject_root_list_args(root_list_args, "tmux set-metadata")?;
             command_tmux_set_metadata(args)
         }
         TmuxCommands::ClearMetadata(args) => {
-            reject_root_refresh(root_refresh, "tmux clear-metadata")?;
+            reject_root_list_args(root_list_args, "tmux clear-metadata")?;
             command_tmux_clear_metadata(args)
         }
     }

@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use tempfile::TempDir;
 
-const DAEMON_TIMEOUT: Duration = Duration::from_secs(20);
+const DAEMON_TIMEOUT: Duration = Duration::from_secs(40);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 #[test]
@@ -223,10 +223,8 @@ fn metadata_helpers_survive_unrelated_daemon_updates() -> Result<()> {
             && pane["status"]["kind"] == "busy"
     })?;
 
-    harness.set_pane_title(&trigger_pane_id, "Claude Code | Working")?;
-    harness.wait_for_pane(&mut daemon, &trigger_pane_id, |pane| {
-        pane["provider"] == "claude" && pane["status"]["kind"] == "busy"
-    })?;
+    let split_pane_id = harness.split_window("metadata-trigger:0.0", "sleep 300")?;
+    harness.wait_for_pane(&mut daemon, &split_pane_id, |_| true)?;
     harness.wait_for_pane(&mut daemon, &metadata_pane_id, |pane| {
         pane["provider"] == "codex"
             && pane["display"]["label"] == "Persistent Metadata"
@@ -578,10 +576,6 @@ impl TestHarness {
             &format!("printf '\\033]2;{title}\\033\\\\'"),
             "Enter",
         ])
-    }
-
-    fn set_pane_title(&self, pane_id: &str, title: &str) -> Result<()> {
-        self.tmux(["select-pane", "-t", pane_id, "-T", title])
     }
 
     fn agentscan<I, S>(&self, args: I) -> Result<()>

@@ -221,7 +221,7 @@ Responsibilities:
 
 - popup-oriented helper script or command entrypoint
 - map popup selection to `agentscan focus`
-- render data from `agentscan list` or `agentscan tmux`
+- render data from `agentscan tmux popup`
 
 Acceptance criteria:
 
@@ -314,11 +314,6 @@ Chosen direction:
 - support the default current tmux environment first and defer multi-server handling
 
 ### Popup Output Shape
-
-Need to choose:
-
-- whether popup rendering reads text output from `agentscan list`
-- or a dedicated structured `agentscan tmux popup` output
 
 Chosen direction:
 

@@ -400,7 +400,8 @@ That would be justified by needs such as:
 - Useful for debugging and tests
 
 ### `agentscan list`
-- Read live or cached state
+- Read cached state by default
+- Force a fresh tmux snapshot with `-f` when needed
 - Emit `text` or `json`
 
 ### `agentscan tmux popup`
@@ -461,7 +462,7 @@ Current direction:
 
 - the daemon is an explicit `agentscan daemon run` entrypoint
 - short-lived commands stay passive by default
-- cache-backed pane and cache-inspection commands may force a fresh snapshot with `-f` / `--refresh`
+- `scan`, cache-backed pane commands, cache inspection, and popup commands may force a fresh snapshot with `-f` / `--refresh`
 - when tmux disappears, the daemon exits clearly instead of retrying internally
 - restart policy belongs to an external supervisor until product needs justify a different model
 

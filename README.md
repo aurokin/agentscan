@@ -94,6 +94,7 @@ It can:
 
 Key operational commands today:
 
+- `agentscan`
 - `agentscan scan`
 - `agentscan list`
 - `agentscan inspect <pane_id>`
@@ -106,6 +107,8 @@ Key operational commands today:
 - `agentscan tmux popup`
 - `agentscan tmux set-metadata`
 - `agentscan tmux clear-metadata`
+
+`agentscan` without a subcommand runs the default cached `list` flow.
 
 It does not yet:
 

@@ -41,6 +41,7 @@ pub(super) fn daemon_run() -> Result<()> {
             cache::write_snapshot_to_cache(&snapshot)?;
         } else if should_resnapshot_from_notification(&line) {
             snapshot = cache::daemon_snapshot_from_tmux()?;
+            merge_cached_panes(&mut snapshot, None);
             cache::write_snapshot_to_cache(&snapshot)?;
         }
 

@@ -2,6 +2,7 @@
 
 ## Package Manager
 - Use `cargo`: `cargo build`, `cargo test`, `cargo run -- --format text`
+- Bare `cargo run -- ...` examples use the default cached `list` flow; direct tmux snapshots use `cargo run -- scan ...`.
 
 ## File-Scoped Commands
 | Task | Command |

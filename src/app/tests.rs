@@ -19,8 +19,8 @@ const TMUX_METADATA_FIXTURE: &str = include_str!(concat!(
 #[allow(unused_imports)]
 use super::{
     CACHE_RELATIVE_PATH, CACHE_SCHEMA_VERSION, CLAUDE_SPINNER_GLYPHS, Cli,
-    DAEMON_SUBSCRIPTION_FORMAT, IDLE_GLYPHS, PaneRecord, Provider, SnapshotEnvelope, SourceKind,
-    StatusKind, TmuxMetadataField, cache, classify, daemon, output, tmux,
+    DAEMON_SUBSCRIPTION_FORMAT, IDLE_GLYPHS, OutputFormat, PaneRecord, Provider, SnapshotEnvelope,
+    SourceKind, StatusKind, TmuxMetadataField, cache, classify, daemon, output, tmux,
 };
 
 #[test]
@@ -667,63 +667,110 @@ fn display_metadata_extracts_activity_labels_from_titles() {
 }
 
 #[test]
-fn cli_refresh_flag_is_supported_only_on_refreshing_commands() {
-    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "-f"]);
+fn root_list_args_parse_for_default_list_flow() {
+    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "-f", "--all", "--format", "json"]);
     assert!(cli.list_args.refresh.refresh);
+    assert!(cli.list_args.all);
+    assert_eq!(cli.list_args.format, OutputFormat::Json);
+}
 
-    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "list", "-f"]);
+#[test]
+fn root_list_args_merge_into_list_like_commands() {
+    let cli =
+        <Cli as clap::Parser>::parse_from(["agentscan", "--all", "--format", "json", "list", "-f"]);
     match cli.command {
-        Some(super::Commands::List(args)) => assert!(args.refresh.refresh),
+        Some(super::Commands::List(mut args)) => {
+            super::commands::merge_list_args(&mut args, &cli.list_args);
+            assert!(args.refresh.refresh);
+            assert!(args.all);
+            assert_eq!(args.format, OutputFormat::Json);
+        }
         other => panic!("expected list command, got {other:?}"),
     }
 
-    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "scan", "-f"]);
+    let cli =
+        <Cli as clap::Parser>::parse_from(["agentscan", "--all", "--format", "json", "scan", "-f"]);
     match cli.command {
-        Some(super::Commands::Scan(args)) => assert!(args.refresh.refresh),
+        Some(super::Commands::Scan(mut args)) => {
+            super::commands::merge_list_args(&mut args, &cli.list_args);
+            assert!(args.refresh.refresh);
+            assert!(args.all);
+            assert_eq!(args.format, OutputFormat::Json);
+        }
         other => panic!("expected scan command, got {other:?}"),
     }
+}
 
-    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "inspect", "%1", "-f"]);
+#[test]
+fn root_list_args_merge_into_other_refresh_capable_commands() {
+    let cli =
+        <Cli as clap::Parser>::parse_from(["agentscan", "--format", "json", "inspect", "%1", "-f"]);
     match cli.command {
-        Some(super::Commands::Inspect(args)) => assert!(args.refresh.refresh),
+        Some(super::Commands::Inspect(mut args)) => {
+            super::commands::merge_inspect_args(&mut args, &cli.list_args).unwrap();
+            assert!(args.refresh.refresh);
+            assert_eq!(args.format, OutputFormat::Json);
+        }
         other => panic!("expected inspect command, got {other:?}"),
     }
 
-    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "focus", "%1", "-f"]);
+    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "-f", "focus", "%1"]);
     match cli.command {
-        Some(super::Commands::Focus(args)) => assert!(args.refresh.refresh),
+        Some(super::Commands::Focus(mut args)) => {
+            super::commands::merge_focus_args(&mut args, &cli.list_args).unwrap();
+            assert!(args.refresh.refresh);
+        }
         other => panic!("expected focus command, got {other:?}"),
     }
 
-    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "cache", "show", "-f"]);
+    let cli =
+        <Cli as clap::Parser>::parse_from(["agentscan", "--format", "json", "cache", "show", "-f"]);
     match cli.command {
         Some(super::Commands::Cache(args)) => match args.command {
-            super::CacheCommands::Show(show_args) => assert!(show_args.refresh.refresh),
+            super::CacheCommands::Show(show_args) => {
+                assert!(show_args.refresh.refresh);
+                assert_eq!(cli.list_args.format, OutputFormat::Json);
+            }
             other => panic!("expected cache show command, got {other:?}"),
         },
         other => panic!("expected cache command, got {other:?}"),
     }
 
-    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "tmux", "popup", "-f"]);
+    let cli = <Cli as clap::Parser>::parse_from([
+        "agentscan",
+        "--all",
+        "--format",
+        "json",
+        "tmux",
+        "popup",
+        "-f",
+    ]);
     match cli.command {
         Some(super::Commands::Tmux(args)) => match args.command {
-            super::TmuxCommands::Popup(popup_args) => assert!(popup_args.refresh.refresh),
+            super::TmuxCommands::Popup(popup_args) => {
+                assert!(popup_args.refresh.refresh);
+                assert!(cli.list_args.all);
+                assert_eq!(cli.list_args.format, OutputFormat::Json);
+            }
             other => panic!("expected tmux popup command, got {other:?}"),
         },
         other => panic!("expected tmux command, got {other:?}"),
     }
+}
 
-    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "-f", "daemon", "status"]);
-    assert!(cli.list_args.refresh.refresh);
-    assert!(super::commands::reject_root_refresh(true, "daemon").is_err());
+#[test]
+fn unsupported_root_list_args_are_rejected_for_other_commands() {
+    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "--all", "daemon", "status"]);
+    assert!(cli.list_args.all);
+    assert!(super::commands::reject_root_all(&cli.list_args, "daemon").is_err());
 
-    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "-f", "cache", "path"]);
-    assert!(cli.list_args.refresh.refresh);
-    assert!(super::commands::reject_root_refresh(true, "cache path").is_err());
+    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "--format", "json", "cache", "path"]);
+    assert_eq!(cli.list_args.format, OutputFormat::Json);
+    assert!(super::commands::reject_root_format(&cli.list_args, "cache path").is_err());
 
     let cli = <Cli as clap::Parser>::parse_from(["agentscan", "-f", "tmux", "set-metadata"]);
     assert!(cli.list_args.refresh.refresh);
-    assert!(super::commands::reject_root_refresh(true, "tmux set-metadata").is_err());
+    assert!(super::commands::reject_root_refresh(&cli.list_args, "tmux set-metadata").is_err());
 }
 
 fn cache_path_for_test(
