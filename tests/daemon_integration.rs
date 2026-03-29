@@ -124,6 +124,23 @@ fn daemon_updates_cache_when_panes_are_removed() -> Result<()> {
 }
 
 #[test]
+fn daemon_survives_when_attached_session_is_removed_but_server_remains() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let attached_pane_id = harness.start_session("attached-session", "sleep 300")?;
+    let surviving_pane_id = harness.start_session("surviving-session", "sleep 300")?;
+    let mut daemon = harness.start_daemon()?;
+
+    harness.wait_for_pane(&mut daemon, &attached_pane_id, |_| true)?;
+    harness.wait_for_pane(&mut daemon, &surviving_pane_id, |_| true)?;
+
+    harness.tmux(["kill-session", "-t", "attached-session"])?;
+    harness.wait_for_pane(&mut daemon, &surviving_pane_id, |_| true)?;
+
+    daemon.shutdown()?;
+    Ok(())
+}
+
+#[test]
 fn daemon_exits_when_tmux_server_disappears() -> Result<()> {
     let harness = TestHarness::new()?;
     let _pane_id = harness.start_session("server-exit", "sleep 300")?;
