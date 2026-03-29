@@ -63,7 +63,7 @@ Completed baseline work:
 - fixture-backed title coverage now includes current Codex waiting-state titles and Claude textual `Claude Code | ...` states
 - property tests now cover parser round-trips and normalization invariants
 - benchmark tooling now measures snapshot parsing, row-to-pane conversion, cache deserialization, and popup entry generation
-- isolated daemon integration tests now cover title updates, pane/window add-remove topology changes, session add/remove churn, attached-session removal, wrapper-metadata helper flows, and fail-fast tmux server disappearance
+- isolated daemon integration tests now cover title updates, pane/window add-remove topology changes, session add/remove and rename churn, window rename churn, attached-session removal, wrapper-metadata helper flows, and fail-fast tmux server disappearance
 - canonical pane model and snapshot envelope are implemented
 - `agentscan scan`, `agentscan list`, and `agentscan inspect` are implemented
 - `agentscan cache path`, `cache show`, and `cache validate` are implemented with XDG default plus override support

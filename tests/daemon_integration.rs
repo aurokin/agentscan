@@ -181,6 +181,40 @@ fn daemon_updates_cache_when_windows_are_added_and_removed() -> Result<()> {
 }
 
 #[test]
+fn daemon_updates_cache_when_session_is_renamed() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let pane_id = harness.start_session("rename-session", "sleep 300")?;
+    let mut daemon = harness.start_daemon()?;
+
+    harness.wait_for_pane(&mut daemon, &pane_id, |_| true)?;
+
+    harness.tmux(["rename-session", "-t", "rename-session", "renamed-session"])?;
+    harness.wait_for_pane(&mut daemon, &pane_id, |pane| {
+        pane["location"]["session_name"] == "renamed-session"
+    })?;
+
+    daemon.shutdown()?;
+    Ok(())
+}
+
+#[test]
+fn daemon_updates_cache_when_window_is_renamed() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let pane_id = harness.start_session("rename-window", "sleep 300")?;
+    let mut daemon = harness.start_daemon()?;
+
+    harness.wait_for_pane(&mut daemon, &pane_id, |_| true)?;
+
+    harness.tmux(["rename-window", "-t", "rename-window:0", "ai"])?;
+    harness.wait_for_pane(&mut daemon, &pane_id, |pane| {
+        pane["location"]["window_name"] == "ai"
+    })?;
+
+    daemon.shutdown()?;
+    Ok(())
+}
+
+#[test]
 fn daemon_exits_when_tmux_server_disappears() -> Result<()> {
     let harness = TestHarness::new()?;
     let _pane_id = harness.start_session("server-exit", "sleep 300")?;
