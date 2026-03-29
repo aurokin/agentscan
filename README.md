@@ -63,6 +63,7 @@ It can:
 
 - run an explicit daemon baseline with tmux control mode
 - fail fast when the daemon loses tmux, leaving restart policy to an external supervisor
+- refresh individual panes on daemon title and metadata updates instead of full tmux rescans
 - report daemon-backed cache health
 - persist and read a local JSON cache
 - show and validate the local JSON cache

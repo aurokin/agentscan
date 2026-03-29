@@ -849,6 +849,12 @@ fn snapshot_from_tmux() -> Result<SnapshotEnvelope> {
     })
 }
 
+fn daemon_snapshot_from_tmux() -> Result<SnapshotEnvelope> {
+    let mut snapshot = snapshot_from_tmux()?;
+    mark_snapshot_as_daemon(&mut snapshot)?;
+    Ok(snapshot)
+}
+
 fn refresh_cache_from_tmux() -> Result<SnapshotEnvelope> {
     let snapshot = snapshot_from_tmux()?;
     write_snapshot_to_cache(&snapshot)?;
@@ -996,6 +1002,32 @@ fn tmux_list_panes() -> Result<Vec<TmuxPaneRow>> {
 
     let stdout = String::from_utf8(output.stdout).context("tmux output was not valid UTF-8")?;
     parse_pane_rows(&stdout)
+}
+
+fn tmux_list_pane(pane_id: &str) -> Result<Option<TmuxPaneRow>> {
+    let output = Command::new("tmux")
+        .args(["list-panes", "-t", pane_id, "-F", PANE_FORMAT])
+        .output()
+        .with_context(|| format!("failed to execute tmux list-panes for {pane_id}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = stderr.trim();
+        if stderr.contains("can't find pane") || stderr.contains("can't find window") {
+            return Ok(None);
+        }
+        if stderr.is_empty() {
+            bail!(
+                "tmux list-panes -t {pane_id} failed with status {}",
+                output.status
+            );
+        }
+        bail!("tmux list-panes -t {pane_id} failed: {stderr}");
+    }
+
+    let stdout = String::from_utf8(output.stdout).context("tmux output was not valid UTF-8")?;
+    let mut rows = parse_pane_rows(&stdout)?;
+    Ok(rows.pop())
 }
 
 pub(crate) fn parse_pane_rows(input: &str) -> Result<Vec<TmuxPaneRow>> {
@@ -1558,8 +1590,7 @@ fn daemon_cache_status(
 }
 
 fn daemon_run() -> Result<()> {
-    let mut snapshot = snapshot_from_tmux()?;
-    snapshot.source.kind = SourceKind::Daemon;
+    let mut snapshot = daemon_snapshot_from_tmux()?;
     write_snapshot_to_cache(&snapshot)?;
 
     let session_target = default_session_target()?;
@@ -1589,9 +1620,11 @@ fn daemon_run() -> Result<()> {
 
     for line in reader.lines() {
         let line = line.context("failed to read tmux control-mode output")?;
-        if should_refresh_from_notification(&line) {
-            let mut snapshot = snapshot_from_tmux()?;
-            snapshot.source.kind = SourceKind::Daemon;
+        if let Some(pane_id) = subscription_changed_pane_id(&line) {
+            refresh_snapshot_pane(&mut snapshot, pane_id)?;
+            write_snapshot_to_cache(&snapshot)?;
+        } else if should_resnapshot_from_notification(&line) {
+            snapshot = daemon_snapshot_from_tmux()?;
             write_snapshot_to_cache(&snapshot)?;
         }
 
@@ -1802,12 +1835,11 @@ fn focus_tmux_pane(pane_id: &str, client_tty: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-fn should_refresh_from_notification(line: &str) -> bool {
+fn should_resnapshot_from_notification(line: &str) -> bool {
     matches!(
         notification_name(line),
         Some(
-            "%subscription-changed"
-                | "%sessions-changed"
+            "%sessions-changed"
                 | "%session-changed"
                 | "%session-renamed"
                 | "%session-window-changed"
@@ -1818,6 +1850,45 @@ fn should_refresh_from_notification(line: &str) -> bool {
                 | "%window-renamed"
         )
     )
+}
+
+fn subscription_changed_pane_id(line: &str) -> Option<&str> {
+    let mut fields = line.split_whitespace();
+    if fields.next()? != "%subscription-changed" {
+        return None;
+    }
+    let _subscription_name = fields.next()?;
+    let _session = fields.next()?;
+    let _window = fields.next()?;
+    let _flags = fields.next()?;
+    let pane_id = fields.next()?;
+    pane_id.starts_with('%').then_some(pane_id)
+}
+
+fn refresh_snapshot_pane(snapshot: &mut SnapshotEnvelope, pane_id: &str) -> Result<()> {
+    let pane = tmux_list_pane(pane_id)?.map(pane_from_row);
+
+    if let Some(index) = snapshot
+        .panes
+        .iter()
+        .position(|existing| existing.pane_id == pane_id)
+    {
+        if let Some(pane) = pane {
+            snapshot.panes[index] = pane;
+        } else {
+            snapshot.panes.remove(index);
+        }
+    } else if let Some(pane) = pane {
+        snapshot.panes.push(pane);
+    }
+
+    mark_snapshot_as_daemon(snapshot)
+}
+
+fn mark_snapshot_as_daemon(snapshot: &mut SnapshotEnvelope) -> Result<()> {
+    snapshot.generated_at = now_rfc3339()?;
+    snapshot.source.kind = SourceKind::Daemon;
+    Ok(())
 }
 
 fn notification_name(line: &str) -> Option<&str> {
@@ -2003,9 +2074,9 @@ mod tests {
         daemon_cache_status_name, display_metadata, infer_status, infer_title_status,
         looks_like_codex_title, normalize_title_for_display, notification_name, pane_from_row,
         parse_pane_rows, parse_tmux_client_rows, popup_entries, select_best_client_tty,
-        should_refresh_from_notification, status_kind_name, strip_known_status_glyph,
-        summarize_snapshot, tmux_metadata_fields_to_clear, tmux_metadata_updates, tsv_escape,
-        validate_snapshot,
+        should_resnapshot_from_notification, status_kind_name, strip_known_status_glyph,
+        subscription_changed_pane_id, summarize_snapshot, tmux_metadata_fields_to_clear,
+        tmux_metadata_updates, tsv_escape, validate_snapshot,
     };
 
     #[test]
@@ -2093,11 +2164,22 @@ mod tests {
 
     #[test]
     fn daemon_notifications_trigger_refresh() {
-        assert!(should_refresh_from_notification("%window-add @1"));
-        assert!(should_refresh_from_notification(
-            "%subscription-changed agentscan %1 : value"
+        assert!(should_resnapshot_from_notification("%window-add @1"));
+        assert!(!should_resnapshot_from_notification(
+            "%subscription-changed agentscan $174 @251 1 %251 : %251:Claude Code | Working:claude::::"
         ));
-        assert!(!should_refresh_from_notification("%begin 1 1 0"));
+        assert!(!should_resnapshot_from_notification("%begin 1 1 0"));
+    }
+
+    #[test]
+    fn subscription_changed_notifications_expose_pane_id() {
+        assert_eq!(
+            subscription_changed_pane_id(
+                "%subscription-changed agentscan $174 @251 1 %251 : %251:Claude Code | Working:claude::::"
+            ),
+            Some("%251")
+        );
+        assert_eq!(subscription_changed_pane_id("%window-add @1"), None);
     }
 
     #[test]

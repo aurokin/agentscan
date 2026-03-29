@@ -70,6 +70,7 @@ Completed baseline work:
 - title-first metadata classification is wired into snapshot ingestion
 - `agentscan daemon run` writes a daemon-marked cache from tmux control mode
 - the daemon currently fails fast when tmux disappears and leaves restart policy to an external supervisor
+- daemon title and pane-metadata updates now refresh only the affected pane, while topology changes still resnapshot tmux
 - `list` and `inspect` now read cache-backed state by default
 - cache-backed pane and cache-inspection commands now support `-f` / `--refresh` to take a fresh tmux snapshot and rewrite cache on demand
 - cache reads now validate schema version before consumers use cached state
