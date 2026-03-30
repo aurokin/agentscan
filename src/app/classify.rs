@@ -279,7 +279,7 @@ pub(crate) fn display_metadata(
     {
         return DisplayMetadata {
             label: label.to_string(),
-            activity_label: None,
+            activity_label: infer_activity_label(provider, label),
         };
     }
 
@@ -348,6 +348,7 @@ fn infer_activity_label(provider: Option<Provider>, label: &str) -> Option<Strin
     }
 
     match provider {
+        Some(Provider::Codex) => Some(label.to_string()),
         Some(Provider::Claude) | Some(Provider::Gemini) | Some(Provider::Opencode) => {
             Some(label.to_string())
         }

@@ -398,6 +398,10 @@ fn fixture_snapshot_preserves_wrapper_prefixes() {
     let wrapped_codex = pane_by_id(&panes, "%89");
     assert_eq!(wrapped_codex.provider, Some(Provider::Codex));
     assert_eq!(wrapped_codex.display.label, "(bront) parallel-n64");
+    assert_eq!(
+        wrapped_codex.display.activity_label.as_deref(),
+        Some("(bront) parallel-n64")
+    );
     assert_eq!(wrapped_codex.status.kind, StatusKind::Unknown);
 }
 
@@ -423,6 +427,10 @@ fn pane_metadata_overrides_display_provider_and_status_when_title_is_ambiguous()
 
     assert_eq!(pane.provider, Some(Provider::Claude));
     assert_eq!(pane.display.label, "Wrapper Claude Task");
+    assert_eq!(
+        pane.display.activity_label.as_deref(),
+        Some("Wrapper Claude Task")
+    );
     assert_eq!(pane.status.kind, StatusKind::Idle);
     assert_eq!(pane.status.source, super::StatusSource::PaneMetadata);
     assert_eq!(
@@ -664,6 +672,32 @@ fn display_metadata_extracts_activity_labels_from_titles() {
         classify::display_metadata(Some(Provider::Codex), None, "Ready", "codex", "editor");
     assert_eq!(generic.label, "Ready");
     assert_eq!(generic.activity_label, None);
+
+    let wrapped_codex = classify::display_metadata(
+        Some(Provider::Codex),
+        None,
+        "(bront) parallel-n64: /home/auro/.zshrc.d/scripts/lgpt.sh",
+        "zsh",
+        "editor",
+    );
+    assert_eq!(wrapped_codex.label, "(bront) parallel-n64");
+    assert_eq!(
+        wrapped_codex.activity_label.as_deref(),
+        Some("(bront) parallel-n64")
+    );
+
+    let published = classify::display_metadata(
+        Some(Provider::Claude),
+        Some("Wrapper Claude Task"),
+        "Claude Code | Working",
+        "zsh",
+        "ai",
+    );
+    assert_eq!(published.label, "Wrapper Claude Task");
+    assert_eq!(
+        published.activity_label.as_deref(),
+        Some("Wrapper Claude Task")
+    );
 }
 
 #[test]

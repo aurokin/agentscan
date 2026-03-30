@@ -84,7 +84,7 @@ It can:
 - expose `session:window.pane` as a first-class location tag in popup JSON and inspect output
 - infer likely agent panes from tmux metadata
 - normalize noisy provider prefixes and wrapper/script suffixes out of display labels for title-driven panes
-- populate `display.activity_label` for title-driven panes when titles include meaningful activity text
+- populate `display.activity_label` for meaningful title-driven panes and authoritative wrapper labels, including non-generic Codex wrapper titles
 - keep labels conservative: show what tmux metadata actually tells us and avoid inventing richer task names from weak signals
 - publish, clear, and consume explicit wrapper metadata via pane-local `@agent.*` tmux options
 - refresh the existing cache immediately after repo-local metadata helper writes so wrapper-driven metadata changes stay visible to cache consumers whether the cache came from the daemon or a forced snapshot
