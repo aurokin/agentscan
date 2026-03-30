@@ -31,6 +31,8 @@ pub(crate) fn pane_from_row(row: TmuxPaneRow) -> PaneRecord {
             pane_current_path: row.pane_current_path,
             pane_current_command: row.pane_current_command.clone(),
             pane_title_raw: row.pane_title_raw.clone(),
+            session_id: row.session_id.clone(),
+            window_id: row.window_id.clone(),
         },
         display: display_metadata(
             provider,

@@ -19,6 +19,35 @@ pub(crate) fn tmux_list_panes() -> Result<Vec<TmuxPaneRow>> {
     parse_pane_rows(&stdout)
 }
 
+pub(crate) fn tmux_list_panes_target(target: &str) -> Result<Option<Vec<TmuxPaneRow>>> {
+    let output = Command::new("tmux")
+        .args(["list-panes", "-t", target, "-F", PANE_FORMAT])
+        .output()
+        .with_context(|| format!("failed to execute tmux list-panes for target {target}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = stderr.trim();
+        if stderr.contains("can't find window")
+            || stderr.contains("can't find session")
+            || stderr.contains("can't find pane")
+        {
+            return Ok(None);
+        }
+        if stderr.is_empty() {
+            bail!(
+                "tmux list-panes -t {target} failed with status {}",
+                output.status
+            );
+        }
+        bail!("tmux list-panes -t {target} failed: {stderr}");
+    }
+
+    let stdout = String::from_utf8(output.stdout).context("tmux output was not valid UTF-8")?;
+    let rows = parse_pane_rows(&stdout)?;
+    Ok(Some(rows))
+}
+
 pub(crate) fn tmux_list_pane(pane_id: &str) -> Result<Option<TmuxPaneRow>> {
     let output = Command::new("tmux")
         .args(["list-panes", "-t", pane_id, "-F", PANE_FORMAT])
@@ -54,22 +83,33 @@ pub(crate) fn parse_pane_rows(input: &str) -> Result<Vec<TmuxPaneRow>> {
         }
 
         let fields: Vec<_> = line.split(PANE_DELIM).collect();
-        if fields.len() != 10 && fields.len() != 15 {
+        if fields.len() != 10 && fields.len() != 12 && fields.len() != 15 && fields.len() != 17 {
             bail!(
-                "unexpected tmux pane field count on line {}: expected 10 or 15, got {}",
+                "unexpected tmux pane field count on line {}: expected 10, 12, 15, or 17, got {}",
                 line_number + 1,
                 fields.len()
             );
         }
 
+        let (session_id, window_id, agent_fields_start) = match fields.len() {
+            12 => (empty_to_none(fields[10]), empty_to_none(fields[11]), None),
+            17 => (
+                empty_to_none(fields[10]),
+                empty_to_none(fields[11]),
+                Some(12),
+            ),
+            10 | 15 => (None, None, (fields.len() == 15).then_some(10)),
+            _ => unreachable!("unexpected tmux field count already validated"),
+        };
+
         let (agent_provider, agent_label, agent_cwd, agent_state, agent_session_id) =
-            if fields.len() == 15 {
+            if let Some(start) = agent_fields_start {
                 (
-                    empty_to_none(fields[10]),
-                    empty_to_none(fields[11]),
-                    empty_to_none(fields[12]),
-                    empty_to_none(fields[13]),
-                    empty_to_none(fields[14]),
+                    empty_to_none(fields[start]),
+                    empty_to_none(fields[start + 1]),
+                    empty_to_none(fields[start + 2]),
+                    empty_to_none(fields[start + 3]),
+                    empty_to_none(fields[start + 4]),
                 )
             } else {
                 (None, None, None, None, None)
@@ -86,6 +126,8 @@ pub(crate) fn parse_pane_rows(input: &str) -> Result<Vec<TmuxPaneRow>> {
             pane_tty: fields[7].to_string(),
             pane_current_path: fields[8].to_string(),
             window_name: fields[9].to_string(),
+            session_id,
+            window_id,
             agent_provider,
             agent_label,
             agent_cwd,

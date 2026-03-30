@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "generated_at": "2026-03-28T00:00:00Z",
   "source": {
     "kind": "daemon",
@@ -20,7 +20,9 @@
         "pane_tty": "/dev/pts/48",
         "pane_current_path": "/home/auro/code/auro_midnight",
         "pane_current_command": "codex",
-        "pane_title_raw": "Ready"
+        "pane_title_raw": "Ready",
+        "session_id": "$1",
+        "window_id": "@1"
       },
       "display": {
         "label": "Ready",

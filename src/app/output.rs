@@ -68,6 +68,13 @@ pub(super) fn print_inspect_text(pane: &PaneRecord) {
         default_if_empty(&pane.tmux.pane_current_path, "<empty>")
     );
     println!("tty: {}", default_if_empty(&pane.tmux.pane_tty, "<empty>"));
+    if pane.tmux.session_id.is_some() || pane.tmux.window_id.is_some() {
+        println!(
+            "tmux_ids: session={} window={}",
+            default_if_empty(pane.tmux.session_id.as_deref().unwrap_or(""), "<empty>"),
+            default_if_empty(pane.tmux.window_id.as_deref().unwrap_or(""), "<empty>")
+        );
+    }
 
     if pane.agent_metadata.provider.is_some()
         || pane.agent_metadata.label.is_some()

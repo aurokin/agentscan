@@ -60,8 +60,8 @@ Completed baseline work:
 - formatting, lint, complexity, and unit-test checks now run clean locally
 - CI runs format, lint, complexity, and unit-test checks
 - fixture-backed tests now cover representative tmux title snapshots and cache snapshot deserialization
-- fixture-backed tests now cover both legacy 10-field and current 15-field tmux row shapes
-- fixture-backed title coverage now includes current Codex waiting-state titles and Claude textual `Claude Code | ...` states
+- fixture-backed tests now cover legacy and current tmux row shapes, including raw tmux `session_id` and `window_id` fields in the current format
+- fixture-backed title coverage now includes current Codex waiting-state titles, Claude textual `Claude Code | ...` states, and additional live Claude task-title samples
 - property tests now cover parser round-trips and normalization invariants
 - benchmark tooling now measures snapshot parsing, row-to-pane conversion, cache deserialization, and popup entry generation
 - isolated daemon integration tests now cover title updates, pane/window add-remove topology changes, session add/remove and rename churn, window rename churn, attached-session removal, wrapper-metadata helper flows, and fail-fast tmux server disappearance
@@ -73,11 +73,12 @@ Completed baseline work:
 - title-first metadata classification is wired into snapshot ingestion
 - `agentscan daemon run` writes a daemon-marked cache from tmux control mode
 - the daemon currently fails fast when tmux disappears and leaves restart policy to an external supervisor
-- daemon title updates now refresh only the affected pane, while topology changes still resnapshot tmux
+- daemon title and metadata updates now refresh only the affected pane, window and session rename/topology events can refresh the affected tmux scope when stable ids are present, and a periodic full reconcile remains as a safety net
 - `list` and `inspect` now read cache-backed state by default
 - `scan`, cache-backed pane commands, cache inspection, and popup commands now support `-f` / `--refresh` to take a fresh tmux snapshot and rewrite cache on demand without losing the last known daemon refresh timestamp
 - cache reads now validate schema version before consumers use cached state
 - pane diagnostics now distinguish direct snapshots, daemon snapshots, and daemon-updated panes
+- raw tmux metadata now includes stable `session_id` and `window_id` values for debugging and narrower daemon refresh paths
 - full snapshots and targeted daemon pane refreshes now keep pane ordering stable
 - `agentscan tmux popup` provides dedicated structured popup output
 - popup JSON and inspect output now expose `session:window.pane` as a first-class location tag

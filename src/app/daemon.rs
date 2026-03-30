@@ -1,4 +1,8 @@
 use super::*;
+use std::sync::mpsc;
+use std::time::Duration;
+
+const RECONCILE_INTERVAL: Duration = Duration::from_secs(1);
 
 pub(super) fn daemon_run() -> Result<()> {
     let mut snapshot = cache::daemon_snapshot_from_tmux()?;
@@ -27,26 +31,55 @@ pub(super) fn daemon_run() -> Result<()> {
         .stdout
         .take()
         .context("tmux control-mode client did not provide stdout")?;
-    let reader = BufReader::new(stdout);
-
-    for line in reader.lines() {
-        let line = line.context("failed to read tmux control-mode output")?;
-        if let Some(pane_id) = subscription_changed_pane_id(&line) {
-            refresh_snapshot_pane(&mut snapshot, pane_id)?;
-            merge_cached_panes(&mut snapshot, Some(pane_id));
-            cache::write_snapshot_to_cache(&snapshot)?;
-        } else if let Some(pane_id) = output_title_change_pane_id(&line) {
-            refresh_snapshot_pane(&mut snapshot, pane_id)?;
-            merge_cached_panes(&mut snapshot, Some(pane_id));
-            cache::write_snapshot_to_cache(&snapshot)?;
-        } else if should_resnapshot_from_notification(&line) {
-            snapshot = cache::daemon_snapshot_from_tmux()?;
-            merge_cached_panes(&mut snapshot, None);
-            cache::write_snapshot_to_cache(&snapshot)?;
+    let (line_tx, line_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines() {
+            if line_tx
+                .send(line.context("failed to read tmux control-mode output"))
+                .is_err()
+            {
+                break;
+            }
         }
+    });
 
-        if line.starts_with("%exit") {
-            break;
+    loop {
+        match line_rx.recv_timeout(RECONCILE_INTERVAL) {
+            Ok(line) => {
+                let line = line?;
+                if let Some(pane_id) = subscription_changed_pane_id(&line) {
+                    refresh_snapshot_pane(&mut snapshot, pane_id)?;
+                    merge_cached_panes(&mut snapshot, Some(pane_id));
+                    cache::write_snapshot_to_cache(&snapshot)?;
+                } else if let Some(pane_id) = output_title_change_pane_id(&line) {
+                    refresh_snapshot_pane(&mut snapshot, pane_id)?;
+                    merge_cached_panes(&mut snapshot, Some(pane_id));
+                    cache::write_snapshot_to_cache(&snapshot)?;
+                } else if let Some(window_id) = window_notification_target(&line) {
+                    refresh_snapshot_window(&mut snapshot, window_id).or_else(|error| {
+                        fallback_to_full_resnapshot(&mut snapshot, &line, error)
+                    })?;
+                    cache::write_snapshot_to_cache(&snapshot)?;
+                } else if let Some(session_id) = session_notification_target(&line) {
+                    refresh_snapshot_session(&mut snapshot, session_id).or_else(|error| {
+                        fallback_to_full_resnapshot(&mut snapshot, &line, error)
+                    })?;
+                    cache::write_snapshot_to_cache(&snapshot)?;
+                } else if should_resnapshot_from_notification(&line) {
+                    reconcile_full_snapshot(&mut snapshot)?;
+                    cache::write_snapshot_to_cache(&snapshot)?;
+                }
+
+                if line.starts_with("%exit") {
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                reconcile_full_snapshot(&mut snapshot)?;
+                cache::write_snapshot_to_cache(&snapshot)?;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
 
@@ -138,6 +171,56 @@ fn refresh_snapshot_pane(snapshot: &mut SnapshotEnvelope, pane_id: &str) -> Resu
     cache::mark_snapshot_as_daemon(snapshot)
 }
 
+fn refresh_snapshot_window(snapshot: &mut SnapshotEnvelope, window_id: &str) -> Result<()> {
+    refresh_snapshot_scope(snapshot, TargetScope::Window, window_id)
+}
+
+fn refresh_snapshot_session(snapshot: &mut SnapshotEnvelope, session_id: &str) -> Result<()> {
+    refresh_snapshot_scope(snapshot, TargetScope::Session, session_id)
+}
+
+fn refresh_snapshot_scope(
+    snapshot: &mut SnapshotEnvelope,
+    scope: TargetScope,
+    target_id: &str,
+) -> Result<()> {
+    let rows = tmux::tmux_list_panes_target(target_id)?;
+
+    snapshot
+        .panes
+        .retain(|pane| !scope.matches(pane, target_id));
+
+    if let Some(rows) = rows {
+        snapshot.panes.extend(rows.into_iter().map(|row| {
+            let mut pane = classify::pane_from_row(row);
+            pane.diagnostics.cache_origin = "daemon_update".to_string();
+            pane
+        }));
+    }
+
+    merge_cached_panes(snapshot, None);
+    cache::sort_snapshot_panes(snapshot);
+    cache::mark_snapshot_as_daemon(snapshot)
+}
+
+fn fallback_to_full_resnapshot(
+    snapshot: &mut SnapshotEnvelope,
+    line: &str,
+    error: anyhow::Error,
+) -> Result<()> {
+    eprintln!(
+        "agentscan: targeted refresh failed for control-mode line {:?}: {error:#}",
+        line
+    );
+    reconcile_full_snapshot(snapshot)
+}
+
+fn reconcile_full_snapshot(snapshot: &mut SnapshotEnvelope) -> Result<()> {
+    *snapshot = cache::daemon_snapshot_from_tmux()?;
+    merge_cached_panes(snapshot, None);
+    Ok(())
+}
+
 fn merge_cached_panes(snapshot: &mut SnapshotEnvelope, excluded_pane_id: Option<&str>) {
     let Some(existing) = cache::read_existing_snapshot_if_valid() else {
         return;
@@ -159,6 +242,34 @@ fn merge_cached_panes(snapshot: &mut SnapshotEnvelope, excluded_pane_id: Option<
     }
 }
 
+pub(crate) fn window_notification_target(line: &str) -> Option<&str> {
+    match notification_name(line) {
+        Some(
+            "%layout-change"
+            | "%window-add"
+            | "%window-close"
+            | "%unlinked-window-close"
+            | "%unlinked-window-renamed"
+            | "%window-pane-changed"
+            | "%window-renamed",
+        ) => line
+            .split_whitespace()
+            .nth(1)
+            .filter(|value| value.starts_with('@')),
+        _ => None,
+    }
+}
+
+pub(crate) fn session_notification_target(line: &str) -> Option<&str> {
+    match notification_name(line) {
+        Some("%session-renamed") => line
+            .split_whitespace()
+            .nth(1)
+            .filter(|value| value.starts_with('$')),
+        _ => None,
+    }
+}
+
 fn has_more_recent_helper_state(existing: &PaneRecord, current: &PaneRecord) -> bool {
     existing.agent_metadata.provider != current.agent_metadata.provider
         || existing.agent_metadata.label != current.agent_metadata.label
@@ -171,4 +282,19 @@ pub(crate) fn notification_name(line: &str) -> Option<&str> {
     line.split_whitespace()
         .next()
         .filter(|token| token.starts_with('%'))
+}
+
+#[derive(Clone, Copy)]
+enum TargetScope {
+    Window,
+    Session,
+}
+
+impl TargetScope {
+    fn matches(self, pane: &PaneRecord, target_id: &str) -> bool {
+        match self {
+            Self::Window => pane.tmux.window_id.as_deref() == Some(target_id),
+            Self::Session => pane.tmux.session_id.as_deref() == Some(target_id),
+        }
+    }
 }

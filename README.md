@@ -72,7 +72,9 @@ It can:
 
 - run an explicit daemon baseline with tmux control mode
 - fail fast when the daemon loses tmux, leaving restart policy to an external supervisor
-- refresh individual panes on daemon title updates and preserve helper-published metadata across unrelated daemon writes
+- preserve raw tmux `session_id` and `window_id` values in the canonical pane model for cache consumers and local daemon updates
+- refresh individual panes on daemon title and metadata updates, refresh affected windows or sessions when tmux emits stable ids for those scopes, and keep a periodic full reconcile as a safety net
+- preserve helper-published metadata across unrelated daemon writes
 - report daemon-backed cache health
 - persist and read a local JSON cache
 - show and validate the local JSON cache

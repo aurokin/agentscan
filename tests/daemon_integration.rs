@@ -223,8 +223,12 @@ fn metadata_helpers_survive_unrelated_daemon_updates() -> Result<()> {
             && pane["status"]["kind"] == "busy"
     })?;
 
-    let split_pane_id = harness.split_window("metadata-trigger:0.0", "sleep 300")?;
-    harness.wait_for_pane(&mut daemon, &split_pane_id, |_| true)?;
+    harness.send_title_escape(&trigger_pane_id, "Claude Code | Working")?;
+    harness.wait_for_pane(&mut daemon, &trigger_pane_id, |pane| {
+        pane["provider"] == "claude"
+            && pane["status"]["kind"] == "busy"
+            && pane["display"]["label"] == "Working"
+    })?;
     harness.wait_for_pane(&mut daemon, &metadata_pane_id, |pane| {
         pane["provider"] == "codex"
             && pane["display"]["label"] == "Persistent Metadata"

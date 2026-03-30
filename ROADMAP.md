@@ -228,6 +228,7 @@ intent, even if the implementation changes completely:
 Those design inputs suggest a few concrete requirements for the Rust model:
 
 - keep both raw tmux fields and normalized display fields
+- keep stable raw tmux ids such as `session_id` and `window_id` when tmux exposes them, so daemon updates can stay local to the affected scope
 - model status explicitly instead of forcing a binary busy/idle answer
 - preserve stable location and identity fields needed by short-lived consumers
 - make room for explicit pane metadata published by wrappers so classification can get simpler over time
@@ -295,7 +296,7 @@ Initial snapshot shape:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "generated_at": "2026-03-26T23:59:59Z",
   "source": {
     "kind": "snapshot",
@@ -315,7 +316,9 @@ Initial snapshot shape:
         "pane_tty": "/dev/pts/55",
         "pane_current_path": "/home/auro/.dotfiles",
         "pane_current_command": "codex",
-        "pane_title_raw": "(bront) .dotfiles: codex --dangerously-bypass-approvals-and-sandbox"
+        "pane_title_raw": "(bront) .dotfiles: codex --dangerously-bypass-approvals-and-sandbox",
+        "session_id": "$1",
+        "window_id": "@1"
       },
       "display": {
         "label": "(bront) .dotfiles: codex",

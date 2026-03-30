@@ -70,6 +70,17 @@ fn parses_tmux_output_into_rows() {
 }
 
 #[test]
+fn parses_tmux_output_with_session_and_window_ids() {
+    let input = "notes\x1f4\x1f1\x1f%41\x1f324026\x1fclaude\x1fClaude Code\x1f/dev/pts/44\x1f/home/auro/notes\x1fquery\x1f$7\x1f@9\n";
+
+    let rows = tmux::parse_pane_rows(input).expect("tmux output with ids should parse");
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].session_id.as_deref(), Some("$7"));
+    assert_eq!(rows[0].window_id.as_deref(), Some("@9"));
+}
+
+#[test]
 fn parses_tmux_client_rows_and_selects_most_recent_tty() {
     let input = concat!(
         "/dev/pts/5\x1f1711671000\n",
@@ -99,6 +110,8 @@ fn pane_record_uses_canonical_shape() {
         pane_tty: "/dev/pts/44".to_string(),
         pane_current_path: "/home/auro/notes".to_string(),
         window_name: "ai".to_string(),
+        session_id: None,
+        window_id: None,
         agent_provider: None,
         agent_label: None,
         agent_cwd: None,
@@ -124,6 +137,42 @@ fn daemon_notifications_trigger_refresh() {
         "%subscription-changed agentscan $174 @251 1 %251 : %251:Claude Code | Working:claude::::"
     ));
     assert!(!daemon::should_resnapshot_from_notification("%begin 1 1 0"));
+}
+
+#[test]
+fn window_notifications_expose_window_targets() {
+    assert_eq!(
+        daemon::window_notification_target("%window-renamed @1 editor"),
+        Some("@1")
+    );
+    assert_eq!(
+        daemon::window_notification_target("%window-close @2"),
+        Some("@2")
+    );
+    assert_eq!(
+        daemon::window_notification_target("%unlinked-window-renamed @4 sh"),
+        Some("@4")
+    );
+    assert_eq!(
+        daemon::window_notification_target("%layout-change @3 a,b,c"),
+        Some("@3")
+    );
+    assert_eq!(
+        daemon::window_notification_target("%session-renamed $1 renamed"),
+        None
+    );
+}
+
+#[test]
+fn session_notifications_expose_session_targets() {
+    assert_eq!(
+        daemon::session_notification_target("%session-renamed $1 renamed"),
+        Some("$1")
+    );
+    assert_eq!(
+        daemon::session_notification_target("%window-renamed @1 editor"),
+        None
+    );
 }
 
 #[test]
@@ -367,6 +416,8 @@ fn popup_entries_include_location_and_status() {
         pane_tty: "/dev/pts/44".to_string(),
         pane_current_path: "/home/auro/notes".to_string(),
         window_name: "ai".to_string(),
+        session_id: None,
+        window_id: None,
         agent_provider: None,
         agent_label: None,
         agent_cwd: None,
@@ -403,6 +454,8 @@ fn fixture_snapshot_preserves_wrapper_prefixes() {
         Some("(bront) parallel-n64")
     );
     assert_eq!(wrapped_codex.status.kind, StatusKind::Unknown);
+    assert_eq!(wrapped_codex.tmux.session_id.as_deref(), Some("$8"));
+    assert_eq!(wrapped_codex.tmux.window_id.as_deref(), Some("@8"));
 }
 
 #[test]
@@ -418,6 +471,8 @@ fn pane_metadata_overrides_display_provider_and_status_when_title_is_ambiguous()
         pane_tty: "/dev/pts/500".to_string(),
         pane_current_path: "/home/auro/code/wrapper".to_string(),
         window_name: "ai".to_string(),
+        session_id: None,
+        window_id: None,
         agent_provider: Some("claude".to_string()),
         agent_label: Some("Wrapper Claude Task".to_string()),
         agent_cwd: Some("/tmp/wrapper".to_string()),
@@ -472,6 +527,8 @@ fn cache_fixture_deserializes_into_current_schema() {
     assert_eq!(snapshot.panes.len(), 1);
     assert_eq!(snapshot.panes[0].pane_id, "%67");
     assert_eq!(snapshot.panes[0].status.kind, StatusKind::Idle);
+    assert_eq!(snapshot.panes[0].tmux.session_id.as_deref(), Some("$1"));
+    assert_eq!(snapshot.panes[0].tmux.window_id.as_deref(), Some("@1"));
     assert_eq!(
         snapshot.panes[0].diagnostics.cache_origin,
         "daemon_snapshot"
@@ -512,6 +569,8 @@ fn snapshot_sort_orders_panes_by_location() {
                 pane_tty: "/dev/pts/3".to_string(),
                 pane_current_path: "/tmp/zeta".to_string(),
                 window_name: "editor".to_string(),
+                session_id: None,
+                window_id: None,
                 agent_provider: None,
                 agent_label: None,
                 agent_cwd: None,
@@ -529,6 +588,8 @@ fn snapshot_sort_orders_panes_by_location() {
                 pane_tty: "/dev/pts/2".to_string(),
                 pane_current_path: "/tmp/alpha".to_string(),
                 window_name: "ai".to_string(),
+                session_id: None,
+                window_id: None,
                 agent_provider: None,
                 agent_label: None,
                 agent_cwd: None,
@@ -546,6 +607,8 @@ fn snapshot_sort_orders_panes_by_location() {
                 pane_tty: "/dev/pts/1".to_string(),
                 pane_current_path: "/tmp/alpha".to_string(),
                 window_name: "editor".to_string(),
+                session_id: None,
+                window_id: None,
                 agent_provider: None,
                 agent_label: None,
                 agent_cwd: None,

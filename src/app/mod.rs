@@ -27,7 +27,7 @@ pub use commands::run;
 const PANE_DELIM: char = '\u{001f}';
 const CACHE_ENV_VAR: &str = "AGENTSCAN_CACHE_PATH";
 const CACHE_RELATIVE_PATH: &str = "agentscan/cache-v1.json";
-const CACHE_SCHEMA_VERSION: u32 = 1;
+const CACHE_SCHEMA_VERSION: u32 = 2;
 static CACHE_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const CLAUDE_SPINNER_GLYPHS: &[char] = &[
     '⠁', '⠂', '⠄', '⡀', '⢀', '⠠', '⠐', '⠈', '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏', '⣾',
@@ -54,6 +54,10 @@ const PANE_FORMAT: &str = concat!(
     "#{pane_current_path}",
     "\x1f",
     "#{window_name}",
+    "\x1f",
+    "#{session_id}",
+    "\x1f",
+    "#{window_id}",
     "\x1f",
     "#{@agent.provider}",
     "\x1f",
@@ -423,6 +427,10 @@ struct TmuxPaneMetadata {
     pane_current_path: String,
     pane_current_command: String,
     pane_title_raw: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    window_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -498,6 +506,8 @@ struct TmuxPaneRow {
     pane_tty: String,
     pane_current_path: String,
     window_name: String,
+    session_id: Option<String>,
+    window_id: Option<String>,
     agent_provider: Option<String>,
     agent_label: Option<String>,
     agent_cwd: Option<String>,
