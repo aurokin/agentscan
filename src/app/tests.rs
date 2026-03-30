@@ -888,6 +888,12 @@ fn cache_path_for_test(
 }
 
 fn assert_fixture_codex_cases(panes: &[PaneRecord]) {
+    let codex_plain_working = pane_by_id(panes, "%178");
+    assert_eq!(codex_plain_working.provider, Some(Provider::Codex));
+    assert_eq!(codex_plain_working.status.kind, StatusKind::Busy);
+    assert_eq!(codex_plain_working.display.label, "Working");
+    assert_eq!(codex_plain_working.display.activity_label, None);
+
     let codex_working = pane_by_id(panes, "%191");
     assert_eq!(codex_working.provider, Some(Provider::Codex));
     assert_eq!(codex_working.status.kind, StatusKind::Busy);
@@ -935,6 +941,18 @@ fn assert_fixture_claude_cases(panes: &[PaneRecord]) {
     assert_eq!(claude_title_idle.status.kind, StatusKind::Idle);
     assert_eq!(claude_title_idle.display.label, "Ready");
     assert_eq!(claude_title_idle.display.activity_label, None);
+
+    let claude_task_idle = pane_by_id(panes, "%275");
+    assert_eq!(claude_task_idle.provider, Some(Provider::Claude));
+    assert_eq!(claude_task_idle.status.kind, StatusKind::Idle);
+    assert_eq!(
+        claude_task_idle.display.label,
+        "Design GitHub bot with Claude agent dashboard"
+    );
+    assert_eq!(
+        claude_task_idle.display.activity_label.as_deref(),
+        Some("Design GitHub bot with Claude agent dashboard")
+    );
 }
 
 fn assert_fixture_opencode_case(panes: &[PaneRecord]) {
