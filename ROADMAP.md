@@ -47,7 +47,7 @@ the documented contract instead of the legacy scripts.
 - tmux-wide pane discovery
 - provider detection for `codex`, `claude`, `gemini`, and `opencode`
 - normalized pane metadata
-- stable text, JSON, and popup-oriented outputs
+- stable text and JSON outputs plus an interactive popup command
 - busy or idle state tracking
 - a long-lived index or cache
 - fallback process inspection for ambiguous panes
@@ -61,8 +61,7 @@ That means it should own:
 
 - the Rust scanner and cache implementation
 - the user-facing `agentscan` CLI
-- any bundled shell helpers needed for local integration
-- any tmux-facing scripts, templates, or commands needed to consume `agentscan`
+- any tmux-facing commands or minimal config guidance needed to consume `agentscan`
 - the documentation for the supported workflow
 
 That does not mean immediate rollout into host-specific dotfiles. Until the
@@ -98,18 +97,19 @@ The CLI should likely split into a few stable command families:
 Suggested responsibilities:
 
 - `agentscan scan`: direct snapshot from tmux for debugging and recovery
-- `agentscan list`: read the best available state source and emit text or JSON
+- `agentscan list`: read the best available state source and emit text or the supported JSON automation output
 - `agentscan inspect <pane_id>`: show one pane with classification and diagnostics
 - `agentscan focus <pane_id>`: switch tmux client to a pane by stable id
 - `agentscan daemon`: start, run, or supervise the long-lived indexer
 - `agentscan cache`: print cache path, validate cache, or dump raw snapshot state
-- `agentscan tmux`: tmux-oriented helpers such as popup output or integration setup
+- `agentscan tmux`: tmux-oriented helpers for metadata publishing and integration setup
 
 The important CLI distinction is between:
 
 - direct snapshot commands for debugging
 - cached/indexed commands for normal use
 - integration commands for tmux or shell consumers
+- interactive UI commands that are intentionally not machine-readable contracts
 
 ## Decision Log
 
@@ -164,6 +164,18 @@ Implications:
 - cache shape is an API contract
 - schema versioning must be explicit
 - TSV remains an adapter output only
+
+### Popup Contract
+
+`agentscan popup` is an interactive UI, not an automation surface.
+
+Implications:
+
+- popup does not support `--format`
+- popup should reject unsupported flags during normal clap parsing; do not add hidden compatibility parsing for automation spellings
+- popup rendering is not a stable machine-readable contract
+- machine-readable consumers should use documented JSON commands instead
+- missing machine-readable fields are API gaps to close in those JSON commands, not reasons to make popup machine-readable again
 
 ### Integration Boundary
 
@@ -380,7 +392,7 @@ Near-term adapters:
 
 - `text` for human-readable CLI output
 - `json` for rich machine-readable consumers
-- `popup-tsv` only for narrow popup compatibility if needed
+- no popup-shaped adapter output as a supported contract
 
 TSV should not be used as the persisted cache format because it is too lossy and brittle for long-term evolution.
 
@@ -406,10 +418,19 @@ That would be justified by needs such as:
 - Read cached state by default
 - Force a fresh tmux snapshot with `-f` when needed
 - Emit `text` or `json`
+- Treat `json` as the supported machine-readable automation surface
 
-### `agentscan tmux popup`
-- Emit dedicated popup-oriented structured output
-- Keep popup consumers decoupled from human list formatting
+### `agentscan popup`
+- Open the interactive popup UI directly from the Rust binary
+- Read cached pane state by default and rerender as the cache changes
+- Preserve stable single-keystroke pane selection while the popup remains open
+- Page overflow rows instead of rendering visible-but-unselectable panes
+- Recompute layout on terminal resize and keep the current page anchor stable
+- Remain interactive-only with no `--format` support
+
+### `agentscan cache show`
+- Expose the raw cached snapshot envelope
+- Support JSON when a consumer explicitly needs cache-level metadata rather than the normal `list` view
 
 ### `agentscan daemon`
 - Maintain long-lived pane index
@@ -488,7 +509,7 @@ Current direction:
 ### Operability
 - Add unit tests around parsing and classification
 - Add inspectable reasoning for why a pane matched
-- Keep machine-readable output contracts stable for shell consumers
+- Keep machine-readable output contracts stable where they are intentionally documented
 - Keep persisted cache schema versioned and explicitly documented
 
 ## Migration Plan
@@ -498,13 +519,15 @@ Delivered baseline:
 - snapshot scanner from `tmux list-panes`
 - provider inference from tmux metadata and titles
 - text and JSON output
-- popup-oriented output and repo-local popup wrapper
+- interactive `agentscan popup`
+- removal of the old `agentscan tmux popup` adapter and bundled popup wrapper
 - versioned JSON cache snapshot
 - pane metadata model for explicit tmux user options
 - `daemon` with live cache maintenance from tmux control mode
 
 Remaining migration work:
 
+- document `agentscan list --format json` as the supported replacement for popup-shaped machine-readable output and treat missing fields there as API gaps
 - broaden title-driven coverage for current providers without inventing labels from weak signals
 - add targeted `/proc` fallback for ambiguous panes that tmux metadata cannot resolve
 - add optional incremental output parsing only if title and metadata signals remain insufficient
@@ -533,4 +556,4 @@ Shell should not remain responsible for:
 - No popup-time full rescans once cached mode exists
 - No TSV as canonical persisted state
 - No migration of dotfiles integration unless the task includes the integration layer
-- No breaking output-format changes without updating shell consumers and docs
+- No breaking machine-readable output changes without updating the documented JSON consumers and docs

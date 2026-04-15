@@ -158,22 +158,6 @@ pub(crate) fn sort_snapshot_panes(snapshot: &mut SnapshotEnvelope) {
     });
 }
 
-pub(crate) fn popup_entries(panes: &[PaneRecord]) -> Vec<PopupEntry> {
-    panes
-        .iter()
-        .map(|pane| PopupEntry {
-            pane_id: pane.pane_id.clone(),
-            provider: pane.provider,
-            status: pane.status.kind,
-            location_tag: pane.location.tag(),
-            session_name: pane.location.session_name.clone(),
-            window_index: pane.location.window_index,
-            pane_index: pane.location.pane_index,
-            display_label: pane.display.label.clone(),
-        })
-        .collect()
-}
-
 fn now_rfc3339() -> Result<String> {
     OffsetDateTime::now_utc()
         .format(&Rfc3339)

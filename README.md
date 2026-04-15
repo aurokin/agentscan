@@ -57,7 +57,7 @@ Current performance tooling:
 - `cargo bench --bench core_paths -- --noplot`
 
 The initial benchmark target covers snapshot row parsing, row-to-pane conversion,
-cache deserialization, and popup entry generation against committed fixtures.
+cache deserialization, and popup row rendering against committed fixtures.
 
 ## Current scope
 
@@ -78,21 +78,30 @@ It can:
 - report daemon-backed cache health
 - persist and read a local JSON cache
 - show and validate the local JSON cache
-- force a fresh tmux snapshot and cache rewrite for `list`, `scan`, `inspect`, `focus`, `cache show`, `cache validate`, and `tmux popup` with `-f` / `--refresh`
+- force a fresh tmux snapshot and cache rewrite for `list`, `scan`, `inspect`, `focus`, `popup`, `cache show`, and `cache validate` with `-f` / `--refresh`
 - list panes through the default `list` flow
 - inspect a pane by `pane_id`
 - focus a pane by `pane_id`, with attached-client fallback when no explicit tty is provided and tested multi-client selection of the most recent attached client
-- emit dedicated popup-oriented tmux output
-- expose `session:window.pane` as a first-class location tag in popup JSON and inspect output
+- open an interactive `agentscan popup` UI directly from the Rust binary
+- page popup rows when more panes exist than can fit the current key budget or viewport
+- redraw the popup immediately on terminal resize and keep keys stable for rows that remain visible on the current page
 - infer likely agent panes from tmux metadata
 - normalize noisy provider prefixes and wrapper/script suffixes out of display labels for title-driven panes
 - populate `display.activity_label` for meaningful title-driven panes and authoritative wrapper labels, including non-generic Codex wrapper titles
 - keep labels conservative: show what tmux metadata actually tells us and avoid inventing richer task names from weak signals
 - publish, clear, and consume explicit wrapper metadata via pane-local `@agent.*` tmux options
 - refresh the existing cache immediately after repo-local metadata helper writes so wrapper-driven metadata changes stay visible to cache consumers whether the cache came from the daemon or a forced snapshot
-- forward `-f` / `--refresh` through the bundled popup wrapper for on-demand cache refresh
 - emit canonical snapshot JSON
 - print the cache path
+
+Automation contract:
+
+- `agentscan popup` is interactive-only and is not a supported machine-readable surface
+- unsupported flags on `agentscan popup` should remain normal parse errors; do not add popup-specific compatibility shims to intercept them
+- `agentscan list --format json` is the supported machine-readable command for downstream consumers
+- `agentscan list --all --format json` is the supported way to include non-agent panes in that machine-readable output
+- `agentscan cache show --format json` exposes the raw cached snapshot when a consumer explicitly needs cache envelope details rather than the normal `list` view
+- popup-shaped TSV or JSON output is not a supported long-term contract
 
 Key operational commands today:
 
@@ -106,11 +115,28 @@ Key operational commands today:
 - `agentscan cache path`
 - `agentscan cache show`
 - `agentscan cache validate`
-- `agentscan tmux popup`
+- `agentscan popup`
 - `agentscan tmux set-metadata`
 - `agentscan tmux clear-metadata`
 
 `agentscan` without a subcommand runs the default cached `list` flow.
+
+For repo-local tmux popup testing without installing the binary on `PATH`, use
+`tmux display-popup -E "$PWD/target/debug/agentscan" popup` after building.
+
+## Migration Note
+
+Machine-readable consumers should not call `agentscan popup`.
+
+Use:
+
+- `agentscan list --format json` for the supported JSON automation surface
+- `agentscan list --all --format json` if the consumer previously depended on popup-style `--all`
+- `agentscan cache show --format json` only when the consumer intentionally needs the raw cached snapshot envelope
+
+If an automation consumer cannot migrate because required fields are missing from
+the documented JSON surfaces, treat that as an API gap to close in `list` or
+cache JSON. Do not add `--format` back to `popup`, including hidden or compatibility-only parser paths.
 
 It does not yet:
 
@@ -124,7 +150,7 @@ the kinds of things users currently rely on:
 - pane discovery across tmux
 - stable pane targeting for navigation and focus
 - provider inference and title normalization
-- popup-oriented output and pane targeting
+- popup selection and pane targeting
 - rough busy/idle detection for some providers
 
 But those scripts should be treated as a source of examples and migration context,
@@ -143,7 +169,7 @@ The useful design inputs are mostly at the data-model level:
 
 1. Broaden title-driven status coverage for the current provider set without inventing misleading labels.
 2. Keep hardening daemon/cache consistency and wrapper metadata handling.
-3. Keep tmux popup consumption working from this repo while the product matures.
+3. Keep hardening the repo-local popup workflow around `agentscan popup`.
 4. Add targeted fallback inspection only for concrete ambiguous cases that tmux metadata cannot resolve.
 
 ## Current CLI Families
@@ -152,8 +178,9 @@ The current CLI centers on:
 
 - `agentscan daemon` as the primary runtime
 - `agentscan scan` for direct tmux snapshots
-- `agentscan list` for normal human or JSON output
+- `agentscan list` for normal human output and the supported JSON automation surface
 - `agentscan inspect` for one-pane diagnostics
 - `agentscan focus` for pane targeting
 - `agentscan cache` for indexed operation
+- `agentscan popup` for interactive pane selection only
 - `agentscan tmux` for tmux-facing integration helpers

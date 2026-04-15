@@ -13,6 +13,10 @@ pub fn run() -> Result<()> {
             merge_list_args(&mut args, &root_list_args);
             command_list(&args)
         }
+        Some(Commands::Popup(mut args)) => {
+            merge_popup_args(&mut args, &root_list_args)?;
+            command_popup(&args)
+        }
         Some(Commands::Inspect(mut args)) => {
             merge_inspect_args(&mut args, &root_list_args)?;
             command_inspect(&args)
@@ -57,6 +61,14 @@ pub(super) fn merge_focus_args(args: &mut FocusArgs, root_list_args: &ListArgs) 
     Ok(())
 }
 
+pub(super) fn merge_popup_args(args: &mut PopupArgs, root_list_args: &ListArgs) -> Result<()> {
+    reject_popup_format(root_list_args)?;
+    args.refresh.refresh |= root_list_args.refresh.refresh;
+    args.all |= root_list_args.all;
+
+    Ok(())
+}
+
 pub(super) fn reject_root_refresh(root_list_args: &ListArgs, command_name: &str) -> Result<()> {
     if root_list_args.refresh.refresh {
         bail!(
@@ -87,6 +99,16 @@ pub(super) fn reject_root_format(root_list_args: &ListArgs, command_name: &str) 
     Ok(())
 }
 
+pub(super) fn reject_popup_format(root_list_args: &ListArgs) -> Result<()> {
+    if root_list_args.format != OutputFormat::Text {
+        bail!(
+            "`agentscan popup` is interactive-only and does not support `--format`; use `agentscan list --format json` for supported machine-readable output or `agentscan cache show --format json` for the raw cached snapshot"
+        );
+    }
+
+    Ok(())
+}
+
 fn reject_root_list_args(root_list_args: &ListArgs, command_name: &str) -> Result<()> {
     reject_root_refresh(root_list_args, command_name)?;
     reject_root_all(root_list_args, command_name)?;
@@ -107,6 +129,10 @@ fn command_list(args: &ListArgs) -> Result<()> {
     let mut snapshot = cache::load_snapshot(args.refresh.refresh)?;
     cache::filter_snapshot(&mut snapshot, args.all);
     output::emit_snapshot(&snapshot, args.format)
+}
+
+fn command_popup(args: &PopupArgs) -> Result<()> {
+    popup_ui::run(args)
 }
 
 fn command_inspect(args: &InspectArgs) -> Result<()> {
@@ -141,7 +167,12 @@ fn command_focus(args: &FocusArgs) -> Result<()> {
             bail!("pane {} not found in fresh tmux snapshot", args.pane_id);
         }
     }
-    tmux::focus_tmux_pane(&args.pane_id, args.client_tty.as_deref())
+    match tmux::focus_tmux_pane(&args.pane_id, args.client_tty.as_deref())? {
+        tmux::FocusTmuxPaneResult::Focused => Ok(()),
+        tmux::FocusTmuxPaneResult::Missing => {
+            bail!("pane {} is no longer available", args.pane_id)
+        }
+    }
 }
 
 fn command_daemon(args: &DaemonArgs) -> Result<()> {
@@ -224,22 +255,6 @@ fn command_cache(args: &CacheArgs, root_list_args: &ListArgs) -> Result<()> {
 
 fn command_tmux(args: &TmuxArgs, root_list_args: &ListArgs) -> Result<()> {
     match &args.command {
-        TmuxCommands::Popup(args) => {
-            let args = TmuxPopupArgs {
-                refresh: RefreshArgs {
-                    refresh: args.refresh.refresh || root_list_args.refresh.refresh,
-                },
-                all: args.all || root_list_args.all,
-                format: if args.format == PopupOutputFormat::Tsv
-                    && root_list_args.format == OutputFormat::Json
-                {
-                    PopupOutputFormat::Json
-                } else {
-                    args.format
-                },
-            };
-            command_tmux_popup(&args)
-        }
         TmuxCommands::SetMetadata(args) => {
             reject_root_list_args(root_list_args, "tmux set-metadata")?;
             command_tmux_set_metadata(args)
@@ -248,20 +263,6 @@ fn command_tmux(args: &TmuxArgs, root_list_args: &ListArgs) -> Result<()> {
             reject_root_list_args(root_list_args, "tmux clear-metadata")?;
             command_tmux_clear_metadata(args)
         }
-    }
-}
-
-fn command_tmux_popup(args: &TmuxPopupArgs) -> Result<()> {
-    let mut snapshot = cache::load_snapshot(args.refresh.refresh)?;
-    cache::filter_snapshot(&mut snapshot, args.all);
-    let entries = cache::popup_entries(&snapshot.panes);
-
-    match args.format {
-        PopupOutputFormat::Tsv => {
-            output::print_popup_tsv(&entries);
-            Ok(())
-        }
-        PopupOutputFormat::Json => output::print_json(&entries),
     }
 }
 

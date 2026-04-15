@@ -127,27 +127,6 @@ pub(super) fn print_inspect_text(pane: &PaneRecord) {
     }
 }
 
-pub(super) fn print_popup_tsv(entries: &[PopupEntry]) {
-    for entry in entries {
-        println!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            tsv_escape(&entry.pane_id),
-            tsv_escape(
-                &entry
-                    .provider
-                    .map(|provider| provider.to_string())
-                    .unwrap_or_default()
-            ),
-            tsv_escape(status_kind_name(entry.status)),
-            tsv_escape(&entry.location_tag),
-            tsv_escape(&entry.session_name),
-            entry.window_index,
-            entry.pane_index,
-            tsv_escape(&entry.display_label)
-        );
-    }
-}
-
 pub(super) fn print_json<T: Serialize>(value: &T) -> Result<()> {
     println!(
         "{}",
@@ -225,8 +204,4 @@ fn format_status_counts(counts: &[(StatusKind, usize)]) -> String {
         .map(|(status, count)| format!("{}={count}", status_kind_name(*status)))
         .collect::<Vec<_>>()
         .join(", ")
-}
-
-pub(crate) fn tsv_escape(value: &str) -> String {
-    value.replace(['\t', '\n', '\r'], " ")
 }

@@ -1,4 +1,5 @@
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread::sleep;
@@ -283,6 +284,236 @@ fn focus_targets_explicit_client_tty() -> Result<()> {
 }
 
 #[test]
+fn popup_focuses_selected_pane_from_interactive_tmux_pane() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let root_pane_id = harness.start_session("popup-focus", "sleep 300")?;
+    let split_pane_id = harness.split_window("popup-focus:0.0", "sleep 300")?;
+    harness.agentscan([
+        "tmux",
+        "set-metadata",
+        "--pane-id",
+        &root_pane_id,
+        "--provider",
+        "codex",
+        "--label",
+        "Root Task",
+        "--state",
+        "idle",
+    ])?;
+    harness.agentscan([
+        "tmux",
+        "set-metadata",
+        "--pane-id",
+        &split_pane_id,
+        "--provider",
+        "claude",
+        "--label",
+        "Split Task",
+        "--state",
+        "busy",
+    ])?;
+    harness.agentscan(["-f", "cache", "show"])?;
+    let mut client = harness.attach_client("popup-focus")?;
+
+    let popup_pane_id = harness.start_agentscan_popup_pane("popup-focus:0.0", &[])?;
+    sleep(Duration::from_millis(200));
+    harness.tmux(["send-keys", "-t", &popup_pane_id, "2"])?;
+    harness.wait_for_client_pane(&mut client, &split_pane_id)?;
+
+    Ok(())
+}
+
+#[test]
+fn popup_displays_message_when_cached_pane_no_longer_exists() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let root_pane_id = harness.start_session("popup-missing", "sleep 300")?;
+    let split_pane_id = harness.split_window("popup-missing:0.0", "sleep 300")?;
+    harness.agentscan([
+        "tmux",
+        "set-metadata",
+        "--pane-id",
+        &root_pane_id,
+        "--provider",
+        "codex",
+        "--label",
+        "Root Task",
+        "--state",
+        "idle",
+    ])?;
+    harness.agentscan([
+        "tmux",
+        "set-metadata",
+        "--pane-id",
+        &split_pane_id,
+        "--provider",
+        "claude",
+        "--label",
+        "Split Task",
+        "--state",
+        "busy",
+    ])?;
+    harness.agentscan(["-f", "cache", "show"])?;
+    harness.tmux(["kill-pane", "-t", &split_pane_id])?;
+    let mut client = harness.attach_client("popup-missing")?;
+
+    let popup_pane_id = harness.start_agentscan_popup_pane("popup-missing:0.0", &[])?;
+    sleep(Duration::from_millis(200));
+    harness.tmux(["send-keys", "-t", &popup_pane_id, "2"])?;
+    harness.wait_for_client_pane(&mut client, &root_pane_id)?;
+
+    Ok(())
+}
+
+#[test]
+fn popup_ctrl_b_passthrough_returns_to_tmux_prefix_table() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let _pane_id = harness.start_session("popup-prefix", "sleep 300")?;
+    let client = harness.attach_client("popup-prefix")?;
+
+    let popup_pane_id = harness.start_agentscan_popup_pane("popup-prefix:0.0", &[])?;
+    sleep(Duration::from_millis(200));
+    harness.tmux(["send-keys", "-t", &popup_pane_id, "C-b"])?;
+    harness.wait_for_client_key_table(&client.tty, "prefix")?;
+    assert!(harness.pane_exists(&popup_pane_id)?);
+    harness.tmux(["send-keys", "-t", &popup_pane_id, "Escape"])?;
+    harness.wait_for_pane_closed(&popup_pane_id)?;
+
+    Ok(())
+}
+
+#[test]
+fn popup_renders_cache_error_frame_when_cache_is_missing() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let _pane_id = harness.start_session("popup-cache-missing", "sleep 300")?;
+
+    let popup_pane_id = harness.start_agentscan_popup_pane("popup-cache-missing:0.0", &[])?;
+    sleep(Duration::from_millis(200));
+    let contents = harness.capture_pane(&popup_pane_id)?;
+
+    assert!(
+        contents.contains("agentscan popup unavailable"),
+        "expected popup error frame, got:\n{contents}"
+    );
+    assert!(
+        contents.contains("popup --refresh"),
+        "expected refresh guidance in popup error frame, got:\n{contents}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn popup_rerenders_when_cache_changes() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let pane_id = harness.start_session("popup-rerender", "sleep 300")?;
+    harness.agentscan([
+        "tmux",
+        "set-metadata",
+        "--pane-id",
+        &pane_id,
+        "--provider",
+        "claude",
+        "--label",
+        "Initial Task",
+        "--state",
+        "busy",
+    ])?;
+    harness.agentscan(["-f", "cache", "show"])?;
+
+    let popup_pane_id = harness.start_agentscan_popup_pane("popup-rerender:0.0", &[])?;
+    harness.wait_for_pane_contents(&popup_pane_id, |contents| contents.contains("Initial Task"))?;
+
+    harness.agentscan([
+        "tmux",
+        "set-metadata",
+        "--pane-id",
+        &pane_id,
+        "--provider",
+        "claude",
+        "--label",
+        "Updated Task",
+        "--state",
+        "busy",
+    ])?;
+    harness.wait_for_pane_contents(&popup_pane_id, |contents| contents.contains("Updated Task"))?;
+
+    harness.tmux(["send-keys", "-t", &popup_pane_id, "Escape"])?;
+    harness.wait_for_pane_closed(&popup_pane_id)?;
+
+    Ok(())
+}
+
+#[test]
+fn popup_ignores_non_selection_keys_until_escape() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let _pane_id = harness.start_session("popup-ignore", "sleep 300")?;
+
+    let popup_pane_id = harness.start_agentscan_popup_pane("popup-ignore:0.0", &[])?;
+    sleep(Duration::from_millis(200));
+    harness.tmux(["send-keys", "-t", &popup_pane_id, "A"])?;
+    sleep(Duration::from_millis(200));
+    assert!(harness.pane_exists(&popup_pane_id)?);
+
+    harness.tmux(["send-keys", "-t", &popup_pane_id, "Escape"])?;
+    harness.wait_for_pane_closed(&popup_pane_id)?;
+
+    Ok(())
+}
+
+#[test]
+fn popup_ctrl_c_closes() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let _pane_id = harness.start_session("popup-ctrl-c", "sleep 300")?;
+
+    let popup_pane_id = harness.start_agentscan_popup_pane("popup-ctrl-c:0.0", &[])?;
+    sleep(Duration::from_millis(200));
+    harness.tmux(["send-keys", "-t", &popup_pane_id, "C-c"])?;
+    harness.wait_for_pane_closed(&popup_pane_id)?;
+
+    Ok(())
+}
+
+#[test]
+fn popup_pages_to_overflow_rows() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let root_pane_id = harness.start_session("popup-paging", "sleep 300")?;
+    let mut pane_ids = vec![root_pane_id.clone()];
+
+    for _ in 1..18 {
+        pane_ids.push(harness.new_window("popup-paging", "sleep 300")?);
+    }
+
+    for (index, pane_id) in pane_ids.iter().enumerate() {
+        harness.agentscan([
+            "tmux",
+            "set-metadata",
+            "--pane-id",
+            pane_id,
+            "--provider",
+            "claude",
+            "--label",
+            &format!("Task {:02}", index + 1),
+            "--state",
+            "busy",
+        ])?;
+    }
+    harness.agentscan(["-f", "cache", "show"])?;
+
+    let _client = harness.attach_client("popup-paging")?;
+    let popup_pane_id = harness.start_agentscan_popup_pane("popup-paging:0.0", &[])?;
+
+    harness.wait_for_pane_contents(&popup_pane_id, |contents| contents.contains("Page 1/2"))?;
+    harness.tmux(["send-keys", "-t", &popup_pane_id, "Right"])?;
+    harness.wait_for_pane_contents(&popup_pane_id, |contents| {
+        contents.contains("Page 2/2") && contents.contains("Task 17")
+    })?;
+    harness.tmux(["send-keys", "-t", &popup_pane_id, "Escape"])?;
+    harness.wait_for_pane_closed(&popup_pane_id)?;
+
+    Ok(())
+}
+
+#[test]
 fn focus_uses_attached_client_fallback_when_no_tty_is_given() -> Result<()> {
     let harness = TestHarness::new()?;
     let _root_pane_id = harness.start_session("focus-fallback", "sleep 300")?;
@@ -458,6 +689,7 @@ fn daemon_exits_when_tmux_server_disappears() -> Result<()> {
 struct TestHarness {
     _tempdir: TempDir,
     tmux_tmpdir: PathBuf,
+    tmux_socket_path: PathBuf,
     cache_path: PathBuf,
     stdout_path: PathBuf,
     stderr_path: PathBuf,
@@ -469,8 +701,19 @@ impl TestHarness {
         let tmux_tmpdir = tempdir.path().join("tmux");
         fs::create_dir_all(&tmux_tmpdir)
             .with_context(|| format!("failed to create {}", tmux_tmpdir.display()))?;
+        let tmux_socket_path = tmux_default_socket_path(&tmux_tmpdir)?;
+        let tmux_socket_dir = tmux_socket_path
+            .parent()
+            .context("failed to derive tmux socket directory")?;
+        fs::create_dir_all(tmux_socket_dir)
+            .with_context(|| format!("failed to create {}", tmux_socket_dir.display()))?;
+        fs::set_permissions(&tmux_tmpdir, fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("failed to chmod {}", tmux_tmpdir.display()))?;
+        fs::set_permissions(tmux_socket_dir, fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("failed to chmod {}", tmux_socket_dir.display()))?;
 
         Ok(Self {
+            tmux_socket_path,
             cache_path: tempdir.path().join("cache.json"),
             stdout_path: tempdir.path().join("daemon.stdout.log"),
             stderr_path: tempdir.path().join("daemon.stderr.log"),
@@ -554,13 +797,13 @@ impl TestHarness {
 
     fn attach_client(&self, session_name: &str) -> Result<AttachedClientHandle> {
         let existing_ttys = self.client_ttys()?;
+        let attach_command = format!(
+            "tmux -S {} attach-session -t {}",
+            shell_escape_path(&self.tmux_socket_path),
+            shell_escape(session_name),
+        );
         let child = Command::new("script")
-            .args([
-                "-q",
-                "-c",
-                &format!("tmux attach-session -t {session_name}"),
-                "/dev/null",
-            ])
+            .args(["-q", "-c", &attach_command, "/dev/null"])
             .env_remove("TMUX")
             .env("TMUX_TMPDIR", &self.tmux_tmpdir)
             .stdout(Stdio::null())
@@ -643,6 +886,36 @@ impl TestHarness {
         String::from_utf8(output.stdout).context("tmux output was not valid UTF-8")
     }
 
+    fn start_agentscan_popup_pane(&self, target: &str, extra_args: &[&str]) -> Result<String> {
+        let popup_command = self.agentscan_popup_command(extra_args)?;
+        self.split_window(target, &popup_command)
+    }
+
+    fn agentscan_popup_command(&self, extra_args: &[&str]) -> Result<String> {
+        let mut command = format!(
+            "TMUX_TMPDIR={} AGENTSCAN_CACHE_PATH={} {} popup",
+            shell_escape_path(&self.tmux_tmpdir),
+            shell_escape_path(&self.cache_path),
+            shell_escape_path(&agentscan_bin()?)
+        );
+        for arg in extra_args {
+            command.push(' ');
+            command.push_str(&shell_escape(arg));
+        }
+        Ok(command)
+    }
+
+    fn capture_pane(&self, pane_id: &str) -> Result<String> {
+        self.tmux_output(["capture-pane", "-p", "-t", pane_id])
+    }
+
+    fn pane_exists(&self, pane_id: &str) -> Result<bool> {
+        Ok(self
+            .tmux_output(["list-panes", "-a", "-F", "#{pane_id}"])?
+            .lines()
+            .any(|listed_pane_id| listed_pane_id.trim() == pane_id))
+    }
+
     fn client_ttys(&self) -> Result<Vec<String>> {
         Ok(self
             .client_rows()?
@@ -692,6 +965,64 @@ impl TestHarness {
                     "timed out waiting for client {} to focus pane {pane_id}",
                     client.tty
                 );
+            }
+
+            sleep(POLL_INTERVAL);
+        }
+    }
+
+    fn wait_for_client_key_table(&self, client_tty: &str, expected_key_table: &str) -> Result<()> {
+        let deadline = Instant::now() + DAEMON_TIMEOUT;
+        loop {
+            let output =
+                self.tmux_output(["list-clients", "-F", "#{client_tty}\x1f#{client_key_table}"])?;
+            for line in output.lines() {
+                let mut fields = line.split('\x1f');
+                let listed_client_tty = fields.next().unwrap_or_default().trim();
+                let key_table = fields.next().unwrap_or_default().trim();
+                if listed_client_tty == client_tty && key_table == expected_key_table {
+                    return Ok(());
+                }
+            }
+
+            if Instant::now() >= deadline {
+                bail!(
+                    "timed out waiting for client {client_tty} to reach key table {expected_key_table}"
+                );
+            }
+
+            sleep(POLL_INTERVAL);
+        }
+    }
+
+    fn wait_for_pane_closed(&self, pane_id: &str) -> Result<()> {
+        let deadline = Instant::now() + DAEMON_TIMEOUT;
+        loop {
+            if !self.pane_exists(pane_id)? {
+                return Ok(());
+            }
+
+            if Instant::now() >= deadline {
+                bail!("timed out waiting for popup pane {pane_id} to close");
+            }
+
+            sleep(POLL_INTERVAL);
+        }
+    }
+
+    fn wait_for_pane_contents<F>(&self, pane_id: &str, predicate: F) -> Result<String>
+    where
+        F: Fn(&str) -> bool,
+    {
+        let deadline = Instant::now() + DAEMON_TIMEOUT;
+        loop {
+            let contents = self.capture_pane(pane_id)?;
+            if predicate(&contents) {
+                return Ok(contents);
+            }
+
+            if Instant::now() >= deadline {
+                bail!("timed out waiting for popup pane {pane_id} contents to update");
             }
 
             sleep(POLL_INTERVAL);
@@ -769,6 +1100,7 @@ impl TestHarness {
 
     fn tmux_command(&self) -> Command {
         let mut command = Command::new("tmux");
+        command.arg("-S").arg(&self.tmux_socket_path);
         command.env_remove("TMUX");
         command.env("TMUX_TMPDIR", &self.tmux_tmpdir);
         command
@@ -793,6 +1125,20 @@ impl TestHarness {
             });
         }
         Ok(rows)
+    }
+}
+
+impl Drop for TestHarness {
+    fn drop(&mut self) {
+        let _ = Command::new("tmux")
+            .arg("-S")
+            .arg(&self.tmux_socket_path)
+            .arg("kill-server")
+            .env_remove("TMUX")
+            .env("TMUX_TMPDIR", &self.tmux_tmpdir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
 }
 
@@ -927,4 +1273,36 @@ fn agentscan_bin() -> Result<PathBuf> {
         "failed to find agentscan binary via CARGO_BIN_EXE_agentscan or {}",
         candidate.display()
     )
+}
+
+fn tmux_default_socket_path(tmux_tmpdir: &Path) -> Result<PathBuf> {
+    let output = Command::new("id")
+        .arg("-u")
+        .output()
+        .context("failed to determine current uid for tmux socket path")?;
+    if !output.status.success() {
+        bail!("`id -u` failed with status {}", output.status);
+    }
+
+    let uid = String::from_utf8(output.stdout).context("`id -u` output was not valid UTF-8")?;
+    Ok(tmux_tmpdir.join(format!("tmux-{}/default", uid.trim())))
+}
+
+fn shell_escape_path(path: &Path) -> String {
+    shell_escape(path.to_string_lossy().as_ref())
+}
+
+fn shell_escape(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_string();
+    }
+
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-' | ':' | '%'))
+    {
+        return value.to_string();
+    }
+
+    format!("'{}'", value.replace('\'', r"'\''"))
 }

@@ -11,7 +11,8 @@ It assumes:
 - the production host workflow in `~/.dotfiles` stays unchanged until rollout
 - the daemon-backed index is part of v1, not a later optimization
 - the first consumer contract is a versioned JSON file cache
-- tmux popup consumption remains a first-class v1 workflow
+- the interactive popup remains a first-class v1 workflow
+- popup automation consumers migrate to documented JSON commands rather than popup-shaped output
 
 ## Locked Decisions
 
@@ -19,13 +20,14 @@ These decisions are already made and should be treated as planning inputs:
 
 - architecture is daemon-first
 - the first canonical consumer contract is a JSON file cache
-- tmux popup consumption remains in v1
+- the interactive popup remains in v1
+- `agentscan popup` is interactive-only; machine-readable consumers use documented JSON commands
 - `busy` means a reliable positive signal
 - `idle` means a reliable negative signal
 - `unknown` means ambiguous or not cheaply knowable
 - published wrapper `provider` and `label` are authoritative when present
 - published wrapper `status` is advisory
-- tmux and shell integration should ship from this repo as thin wrappers around the CLI
+- tmux integration should ship from this repo as thin configuration around the CLI
 - legacy shell detection bugs are reasons to redesign the detector rather than preserve old heuristics
 - terminal titles and tmux metadata are the default detection path for all providers
 - pane-content inspection is a later fallback only if title and tmux metadata are proven insufficient
@@ -38,6 +40,7 @@ The initial product surface should center on these commands:
 - `agentscan daemon`
 - `agentscan scan`
 - `agentscan list`
+- `agentscan popup`
 - `agentscan inspect <pane_id>`
 - `agentscan focus <pane_id>`
 - `agentscan cache`
@@ -47,11 +50,14 @@ Expected command roles:
 
 - `agentscan daemon`: run and supervise the long-lived indexer
 - `agentscan scan`: direct tmux snapshot for debugging and recovery
-- `agentscan list`: normal user-facing listing from cache, with JSON and text output
+- `agentscan list`: normal user-facing listing from cache, with JSON as the supported machine-readable automation surface
+- `agentscan popup`: interactive pane picker from cached state
 - `agentscan inspect`: show one pane with classification and diagnostics
 - `agentscan focus`: switch tmux client to a pane by `pane_id`
 - `agentscan cache`: expose cache location, health, and raw state inspection
-- `agentscan tmux`: tmux-facing helper commands used by bundled scripts
+- `agentscan popup`: interactive popup UI from cached pane state
+- `agentscan tmux`: tmux-facing helper commands for metadata publishing and repo-local integration
+- `agentscan cache show --format json`: lower-level raw cache contract for consumers that intentionally need the full snapshot envelope
 
 ## Current Progress
 
@@ -63,7 +69,7 @@ Completed baseline work:
 - fixture-backed tests now cover legacy and current tmux row shapes, including raw tmux `session_id` and `window_id` fields in the current format
 - fixture-backed title coverage now includes current Codex waiting-state titles, Claude textual `Claude Code | ...` states, and additional live Claude task-title samples
 - property tests now cover parser round-trips and normalization invariants
-- benchmark tooling now measures snapshot parsing, row-to-pane conversion, cache deserialization, and popup entry generation
+- benchmark tooling now measures snapshot parsing, row-to-pane conversion, cache deserialization, and popup row rendering
 - isolated daemon integration tests now cover title updates, pane/window add-remove topology changes, session add/remove and rename churn, window rename churn, attached-session removal, wrapper-metadata helper flows, and fail-fast tmux server disappearance
 - the runtime is now split by concern under `src/app/` so command dispatch, cache logic, daemon handling, tmux integration, output formatting, and classification logic can evolve independently without continuing to grow a single monolithic file
 - canonical pane model and snapshot envelope are implemented
@@ -80,10 +86,11 @@ Completed baseline work:
 - pane diagnostics now distinguish direct snapshots, daemon snapshots, and daemon-updated panes
 - raw tmux metadata now includes stable `session_id` and `window_id` values for debugging and narrower daemon refresh paths
 - full snapshots and targeted daemon pane refreshes now keep pane ordering stable
-- `agentscan tmux popup` provides dedicated structured popup output
-- popup JSON and inspect output now expose `session:window.pane` as a first-class location tag
-- a thin repo-local `scripts/agentscan-popup.sh` wrapper renders cached popup rows, supports unlimited numeric selection, and calls `focus`
-- the bundled popup wrapper now forwards `-f` / `--refresh` to the CLI for on-demand cache refresh
+- `agentscan popup` provides an interactive popup UI directly from the Rust binary
+- popup rows preserve stable key assignments within the visible page, page overflow rows instead of rendering unselectable entries, and surface cache failures in-popup instead of crashing
+- popup redraw now responds to terminal resize, keeps the current page anchor stable, and clamps invalidated pages after cache-driven pane removal
+- popup integration tests now cover interactive selection, paging overflow, stale-cache pane fallback, Ctrl-B passthrough, and cache-error rendering
+- popup argument handling now rejects `--format` with migration guidance toward `list --format json` and `cache show --format json`
 - title-driven status heuristics now cover the current observed Codex and Claude paths first, with Gemini and basic OpenCode support present but still secondary
 - display normalization now strips noisy provider prefixes from title-driven Claude and OpenCode labels and collapses wrapper-heavy Codex titles down to task labels
 - `display.activity_label` is now populated for title-driven panes and authoritative wrapper labels when they carry useful activity text, including non-generic Codex wrapper titles
@@ -98,6 +105,7 @@ Completed baseline work:
 
 Still pending in Phase 1:
 
+- document and enforce the automation boundary so popup remains interactive-only while JSON consumers have a clear supported contract
 - broader title-driven status coverage and more fixture samples across providers
 
 ## Phase 1
@@ -110,7 +118,7 @@ rescans without requiring host dotfile migration.
 - control-mode daemon maintains pane state in memory
 - daemon writes a canonical JSON cache atomically
 - `list`, `inspect`, and `focus` operate against the cache or daemon-managed state
-- tmux popup workflow can consume this repo's integration entrypoint
+- the popup workflow can run directly from this repo's CLI entrypoint
 - `scan` remains available as a direct snapshot debug path
 
 ### Workstreams
@@ -220,9 +228,9 @@ Ship repo-local tmux integration that stays thin.
 
 Responsibilities:
 
-- popup-oriented helper script or command entrypoint
+- interactive popup command entrypoint
 - map popup selection to `agentscan focus`
-- render data from `agentscan tmux popup`
+- render popup rows directly from cached pane state
 
 Acceptance criteria:
 
@@ -314,11 +322,11 @@ Chosen direction:
 
 - support the default current tmux environment first and defer multi-server handling
 
-### Popup Output Shape
+### Popup UX Shape
 
 Chosen direction:
 
-- dedicated popup-oriented subcommand so popup rendering does not depend on human text formatting
+- dedicated interactive popup command so popup rendering does not depend on human list formatting
 
 ### Detection Strategy Validation
 
@@ -344,7 +352,7 @@ Suggested implementation order:
 5. Add tmux control-mode event handling and incremental state updates.
 6. Implement `agentscan inspect <pane_id>`.
 7. Implement `agentscan focus <pane_id>`.
-8. Add repo-local tmux popup integration that consumes the CLI.
+8. Add repo-local tmux popup integration that launches `agentscan popup`.
 9. Add fixture-driven tests for parsing, classification, cache serialization, and focus behavior.
 
 ## Definition Of Done For V1

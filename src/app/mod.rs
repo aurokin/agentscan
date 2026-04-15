@@ -18,6 +18,7 @@ mod classify;
 mod commands;
 mod daemon;
 mod output;
+mod popup_ui;
 #[cfg(test)]
 mod tests;
 mod tmux;
@@ -96,6 +97,8 @@ enum Commands {
     Scan(ListArgs),
     /// List panes using the best available state source.
     List(ListArgs),
+    /// Open the interactive tmux popup UI. `popup` is interactive-only; use `list --format json` for automation.
+    Popup(PopupArgs),
     /// Inspect one pane by pane id.
     Inspect(InspectArgs),
     /// Focus a pane by pane id.
@@ -146,6 +149,16 @@ struct FocusArgs {
     /// The tmux client tty to target when switching panes.
     #[arg(long)]
     client_tty: Option<String>,
+}
+
+#[derive(Args, Debug)]
+struct PopupArgs {
+    #[command(flatten)]
+    refresh: RefreshArgs,
+
+    /// Include all tmux panes, not only likely agent panes, in the interactive picker.
+    #[arg(long)]
+    all: bool,
 }
 
 #[derive(Args, Debug)]
@@ -213,26 +226,10 @@ struct DaemonStatusArgs {
 
 #[derive(Subcommand, Debug)]
 enum TmuxCommands {
-    /// Emit popup-oriented pane output.
-    Popup(TmuxPopupArgs),
     /// Publish explicit pane metadata for wrappers.
     SetMetadata(TmuxSetMetadataArgs),
     /// Clear explicit pane metadata.
     ClearMetadata(TmuxClearMetadataArgs),
-}
-
-#[derive(Args, Debug)]
-struct TmuxPopupArgs {
-    #[command(flatten)]
-    refresh: RefreshArgs,
-
-    /// Include all tmux panes, not only likely agent panes.
-    #[arg(long)]
-    all: bool,
-
-    /// Output format for popup consumers.
-    #[arg(long, value_enum, default_value_t = PopupOutputFormat::Tsv)]
-    format: PopupOutputFormat,
 }
 
 #[derive(Args, Debug)]
@@ -283,12 +280,6 @@ struct RefreshArgs {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum OutputFormat {
     Text,
-    Json,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-enum PopupOutputFormat {
-    Tsv,
     Json,
 }
 
@@ -480,18 +471,6 @@ enum DaemonCacheStatus {
     Healthy,
     Stale,
     Unavailable,
-}
-
-#[derive(Debug, Serialize)]
-struct PopupEntry {
-    pane_id: String,
-    provider: Option<Provider>,
-    status: StatusKind,
-    location_tag: String,
-    session_name: String,
-    window_index: u32,
-    pane_index: u32,
-    display_label: String,
 }
 
 #[derive(Clone, Debug)]
