@@ -15,3 +15,11 @@ copilot_proj11%302555002copilotCopilot | Working/dev/pts/202/home/auro/c
 cursor_proj11%303555003cursor-agentCursor CLI | Query planner/dev/pts/203/home/auro/code/cursor_projai$13@13
 cursorprobe11%3051060198cursor-agentbront/dev/pts/99/home/auro/code/agentscancursor-agent$0@0
 pi_proj11%304555004zshπ - refactor - pi_proj/dev/pts/204/home/auro/code/pi_projai$14@14
+gemini_proj12%306555005gemini-cliWorking/dev/pts/205/home/auro/code/gemini_projeditor$10@10
+gemini_proj13%307555006gemini-cliPlan snapshot cache migration/dev/pts/206/home/auro/code/gemini_projeditor$10@10
+opencode_proj12%308555007zshOC | Working/dev/pts/207/home/auro/code/opencode_projai$11@11
+opencode_proj13%309555008zshOC | Ready/dev/pts/208/home/auro/code/opencode_projai$11@11
+copilot_proj12%310555009zshGitHub Copilot | Ready/dev/pts/209/home/auro/code/copilot_projai$12@12
+copilot_proj13%311555010zshCopilot | Review patch/dev/pts/210/home/auro/code/copilot_projai$12@12
+pi_proj12%312555011zsh⠋ π - refactor - pi_proj/dev/pts/211/home/auro/code/pi_projai$14@14
+pi_proj13%313555012pipi - ship cache docs - followup/dev/pts/212/home/auro/code/pi_projai$14@14

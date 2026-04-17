@@ -46,6 +46,19 @@ fn classifies_from_command() {
         super::ClassificationConfidence::Medium,
         "suffixed binary match should stay medium confidence"
     );
+
+    let gemini_cli = classify::classify_provider(None, "gemini-cli", "")
+        .expect("gemini-cli should classify as Gemini");
+    assert_eq!(gemini_cli.provider, Provider::Gemini);
+    assert_eq!(
+        gemini_cli.matched_by,
+        super::ClassificationMatchKind::PaneCurrentCommand
+    );
+    assert_eq!(
+        gemini_cli.confidence,
+        super::ClassificationConfidence::Medium,
+        "suffixed gemini binary should stay medium confidence"
+    );
 }
 
 #[test]
@@ -453,13 +466,26 @@ fn detects_notification_names() {
 }
 
 #[test]
-fn infers_status_from_title_only() {
-    let status = classify::infer_title_status(
+fn gemini_status_uses_generic_titles_when_provider_is_known() {
+    let busy = classify::infer_title_status(
         Some(Provider::Gemini),
         Some(super::ClassificationMatchKind::PaneTitle),
         "Working",
     );
-    assert_eq!(status.kind, StatusKind::Busy);
+    let idle = classify::infer_title_status(
+        Some(Provider::Gemini),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "Ready",
+    );
+    let unknown = classify::infer_title_status(
+        Some(Provider::Gemini),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "Plan snapshot cache migration",
+    );
+
+    assert_eq!(busy.kind, StatusKind::Busy);
+    assert_eq!(idle.kind, StatusKind::Idle);
+    assert_eq!(unknown.kind, StatusKind::Unknown);
 }
 
 #[test]
@@ -1538,6 +1564,7 @@ fn fixture_snapshot_parses_expected_provider_cases() {
 
     assert_fixture_codex_cases(&panes);
     assert_fixture_claude_cases(&panes);
+    assert_fixture_gemini_cases(&panes);
     assert_fixture_opencode_case(&panes);
     assert_fixture_copilot_case(&panes);
     assert_fixture_cursor_cli_title_case(&panes);
@@ -2332,6 +2359,33 @@ fn assert_fixture_claude_cases(panes: &[PaneRecord]) {
     );
 }
 
+fn assert_fixture_gemini_cases(panes: &[PaneRecord]) {
+    let gemini_idle = pane_by_id(panes, "%300");
+    assert_eq!(gemini_idle.provider, Some(Provider::Gemini));
+    assert_eq!(gemini_idle.status.kind, StatusKind::Idle);
+    assert_eq!(gemini_idle.display.label, "Ready");
+    assert_eq!(gemini_idle.display.activity_label, None);
+    assert_eq!(
+        gemini_idle.classification.matched_by,
+        Some(super::ClassificationMatchKind::PaneCurrentCommand)
+    );
+
+    let gemini_busy = pane_by_id(panes, "%306");
+    assert_eq!(gemini_busy.provider, Some(Provider::Gemini));
+    assert_eq!(gemini_busy.status.kind, StatusKind::Busy);
+    assert_eq!(gemini_busy.display.label, "Working");
+    assert_eq!(gemini_busy.display.activity_label, None);
+
+    let gemini_task = pane_by_id(panes, "%307");
+    assert_eq!(gemini_task.provider, Some(Provider::Gemini));
+    assert_eq!(gemini_task.status.kind, StatusKind::Unknown);
+    assert_eq!(gemini_task.display.label, "Plan snapshot cache migration");
+    assert_eq!(
+        gemini_task.display.activity_label.as_deref(),
+        Some("Plan snapshot cache migration")
+    );
+}
+
 fn assert_fixture_opencode_case(panes: &[PaneRecord]) {
     let opencode = pane_by_id(panes, "%301");
     assert_eq!(opencode.provider, Some(Provider::Opencode));
@@ -2340,6 +2394,18 @@ fn assert_fixture_opencode_case(panes: &[PaneRecord]) {
         opencode.display.activity_label.as_deref(),
         Some("Query planner")
     );
+
+    let opencode_busy = pane_by_id(panes, "%308");
+    assert_eq!(opencode_busy.provider, Some(Provider::Opencode));
+    assert_eq!(opencode_busy.status.kind, StatusKind::Busy);
+    assert_eq!(opencode_busy.display.label, "Working");
+    assert_eq!(opencode_busy.display.activity_label, None);
+
+    let opencode_idle = pane_by_id(panes, "%309");
+    assert_eq!(opencode_idle.provider, Some(Provider::Opencode));
+    assert_eq!(opencode_idle.status.kind, StatusKind::Idle);
+    assert_eq!(opencode_idle.display.label, "Ready");
+    assert_eq!(opencode_idle.display.activity_label, None);
 }
 
 fn assert_fixture_copilot_case(panes: &[PaneRecord]) {
@@ -2348,6 +2414,25 @@ fn assert_fixture_copilot_case(panes: &[PaneRecord]) {
     assert_eq!(copilot.status.kind, StatusKind::Busy);
     assert_eq!(copilot.display.label, "Working");
     assert_eq!(copilot.display.activity_label, None);
+
+    let copilot_idle = pane_by_id(panes, "%310");
+    assert_eq!(copilot_idle.provider, Some(Provider::Copilot));
+    assert_eq!(copilot_idle.status.kind, StatusKind::Idle);
+    assert_eq!(copilot_idle.display.label, "Ready");
+    assert_eq!(copilot_idle.display.activity_label, None);
+    assert_eq!(
+        copilot_idle.classification.matched_by,
+        Some(super::ClassificationMatchKind::PaneTitle)
+    );
+
+    let copilot_task = pane_by_id(panes, "%311");
+    assert_eq!(copilot_task.provider, Some(Provider::Copilot));
+    assert_eq!(copilot_task.status.kind, StatusKind::Unknown);
+    assert_eq!(copilot_task.display.label, "Review patch");
+    assert_eq!(
+        copilot_task.display.activity_label.as_deref(),
+        Some("Review patch")
+    );
 }
 
 fn assert_fixture_cursor_cli_title_case(panes: &[PaneRecord]) {
@@ -2381,6 +2466,28 @@ fn assert_fixture_pi_case(panes: &[PaneRecord]) {
     assert_eq!(
         pi.display.activity_label.as_deref(),
         Some("refactor - pi_proj")
+    );
+
+    let pi_busy = pane_by_id(panes, "%312");
+    assert_eq!(pi_busy.provider, Some(Provider::Pi));
+    assert_eq!(pi_busy.status.kind, StatusKind::Busy);
+    assert_eq!(pi_busy.display.label, "refactor - pi_proj");
+    assert_eq!(
+        pi_busy.display.activity_label.as_deref(),
+        Some("refactor - pi_proj")
+    );
+
+    let pi_command = pane_by_id(panes, "%313");
+    assert_eq!(pi_command.provider, Some(Provider::Pi));
+    assert_eq!(pi_command.status.kind, StatusKind::Unknown);
+    assert_eq!(pi_command.display.label, "ship cache docs - followup");
+    assert_eq!(
+        pi_command.display.activity_label.as_deref(),
+        Some("ship cache docs - followup")
+    );
+    assert_eq!(
+        pi_command.classification.matched_by,
+        Some(super::ClassificationMatchKind::PaneCurrentCommand)
     );
 }
 
