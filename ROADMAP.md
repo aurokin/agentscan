@@ -82,6 +82,9 @@ These stay outside the core scanner unless explicitly needed later:
 Concrete milestones, task sequencing, and execution details live in
 `IMPLEMENTATION_PLAN.md`.
 
+The narrower finish work left after the current daemon/cache/popup baseline is
+tracked in `plans/remaining-work.md`.
+
 ## Proposed CLI Surface
 
 The CLI should likely split into a few stable command families:

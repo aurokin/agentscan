@@ -104,10 +104,16 @@ Completed baseline work:
 - daemon control-mode subscriptions now watch pane-local `@agent.*` metadata fields in addition to pane titles
 - targeted daemon writes now reconcile helper-published metadata from the current cache so unrelated daemon updates do not erase wrapper state
 
-Still pending in Phase 1:
+Phase 1 status:
 
-- document and enforce the automation boundary so popup remains interactive-only while JSON consumers have a clear supported contract
+- the command surface, popup automation boundary, daemon cache contract, and repo-local tmux integration are implemented in the current branch
+- the remaining work is narrower than the original Phase 1 scope and should be treated as finish work rather than missing product shape
+
+Remaining closeout work before treating the current architecture as fully settled:
+
 - broader title-driven status coverage and more fixture samples across providers
+- a narrow fallback strategy for concrete ambiguous panes where tmux metadata and titles do not provide a reliable answer
+- follow-on operational hardening for daemon lifecycle and cache diagnostics after the current fail-fast baseline
 
 ## Phase 1
 
@@ -283,6 +289,8 @@ and unit-test baseline:
 - broader property coverage for parser and normalization behavior
 - broader benchmark coverage and simple comparison workflows for key paths
 - simple performance regression checks around title-first detection and daemon refresh behavior
+
+Concrete sequencing for the remaining finish work now lives in `plans/remaining-work.md`.
 
 ## Open Implementation Questions
 

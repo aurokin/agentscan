@@ -31,6 +31,7 @@ remain unchanged until `agentscan` is ready to replace it.
 - `AGENTS.md`: repo-local agent guardrails and conventions
 - `ROADMAP.md`: intended behavior, architecture, and migration plan
 - `IMPLEMENTATION_PLAN.md`: concrete milestones, task breakdown, and execution plan
+- `plans/remaining-work.md`: scoped plan for the remaining provider, fallback, and operational hardening work
 
 ## Quality Gates
 
@@ -141,7 +142,9 @@ cache JSON. Do not add `--format` back to `popup`, including hidden or compatibi
 
 It does not yet:
 
-- broaden title-driven status logic beyond the current Codex and Claude focus, with Gemini, OpenCode, Copilot, and Pi still treated as secondary coverage while Cursor CLI remains intentionally metadata-first unless it presents an explicit Cursor title
+- provide broad fixture-backed status and label coverage across the remaining providers, with Gemini, OpenCode, Copilot, and Pi still behind the current Codex and Claude depth while Cursor CLI remains intentionally metadata-first unless it presents an explicit Cursor title
+- define and implement targeted fallback inspection for concrete ambiguous panes where tmux metadata and titles are not enough
+- harden daemon lifecycle and stale-cache diagnostics beyond the current explicit-daemon, fail-fast baseline
 
 ## Reference Behavior
 
@@ -168,10 +171,10 @@ The useful design inputs are mostly at the data-model level:
 
 ## Near-term plan
 
-1. Broaden title-driven status coverage for the current provider set without inventing misleading labels.
-2. Keep hardening daemon/cache consistency and wrapper metadata handling.
-3. Keep hardening the repo-local popup workflow around `agentscan popup`.
-4. Add targeted fallback inspection only for concrete ambiguous cases that tmux metadata cannot resolve.
+1. Finish fixture-driven provider coverage for Gemini, OpenCode, Copilot, and Pi without weakening the conservative label policy.
+2. Add targeted fallback inspection only for concrete ambiguous cases that tmux metadata and titles cannot resolve cheaply.
+3. Harden daemon lifecycle semantics, stale-cache diagnostics, and cache ergonomics around the current daemon-backed workflow.
+4. Document the remaining migration and wrapper-adoption guidance needed to move more real sessions onto explicit pane metadata.
 
 ## Current CLI Families
 
