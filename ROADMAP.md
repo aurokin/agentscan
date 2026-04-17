@@ -45,7 +45,7 @@ the documented contract instead of the legacy scripts.
 `agentscan` should eventually cover:
 
 - tmux-wide pane discovery
-- provider detection for `codex`, `claude`, `gemini`, and `opencode`
+- provider detection for `codex`, `claude`, `gemini`, `opencode`, `copilot`, `cursor_cli`, and `pi`
 - normalized pane metadata
 - stable text and JSON outputs plus an interactive popup command
 - busy or idle state tracking
@@ -460,6 +460,7 @@ Initial semantics:
 - `@agent.cwd`: working directory intended to represent the agent task root
 - `@agent.state`: optional explicit state such as `busy` or `idle`
 - `@agent.session_id`: provider-specific session or resume identifier when useful
+- for Cursor CLI, `@agent.session_id` should prefer the local chat or resume UUID exposed by `cursor-agent create-chat` and resume flows
 
 Metadata precedence should be:
 
@@ -475,6 +476,7 @@ Rules:
 - wrappers should not invent activity state unless they have strong evidence
 - missing metadata must not block discovery
 - explicit metadata should override heuristic title parsing when present
+- Cursor CLI wrappers should prefer explicit labels and session ids over assuming tmux titles will expose task names
 
 Open point:
 

@@ -207,6 +207,9 @@ pub(crate) fn summarize_snapshot(snapshot: &SnapshotEnvelope) -> Result<CacheSum
         Provider::Claude,
         Provider::Gemini,
         Provider::Opencode,
+        Provider::Copilot,
+        Provider::CursorCli,
+        Provider::Pi,
     ]
     .into_iter()
     .filter_map(|provider| {

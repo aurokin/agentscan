@@ -32,10 +32,103 @@ fn classifies_from_command() {
         matched.matched_by,
         super::ClassificationMatchKind::PaneCurrentCommand
     );
+    assert_eq!(
+        matched.confidence,
+        super::ClassificationConfidence::High,
+        "exact canonical binary match should be high confidence"
+    );
+
+    let suffixed = classify::classify_provider(None, "codex-exec", "")
+        .expect("suffixed codex binary should still classify");
+    assert_eq!(suffixed.provider, Provider::Codex);
+    assert_eq!(
+        suffixed.confidence,
+        super::ClassificationConfidence::Medium,
+        "suffixed binary match should stay medium confidence"
+    );
 }
 
 #[test]
-fn classifies_from_title_before_command() {
+fn rejects_suffixed_binaries_for_generic_word_providers() {
+    assert!(
+        classify::classify_provider(None, "copilot-backend", "").is_none(),
+        "copilot suffix should not classify as Copilot"
+    );
+    assert!(
+        classify::classify_provider(None, "cursor-agent-beta", "").is_none(),
+        "cursor-agent suffix should not classify as CursorCli"
+    );
+    assert!(
+        classify::classify_provider(None, "pi-coding-agent-foo", "").is_none(),
+        "pi-coding-agent suffix should not classify as Pi"
+    );
+}
+
+#[test]
+fn classifies_copilot_and_cursor_cli_from_command() {
+    let copilot = classify::classify_provider(None, "copilot", "").expect("should match copilot");
+    assert_eq!(copilot.provider, Provider::Copilot);
+    assert_eq!(
+        copilot.matched_by,
+        super::ClassificationMatchKind::PaneCurrentCommand
+    );
+
+    let github_copilot = classify::classify_provider(None, "github-copilot", "")
+        .expect("should match github-copilot");
+    assert_eq!(github_copilot.provider, Provider::Copilot);
+    assert_eq!(
+        github_copilot.matched_by,
+        super::ClassificationMatchKind::PaneCurrentCommand
+    );
+
+    let cursor =
+        classify::classify_provider(None, "cursor-agent", "").expect("should match cursor cli");
+    assert_eq!(cursor.provider, Provider::CursorCli);
+    assert_eq!(
+        cursor.matched_by,
+        super::ClassificationMatchKind::PaneCurrentCommand
+    );
+
+    let plain_cursor = classify::classify_provider(None, "cursor", "");
+    assert!(
+        plain_cursor.is_none(),
+        "plain cursor launcher should not match cursor cli"
+    );
+}
+
+#[test]
+fn classifies_pi_from_specific_command_and_title() {
+    let command = classify::classify_provider(None, "pi-coding-agent", "")
+        .expect("should match pi coding agent");
+    assert_eq!(command.provider, Provider::Pi);
+    assert_eq!(
+        command.matched_by,
+        super::ClassificationMatchKind::PaneCurrentCommand
+    );
+
+    let title = classify::classify_provider(None, "pi", "pi - refactor - agentscan")
+        .expect("bare pi command plus task title should match");
+    assert_eq!(title.provider, Provider::Pi);
+    assert_eq!(
+        title.matched_by,
+        super::ClassificationMatchKind::PaneCurrentCommand
+    );
+}
+
+#[test]
+fn does_not_classify_bare_pi_command_without_other_signal() {
+    let bare = classify::classify_provider(None, "pi", "");
+    let generic_title = classify::classify_provider(None, "pi", "pi - agentscan");
+
+    assert!(bare.is_none(), "bare pi command should not match");
+    assert!(
+        generic_title.is_none(),
+        "bare pi command plus generic title should not match"
+    );
+}
+
+#[test]
+fn classifies_from_title_when_command_is_generic() {
     let matched = classify::classify_provider(None, "zsh", "Claude Code | Working")
         .expect("should match claude");
     assert_eq!(matched.provider, Provider::Claude);
@@ -43,6 +136,63 @@ fn classifies_from_title_before_command() {
         matched.matched_by,
         super::ClassificationMatchKind::PaneTitle
     );
+}
+
+#[test]
+fn classifies_cursor_agent_from_bare_title_when_command_is_generic() {
+    let matched =
+        classify::classify_provider(None, "zsh", "Cursor Agent").expect("should match cursor cli");
+    assert_eq!(matched.provider, Provider::CursorCli);
+    assert_eq!(
+        matched.matched_by,
+        super::ClassificationMatchKind::PaneTitle
+    );
+}
+
+#[test]
+fn classifies_from_command_before_conflicting_title() {
+    let cursor_title = classify::classify_provider(None, "codex", "Cursor | Working")
+        .expect("command should beat conflicting cursor title");
+    assert_eq!(cursor_title.provider, Provider::Codex);
+    assert_eq!(
+        cursor_title.matched_by,
+        super::ClassificationMatchKind::PaneCurrentCommand
+    );
+
+    let pi_title = classify::classify_provider(None, "codex", "pi - refactor - agentscan")
+        .expect("command should beat conflicting pi title");
+    assert_eq!(pi_title.provider, Provider::Codex);
+    assert_eq!(
+        pi_title.matched_by,
+        super::ClassificationMatchKind::PaneCurrentCommand
+    );
+}
+
+#[test]
+fn codex_shaped_titles_win_before_pi_heuristic() {
+    let matched = classify::classify_provider(None, "zsh", "pi - refactor - agentscan: codex")
+        .expect("codex-shaped title should still classify as codex");
+    assert_eq!(matched.provider, Provider::Codex);
+    assert_eq!(
+        matched.matched_by,
+        super::ClassificationMatchKind::PaneTitle
+    );
+}
+
+#[test]
+fn codex_shaped_titles_win_before_copilot_and_cursor_prefixes() {
+    let copilot = classify::classify_provider(None, "zsh", "Copilot | review patch: codex")
+        .expect("codex-shaped copilot wrapper title should classify as codex");
+    assert_eq!(copilot.provider, Provider::Codex);
+    assert_eq!(
+        copilot.matched_by,
+        super::ClassificationMatchKind::PaneTitle
+    );
+
+    let cursor = classify::classify_provider(None, "zsh", "Cursor CLI | parser work: codex")
+        .expect("codex-shaped cursor wrapper title should classify as codex");
+    assert_eq!(cursor.provider, Provider::Codex);
+    assert_eq!(cursor.matched_by, super::ClassificationMatchKind::PaneTitle);
 }
 
 #[test]
@@ -54,6 +204,42 @@ fn classifies_from_pane_metadata_before_title_and_command() {
         matched.matched_by,
         super::ClassificationMatchKind::PaneMetadata
     );
+}
+
+#[test]
+fn classifies_copilot_and_cursor_cli_from_metadata_aliases() {
+    let copilot = classify::classify_provider(Some("github-copilot"), "zsh", "Cursor CLI | Ready")
+        .expect("pane metadata should match copilot");
+    assert_eq!(copilot.provider, Provider::Copilot);
+    assert_eq!(
+        copilot.matched_by,
+        super::ClassificationMatchKind::PaneMetadata
+    );
+
+    let cursor = classify::classify_provider(Some("cursor cli"), "zsh", "Copilot | Working")
+        .expect("pane metadata should match cursor cli");
+    assert_eq!(cursor.provider, Provider::CursorCli);
+    assert_eq!(
+        cursor.matched_by,
+        super::ClassificationMatchKind::PaneMetadata
+    );
+
+    let cursor_agent =
+        classify::classify_provider(Some("cursor-agent"), "zsh", "Copilot | Working")
+            .expect("cursor-agent metadata should match cursor cli");
+    assert_eq!(cursor_agent.provider, Provider::CursorCli);
+    assert_eq!(
+        cursor_agent.matched_by,
+        super::ClassificationMatchKind::PaneMetadata
+    );
+}
+
+#[test]
+fn classifies_pi_from_metadata_aliases() {
+    let pi = classify::classify_provider(Some("pi-coding-agent"), "zsh", "Claude Code | Working")
+        .expect("pane metadata should match pi");
+    assert_eq!(pi.provider, Provider::Pi);
+    assert_eq!(pi.matched_by, super::ClassificationMatchKind::PaneMetadata);
 }
 
 #[test]
@@ -268,14 +454,26 @@ fn detects_notification_names() {
 
 #[test]
 fn infers_status_from_title_only() {
-    let status = classify::infer_title_status(Some(Provider::Gemini), "Working");
+    let status = classify::infer_title_status(
+        Some(Provider::Gemini),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "Working",
+    );
     assert_eq!(status.kind, StatusKind::Busy);
 }
 
 #[test]
 fn codex_status_uses_title_only() {
-    let busy = classify::infer_title_status(Some(Provider::Codex), "⠹ agentscan | Working");
-    let idle = classify::infer_title_status(Some(Provider::Codex), "Ready");
+    let busy = classify::infer_title_status(
+        Some(Provider::Codex),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "⠹ agentscan | Working",
+    );
+    let idle = classify::infer_title_status(
+        Some(Provider::Codex),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "Ready",
+    );
 
     assert_eq!(busy.kind, StatusKind::Busy);
     assert_eq!(idle.kind, StatusKind::Idle);
@@ -283,9 +481,16 @@ fn codex_status_uses_title_only() {
 
 #[test]
 fn claude_status_distinguishes_spinner_and_idle_marker() {
-    let busy = classify::infer_title_status(Some(Provider::Claude), "⠏ Building summary");
-    let idle =
-        classify::infer_title_status(Some(Provider::Claude), "✳ Review and summarize todo list");
+    let busy = classify::infer_title_status(
+        Some(Provider::Claude),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "⠏ Building summary",
+    );
+    let idle = classify::infer_title_status(
+        Some(Provider::Claude),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "✳ Review and summarize todo list",
+    );
 
     assert_eq!(busy.kind, StatusKind::Busy);
     assert_eq!(idle.kind, StatusKind::Idle);
@@ -293,9 +498,21 @@ fn claude_status_distinguishes_spinner_and_idle_marker() {
 
 #[test]
 fn claude_status_uses_textual_titles_without_spinner_glyphs() {
-    let busy = classify::infer_title_status(Some(Provider::Claude), "Claude Code | Working");
-    let idle = classify::infer_title_status(Some(Provider::Claude), "Claude Code | Ready");
-    let unknown = classify::infer_title_status(Some(Provider::Claude), "Claude Code | Query");
+    let busy = classify::infer_title_status(
+        Some(Provider::Claude),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "Claude Code | Working",
+    );
+    let idle = classify::infer_title_status(
+        Some(Provider::Claude),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "Claude Code | Ready",
+    );
+    let unknown = classify::infer_title_status(
+        Some(Provider::Claude),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "Claude Code | Query",
+    );
 
     assert_eq!(busy.kind, StatusKind::Busy);
     assert_eq!(idle.kind, StatusKind::Idle);
@@ -304,9 +521,21 @@ fn claude_status_uses_textual_titles_without_spinner_glyphs() {
 
 #[test]
 fn opencode_status_uses_title_prefix_when_present() {
-    let busy = classify::infer_title_status(Some(Provider::Opencode), "OC | Working");
-    let idle = classify::infer_title_status(Some(Provider::Opencode), "OC | Ready");
-    let unknown = classify::infer_title_status(Some(Provider::Opencode), "OC | Query planner");
+    let busy = classify::infer_title_status(
+        Some(Provider::Opencode),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "OC | Working",
+    );
+    let idle = classify::infer_title_status(
+        Some(Provider::Opencode),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "OC | Ready",
+    );
+    let unknown = classify::infer_title_status(
+        Some(Provider::Opencode),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "OC | Query planner",
+    );
 
     assert_eq!(busy.kind, StatusKind::Busy);
     assert_eq!(idle.kind, StatusKind::Idle);
@@ -314,13 +543,313 @@ fn opencode_status_uses_title_prefix_when_present() {
 }
 
 #[test]
+fn copilot_and_cursor_cli_status_use_title_prefixes_when_present() {
+    let copilot_busy = classify::infer_title_status(
+        Some(Provider::Copilot),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "Copilot | Working",
+    );
+    let copilot_idle = classify::infer_title_status(
+        Some(Provider::Copilot),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "GitHub Copilot | Ready",
+    );
+    let cursor_busy = classify::infer_title_status(
+        Some(Provider::CursorCli),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "Cursor CLI | Working",
+    );
+    let cursor_unknown = classify::infer_title_status(
+        Some(Provider::CursorCli),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "Cursor | Query planner",
+    );
+    let cursor_agent_busy = classify::infer_title_status(
+        Some(Provider::CursorCli),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "Cursor Agent | Working",
+    );
+
+    assert_eq!(copilot_busy.kind, StatusKind::Busy);
+    assert_eq!(copilot_idle.kind, StatusKind::Idle);
+    assert_eq!(cursor_busy.kind, StatusKind::Busy);
+    assert_eq!(cursor_unknown.kind, StatusKind::Unknown);
+    assert_eq!(cursor_agent_busy.kind, StatusKind::Busy);
+}
+
+#[test]
+fn command_first_status_ignores_stale_prefixed_titles_from_other_providers() {
+    let stale_claude = classify::infer_title_status(
+        Some(Provider::Codex),
+        Some(super::ClassificationMatchKind::PaneCurrentCommand),
+        "Claude Code | Ready",
+    );
+    let stale_opencode = classify::infer_title_status(
+        Some(Provider::Codex),
+        Some(super::ClassificationMatchKind::PaneCurrentCommand),
+        "OC | Working",
+    );
+    let stale_copilot = classify::infer_title_status(
+        Some(Provider::Codex),
+        Some(super::ClassificationMatchKind::PaneCurrentCommand),
+        "Copilot | Working",
+    );
+    let stale_pi = classify::infer_title_status(
+        Some(Provider::Claude),
+        Some(super::ClassificationMatchKind::PaneMetadata),
+        "⠋ π - refactor - agentscan",
+    );
+
+    assert_eq!(stale_claude.kind, StatusKind::Unknown);
+    assert_eq!(stale_opencode.kind, StatusKind::Unknown);
+    assert_eq!(stale_copilot.kind, StatusKind::Unknown);
+    assert_eq!(stale_pi.kind, StatusKind::Unknown);
+}
+
+#[test]
+fn cursor_cli_generic_titles_fall_back_to_window_name_for_display() {
+    let pane = classify::pane_from_row(super::TmuxPaneRow {
+        session_name: "cursorprobe".to_string(),
+        window_index: 1,
+        pane_index: 1,
+        pane_id: "%305".to_string(),
+        pane_pid: 1060198,
+        pane_current_command: "cursor-agent".to_string(),
+        pane_title_raw: "bront".to_string(),
+        pane_tty: "/dev/pts/99".to_string(),
+        pane_current_path: "/home/auro/code/agentscan".to_string(),
+        window_name: "ai".to_string(),
+        session_id: Some("$0".to_string()),
+        window_id: Some("@0".to_string()),
+        agent_provider: None,
+        agent_label: None,
+        agent_cwd: None,
+        agent_state: None,
+        agent_session_id: None,
+    });
+
+    assert_eq!(pane.provider, Some(Provider::CursorCli));
+    assert_eq!(pane.display.label, "ai");
+    assert_eq!(pane.display.activity_label, None);
+    assert_eq!(pane.status.kind, StatusKind::Unknown);
+    assert_eq!(
+        pane.classification.matched_by,
+        Some(super::ClassificationMatchKind::PaneCurrentCommand)
+    );
+}
+
+#[test]
+fn cursor_cli_title_only_panes_classify_from_bare_cursor_titles() {
+    for title in ["Cursor Agent", "Cursor CLI", "Cursor"] {
+        let pane = classify::pane_from_row(super::TmuxPaneRow {
+            session_name: "cursorprobe".to_string(),
+            window_index: 1,
+            pane_index: 1,
+            pane_id: "%306".to_string(),
+            pane_pid: 1060201,
+            pane_current_command: "zsh".to_string(),
+            pane_title_raw: title.to_string(),
+            pane_tty: "/dev/pts/100".to_string(),
+            pane_current_path: "/home/auro/code/agentscan".to_string(),
+            window_name: "ai".to_string(),
+            session_id: Some("$0".to_string()),
+            window_id: Some("@0".to_string()),
+            agent_provider: None,
+            agent_label: None,
+            agent_cwd: None,
+            agent_state: None,
+            agent_session_id: None,
+        });
+
+        assert_eq!(pane.provider, Some(Provider::CursorCli), "title: {title}");
+        assert_eq!(pane.display.label, title, "title: {title}");
+        assert_eq!(pane.display.activity_label, None, "title: {title}");
+        assert_eq!(pane.status.kind, StatusKind::Unknown, "title: {title}");
+        assert_eq!(
+            pane.classification.matched_by,
+            Some(super::ClassificationMatchKind::PaneTitle),
+            "title: {title}"
+        );
+    }
+}
+
+#[test]
+fn cursor_cli_generic_status_titles_fall_back_for_display() {
+    let ready_pane = classify::pane_from_row(super::TmuxPaneRow {
+        session_name: "cursorprobe".to_string(),
+        window_index: 1,
+        pane_index: 1,
+        pane_id: "%307".to_string(),
+        pane_pid: 1060202,
+        pane_current_command: "cursor-agent".to_string(),
+        pane_title_raw: "Cursor | Ready".to_string(),
+        pane_tty: "/dev/pts/101".to_string(),
+        pane_current_path: "/home/auro/code/agentscan".to_string(),
+        window_name: "cursor-window".to_string(),
+        session_id: Some("$0".to_string()),
+        window_id: Some("@0".to_string()),
+        agent_provider: None,
+        agent_label: None,
+        agent_cwd: None,
+        agent_state: None,
+        agent_session_id: None,
+    });
+    assert_eq!(ready_pane.provider, Some(Provider::CursorCli));
+    assert_eq!(ready_pane.display.label, "cursor-window");
+    assert_eq!(ready_pane.display.activity_label, None);
+    assert_eq!(ready_pane.status.kind, StatusKind::Idle);
+
+    let working_pane = classify::pane_from_row(super::TmuxPaneRow {
+        session_name: "cursorprobe".to_string(),
+        window_index: 1,
+        pane_index: 2,
+        pane_id: "%308".to_string(),
+        pane_pid: 1060203,
+        pane_current_command: "cursor-agent".to_string(),
+        pane_title_raw: "Cursor CLI | Working".to_string(),
+        pane_tty: "/dev/pts/102".to_string(),
+        pane_current_path: "/home/auro/code/agentscan".to_string(),
+        window_name: "cursor-window-2".to_string(),
+        session_id: Some("$0".to_string()),
+        window_id: Some("@0".to_string()),
+        agent_provider: None,
+        agent_label: None,
+        agent_cwd: None,
+        agent_state: None,
+        agent_session_id: None,
+    });
+    assert_eq!(working_pane.provider, Some(Provider::CursorCli));
+    assert_eq!(working_pane.display.label, "cursor-window-2");
+    assert_eq!(working_pane.display.activity_label, None);
+    assert_eq!(working_pane.status.kind, StatusKind::Busy);
+}
+
+#[test]
+fn cursor_cli_task_titles_still_drive_display_label() {
+    let pane = classify::pane_from_row(super::TmuxPaneRow {
+        session_name: "cursorprobe".to_string(),
+        window_index: 1,
+        pane_index: 3,
+        pane_id: "%309".to_string(),
+        pane_pid: 1060204,
+        pane_current_command: "cursor-agent".to_string(),
+        pane_title_raw: "Cursor CLI | Query planner".to_string(),
+        pane_tty: "/dev/pts/103".to_string(),
+        pane_current_path: "/home/auro/code/agentscan".to_string(),
+        window_name: "cursor-window-3".to_string(),
+        session_id: Some("$0".to_string()),
+        window_id: Some("@0".to_string()),
+        agent_provider: None,
+        agent_label: None,
+        agent_cwd: None,
+        agent_state: None,
+        agent_session_id: None,
+    });
+
+    assert_eq!(pane.provider, Some(Provider::CursorCli));
+    assert_eq!(pane.display.label, "Query planner");
+    assert_eq!(
+        pane.display.activity_label,
+        Some("Query planner".to_string())
+    );
+    assert_eq!(pane.status.kind, StatusKind::Unknown);
+}
+
+#[test]
+fn cursor_cli_metadata_alias_classifies_generic_shell_panes() {
+    let pane = classify::pane_from_row(super::TmuxPaneRow {
+        session_name: "cursorprobe".to_string(),
+        window_index: 1,
+        pane_index: 4,
+        pane_id: "%310".to_string(),
+        pane_pid: 1060205,
+        pane_current_command: "zsh".to_string(),
+        pane_title_raw: "zsh".to_string(),
+        pane_tty: "/dev/pts/104".to_string(),
+        pane_current_path: "/home/auro/code/agentscan".to_string(),
+        window_name: "cursor-window-4".to_string(),
+        session_id: Some("$0".to_string()),
+        window_id: Some("@0".to_string()),
+        agent_provider: Some("cursor-agent".to_string()),
+        agent_label: None,
+        agent_cwd: None,
+        agent_state: None,
+        agent_session_id: None,
+    });
+
+    assert_eq!(pane.provider, Some(Provider::CursorCli));
+    assert_eq!(pane.display.label, "cursor-window-4");
+    assert_eq!(pane.display.activity_label, None);
+    assert_eq!(pane.status.kind, StatusKind::Unknown);
+    assert_eq!(
+        pane.classification.matched_by,
+        Some(super::ClassificationMatchKind::PaneMetadata)
+    );
+}
+
+#[test]
+fn cursor_agent_prefixed_task_titles_still_drive_display_label() {
+    let pane = classify::pane_from_row(super::TmuxPaneRow {
+        session_name: "cursorprobe".to_string(),
+        window_index: 1,
+        pane_index: 5,
+        pane_id: "%311".to_string(),
+        pane_pid: 1060206,
+        pane_current_command: "cursor-agent".to_string(),
+        pane_title_raw: "Cursor Agent | Query planner".to_string(),
+        pane_tty: "/dev/pts/105".to_string(),
+        pane_current_path: "/home/auro/code/agentscan".to_string(),
+        window_name: "cursor-window-5".to_string(),
+        session_id: Some("$0".to_string()),
+        window_id: Some("@0".to_string()),
+        agent_provider: None,
+        agent_label: None,
+        agent_cwd: None,
+        agent_state: None,
+        agent_session_id: None,
+    });
+
+    assert_eq!(pane.provider, Some(Provider::CursorCli));
+    assert_eq!(pane.display.label, "Query planner");
+    assert_eq!(
+        pane.display.activity_label,
+        Some("Query planner".to_string())
+    );
+    assert_eq!(pane.status.kind, StatusKind::Unknown);
+}
+
+#[test]
+fn pi_status_uses_spinner_title_when_present() {
+    let busy = classify::infer_title_status(
+        Some(Provider::Pi),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "⠋ π - refactor - agentscan",
+    );
+    let unknown = classify::infer_title_status(
+        Some(Provider::Pi),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "π - refactor - agentscan",
+    );
+
+    assert_eq!(busy.kind, StatusKind::Busy);
+    assert_eq!(unknown.kind, StatusKind::Unknown);
+}
+
+#[test]
 fn metadata_state_fills_unknown_status_without_overriding_title_signal() {
-    let unknown_from_title =
-        classify::infer_title_status(Some(Provider::Codex), "(bront) repo: codex");
+    let unknown_from_title = classify::infer_title_status(
+        Some(Provider::Codex),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "(bront) repo: codex",
+    );
     let busy_from_metadata = classify::infer_status(unknown_from_title, Some("busy"));
     assert_eq!(busy_from_metadata.kind, StatusKind::Busy);
 
-    let idle_from_title = classify::infer_title_status(Some(Provider::Codex), "Ready");
+    let idle_from_title = classify::infer_title_status(
+        Some(Provider::Codex),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "Ready",
+    );
     let still_idle = classify::infer_status(idle_from_title, Some("busy"));
     assert_eq!(still_idle.kind, StatusKind::Idle);
 }
@@ -382,6 +911,36 @@ fn detects_codex_titles() {
         "(repo) task: /home/auro/.zshrc.d/scripts/lgpt.sh"
     ));
     assert!(!classify::looks_like_codex_title("(repo) task: shell"));
+}
+
+#[test]
+fn detects_pi_titles() {
+    let greek = classify::classify_provider(None, "zsh", "π - refactor - agentscan")
+        .expect("greek pi title should match");
+    let ascii = classify::classify_provider(None, "pi", "pi - refactor - agentscan")
+        .expect("ascii pi title should match with bare pi command");
+
+    assert_eq!(greek.provider, Provider::Pi);
+    assert_eq!(ascii.provider, Provider::Pi);
+}
+
+#[test]
+fn does_not_classify_ascii_pi_task_titles_without_extra_signal() {
+    let ascii = classify::classify_provider(None, "zsh", "pi - refactor - agentscan");
+
+    assert!(
+        ascii.is_none(),
+        "ascii pi title without metadata, spinner, or pi command should not match"
+    );
+}
+
+#[test]
+fn does_not_classify_generic_pi_prefix_titles() {
+    let greek = classify::classify_provider(None, "zsh", "π - agentscan");
+    let ascii = classify::classify_provider(None, "zsh", "pi - agentscan");
+
+    assert!(greek.is_none(), "generic greek pi title should not match");
+    assert!(ascii.is_none(), "generic ascii pi title should not match");
 }
 
 #[test]
@@ -980,6 +1539,10 @@ fn fixture_snapshot_parses_expected_provider_cases() {
     assert_fixture_codex_cases(&panes);
     assert_fixture_claude_cases(&panes);
     assert_fixture_opencode_case(&panes);
+    assert_fixture_copilot_case(&panes);
+    assert_fixture_cursor_cli_title_case(&panes);
+    assert_fixture_cursor_cli_command_case(&panes);
+    assert_fixture_pi_case(&panes);
 }
 
 #[test]
@@ -1219,26 +1782,74 @@ fn known_status_glyph_stripping_preserves_normal_prefixes() {
 #[test]
 fn title_normalization_strips_claude_and_opencode_prefixes() {
     assert_eq!(
-        classify::normalize_title_for_display("Claude Code | Query"),
+        classify::normalize_title_for_display(Some(Provider::Claude), "Claude Code | Query"),
         "Query"
     );
     assert_eq!(
-        classify::normalize_title_for_display("Claude | Ready"),
+        classify::normalize_title_for_display(Some(Provider::Claude), "Claude | Ready"),
         "Ready"
     );
     assert_eq!(
-        classify::normalize_title_for_display("OC | Query planner"),
+        classify::normalize_title_for_display(Some(Provider::Opencode), "OC | Query planner"),
         "Query planner"
     );
     assert_eq!(
+        classify::normalize_title_for_display(Some(Provider::Copilot), "Copilot | Review patch"),
+        "Review patch"
+    );
+    assert_eq!(
         classify::normalize_title_for_display(
+            Some(Provider::CursorCli),
+            "Cursor CLI | Query planner"
+        ),
+        "Query planner"
+    );
+    assert_eq!(
+        classify::normalize_title_for_display(Some(Provider::Pi), "π - refactor - agentscan"),
+        "refactor - agentscan"
+    );
+    assert_eq!(
+        classify::normalize_title_for_display(Some(Provider::Pi), "pi - agentscan"),
+        "pi - agentscan"
+    );
+    assert_eq!(
+        classify::normalize_title_for_display(
+            Some(Provider::Codex),
             "(bront) parallel-n64: /home/auro/.zshrc.d/scripts/lgpt.sh"
         ),
         "(bront) parallel-n64"
     );
     assert_eq!(
-        classify::normalize_title_for_display("(repo) task: codex --model gpt-5"),
+        classify::normalize_title_for_display(
+            Some(Provider::Codex),
+            "(repo) task: codex --model gpt-5"
+        ),
         "(repo) task"
+    );
+    assert_eq!(
+        classify::normalize_title_for_display(
+            Some(Provider::Codex),
+            "pi - refactor - agentscan: codex"
+        ),
+        "pi - refactor - agentscan"
+    );
+    assert_eq!(
+        classify::normalize_title_for_display(
+            Some(Provider::Codex),
+            "Copilot | Review patch: codex"
+        ),
+        "Copilot | Review patch"
+    );
+    assert_eq!(
+        classify::normalize_title_for_display(
+            Some(Provider::Codex),
+            "Cursor CLI | Parser work: codex"
+        ),
+        "Cursor CLI | Parser work"
+    );
+    assert_eq!(
+        classify::normalize_title_for_display(Some(Provider::Codex), "Copilot | Review patch"),
+        "Copilot | Review patch"
     );
 }
 
@@ -1247,6 +1858,7 @@ fn display_metadata_extracts_activity_labels_from_titles() {
     let codex = classify::display_metadata(
         Some(Provider::Codex),
         None,
+        None,
         "⠹ agentscan | Working",
         "codex",
         "editor",
@@ -1254,8 +1866,23 @@ fn display_metadata_extracts_activity_labels_from_titles() {
     assert_eq!(codex.label, "agentscan | Working");
     assert_eq!(codex.activity_label.as_deref(), Some("agentscan"));
 
+    let codex_wrapped = classify::display_metadata(
+        Some(Provider::Codex),
+        None,
+        None,
+        "pi - refactor - agentscan: codex",
+        "zsh",
+        "editor",
+    );
+    assert_eq!(codex_wrapped.label, "pi - refactor - agentscan");
+    assert_eq!(
+        codex_wrapped.activity_label.as_deref(),
+        Some("pi - refactor - agentscan")
+    );
+
     let claude = classify::display_metadata(
         Some(Provider::Claude),
+        None,
         None,
         "✳ Review and summarize todo list",
         "claude",
@@ -1267,13 +1894,20 @@ fn display_metadata_extracts_activity_labels_from_titles() {
         Some("Review and summarize todo list")
     );
 
-    let generic =
-        classify::display_metadata(Some(Provider::Codex), None, "Ready", "codex", "editor");
+    let generic = classify::display_metadata(
+        Some(Provider::Codex),
+        None,
+        None,
+        "Ready",
+        "codex",
+        "editor",
+    );
     assert_eq!(generic.label, "Ready");
     assert_eq!(generic.activity_label, None);
 
     let wrapped_codex = classify::display_metadata(
         Some(Provider::Codex),
+        None,
         None,
         "(bront) parallel-n64: /home/auro/.zshrc.d/scripts/lgpt.sh",
         "zsh",
@@ -1287,6 +1921,7 @@ fn display_metadata_extracts_activity_labels_from_titles() {
 
     let published = classify::display_metadata(
         Some(Provider::Claude),
+        None,
         Some("Wrapper Claude Task"),
         "Claude Code | Working",
         "zsh",
@@ -1296,6 +1931,167 @@ fn display_metadata_extracts_activity_labels_from_titles() {
     assert_eq!(
         published.activity_label.as_deref(),
         Some("Wrapper Claude Task")
+    );
+
+    let copilot = classify::display_metadata(
+        Some(Provider::Copilot),
+        None,
+        None,
+        "Copilot | Review patch",
+        "copilot",
+        "ai",
+    );
+    assert_eq!(copilot.label, "Review patch");
+    assert_eq!(copilot.activity_label.as_deref(), Some("Review patch"));
+
+    let cursor = classify::display_metadata(
+        Some(Provider::CursorCli),
+        Some(super::ClassificationMatchKind::PaneCurrentCommand),
+        None,
+        "Cursor CLI | Query planner",
+        "cursor-agent",
+        "ai",
+    );
+    assert_eq!(cursor.label, "Query planner");
+    assert_eq!(cursor.activity_label.as_deref(), Some("Query planner"));
+
+    let pi = classify::display_metadata(
+        Some(Provider::Pi),
+        None,
+        None,
+        "π - refactor - agentscan",
+        "pi",
+        "ai",
+    );
+    assert_eq!(pi.label, "refactor - agentscan");
+    assert_eq!(pi.activity_label.as_deref(), Some("refactor - agentscan"));
+
+    let prefixed_codex = classify::display_metadata(
+        Some(Provider::Codex),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        None,
+        "Copilot | Review patch: codex",
+        "zsh",
+        "ai",
+    );
+    assert_eq!(prefixed_codex.label, "Copilot | Review patch");
+    assert_eq!(
+        prefixed_codex.activity_label.as_deref(),
+        Some("Copilot | Review patch")
+    );
+}
+
+#[test]
+fn display_metadata_prefers_window_name_for_metadata_only_cursor_cli() {
+    let cursor = classify::display_metadata(
+        Some(Provider::CursorCli),
+        Some(super::ClassificationMatchKind::PaneMetadata),
+        None,
+        "zsh",
+        "zsh",
+        "agent-pane",
+    );
+    assert_eq!(cursor.label, "agent-pane");
+    assert_eq!(cursor.activity_label, None);
+}
+
+#[test]
+fn display_metadata_keeps_task_titles_for_metadata_only_cursor_cli() {
+    let cursor = classify::display_metadata(
+        Some(Provider::CursorCli),
+        Some(super::ClassificationMatchKind::PaneMetadata),
+        None,
+        "Implement parser",
+        "zsh",
+        "agent-pane",
+    );
+    assert_eq!(cursor.label, "Implement parser");
+    assert_eq!(cursor.activity_label.as_deref(), Some("Implement parser"));
+}
+
+#[test]
+fn display_metadata_ignores_stale_prefixed_titles_for_other_providers() {
+    let stale_codex = classify::display_metadata(
+        Some(Provider::Claude),
+        Some(super::ClassificationMatchKind::PaneCurrentCommand),
+        None,
+        "repo: codex",
+        "claude",
+        "review",
+    );
+    assert_eq!(stale_codex.label, "review");
+    assert_eq!(stale_codex.activity_label, None);
+
+    let stale_claude = classify::display_metadata(
+        Some(Provider::Codex),
+        Some(super::ClassificationMatchKind::PaneCurrentCommand),
+        None,
+        "Claude Code | Ready",
+        "codex",
+        "agent-pane",
+    );
+    assert_eq!(stale_claude.label, "agent-pane");
+    assert_eq!(stale_claude.activity_label, None);
+
+    let stale_opencode = classify::display_metadata(
+        Some(Provider::Codex),
+        Some(super::ClassificationMatchKind::PaneCurrentCommand),
+        None,
+        "OC | Query planner",
+        "codex",
+        "agent-pane",
+    );
+    assert_eq!(stale_opencode.label, "agent-pane");
+    assert_eq!(stale_opencode.activity_label, None);
+
+    let stale_copilot = classify::display_metadata(
+        Some(Provider::Codex),
+        Some(super::ClassificationMatchKind::PaneCurrentCommand),
+        None,
+        "Copilot | Working",
+        "codex",
+        "agent-pane",
+    );
+    assert_eq!(stale_copilot.label, "agent-pane");
+    assert_eq!(stale_copilot.activity_label, None);
+
+    let stale_cursor = classify::display_metadata(
+        Some(Provider::Claude),
+        Some(super::ClassificationMatchKind::PaneMetadata),
+        None,
+        "Cursor CLI | Query planner",
+        "zsh",
+        "review",
+    );
+    assert_eq!(stale_cursor.label, "review");
+    assert_eq!(stale_cursor.activity_label, None);
+
+    let stale_pi = classify::display_metadata(
+        Some(Provider::Claude),
+        Some(super::ClassificationMatchKind::PaneMetadata),
+        None,
+        "π - refactor - agentscan",
+        "zsh",
+        "review",
+    );
+    assert_eq!(stale_pi.label, "review");
+    assert_eq!(stale_pi.activity_label, None);
+}
+
+#[test]
+fn display_metadata_keeps_plain_ascii_pi_task_titles_for_non_pi_providers() {
+    let plain_ascii_pi = classify::display_metadata(
+        Some(Provider::Claude),
+        Some(super::ClassificationMatchKind::PaneCurrentCommand),
+        None,
+        "pi - refactor - agentscan",
+        "claude",
+        "review",
+    );
+    assert_eq!(plain_ascii_pi.label, "pi - refactor - agentscan");
+    assert_eq!(
+        plain_ascii_pi.activity_label.as_deref(),
+        Some("pi - refactor - agentscan")
     );
 }
 
@@ -1421,6 +2217,36 @@ fn unsupported_root_list_args_are_rejected_for_other_commands() {
     assert!(super::commands::reject_root_refresh(&cli.list_args, "tmux set-metadata").is_err());
 }
 
+#[test]
+fn tmux_set_metadata_accepts_provider_aliases() {
+    for (value, expected) in [
+        ("cursor_cli", Provider::CursorCli),
+        ("cursor-cli", Provider::CursorCli),
+        ("cursor-agent", Provider::CursorCli),
+        ("copilot", Provider::Copilot),
+        ("github-copilot", Provider::Copilot),
+        ("pi", Provider::Pi),
+        ("pi-coding-agent", Provider::Pi),
+    ] {
+        let cli = <Cli as clap::Parser>::parse_from([
+            "agentscan",
+            "tmux",
+            "set-metadata",
+            "--provider",
+            value,
+        ]);
+        match cli.command {
+            Some(super::Commands::Tmux(args)) => match args.command {
+                super::TmuxCommands::SetMetadata(set_args) => {
+                    assert_eq!(set_args.provider, Some(expected), "value: {value}");
+                }
+                other => panic!("expected tmux set-metadata command, got {other:?}"),
+            },
+            other => panic!("expected tmux command, got {other:?}"),
+        }
+    }
+}
+
 fn cache_path_for_test(
     override_path: Option<&str>,
     xdg_cache_home: Option<&str>,
@@ -1513,6 +2339,48 @@ fn assert_fixture_opencode_case(panes: &[PaneRecord]) {
     assert_eq!(
         opencode.display.activity_label.as_deref(),
         Some("Query planner")
+    );
+}
+
+fn assert_fixture_copilot_case(panes: &[PaneRecord]) {
+    let copilot = pane_by_id(panes, "%302");
+    assert_eq!(copilot.provider, Some(Provider::Copilot));
+    assert_eq!(copilot.status.kind, StatusKind::Busy);
+    assert_eq!(copilot.display.label, "Working");
+    assert_eq!(copilot.display.activity_label, None);
+}
+
+fn assert_fixture_cursor_cli_title_case(panes: &[PaneRecord]) {
+    let cursor = pane_by_id(panes, "%303");
+    assert_eq!(cursor.provider, Some(Provider::CursorCli));
+    assert_eq!(cursor.display.label, "Query planner");
+    assert_eq!(cursor.status.kind, StatusKind::Unknown);
+    assert_eq!(
+        cursor.display.activity_label.as_deref(),
+        Some("Query planner")
+    );
+}
+
+fn assert_fixture_cursor_cli_command_case(panes: &[PaneRecord]) {
+    let cursor = pane_by_id(panes, "%305");
+    assert_eq!(cursor.provider, Some(Provider::CursorCli));
+    assert_eq!(cursor.display.label, "cursor-agent");
+    assert_eq!(cursor.status.kind, StatusKind::Unknown);
+    assert_eq!(cursor.display.activity_label, None);
+    assert_eq!(
+        cursor.classification.matched_by,
+        Some(super::ClassificationMatchKind::PaneCurrentCommand)
+    );
+}
+
+fn assert_fixture_pi_case(panes: &[PaneRecord]) {
+    let pi = pane_by_id(panes, "%304");
+    assert_eq!(pi.provider, Some(Provider::Pi));
+    assert_eq!(pi.display.label, "refactor - pi_proj");
+    assert_eq!(pi.status.kind, StatusKind::Unknown);
+    assert_eq!(
+        pi.display.activity_label.as_deref(),
+        Some("refactor - pi_proj")
     );
 }
 

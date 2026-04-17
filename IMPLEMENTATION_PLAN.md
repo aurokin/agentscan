@@ -94,6 +94,7 @@ Completed baseline work:
 - title-driven status heuristics now cover the current observed Codex and Claude paths first, with Gemini and basic OpenCode support present but still secondary
 - display normalization now strips noisy provider prefixes from title-driven Claude and OpenCode labels and collapses wrapper-heavy Codex titles down to task labels
 - `display.activity_label` is now populated for title-driven panes and authoritative wrapper labels when they carry useful activity text, including non-generic Codex wrapper titles
+- Cursor CLI detection now treats `pane_current_command=cursor-agent` as the reliable baseline and ignores generic tmux titles for display unless the title is explicitly Cursor-shaped, keeping labels conservative until wrapper metadata is available
 - `agentscan focus` supports client-aware tmux switching and has been validated against the current pane workflow
 - `agentscan focus` now falls back to the most recently active attached tmux client when no explicit tty is provided
 - isolated focus integration tests now validate explicit `--client-tty` targeting, attached-client fallback behavior, and multi-client arbitration toward the most recent attached client

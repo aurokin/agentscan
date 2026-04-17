@@ -1,5 +1,180 @@
 use super::*;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TitleHintStrength {
+    Weak,
+    Strong,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TitleProviderHintKind {
+    Explicit,
+    Fuzzy,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TitleProviderHint {
+    provider: Provider,
+    strength: TitleHintStrength,
+    kind: TitleProviderHintKind,
+}
+
+struct TitleAnalysis<'a> {
+    raw: &'a str,
+    stripped: &'a str,
+    has_spinner_glyph: bool,
+    has_idle_glyph: bool,
+    claude_label: Option<&'a str>,
+    opencode_label: Option<&'a str>,
+    copilot_label: Option<&'a str>,
+    cursor_label: Option<&'a str>,
+    pi_label: Option<&'a str>,
+    cursor_title_shaped: bool,
+    provider_hint: Option<TitleProviderHint>,
+    codex_normalized_label: String,
+}
+
+impl<'a> TitleAnalysis<'a> {
+    fn classifyable_provider(&self) -> Option<Provider> {
+        self.provider_hint
+            .filter(|hint| hint.strength == TitleHintStrength::Strong)
+            .map(|hint| hint.provider)
+    }
+
+    fn conflicts_with_resolved_provider(
+        &self,
+        provider: Option<Provider>,
+        provider_match_kind: Option<ClassificationMatchKind>,
+    ) -> bool {
+        if provider_match_kind == Some(ClassificationMatchKind::PaneTitle) {
+            return false;
+        }
+
+        self.provider_hint.is_some_and(|hint| {
+            hint.kind == TitleProviderHintKind::Explicit
+                && hint.strength == TitleHintStrength::Strong
+                && !matches!(provider, Some(resolved_provider) if resolved_provider == hint.provider)
+        })
+    }
+
+    fn normalized_label(&self, provider: Option<Provider>) -> Option<String> {
+        if self.stripped.is_empty() {
+            return None;
+        }
+
+        if let Some(stripped) = self.claude_label {
+            return Some(stripped.to_string());
+        }
+        if let Some(stripped) = self.opencode_label {
+            return Some(stripped.to_string());
+        }
+        if matches!(provider, Some(Provider::Copilot))
+            && let Some(stripped) = self.copilot_label
+        {
+            return Some(stripped.to_string());
+        }
+        if matches!(provider, Some(Provider::CursorCli))
+            && let Some(stripped) = self.cursor_label
+        {
+            return Some(stripped.to_string());
+        }
+        if matches!(provider, Some(Provider::Pi))
+            && let Some(stripped) = self.pi_label
+        {
+            return Some(stripped.to_string());
+        }
+
+        Some(self.codex_normalized_label.clone())
+    }
+}
+
+fn analyze_title(raw_title: &str) -> TitleAnalysis<'_> {
+    let raw = raw_title.trim();
+    let stripped = strip_known_status_glyph(raw).trim();
+    let has_spinner_glyph = has_spinner_glyph(raw);
+    let has_idle_glyph = has_idle_glyph(raw);
+    let claude_label = strip_claude_title_prefix(stripped);
+    let opencode_label = strip_opencode_title_prefix(stripped);
+    let copilot_label = strip_copilot_title_prefix(stripped);
+    let cursor_label = strip_cursor_cli_title_prefix(stripped);
+    let cursor_title_shaped = cursor_label.is_some()
+        || stripped.eq_ignore_ascii_case("Cursor Agent")
+        || stripped.eq_ignore_ascii_case("Cursor CLI")
+        || stripped.eq_ignore_ascii_case("Cursor");
+    let pi_label = looks_like_pi_title(stripped)
+        .then_some(())
+        .and_then(|_| strip_pi_title_prefix(stripped));
+
+    let provider_hint = if claude_label.is_some() || stripped == "Claude Code" {
+        Some(TitleProviderHint {
+            provider: Provider::Claude,
+            strength: TitleHintStrength::Strong,
+            kind: TitleProviderHintKind::Explicit,
+        })
+    } else if opencode_label.is_some() {
+        Some(TitleProviderHint {
+            provider: Provider::Opencode,
+            strength: TitleHintStrength::Strong,
+            kind: TitleProviderHintKind::Explicit,
+        })
+    } else if looks_like_codex_title(stripped) {
+        Some(TitleProviderHint {
+            provider: Provider::Codex,
+            strength: TitleHintStrength::Strong,
+            kind: TitleProviderHintKind::Explicit,
+        })
+    } else if copilot_label.is_some() {
+        Some(TitleProviderHint {
+            provider: Provider::Copilot,
+            strength: TitleHintStrength::Strong,
+            kind: TitleProviderHintKind::Explicit,
+        })
+    } else if cursor_title_shaped {
+        Some(TitleProviderHint {
+            provider: Provider::CursorCli,
+            strength: TitleHintStrength::Strong,
+            kind: TitleProviderHintKind::Explicit,
+        })
+    } else if pi_label.is_some() {
+        Some(TitleProviderHint {
+            provider: Provider::Pi,
+            strength: if stripped.starts_with("π - ") || has_spinner_glyph {
+                TitleHintStrength::Strong
+            } else {
+                TitleHintStrength::Weak
+            },
+            kind: TitleProviderHintKind::Explicit,
+        })
+    } else if stripped.to_ascii_lowercase().contains("gemini") {
+        Some(TitleProviderHint {
+            provider: Provider::Gemini,
+            strength: TitleHintStrength::Strong,
+            kind: TitleProviderHintKind::Fuzzy,
+        })
+    } else {
+        None
+    };
+
+    let codex_normalized_label = strip_codex_provider_suffix(&strip_codex_args_from_title(
+        &normalize_codex_wrapper_title(stripped),
+    ));
+
+    TitleAnalysis {
+        raw,
+        stripped,
+        has_spinner_glyph,
+        has_idle_glyph,
+        claude_label,
+        opencode_label,
+        copilot_label,
+        cursor_label,
+        pi_label,
+        cursor_title_shaped,
+        provider_hint,
+        codex_normalized_label,
+    }
+}
+
 pub(crate) fn pane_from_row(row: TmuxPaneRow) -> PaneRecord {
     let agent_metadata = AgentMetadata {
         provider: row.agent_provider.clone(),
@@ -8,13 +183,18 @@ pub(crate) fn pane_from_row(row: TmuxPaneRow) -> PaneRecord {
         state: row.agent_state.clone(),
         session_id: row.agent_session_id.clone(),
     };
-    let provider_match = classify_provider(
+    let title_analysis = analyze_title(&row.pane_title_raw);
+    let provider_match = classify_provider_from_analysis(
         agent_metadata.provider.as_deref(),
         &row.pane_current_command,
-        &row.pane_title_raw,
+        &title_analysis,
     );
     let provider = provider_match.as_ref().map(|matched| matched.provider);
-    let title_status = infer_title_status(provider, &row.pane_title_raw);
+    let title_status = infer_title_status_from_analysis(
+        provider,
+        provider_match.as_ref().map(|matched| matched.matched_by),
+        &title_analysis,
+    );
     let status = infer_status(title_status, agent_metadata.state.as_deref());
 
     PaneRecord {
@@ -34,10 +214,11 @@ pub(crate) fn pane_from_row(row: TmuxPaneRow) -> PaneRecord {
             session_id: row.session_id.clone(),
             window_id: row.window_id.clone(),
         },
-        display: display_metadata(
+        display: display_metadata_from_analysis(
+            &title_analysis,
             provider,
+            provider_match.as_ref().map(|matched| matched.matched_by),
             agent_metadata.label.as_deref(),
-            &row.pane_title_raw,
             &row.pane_current_command,
             &row.window_name,
         ),
@@ -57,12 +238,21 @@ pub(crate) fn pane_from_row(row: TmuxPaneRow) -> PaneRecord {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn classify_provider(
     published_provider: Option<&str>,
     command: &str,
     title: &str,
 ) -> Option<ProviderMatch> {
-    let title = title.trim();
+    let title_analysis = analyze_title(title);
+    classify_provider_from_analysis(published_provider, command, &title_analysis)
+}
+
+fn classify_provider_from_analysis(
+    published_provider: Option<&str>,
+    command: &str,
+    title_analysis: &TitleAnalysis<'_>,
+) -> Option<ProviderMatch> {
     let command = command.trim();
 
     if let Some(provider) = provider_from_metadata(published_provider) {
@@ -77,21 +267,37 @@ pub(crate) fn classify_provider(
         });
     }
 
-    if let Some(provider) = provider_from_title(title) {
+    if let Some((provider, exact)) = provider_from_command(command) {
+        return Some(ProviderMatch {
+            provider,
+            matched_by: ClassificationMatchKind::PaneCurrentCommand,
+            confidence: if exact {
+                ClassificationConfidence::High
+            } else {
+                ClassificationConfidence::Medium
+            },
+            reasons: vec![format!("pane_current_command={command}")],
+        });
+    }
+
+    if let Some(provider) = title_analysis.classifyable_provider() {
         return Some(ProviderMatch {
             provider,
             matched_by: ClassificationMatchKind::PaneTitle,
             confidence: ClassificationConfidence::High,
-            reasons: vec![format!("pane_title={title}")],
+            reasons: vec![format!("pane_title={}", title_analysis.raw)],
         });
     }
 
-    if let Some(provider) = provider_from_command(command) {
+    if command.eq_ignore_ascii_case("pi") && title_analysis.pi_label.is_some() {
         return Some(ProviderMatch {
-            provider,
+            provider: Provider::Pi,
             matched_by: ClassificationMatchKind::PaneCurrentCommand,
             confidence: ClassificationConfidence::Medium,
-            reasons: vec![format!("pane_current_command={command}")],
+            reasons: vec![
+                format!("pane_current_command={command}"),
+                format!("pane_title={}", title_analysis.raw),
+            ],
         });
     }
 
@@ -105,75 +311,69 @@ fn provider_from_metadata(provider: Option<&str>) -> Option<Provider> {
         "claude" => Some(Provider::Claude),
         "gemini" => Some(Provider::Gemini),
         "opencode" => Some(Provider::Opencode),
+        "copilot" | "github-copilot" | "github copilot" => Some(Provider::Copilot),
+        "cursor_cli" | "cursor-cli" | "cursor cli" | "cursor-agent" => Some(Provider::CursorCli),
+        "pi" | "pi-coding-agent" | "pi coding agent" => Some(Provider::Pi),
         _ => None,
     }
 }
 
-fn provider_from_title(title: &str) -> Option<Provider> {
-    let title = title.trim();
-    if title.is_empty() {
-        return None;
-    }
+fn provider_from_command(command: &str) -> Option<(Provider, bool)> {
+    const CANDIDATES: &[(Provider, &str, bool)] = &[
+        (Provider::Codex, "codex", true),
+        (Provider::Claude, "claude", true),
+        (Provider::Gemini, "gemini", true),
+        (Provider::Opencode, "opencode", true),
+        (Provider::Copilot, "copilot", false),
+        (Provider::Copilot, "github-copilot", false),
+        (Provider::CursorCli, "cursor-cli", false),
+        (Provider::CursorCli, "cursor-agent", false),
+        (Provider::Pi, "pi-coding-agent", false),
+    ];
 
-    let stripped = strip_known_status_glyph(title);
-    if stripped.starts_with("Claude Code | ")
-        || stripped.starts_with("Claude | ")
-        || stripped == "Claude Code"
-    {
-        return Some(Provider::Claude);
-    }
-
-    if stripped.starts_with("OC | ") {
-        return Some(Provider::Opencode);
-    }
-
-    if looks_like_codex_title(stripped) {
-        return Some(Provider::Codex);
-    }
-
-    let lower = stripped.to_ascii_lowercase();
-    if lower.contains("gemini") {
-        return Some(Provider::Gemini);
-    }
-
-    None
+    CANDIDATES
+        .iter()
+        .find_map(|(provider, name, allow_suffix)| {
+            matches_binary(command, name, *allow_suffix).map(|exact| (*provider, exact))
+        })
 }
 
-fn provider_from_command(command: &str) -> Option<Provider> {
-    if matches_provider_name(command, "codex") {
-        return Some(Provider::Codex);
-    }
-    if matches_provider_name(command, "claude") {
-        return Some(Provider::Claude);
-    }
-    if matches_provider_name(command, "gemini") {
-        return Some(Provider::Gemini);
-    }
-    if matches_provider_name(command, "opencode") {
-        return Some(Provider::Opencode);
-    }
-
-    None
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn infer_title_status(
+    provider: Option<Provider>,
+    provider_match_kind: Option<ClassificationMatchKind>,
+    title: &str,
+) -> PaneStatus {
+    let title_analysis = analyze_title(title);
+    infer_title_status_from_analysis(provider, provider_match_kind, &title_analysis)
 }
 
-pub(crate) fn infer_title_status(provider: Option<Provider>, title: &str) -> PaneStatus {
-    let title = title.trim();
-    let stripped = strip_known_status_glyph(title);
+fn infer_title_status_from_analysis(
+    provider: Option<Provider>,
+    provider_match_kind: Option<ClassificationMatchKind>,
+    title_analysis: &TitleAnalysis<'_>,
+) -> PaneStatus {
+    if title_analysis.conflicts_with_resolved_provider(provider, provider_match_kind) {
+        return PaneStatus {
+            kind: StatusKind::Unknown,
+            source: StatusSource::NotChecked,
+        };
+    }
 
     if matches!(provider, Some(Provider::Claude)) {
-        if has_spinner_glyph(title) {
+        if title_analysis.has_spinner_glyph {
             return PaneStatus {
                 kind: StatusKind::Busy,
                 source: StatusSource::TmuxTitle,
             };
         }
-        if has_idle_glyph(title) {
+        if title_analysis.has_idle_glyph {
             return PaneStatus {
                 kind: StatusKind::Idle,
                 source: StatusSource::TmuxTitle,
             };
         }
-        if let Some(rest) = strip_claude_title_prefix(stripped) {
+        if let Some(rest) = title_analysis.claude_label {
             if rest == "Working" || rest.starts_with("Working ") {
                 return PaneStatus {
                     kind: StatusKind::Busy,
@@ -190,16 +390,16 @@ pub(crate) fn infer_title_status(provider: Option<Provider>, title: &str) -> Pan
     }
 
     if matches!(provider, Some(Provider::Codex)) {
-        if stripped == "Working" || stripped.ends_with("| Working") {
+        if title_analysis.stripped == "Working" || title_analysis.stripped.ends_with("| Working") {
             return PaneStatus {
                 kind: StatusKind::Busy,
                 source: StatusSource::TmuxTitle,
             };
         }
-        if stripped == "Ready"
-            || stripped == "Waiting"
-            || stripped.ends_with("| Ready")
-            || stripped.ends_with("| Waiting")
+        if title_analysis.stripped == "Ready"
+            || title_analysis.stripped == "Waiting"
+            || title_analysis.stripped.ends_with("| Ready")
+            || title_analysis.stripped.ends_with("| Waiting")
         {
             return PaneStatus {
                 kind: StatusKind::Idle,
@@ -209,13 +409,13 @@ pub(crate) fn infer_title_status(provider: Option<Provider>, title: &str) -> Pan
     }
 
     if matches!(provider, Some(Provider::Gemini)) {
-        if title.contains("Working") {
+        if title_analysis.raw.contains("Working") {
             return PaneStatus {
                 kind: StatusKind::Busy,
                 source: StatusSource::TmuxTitle,
             };
         }
-        if title.contains("Ready") {
+        if title_analysis.raw.contains("Ready") {
             return PaneStatus {
                 kind: StatusKind::Idle,
                 source: StatusSource::TmuxTitle,
@@ -224,7 +424,7 @@ pub(crate) fn infer_title_status(provider: Option<Provider>, title: &str) -> Pan
     }
 
     if matches!(provider, Some(Provider::Opencode))
-        && let Some(rest) = stripped.strip_prefix("OC | ")
+        && let Some(rest) = title_analysis.opencode_label
     {
         if rest == "Working" || rest.starts_with("Working ") {
             return PaneStatus {
@@ -238,6 +438,50 @@ pub(crate) fn infer_title_status(provider: Option<Provider>, title: &str) -> Pan
                 source: StatusSource::TmuxTitle,
             };
         }
+    }
+
+    if matches!(provider, Some(Provider::Copilot))
+        && let Some(rest) = title_analysis.copilot_label
+    {
+        if rest == "Working" || rest.starts_with("Working ") {
+            return PaneStatus {
+                kind: StatusKind::Busy,
+                source: StatusSource::TmuxTitle,
+            };
+        }
+        if rest == "Ready" || rest.starts_with("Ready ") {
+            return PaneStatus {
+                kind: StatusKind::Idle,
+                source: StatusSource::TmuxTitle,
+            };
+        }
+    }
+
+    if matches!(provider, Some(Provider::CursorCli))
+        && let Some(rest) = title_analysis.cursor_label
+    {
+        if rest == "Working" || rest.starts_with("Working ") {
+            return PaneStatus {
+                kind: StatusKind::Busy,
+                source: StatusSource::TmuxTitle,
+            };
+        }
+        if rest == "Ready" || rest.starts_with("Ready ") {
+            return PaneStatus {
+                kind: StatusKind::Idle,
+                source: StatusSource::TmuxTitle,
+            };
+        }
+    }
+
+    if matches!(provider, Some(Provider::Pi))
+        && title_analysis.pi_label.is_some()
+        && title_analysis.has_spinner_glyph
+    {
+        return PaneStatus {
+            kind: StatusKind::Busy,
+            source: StatusSource::TmuxTitle,
+        };
     }
 
     PaneStatus {
@@ -268,10 +512,31 @@ pub(crate) fn infer_status(title_status: PaneStatus, published_state: Option<&st
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn display_metadata(
     provider: Option<Provider>,
+    provider_match_kind: Option<ClassificationMatchKind>,
     published_label: Option<&str>,
-    raw_title: &str,
+    title: &str,
+    current_command: &str,
+    window_name: &str,
+) -> DisplayMetadata {
+    let title_analysis = analyze_title(title);
+    display_metadata_from_analysis(
+        &title_analysis,
+        provider,
+        provider_match_kind,
+        published_label,
+        current_command,
+        window_name,
+    )
+}
+
+fn display_metadata_from_analysis(
+    title_analysis: &TitleAnalysis<'_>,
+    provider: Option<Provider>,
+    provider_match_kind: Option<ClassificationMatchKind>,
+    published_label: Option<&str>,
     current_command: &str,
     window_name: &str,
 ) -> DisplayMetadata {
@@ -285,9 +550,12 @@ pub(crate) fn display_metadata(
         };
     }
 
-    let title = raw_title.trim();
-    if !title.is_empty() {
-        let label = normalize_title_for_display(title);
+    if let Some(label) = display_label_from_title(
+        provider,
+        provider_match_kind,
+        title_analysis,
+        current_command,
+    ) {
         return DisplayMetadata {
             activity_label: infer_activity_label(provider, &label),
             label,
@@ -306,17 +574,36 @@ pub(crate) fn display_metadata(
     }
 }
 
-pub(crate) fn normalize_title_for_display(title: &str) -> String {
-    let stripped = strip_known_status_glyph(title).trim();
-    if let Some(stripped) = strip_claude_title_prefix(stripped) {
-        return stripped.to_string();
+fn display_label_from_title(
+    provider: Option<Provider>,
+    provider_match_kind: Option<ClassificationMatchKind>,
+    title_analysis: &TitleAnalysis<'_>,
+    current_command: &str,
+) -> Option<String> {
+    if title_analysis.conflicts_with_resolved_provider(provider, provider_match_kind) {
+        return None;
     }
-    if let Some(stripped) = strip_opencode_title_prefix(stripped) {
-        return stripped.to_string();
+
+    let normalized = title_analysis.normalized_label(provider)?;
+    if matches!(provider, Some(Provider::CursorCli))
+        && cursor_cli_should_fall_back_to_window_name(
+            provider_match_kind,
+            title_analysis.cursor_title_shaped,
+            &normalized,
+            current_command,
+        )
+    {
+        return None;
     }
-    let codex_normalized = normalize_codex_wrapper_title(stripped);
-    let codex_normalized = strip_codex_args_from_title(&codex_normalized);
-    strip_codex_provider_suffix(&codex_normalized)
+
+    Some(normalized)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn normalize_title_for_display(provider: Option<Provider>, title: &str) -> String {
+    analyze_title(title)
+        .normalized_label(provider)
+        .unwrap_or_default()
 }
 
 fn strip_claude_title_prefix(title: &str) -> Option<&str> {
@@ -329,9 +616,55 @@ fn strip_opencode_title_prefix(title: &str) -> Option<&str> {
     title.strip_prefix("OC | ")
 }
 
+fn strip_copilot_title_prefix(title: &str) -> Option<&str> {
+    title
+        .strip_prefix("GitHub Copilot | ")
+        .or_else(|| title.strip_prefix("Copilot | "))
+}
+
+fn strip_cursor_cli_title_prefix(title: &str) -> Option<&str> {
+    title
+        .strip_prefix("Cursor CLI | ")
+        .or_else(|| title.strip_prefix("Cursor Agent | "))
+        .or_else(|| title.strip_prefix("Cursor | "))
+}
+
+fn strip_pi_title_prefix(title: &str) -> Option<&str> {
+    title
+        .strip_prefix("π - ")
+        .or_else(|| title.strip_prefix("pi - "))
+}
+
+fn cursor_cli_should_fall_back_to_window_name(
+    provider_match_kind: Option<ClassificationMatchKind>,
+    cursor_title_shaped: bool,
+    normalized_title: &str,
+    current_command: &str,
+) -> bool {
+    if provider_match_kind == Some(ClassificationMatchKind::PaneTitle) && cursor_title_shaped {
+        return false;
+    }
+
+    if is_generic_provider_label(Some(Provider::CursorCli), normalized_title)
+        || is_generic_status_label(normalized_title)
+    {
+        return true;
+    }
+
+    if provider_match_kind != Some(ClassificationMatchKind::PaneMetadata) && !cursor_title_shaped {
+        return true;
+    }
+
+    normalized_title.eq_ignore_ascii_case(current_command.trim())
+}
+
 fn infer_activity_label(provider: Option<Provider>, label: &str) -> Option<String> {
     let label = label.trim();
     if label.is_empty() {
+        return None;
+    }
+
+    if is_generic_provider_label(provider, label) {
         return None;
     }
 
@@ -351,11 +684,25 @@ fn infer_activity_label(provider: Option<Provider>, label: &str) -> Option<Strin
 
     match provider {
         Some(Provider::Codex) => Some(label.to_string()),
-        Some(Provider::Claude) | Some(Provider::Gemini) | Some(Provider::Opencode) => {
-            Some(label.to_string())
-        }
+        Some(Provider::Claude)
+        | Some(Provider::Gemini)
+        | Some(Provider::Opencode)
+        | Some(Provider::Copilot)
+        | Some(Provider::CursorCli)
+        | Some(Provider::Pi) => Some(label.to_string()),
         _ => None,
     }
+}
+
+fn is_generic_provider_label(provider: Option<Provider>, label: &str) -> bool {
+    matches!(
+        provider,
+        Some(Provider::CursorCli)
+            if label.eq_ignore_ascii_case("Cursor Agent")
+                || label.eq_ignore_ascii_case("cursor-agent")
+                || label.eq_ignore_ascii_case("Cursor CLI")
+                || label.eq_ignore_ascii_case("Cursor")
+    )
 }
 
 fn is_generic_status_label(label: &str) -> bool {
@@ -426,12 +773,18 @@ fn strip_codex_provider_suffix(title: &str) -> String {
     title.to_string()
 }
 
-fn matches_provider_name(command: &str, provider: &str) -> bool {
-    command == provider
-        || command.strip_prefix(provider) == Some("")
-        || command
+fn matches_binary(command: &str, provider: &str, allow_suffix: bool) -> Option<bool> {
+    if command == provider {
+        return Some(true);
+    }
+    if allow_suffix
+        && command
             .strip_prefix(provider)
             .is_some_and(|suffix| suffix.starts_with('-'))
+    {
+        return Some(false);
+    }
+    None
 }
 
 pub(crate) fn looks_like_codex_title(title: &str) -> bool {
@@ -448,4 +801,24 @@ pub(crate) fn looks_like_codex_title(title: &str) -> bool {
         || suffix.starts_with("codex ")
         || suffix.ends_with("/codex")
         || suffix.ends_with("/codex.sh")
+}
+
+fn looks_like_pi_title(title: &str) -> bool {
+    let Some(rest) = strip_pi_title_prefix(title) else {
+        return false;
+    };
+
+    let mut segments = rest.split(" - ").map(str::trim);
+    let Some(first) = segments.next() else {
+        return false;
+    };
+    let Some(second) = segments.next() else {
+        return false;
+    };
+
+    if first.is_empty() || second.is_empty() {
+        return false;
+    }
+
+    segments.all(|segment| !segment.is_empty())
 }

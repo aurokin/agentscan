@@ -89,6 +89,7 @@ It can:
 - normalize noisy provider prefixes and wrapper/script suffixes out of display labels for title-driven panes
 - populate `display.activity_label` for meaningful title-driven panes and authoritative wrapper labels, including non-generic Codex wrapper titles
 - keep labels conservative: show what tmux metadata actually tells us and avoid inventing richer task names from weak signals
+- treat Cursor CLI as metadata-first: command detection is enough to identify the provider, but generic tmux titles fall back to conservative pane labels until wrappers publish stronger metadata
 - publish, clear, and consume explicit wrapper metadata via pane-local `@agent.*` tmux options
 - refresh the existing cache immediately after repo-local metadata helper writes so wrapper-driven metadata changes stay visible to cache consumers whether the cache came from the daemon or a forced snapshot
 - emit canonical snapshot JSON
@@ -140,7 +141,7 @@ cache JSON. Do not add `--format` back to `popup`, including hidden or compatibi
 
 It does not yet:
 
-- broaden title-driven status logic beyond the current Codex and Claude focus, with Gemini and OpenCode still treated as secondary coverage
+- broaden title-driven status logic beyond the current Codex and Claude focus, with Gemini, OpenCode, Copilot, and Pi still treated as secondary coverage while Cursor CLI remains intentionally metadata-first unless it presents an explicit Cursor title
 
 ## Reference Behavior
 

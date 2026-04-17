@@ -299,6 +299,12 @@ enum Provider {
     Claude,
     Gemini,
     Opencode,
+    #[value(alias = "github-copilot")]
+    Copilot,
+    #[value(name = "cursor_cli", alias = "cursor-cli", alias = "cursor-agent")]
+    CursorCli,
+    #[value(alias = "pi-coding-agent")]
+    Pi,
 }
 
 impl fmt::Display for Provider {
@@ -308,6 +314,9 @@ impl fmt::Display for Provider {
             Self::Claude => "claude",
             Self::Gemini => "gemini",
             Self::Opencode => "opencode",
+            Self::Copilot => "copilot",
+            Self::CursorCli => "cursor_cli",
+            Self::Pi => "pi",
         };
 
         f.write_str(name)
