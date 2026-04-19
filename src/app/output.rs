@@ -138,11 +138,29 @@ pub(super) fn print_json<T: Serialize>(value: &T) -> Result<()> {
 pub(super) fn print_cache_summary_text(snapshot: &SnapshotEnvelope) -> Result<()> {
     let path = cache::cache_path()?;
     let summary = cache::summarize_snapshot(snapshot)?;
+    let diagnostics = cache_summary_diagnostics(snapshot, &summary)?;
 
     println!("path: {}", path.display());
     println!("schema_version: {}", snapshot.schema_version);
     println!("generated_at: {}", snapshot.generated_at);
+    println!("cache_age_seconds: {}", diagnostics.cache_age_seconds);
     println!("source: {:?}", snapshot.source.kind);
+    println!(
+        "daemon_generated_at: {}",
+        snapshot
+            .source
+            .daemon_generated_at
+            .as_deref()
+            .unwrap_or("<none>")
+    );
+    if let Some(daemon_age_seconds) = diagnostics.daemon_age_seconds {
+        println!("daemon_age_seconds: {daemon_age_seconds}");
+    }
+    println!(
+        "daemon_cache_status: {}",
+        daemon_cache_status_name(diagnostics.daemon_cache_status)
+    );
+    println!("daemon_cache_reason: {}", diagnostics.daemon_status_reason);
     println!(
         "tmux_version: {}",
         snapshot
@@ -162,22 +180,80 @@ pub(super) fn print_cache_summary_text(snapshot: &SnapshotEnvelope) -> Result<()
     Ok(())
 }
 
+fn cache_summary_diagnostics(
+    snapshot: &SnapshotEnvelope,
+    summary: &CacheSummary,
+) -> Result<CacheDiagnostics> {
+    let _ = summary;
+    cache::cache_diagnostics(snapshot, None)
+}
+
 pub(super) fn print_cache_validate_text(
     path: &Path,
     snapshot: &SnapshotEnvelope,
     summary: &CacheSummary,
+    diagnostics: &CacheDiagnostics,
     max_age_seconds: Option<u64>,
 ) {
     println!("cache_valid: yes");
     println!("path: {}", path.display());
     println!("schema_version: {}", snapshot.schema_version);
     println!("generated_at: {}", snapshot.generated_at);
+    println!("cache_age_seconds: {}", diagnostics.cache_age_seconds);
+    println!("source: {:?}", snapshot.source.kind);
+    println!(
+        "daemon_generated_at: {}",
+        snapshot
+            .source
+            .daemon_generated_at
+            .as_deref()
+            .unwrap_or("<none>")
+    );
+    if let Some(daemon_age_seconds) = diagnostics.daemon_age_seconds {
+        println!("daemon_age_seconds: {daemon_age_seconds}");
+    }
+    println!(
+        "daemon_cache_status: {}",
+        daemon_cache_status_name(diagnostics.daemon_cache_status)
+    );
+    println!("daemon_cache_reason: {}", diagnostics.daemon_status_reason);
+    println!("pane_count: {}", summary.pane_count);
+
+    if let Some(max_age_seconds) = max_age_seconds {
+        println!("max_age_seconds: {max_age_seconds}");
+    }
+}
+
+pub(super) fn print_daemon_status_text(
+    path: &Path,
+    snapshot: &SnapshotEnvelope,
+    summary: &CacheSummary,
+    diagnostics: &CacheDiagnostics,
+    max_age_seconds: Option<u64>,
+) {
+    println!(
+        "daemon_cache_status: {}",
+        daemon_cache_status_name(diagnostics.daemon_cache_status)
+    );
+    println!("daemon_cache_reason: {}", diagnostics.daemon_status_reason);
+    println!("path: {}", path.display());
+    println!("generated_at: {}", snapshot.generated_at);
+    println!("cache_age_seconds: {}", diagnostics.cache_age_seconds);
+    println!(
+        "daemon_generated_at: {}",
+        snapshot
+            .source
+            .daemon_generated_at
+            .as_deref()
+            .unwrap_or("<none>")
+    );
+    if let Some(daemon_age_seconds) = diagnostics.daemon_age_seconds {
+        println!("daemon_age_seconds: {daemon_age_seconds}");
+    }
     println!("source: {:?}", snapshot.source.kind);
     println!("pane_count: {}", summary.pane_count);
 
     if let Some(max_age_seconds) = max_age_seconds {
-        let age_seconds = cache::cache_age_seconds(summary.generated_at);
-        println!("age_seconds: {age_seconds}");
         println!("max_age_seconds: {max_age_seconds}");
     }
 }

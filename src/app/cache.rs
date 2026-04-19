@@ -252,12 +252,59 @@ pub(crate) fn cache_age_seconds(generated_at: OffsetDateTime) -> u64 {
     }
 }
 
+pub(crate) fn cache_diagnostics(
+    snapshot: &SnapshotEnvelope,
+    max_age_seconds: Option<u64>,
+) -> Result<CacheDiagnostics> {
+    let summary = summarize_snapshot(snapshot)?;
+    let cache_age_seconds = cache_age_seconds(summary.generated_at);
+    let daemon_timestamp = daemon_timestamp_diagnostics(snapshot)?;
+    let daemon_age_seconds = daemon_timestamp.age_seconds();
+    let daemon_cache_status = if daemon_timestamp.is_malformed() {
+        DaemonCacheStatus::Unavailable
+    } else {
+        daemon_cache_status(snapshot.source.kind, daemon_age_seconds, max_age_seconds)
+    };
+    let daemon_status_reason =
+        daemon_status_reason(snapshot.source.kind, daemon_cache_status, max_age_seconds);
+
+    Ok(CacheDiagnostics {
+        cache_age_seconds,
+        daemon_age_seconds,
+        daemon_cache_status,
+        daemon_status_reason,
+    })
+}
+
+enum DaemonTimestampDiagnostics {
+    Missing,
+    Malformed,
+    Present(u64),
+}
+
+impl DaemonTimestampDiagnostics {
+    fn age_seconds(&self) -> Option<u64> {
+        match self {
+            Self::Present(age_seconds) => Some(*age_seconds),
+            Self::Missing | Self::Malformed => None,
+        }
+    }
+
+    fn is_malformed(&self) -> bool {
+        matches!(self, Self::Malformed)
+    }
+}
+
 pub(crate) fn daemon_cache_status(
+    source_kind: SourceKind,
     age_seconds: Option<u64>,
     max_age_seconds: Option<u64>,
 ) -> DaemonCacheStatus {
     let Some(age_seconds) = age_seconds else {
-        return DaemonCacheStatus::Unavailable;
+        return match source_kind {
+            SourceKind::Snapshot => DaemonCacheStatus::SnapshotOnly,
+            SourceKind::Daemon => DaemonCacheStatus::Unavailable,
+        };
     };
 
     if max_age_seconds.is_some_and(|max_age| age_seconds > max_age) {
@@ -267,14 +314,50 @@ pub(crate) fn daemon_cache_status(
     DaemonCacheStatus::Healthy
 }
 
-pub(crate) fn daemon_age_seconds(snapshot: &SnapshotEnvelope) -> Result<Option<u64>> {
+pub(crate) fn daemon_status_reason(
+    source_kind: SourceKind,
+    status: DaemonCacheStatus,
+    max_age_seconds: Option<u64>,
+) -> String {
+    match status {
+        DaemonCacheStatus::Healthy => match source_kind {
+            SourceKind::Daemon => "cache was last written by the daemon".to_string(),
+            SourceKind::Snapshot => {
+                "cache was last refreshed directly from tmux and preserves the previous daemon refresh time".to_string()
+            }
+        },
+        DaemonCacheStatus::Stale => {
+            let age_clause = max_age_seconds
+                .map(|value| format!("older than the {}s threshold", value))
+                .unwrap_or_else(|| "older than the allowed threshold".to_string());
+            match source_kind {
+                SourceKind::Daemon => format!("last daemon refresh is {age_clause}"),
+                SourceKind::Snapshot => {
+                    format!("cache was last refreshed directly from tmux, but the last daemon refresh is {age_clause}")
+                }
+            }
+        }
+        DaemonCacheStatus::SnapshotOnly => {
+            "cache was written from a direct tmux snapshot and does not include a daemon refresh timestamp".to_string()
+        }
+        DaemonCacheStatus::Unavailable => {
+            "cache does not include a usable daemon refresh timestamp".to_string()
+        }
+    }
+}
+
+fn daemon_timestamp_diagnostics(snapshot: &SnapshotEnvelope) -> Result<DaemonTimestampDiagnostics> {
     let Some(generated_at) = last_daemon_generated_at(snapshot) else {
-        return Ok(None);
+        return Ok(DaemonTimestampDiagnostics::Missing);
     };
 
-    let generated_at = OffsetDateTime::parse(generated_at, &Rfc3339)
-        .context("daemon_generated_at was not valid RFC3339")?;
-    Ok(Some(cache_age_seconds(generated_at)))
+    let generated_at = match OffsetDateTime::parse(generated_at, &Rfc3339) {
+        Ok(generated_at) => generated_at,
+        Err(_) => return Ok(DaemonTimestampDiagnostics::Malformed),
+    };
+    Ok(DaemonTimestampDiagnostics::Present(cache_age_seconds(
+        generated_at,
+    )))
 }
 
 pub(super) fn set_snapshot_cache_origin(snapshot: &mut SnapshotEnvelope, cache_origin: &str) {

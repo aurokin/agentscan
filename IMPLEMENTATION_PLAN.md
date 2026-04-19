@@ -75,7 +75,7 @@ Completed baseline work:
 - canonical pane model and snapshot envelope are implemented
 - `agentscan scan`, `agentscan list`, and `agentscan inspect` are implemented
 - `agentscan cache path`, `cache show`, and `cache validate` are implemented with XDG default plus override support
-- `agentscan daemon status` reports daemon-backed cache health and optional staleness
+- `agentscan daemon status` reports daemon-backed cache health and now distinguishes daemon-backed, stale, and snapshot-only cache states with explicit provenance messaging
 - title-first metadata classification is wired into snapshot ingestion
 - `agentscan daemon run` writes a daemon-marked cache from tmux control mode
 - the daemon currently fails fast when tmux disappears and leaves restart policy to an external supervisor
@@ -91,7 +91,7 @@ Completed baseline work:
 - popup redraw now responds to terminal resize, keeps the current page anchor stable, and clamps invalidated pages after cache-driven pane removal
 - popup integration tests now cover interactive selection, paging overflow, stale-cache pane fallback, Ctrl-B passthrough, and cache-error rendering
 - popup argument handling now rejects `--format` with migration guidance toward `list --format json` and `cache show --format json`
-- title-driven status heuristics now cover the current observed Codex and Claude paths first, with Gemini and basic OpenCode support present but still secondary
+- fixture-backed provider coverage now includes explicit status-source assertions for Gemini, OpenCode, Copilot, and Pi, while Cursor CLI remains intentionally metadata-first unless it presents an explicit Cursor title
 - display normalization now strips noisy provider prefixes from title-driven Claude and OpenCode labels and collapses wrapper-heavy Codex titles down to task labels
 - `display.activity_label` is now populated for title-driven panes and authoritative wrapper labels when they carry useful activity text, including non-generic Codex wrapper titles
 - Cursor CLI detection now treats `pane_current_command=cursor-agent` as the reliable baseline and ignores generic tmux titles for display unless the title is explicitly Cursor-shaped, keeping labels conservative until wrapper metadata is available
@@ -111,9 +111,8 @@ Phase 1 status:
 
 Remaining closeout work before treating the current architecture as fully settled:
 
-- broader title-driven status coverage and more fixture samples across providers
 - a narrow fallback strategy for concrete ambiguous panes where tmux metadata and titles do not provide a reliable answer
-- follow-on operational hardening for daemon lifecycle and cache diagnostics after the current fail-fast baseline
+- remaining migration and wrapper guidance for broader real-world adoption
 
 ## Phase 1
 

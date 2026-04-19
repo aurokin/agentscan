@@ -186,29 +186,26 @@ fn command_daemon_status(args: &DaemonStatusArgs) -> Result<()> {
     let path = cache::cache_path()?;
     let snapshot = cache::read_snapshot_from_cache()?;
     let summary = cache::summarize_snapshot(&snapshot)?;
-    let cache_age_seconds = cache::cache_age_seconds(summary.generated_at);
-    let daemon_age_seconds = cache::daemon_age_seconds(&snapshot)?;
-    let status = cache::daemon_cache_status(daemon_age_seconds, args.max_age_seconds);
+    let diagnostics = cache::cache_diagnostics(&snapshot, args.max_age_seconds)?;
 
-    println!("daemon_cache_status: {}", daemon_cache_status_name(status));
-    println!("path: {}", path.display());
-    println!("generated_at: {}", snapshot.generated_at);
-    println!("cache_age_seconds: {cache_age_seconds}");
-    if let Some(daemon_age_seconds) = daemon_age_seconds {
-        println!("daemon_age_seconds: {daemon_age_seconds}");
-    }
-    println!("source: {:?}", snapshot.source.kind);
-    println!("pane_count: {}", summary.pane_count);
+    output::print_daemon_status_text(
+        &path,
+        &snapshot,
+        &summary,
+        &diagnostics,
+        args.max_age_seconds,
+    );
 
-    if let Some(max_age_seconds) = args.max_age_seconds {
-        println!("max_age_seconds: {max_age_seconds}");
-    }
-
-    match status {
+    match diagnostics.daemon_cache_status {
         DaemonCacheStatus::Healthy => Ok(()),
         DaemonCacheStatus::Stale => bail!("daemon cache is stale"),
+        DaemonCacheStatus::SnapshotOnly => {
+            bail!("daemon cache is snapshot-only; run `agentscan daemon run` for normal cached use")
+        }
         DaemonCacheStatus::Unavailable => {
-            bail!("daemon cache is unavailable because the cache source is not daemon-backed")
+            bail!(
+                "daemon cache is unavailable because the cache does not include a usable daemon refresh timestamp"
+            )
         }
     }
 }
@@ -246,7 +243,14 @@ fn command_cache(args: &CacheArgs, root_list_args: &ListArgs) -> Result<()> {
             let snapshot =
                 cache::load_snapshot(args.refresh.refresh || root_list_args.refresh.refresh)?;
             let summary = cache::validate_snapshot(&snapshot, args.max_age_seconds)?;
-            output::print_cache_validate_text(&path, &snapshot, &summary, args.max_age_seconds);
+            let diagnostics = cache::cache_diagnostics(&snapshot, args.max_age_seconds)?;
+            output::print_cache_validate_text(
+                &path,
+                &snapshot,
+                &summary,
+                &diagnostics,
+                args.max_age_seconds,
+            );
         }
     }
 

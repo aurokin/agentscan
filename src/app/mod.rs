@@ -479,7 +479,16 @@ struct CacheSummary {
 enum DaemonCacheStatus {
     Healthy,
     Stale,
+    SnapshotOnly,
     Unavailable,
+}
+
+#[derive(Debug)]
+struct CacheDiagnostics {
+    cache_age_seconds: u64,
+    daemon_age_seconds: Option<u64>,
+    daemon_cache_status: DaemonCacheStatus,
+    daemon_status_reason: String,
 }
 
 #[derive(Clone, Debug)]
@@ -529,6 +538,7 @@ fn daemon_cache_status_name(status: DaemonCacheStatus) -> &'static str {
     match status {
         DaemonCacheStatus::Healthy => "healthy",
         DaemonCacheStatus::Stale => "stale",
+        DaemonCacheStatus::SnapshotOnly => "snapshot_only",
         DaemonCacheStatus::Unavailable => "unavailable",
     }
 }

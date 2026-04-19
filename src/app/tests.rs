@@ -1000,24 +1000,28 @@ fn daemon_cache_status_reports_health_states() {
         serde_json::from_str(CACHE_SNAPSHOT_FIXTURE).expect("cache fixture should parse");
 
     assert_eq!(
-        cache::daemon_cache_status(Some(10), Some(60)),
+        cache::daemon_cache_status(SourceKind::Daemon, Some(10), Some(60)),
         super::DaemonCacheStatus::Healthy
     );
     assert_eq!(
         super::daemon_cache_status_name(super::DaemonCacheStatus::Healthy),
         "healthy"
     );
+    assert_eq!(
+        super::daemon_cache_status_name(super::DaemonCacheStatus::SnapshotOnly),
+        "snapshot_only"
+    );
 
     snapshot.source.kind = SourceKind::Snapshot;
     snapshot.source.daemon_generated_at = None;
     assert_eq!(
-        cache::daemon_cache_status(None, Some(60)),
-        super::DaemonCacheStatus::Unavailable
+        cache::daemon_cache_status(snapshot.source.kind, None, Some(60)),
+        super::DaemonCacheStatus::SnapshotOnly
     );
 
     snapshot.source.daemon_generated_at = Some("2026-03-28T00:00:00Z".to_string());
     assert_eq!(
-        cache::daemon_cache_status(Some(120), Some(60)),
+        cache::daemon_cache_status(snapshot.source.kind, Some(120), Some(60)),
         super::DaemonCacheStatus::Stale
     );
 }
@@ -1032,8 +1036,82 @@ fn daemon_cache_status_uses_last_daemon_refresh_even_after_snapshot_rewrite() {
     snapshot.source.daemon_generated_at = Some("2026-03-28T00:00:00Z".to_string());
 
     assert_eq!(
-        cache::daemon_cache_status(Some(10), Some(60)),
+        cache::daemon_cache_status(snapshot.source.kind, Some(10), Some(60)),
         super::DaemonCacheStatus::Healthy
+    );
+}
+
+#[test]
+fn cache_diagnostics_distinguish_daemon_and_snapshot_provenance() {
+    let mut daemon_snapshot: SnapshotEnvelope =
+        serde_json::from_str(CACHE_SNAPSHOT_FIXTURE).expect("cache fixture should parse");
+    daemon_snapshot.generated_at = "2026-03-29T00:00:00Z".to_string();
+    daemon_snapshot.source.daemon_generated_at = Some("2026-03-28T00:00:00Z".to_string());
+
+    let daemon_diagnostics =
+        cache::cache_diagnostics(&daemon_snapshot, Some(60)).expect("daemon diagnostics");
+    assert_eq!(
+        daemon_diagnostics.daemon_cache_status,
+        super::DaemonCacheStatus::Stale
+    );
+    assert!(
+        daemon_diagnostics
+            .daemon_status_reason
+            .contains("last daemon refresh is older than the 60s threshold"),
+        "unexpected reason: {}",
+        daemon_diagnostics.daemon_status_reason
+    );
+
+    daemon_snapshot.source.kind = SourceKind::Snapshot;
+    let refreshed_diagnostics =
+        cache::cache_diagnostics(&daemon_snapshot, Some(60)).expect("snapshot diagnostics");
+    assert_eq!(
+        refreshed_diagnostics.daemon_cache_status,
+        super::DaemonCacheStatus::Stale
+    );
+    assert!(
+        refreshed_diagnostics
+            .daemon_status_reason
+            .contains("cache was last refreshed directly from tmux"),
+        "unexpected reason: {}",
+        refreshed_diagnostics.daemon_status_reason
+    );
+
+    daemon_snapshot.source.daemon_generated_at = None;
+    let snapshot_only_diagnostics =
+        cache::cache_diagnostics(&daemon_snapshot, Some(60)).expect("snapshot-only diagnostics");
+    assert_eq!(
+        snapshot_only_diagnostics.daemon_cache_status,
+        super::DaemonCacheStatus::SnapshotOnly
+    );
+    assert!(
+        snapshot_only_diagnostics
+            .daemon_status_reason
+            .contains("does not include a daemon refresh timestamp"),
+        "unexpected reason: {}",
+        snapshot_only_diagnostics.daemon_status_reason
+    );
+}
+
+#[test]
+fn cache_diagnostics_treat_invalid_daemon_timestamp_as_unavailable() {
+    let mut snapshot: SnapshotEnvelope =
+        serde_json::from_str(CACHE_SNAPSHOT_FIXTURE).expect("cache fixture should parse");
+    snapshot.source.daemon_generated_at = Some("not-a-timestamp".to_string());
+
+    let diagnostics = cache::cache_diagnostics(&snapshot, Some(60))
+        .expect("invalid daemon timestamp should degrade to unavailable diagnostics");
+    assert_eq!(
+        diagnostics.daemon_cache_status,
+        super::DaemonCacheStatus::Unavailable
+    );
+    assert_eq!(diagnostics.daemon_age_seconds, None);
+    assert!(
+        diagnostics
+            .daemon_status_reason
+            .contains("does not include a usable daemon refresh timestamp"),
+        "unexpected reason: {}",
+        diagnostics.daemon_status_reason
     );
 }
 
@@ -2363,6 +2441,7 @@ fn assert_fixture_gemini_cases(panes: &[PaneRecord]) {
     let gemini_idle = pane_by_id(panes, "%300");
     assert_eq!(gemini_idle.provider, Some(Provider::Gemini));
     assert_eq!(gemini_idle.status.kind, StatusKind::Idle);
+    assert_eq!(gemini_idle.status.source, super::StatusSource::TmuxTitle);
     assert_eq!(gemini_idle.display.label, "Ready");
     assert_eq!(gemini_idle.display.activity_label, None);
     assert_eq!(
@@ -2373,12 +2452,14 @@ fn assert_fixture_gemini_cases(panes: &[PaneRecord]) {
     let gemini_busy = pane_by_id(panes, "%306");
     assert_eq!(gemini_busy.provider, Some(Provider::Gemini));
     assert_eq!(gemini_busy.status.kind, StatusKind::Busy);
+    assert_eq!(gemini_busy.status.source, super::StatusSource::TmuxTitle);
     assert_eq!(gemini_busy.display.label, "Working");
     assert_eq!(gemini_busy.display.activity_label, None);
 
     let gemini_task = pane_by_id(panes, "%307");
     assert_eq!(gemini_task.provider, Some(Provider::Gemini));
     assert_eq!(gemini_task.status.kind, StatusKind::Unknown);
+    assert_eq!(gemini_task.status.source, super::StatusSource::NotChecked);
     assert_eq!(gemini_task.display.label, "Plan snapshot cache migration");
     assert_eq!(
         gemini_task.display.activity_label.as_deref(),
@@ -2389,6 +2470,8 @@ fn assert_fixture_gemini_cases(panes: &[PaneRecord]) {
 fn assert_fixture_opencode_case(panes: &[PaneRecord]) {
     let opencode = pane_by_id(panes, "%301");
     assert_eq!(opencode.provider, Some(Provider::Opencode));
+    assert_eq!(opencode.status.kind, StatusKind::Unknown);
+    assert_eq!(opencode.status.source, super::StatusSource::NotChecked);
     assert_eq!(opencode.display.label, "Query planner");
     assert_eq!(
         opencode.display.activity_label.as_deref(),
@@ -2398,12 +2481,14 @@ fn assert_fixture_opencode_case(panes: &[PaneRecord]) {
     let opencode_busy = pane_by_id(panes, "%308");
     assert_eq!(opencode_busy.provider, Some(Provider::Opencode));
     assert_eq!(opencode_busy.status.kind, StatusKind::Busy);
+    assert_eq!(opencode_busy.status.source, super::StatusSource::TmuxTitle);
     assert_eq!(opencode_busy.display.label, "Working");
     assert_eq!(opencode_busy.display.activity_label, None);
 
     let opencode_idle = pane_by_id(panes, "%309");
     assert_eq!(opencode_idle.provider, Some(Provider::Opencode));
     assert_eq!(opencode_idle.status.kind, StatusKind::Idle);
+    assert_eq!(opencode_idle.status.source, super::StatusSource::TmuxTitle);
     assert_eq!(opencode_idle.display.label, "Ready");
     assert_eq!(opencode_idle.display.activity_label, None);
 }
@@ -2412,12 +2497,14 @@ fn assert_fixture_copilot_case(panes: &[PaneRecord]) {
     let copilot = pane_by_id(panes, "%302");
     assert_eq!(copilot.provider, Some(Provider::Copilot));
     assert_eq!(copilot.status.kind, StatusKind::Busy);
+    assert_eq!(copilot.status.source, super::StatusSource::TmuxTitle);
     assert_eq!(copilot.display.label, "Working");
     assert_eq!(copilot.display.activity_label, None);
 
     let copilot_idle = pane_by_id(panes, "%310");
     assert_eq!(copilot_idle.provider, Some(Provider::Copilot));
     assert_eq!(copilot_idle.status.kind, StatusKind::Idle);
+    assert_eq!(copilot_idle.status.source, super::StatusSource::TmuxTitle);
     assert_eq!(copilot_idle.display.label, "Ready");
     assert_eq!(copilot_idle.display.activity_label, None);
     assert_eq!(
@@ -2428,6 +2515,7 @@ fn assert_fixture_copilot_case(panes: &[PaneRecord]) {
     let copilot_task = pane_by_id(panes, "%311");
     assert_eq!(copilot_task.provider, Some(Provider::Copilot));
     assert_eq!(copilot_task.status.kind, StatusKind::Unknown);
+    assert_eq!(copilot_task.status.source, super::StatusSource::NotChecked);
     assert_eq!(copilot_task.display.label, "Review patch");
     assert_eq!(
         copilot_task.display.activity_label.as_deref(),
@@ -2440,6 +2528,7 @@ fn assert_fixture_cursor_cli_title_case(panes: &[PaneRecord]) {
     assert_eq!(cursor.provider, Some(Provider::CursorCli));
     assert_eq!(cursor.display.label, "Query planner");
     assert_eq!(cursor.status.kind, StatusKind::Unknown);
+    assert_eq!(cursor.status.source, super::StatusSource::NotChecked);
     assert_eq!(
         cursor.display.activity_label.as_deref(),
         Some("Query planner")
@@ -2463,6 +2552,7 @@ fn assert_fixture_pi_case(panes: &[PaneRecord]) {
     assert_eq!(pi.provider, Some(Provider::Pi));
     assert_eq!(pi.display.label, "refactor - pi_proj");
     assert_eq!(pi.status.kind, StatusKind::Unknown);
+    assert_eq!(pi.status.source, super::StatusSource::NotChecked);
     assert_eq!(
         pi.display.activity_label.as_deref(),
         Some("refactor - pi_proj")
@@ -2471,6 +2561,7 @@ fn assert_fixture_pi_case(panes: &[PaneRecord]) {
     let pi_busy = pane_by_id(panes, "%312");
     assert_eq!(pi_busy.provider, Some(Provider::Pi));
     assert_eq!(pi_busy.status.kind, StatusKind::Busy);
+    assert_eq!(pi_busy.status.source, super::StatusSource::TmuxTitle);
     assert_eq!(pi_busy.display.label, "refactor - pi_proj");
     assert_eq!(
         pi_busy.display.activity_label.as_deref(),
@@ -2480,6 +2571,7 @@ fn assert_fixture_pi_case(panes: &[PaneRecord]) {
     let pi_command = pane_by_id(panes, "%313");
     assert_eq!(pi_command.provider, Some(Provider::Pi));
     assert_eq!(pi_command.status.kind, StatusKind::Unknown);
+    assert_eq!(pi_command.status.source, super::StatusSource::NotChecked);
     assert_eq!(pi_command.display.label, "ship cache docs - followup");
     assert_eq!(
         pi_command.display.activity_label.as_deref(),

@@ -79,6 +79,7 @@ It can:
 - report daemon-backed cache health
 - persist and read a local JSON cache
 - show and validate the local JSON cache
+- distinguish `healthy`, `stale`, and `snapshot_only` daemon-cache states, with daemon refresh provenance in text cache diagnostics
 - force a fresh tmux snapshot and cache rewrite for `list`, `scan`, `inspect`, `focus`, `popup`, `cache show`, and `cache validate` with `-f` / `--refresh`
 - list panes through the default `list` flow
 - inspect a pane by `pane_id`
@@ -142,9 +143,8 @@ cache JSON. Do not add `--format` back to `popup`, including hidden or compatibi
 
 It does not yet:
 
-- provide broad fixture-backed status and label coverage across the remaining providers, with Gemini, OpenCode, Copilot, and Pi still behind the current Codex and Claude depth while Cursor CLI remains intentionally metadata-first unless it presents an explicit Cursor title
 - define and implement targeted fallback inspection for concrete ambiguous panes where tmux metadata and titles are not enough
-- harden daemon lifecycle and stale-cache diagnostics beyond the current explicit-daemon, fail-fast baseline
+- document the remaining migration and wrapper-adoption guidance needed for broader real-world rollout
 
 ## Reference Behavior
 
@@ -171,10 +171,8 @@ The useful design inputs are mostly at the data-model level:
 
 ## Near-term plan
 
-1. Finish fixture-driven provider coverage for Gemini, OpenCode, Copilot, and Pi without weakening the conservative label policy.
-2. Add targeted fallback inspection only for concrete ambiguous cases that tmux metadata and titles cannot resolve cheaply.
-3. Harden daemon lifecycle semantics, stale-cache diagnostics, and cache ergonomics around the current daemon-backed workflow.
-4. Document the remaining migration and wrapper-adoption guidance needed to move more real sessions onto explicit pane metadata.
+1. Add targeted fallback inspection only for concrete ambiguous cases that tmux metadata and titles cannot resolve cheaply.
+2. Document the remaining migration and wrapper-adoption guidance needed to move more real sessions onto explicit pane metadata.
 
 ## Current CLI Families
 

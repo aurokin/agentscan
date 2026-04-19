@@ -434,6 +434,7 @@ That would be justified by needs such as:
 ### `agentscan cache show`
 - Expose the raw cached snapshot envelope
 - Support JSON when a consumer explicitly needs cache-level metadata rather than the normal `list` view
+- In text mode, surface cache age, daemon refresh age, and whether the current file is daemon-backed, stale, or snapshot-only
 
 ### `agentscan daemon`
 - Maintain long-lived pane index
