@@ -28,10 +28,16 @@ remain unchanged until `agentscan` is ready to replace it.
 
 ## Docs
 
+- `docs/index.md`: map of the repo's progressively disclosed documentation
 - `AGENTS.md`: repo-local agent guardrails and conventions
-- `ROADMAP.md`: intended behavior, architecture, and migration plan
-- `IMPLEMENTATION_PLAN.md`: concrete milestones, task breakdown, and execution plan
-- `plans/remaining-work.md`: scoped plan for the remaining provider, fallback, and operational hardening work
+- `ROADMAP.md`: durable product direction, boundaries, and decision log
+- `docs/architecture.md`: runtime model, cache contract, command families, and guardrails
+- `docs/integration.md`: wrapper metadata, automation surfaces, shell boundary, and migration posture
+- `docs/harness-engineering.md`: progressively disclosed harness engineering approach for the repo
+
+Active milestone sequencing lives in Linear. The repo docs are intentionally for
+stable engineering guidance and operator-facing contracts, not live task
+tracking.
 
 ## Quality Gates
 
@@ -141,11 +147,6 @@ If an automation consumer cannot migrate because required fields are missing fro
 the documented JSON surfaces, treat that as an API gap to close in `list` or
 cache JSON. Do not add `--format` back to `popup`, including hidden or compatibility-only parser paths.
 
-It does not yet:
-
-- define and implement targeted fallback inspection for concrete ambiguous panes where tmux metadata and titles are not enough
-- document the remaining migration and wrapper-adoption guidance needed for broader real-world rollout
-
 ## Reference Behavior
 
 The existing shell stack is still relevant as an input to design work. It shows
@@ -168,11 +169,6 @@ The useful design inputs are mostly at the data-model level:
 - separation between raw pane metadata and cleaned display labels
 - explicit `unknown` status when a fast answer is better than an expensive guess
 - stable pane identity for downstream consumers such as popups or focus commands
-
-## Near-term plan
-
-1. Add targeted fallback inspection only for concrete ambiguous cases that tmux metadata and titles cannot resolve cheaply.
-2. Document the remaining migration and wrapper-adoption guidance needed to move more real sessions onto explicit pane metadata.
 
 ## Current CLI Families
 
