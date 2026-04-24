@@ -797,22 +797,43 @@ impl TestHarness {
 
     fn attach_client(&self, session_name: &str) -> Result<AttachedClientHandle> {
         let existing_ttys = self.client_ttys()?;
-        let attach_command = format!(
-            "tmux -S {} attach-session -t {}",
-            shell_escape_path(&self.tmux_socket_path),
-            shell_escape(session_name),
-        );
-        let child = Command::new("script")
-            .args(["-q", "-c", &attach_command, "/dev/null"])
+        let mut child = self.spawn_attached_client(session_name)?;
+
+        let tty = self.wait_for_new_client_tty(&existing_ttys, &mut child)?;
+        Ok(AttachedClientHandle { child, tty })
+    }
+
+    fn spawn_attached_client(&self, session_name: &str) -> Result<Child> {
+        let mut command = Command::new("script");
+        command.arg("-q");
+
+        if cfg!(target_os = "macos")
+            || cfg!(target_os = "freebsd")
+            || cfg!(target_os = "openbsd")
+            || cfg!(target_os = "netbsd")
+        {
+            command
+                .arg("/dev/null")
+                .arg("tmux")
+                .arg("-S")
+                .arg(&self.tmux_socket_path)
+                .args(["attach-session", "-t", session_name]);
+        } else {
+            let attach_command = format!(
+                "tmux -S {} attach-session -t {}",
+                shell_escape_path(&self.tmux_socket_path),
+                shell_escape(session_name),
+            );
+            command.args(["-c", &attach_command, "/dev/null"]);
+        }
+
+        command
             .env_remove("TMUX")
             .env("TMUX_TMPDIR", &self.tmux_tmpdir)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .with_context(|| format!("failed to attach tmux client to {session_name}"))?;
-
-        let tty = self.wait_for_new_client_tty(&existing_ttys)?;
-        Ok(AttachedClientHandle { child, tty })
+            .with_context(|| format!("failed to attach tmux client to {session_name}"))
     }
 
     fn send_title_escape(&self, pane_id: &str, title: &str) -> Result<()> {
@@ -932,9 +953,20 @@ impl TestHarness {
             .map(|row| row.pane_id))
     }
 
-    fn wait_for_new_client_tty(&self, existing_ttys: &[String]) -> Result<String> {
+    fn wait_for_new_client_tty(
+        &self,
+        existing_ttys: &[String],
+        client: &mut Child,
+    ) -> Result<String> {
         let deadline = Instant::now() + DAEMON_TIMEOUT;
         loop {
+            if let Some(status) = client
+                .try_wait()
+                .context("failed to poll attached tmux client")?
+            {
+                bail!("attached tmux client exited before registering with status {status}");
+            }
+
             for row in self.client_rows()? {
                 if !existing_ttys.iter().any(|tty| tty == &row.client_tty) {
                     return Ok(row.client_tty);
