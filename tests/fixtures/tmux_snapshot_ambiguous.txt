@@ -1,0 +1,5 @@
+ambiguous_shell_wrapper11%600602000zsh(bront) ~/code/agent-wrapper/dev/pts/220/home/auro/code/agent-wrapperai$30@30
+ambiguous_status_title11%601602001nodeWorking/dev/pts/221/home/auro/code/agent-nodeai$31@31
+ambiguous_proc_candidate11%602602002python3agent bootstrap/dev/pts/222/home/auro/code/proc-candidateai$32@32
+ambiguous_pi_wrapper11%603602003zshpi - agentscan/dev/pts/223/home/auro/code/pi-wrapperai$33@33
+ambiguous_output_only11%604602004shreview_auth_flow/dev/pts/224/home/auro/code/output-onlyai$34@34

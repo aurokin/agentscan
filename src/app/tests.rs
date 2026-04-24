@@ -16,6 +16,10 @@ const TMUX_METADATA_FIXTURE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/tmux_snapshot_with_metadata.txt"
 ));
+const TMUX_AMBIGUOUS_FIXTURE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/tmux_snapshot_ambiguous.txt"
+));
 
 #[allow(unused_imports)]
 use super::{
@@ -1668,6 +1672,20 @@ fn fixture_snapshot_preserves_wrapper_prefixes() {
 }
 
 #[test]
+fn ambiguous_fixture_documents_current_unresolved_behavior() {
+    let rows =
+        tmux::parse_pane_rows(TMUX_AMBIGUOUS_FIXTURE).expect("ambiguous fixture should parse");
+    let panes: Vec<_> = rows.into_iter().map(classify::pane_from_row).collect();
+
+    assert_eq!(panes.len(), 5);
+    assert_unresolved_ambiguous_pane(pane_by_id(&panes, "%600"), "(bront) ~/code/agent-wrapper");
+    assert_unresolved_ambiguous_pane(pane_by_id(&panes, "%601"), "Working");
+    assert_unresolved_ambiguous_pane(pane_by_id(&panes, "%602"), "agent bootstrap");
+    assert_unresolved_ambiguous_pane(pane_by_id(&panes, "%603"), "pi - agentscan");
+    assert_unresolved_ambiguous_pane(pane_by_id(&panes, "%604"), "review_auth_flow");
+}
+
+#[test]
 fn pane_metadata_overrides_display_provider_and_status_when_title_is_ambiguous() {
     let pane = classify::pane_from_row(super::TmuxPaneRow {
         session_name: "wrapper".to_string(),
@@ -2647,4 +2665,45 @@ fn pane_by_id<'a>(panes: &'a [PaneRecord], pane_id: &str) -> &'a PaneRecord {
         .iter()
         .find(|pane| pane.pane_id == pane_id)
         .unwrap_or_else(|| panic!("missing pane fixture entry {pane_id}"))
+}
+
+fn assert_unresolved_ambiguous_pane(pane: &PaneRecord, expected_label: &str) {
+    assert_eq!(pane.provider, None, "pane_id: {}", pane.pane_id);
+    assert_eq!(
+        pane.status.kind,
+        StatusKind::Unknown,
+        "pane_id: {}",
+        pane.pane_id
+    );
+    assert_eq!(
+        pane.status.source,
+        super::StatusSource::NotChecked,
+        "pane_id: {}",
+        pane.pane_id
+    );
+    assert_eq!(
+        pane.classification.matched_by, None,
+        "pane_id: {}",
+        pane.pane_id
+    );
+    assert_eq!(
+        pane.classification.confidence, None,
+        "pane_id: {}",
+        pane.pane_id
+    );
+    assert!(
+        pane.classification.reasons.is_empty(),
+        "pane_id: {}",
+        pane.pane_id
+    );
+    assert_eq!(
+        pane.display.label, expected_label,
+        "pane_id: {}",
+        pane.pane_id
+    );
+    assert_eq!(
+        pane.display.activity_label, None,
+        "pane_id: {}",
+        pane.pane_id
+    );
 }
