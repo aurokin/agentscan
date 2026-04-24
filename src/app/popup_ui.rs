@@ -258,10 +258,12 @@ fn is_popup_close_key(key_event: &KeyEvent) -> bool {
 
 fn is_popup_previous_page_key(key_event: &KeyEvent) -> bool {
     matches!(key_event.code, KeyCode::Left | KeyCode::PageUp)
+        || matches!(key_event.code, KeyCode::Char('p' | 'P'))
 }
 
 fn is_popup_next_page_key(key_event: &KeyEvent) -> bool {
     matches!(key_event.code, KeyCode::Right | KeyCode::PageDown)
+        || matches!(key_event.code, KeyCode::Char('n' | 'N'))
 }
 
 fn popup_selection_from_key_event(key_event: &KeyEvent) -> Option<char> {
@@ -482,7 +484,7 @@ fn render_footer_lines(
     let second_line = if page_count > 1 {
         truncate_to_width(
             format!(
-                "Page {page_number}/{page_count} | {shown_count}/{total_panes} shown | Left/Right or PgUp/PgDn."
+                "Page {page_number}/{page_count} | {shown_count}/{total_panes} shown | N/P, Left/Right, or PgUp/PgDn."
             )
             .as_str(),
             width,
