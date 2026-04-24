@@ -111,7 +111,9 @@ Implications:
 
 - popup does not support `--format`
 - popup rendering is not a stable machine-readable contract
-- automation consumers should use documented JSON commands instead
+- automation consumers should use `agentscan list --format json` for normal pane data
+- raw cache consumers should use `agentscan cache show --format json`
+- compatibility formatting paths must not be added back to popup
 
 ### Integration Boundary
 
@@ -120,7 +122,9 @@ Keep shell as the integration layer and Rust as the discovery and state layer.
 Implications:
 
 - shell may launch panes and bind keys
+- shell may keep aliases, provider wrappers, and popup entrypoints
 - shell should not classify panes or infer activity state
+- shell should not shape machine-readable pane output
 - wrapper behavior is integration context, not a reason to move launch logic into Rust
 
 ### Platform Priority

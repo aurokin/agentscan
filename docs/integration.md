@@ -8,13 +8,29 @@ Active rollout sequencing lives in Linear.
 
 Machine-readable consumers should use:
 
-- `agentscan list --format json` for the supported pane listing surface
+- `agentscan list --format json` for the supported pane listing surface in normal automation flows
 - `agentscan list --all --format json` when non-agent panes are intentionally needed
 - `agentscan cache show --format json` only when a consumer explicitly needs the raw cache envelope
 
 `agentscan popup` is interactive-only. It must not become a popup-shaped JSON or
-TSV surface, and unsupported flags should remain normal parse errors rather than
-compatibility shims.
+TSV surface, and unsupported formatting requests must not become compatibility
+shims. Local popup-only flags that do not exist should remain parser errors.
+Root-level `--format` routed to `popup` should continue to fail with migration
+guidance rather than rendering machine-readable popup output.
+
+Migration targets:
+
+| Existing consumer need | Supported target |
+|------------------------|------------------|
+| Parse agent panes for automation | `agentscan list --format json` |
+| Parse all tmux panes, including non-agent panes | `agentscan list --all --format json` |
+| Inspect cache provenance, schema version, or unfiltered cache envelope | `agentscan cache show --format json` |
+| Open a human pane picker from a tmux bind | `agentscan popup` |
+
+If a script needs data that is missing from the documented JSON surfaces, treat
+that as an API gap in `list` or cache JSON. Do not add hidden `popup --format`
+paths, popup-shaped TSV, or parser compatibility branches to preserve legacy
+stdout parsing.
 
 ## Wrapper Metadata Contract
 
@@ -126,6 +142,7 @@ Shell remains responsible for:
 - aliases and ergonomics in user dotfiles
 - provider launch wrappers
 - tmux key bindings and popup entrypoints
+- choosing when to invoke `agentscan list`, `agentscan focus`, or `agentscan popup` in a user workflow
 
 Shell should not remain responsible for:
 
@@ -134,12 +151,17 @@ Shell should not remain responsible for:
 - process scanning strategy
 - activity-state inference
 - cache management
+- shaping machine-readable pane output
 
 ## Migration Posture
 
 The repo should document only settled integration contracts. Active milestone
 work, rollout sequencing, and open execution detail live in Linear until they
 are stable enough to promote back into the docs.
+
+Host-specific dotfiles can migrate incrementally. During migration, shell code
+should switch parsing consumers to `agentscan list --format json` or `agentscan
+cache show --format json` and keep `popup` limited to interactive tmux flows.
 
 The repo-local popup invocation for local testing remains:
 
