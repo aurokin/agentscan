@@ -285,6 +285,33 @@ fn parses_tmux_output_with_session_and_window_ids() {
 }
 
 #[test]
+fn parses_tmux_output_with_escaped_delimiters() {
+    let input = r"notes\0374\0371\037%41\037324026\037claude\037Claude Code\037/dev/pts/44\037/home/auro/notes\037query\037$7\037@9\037codex\037Task\037/home/auro/notes\037busy\037session-1
+";
+
+    let rows = tmux::parse_pane_rows(input).expect("escaped tmux output should parse");
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].pane_id, "%41");
+    assert_eq!(rows[0].session_id.as_deref(), Some("$7"));
+    assert_eq!(rows[0].agent_provider.as_deref(), Some("codex"));
+    assert_eq!(rows[0].agent_state.as_deref(), Some("busy"));
+}
+
+#[test]
+fn tmux_output_does_not_split_on_printable_field_content() {
+    let input = r"notes\0374\0371\037%41\037324026\037claude\037Task ||AGENTSCAN|| Review\037/dev/pts/44\037/home/auro/notes\037query\037$7\037@9\037codex\037Task ||AGENTSCAN|| Review\037/home/auro/notes\037busy\037session-1
+";
+
+    let rows = tmux::parse_pane_rows(input).expect("tmux output with printable token should parse");
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].pane_id, "%41");
+    assert_eq!(rows[0].pane_title_raw, "Task ||AGENTSCAN|| Review");
+    assert_eq!(rows[0].agent_provider.as_deref(), Some("codex"));
+}
+
+#[test]
 fn parses_tmux_client_rows_and_selects_most_recent_tty() {
     let input = concat!(
         "/dev/pts/5\x1f1711671000\n",
@@ -293,6 +320,21 @@ fn parses_tmux_client_rows_and_selects_most_recent_tty() {
     );
 
     let clients = tmux::parse_tmux_client_rows(input).expect("tmux client output should parse");
+    assert_eq!(clients.len(), 2);
+    assert_eq!(clients[0].client_tty, "/dev/pts/5");
+    assert_eq!(
+        tmux::select_best_client_tty(&clients),
+        Some("/dev/pts/7".to_string())
+    );
+}
+
+#[test]
+fn parses_tmux_client_rows_with_escaped_delimiters() {
+    let input = "/dev/pts/5\\0371711671000\n/dev/pts/7\\0371711672000\n";
+
+    let clients =
+        tmux::parse_tmux_client_rows(input).expect("escaped tmux client output should parse");
+
     assert_eq!(clients.len(), 2);
     assert_eq!(clients[0].client_tty, "/dev/pts/5");
     assert_eq!(
