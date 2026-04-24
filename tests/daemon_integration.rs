@@ -827,6 +827,10 @@ impl TestHarness {
             command.args(["-c", &attach_command, "/dev/null"]);
         }
 
+        if std::env::var_os("TERM").is_none() {
+            command.env("TERM", "xterm-256color");
+        }
+
         command
             .env_remove("TMUX")
             .env("TMUX_TMPDIR", &self.tmux_tmpdir)
@@ -1006,12 +1010,15 @@ impl TestHarness {
     fn wait_for_client_key_table(&self, client_tty: &str, expected_key_table: &str) -> Result<()> {
         let deadline = Instant::now() + DAEMON_TIMEOUT;
         loop {
-            let output =
-                self.tmux_output(["list-clients", "-F", "#{client_tty}\x1f#{client_key_table}"])?;
+            let output = self.tmux_output([
+                "list-clients",
+                "-F",
+                &format!("#{{client_tty}}{TMUX_TEST_DELIM}#{{client_key_table}}"),
+            ])?;
             for line in output.lines() {
-                let mut fields = line.split('\x1f');
-                let listed_client_tty = fields.next().unwrap_or_default().trim();
-                let key_table = fields.next().unwrap_or_default().trim();
+                let fields = split_tmux_test_fields(line);
+                let listed_client_tty = fields.first().copied().unwrap_or_default().trim();
+                let key_table = fields.get(1).copied().unwrap_or_default().trim();
                 if listed_client_tty == client_tty && key_table == expected_key_table {
                     return Ok(());
                 }
@@ -1139,15 +1146,19 @@ impl TestHarness {
     }
 
     fn client_rows(&self) -> Result<Vec<TmuxClientRow>> {
-        let output = self.tmux_output(["list-clients", "-F", "#{client_tty}\x1f#{pane_id}"])?;
+        let output = self.tmux_output([
+            "list-clients",
+            "-F",
+            &format!("#{{client_tty}}{TMUX_TEST_DELIM}#{{pane_id}}"),
+        ])?;
         let mut rows = Vec::new();
         for line in output.lines() {
             if line.trim().is_empty() {
                 continue;
             }
-            let mut fields = line.split('\x1f');
-            let client_tty = fields.next().unwrap_or_default().trim();
-            let pane_id = fields.next().unwrap_or_default().trim();
+            let fields = split_tmux_test_fields(line);
+            let client_tty = fields.first().copied().unwrap_or_default().trim();
+            let pane_id = fields.get(1).copied().unwrap_or_default().trim();
             if client_tty.is_empty() {
                 continue;
             }
@@ -1275,6 +1286,8 @@ struct TmuxClientRow {
     pane_id: String,
 }
 
+const TMUX_TEST_DELIM: &str = "||AGENTSCAN||";
+
 fn pane_from_cache<'a>(cache: &'a Value, pane_id: &str) -> Option<&'a Value> {
     cache["panes"]
         .as_array()?
@@ -1337,4 +1350,18 @@ fn shell_escape(value: &str) -> String {
     }
 
     format!("'{}'", value.replace('\'', r"'\''"))
+}
+
+fn split_tmux_test_fields(line: &str) -> Vec<&str> {
+    let fields: Vec<_> = line.split(TMUX_TEST_DELIM).collect();
+    if fields.len() > 1 {
+        return fields;
+    }
+
+    let fields: Vec<_> = line.split('\x1f').collect();
+    if fields.len() > 1 {
+        return fields;
+    }
+
+    line.split(r"\037").collect()
 }

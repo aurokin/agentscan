@@ -93,7 +93,7 @@ pub(crate) fn parse_pane_rows(input: &str) -> Result<Vec<TmuxPaneRow>> {
             continue;
         }
 
-        let fields: Vec<_> = line.split(PANE_DELIM).collect();
+        let fields = split_tmux_fields(line);
         if fields.len() != 10 && fields.len() != 12 && fields.len() != 15 && fields.len() != 17 {
             bail!(
                 "unexpected tmux pane field count on line {}: expected 10, 12, 15, or 17, got {}",
@@ -266,7 +266,10 @@ fn current_client_tty() -> Result<Option<String>> {
 
 fn attached_client_tty() -> Result<Option<String>> {
     let output = Command::new("tmux")
-        .args(["list-clients", "-F", "#{client_tty}\x1f#{client_activity}"])
+        .args(["list-clients", "-F"])
+        .arg(format!(
+            "#{{client_tty}}{TMUX_FORMAT_DELIM}#{{client_activity}}"
+        ))
         .output()
         .context("failed to list tmux clients")?;
     if !output.status.success() {
@@ -286,7 +289,7 @@ pub(crate) fn parse_tmux_client_rows(input: &str) -> Result<Vec<TmuxClientRow>> 
             continue;
         }
 
-        let fields: Vec<_> = line.split(PANE_DELIM).collect();
+        let fields = split_tmux_fields(line);
         if fields.len() != 2 {
             bail!(
                 "unexpected tmux client field count on line {}: expected 2, got {}",
@@ -312,6 +315,20 @@ pub(crate) fn parse_tmux_client_rows(input: &str) -> Result<Vec<TmuxClientRow>> 
     }
 
     Ok(clients)
+}
+
+fn split_tmux_fields(line: &str) -> Vec<&str> {
+    let fields: Vec<_> = line.split(TMUX_FORMAT_DELIM).collect();
+    if fields.len() > 1 {
+        return fields;
+    }
+
+    let fields: Vec<_> = line.split(PANE_DELIM).collect();
+    if fields.len() > 1 {
+        return fields;
+    }
+
+    line.split(r"\037").collect()
 }
 
 pub(crate) fn select_best_client_tty(clients: &[TmuxClientRow]) -> Option<String> {

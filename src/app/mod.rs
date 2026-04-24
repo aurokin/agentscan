@@ -25,7 +25,8 @@ mod tmux;
 
 pub use commands::run;
 
-const PANE_DELIM: char = '\u{001f}';
+const PANE_DELIM: &str = "\u{001f}";
+const TMUX_FORMAT_DELIM: &str = "||AGENTSCAN||";
 const CACHE_ENV_VAR: &str = "AGENTSCAN_CACHE_PATH";
 const CACHE_RELATIVE_PATH: &str = "agentscan/cache-v1.json";
 const CACHE_SCHEMA_VERSION: u32 = 2;
@@ -37,37 +38,37 @@ const CLAUDE_SPINNER_GLYPHS: &[char] = &[
 const IDLE_GLYPHS: &[char] = &['✳'];
 const PANE_FORMAT: &str = concat!(
     "#{session_name}",
-    "\x1f",
+    "||AGENTSCAN||",
     "#{window_index}",
-    "\x1f",
+    "||AGENTSCAN||",
     "#{pane_index}",
-    "\x1f",
+    "||AGENTSCAN||",
     "#{pane_id}",
-    "\x1f",
+    "||AGENTSCAN||",
     "#{pane_pid}",
-    "\x1f",
+    "||AGENTSCAN||",
     "#{pane_current_command}",
-    "\x1f",
+    "||AGENTSCAN||",
     "#{pane_title}",
-    "\x1f",
+    "||AGENTSCAN||",
     "#{pane_tty}",
-    "\x1f",
+    "||AGENTSCAN||",
     "#{pane_current_path}",
-    "\x1f",
+    "||AGENTSCAN||",
     "#{window_name}",
-    "\x1f",
+    "||AGENTSCAN||",
     "#{session_id}",
-    "\x1f",
+    "||AGENTSCAN||",
     "#{window_id}",
-    "\x1f",
+    "||AGENTSCAN||",
     "#{@agent.provider}",
-    "\x1f",
+    "||AGENTSCAN||",
     "#{@agent.label}",
-    "\x1f",
+    "||AGENTSCAN||",
     "#{@agent.cwd}",
-    "\x1f",
+    "||AGENTSCAN||",
     "#{@agent.state}",
-    "\x1f",
+    "||AGENTSCAN||",
     "#{@agent.session_id}"
 );
 const DAEMON_SUBSCRIPTION_FORMAT: &str = concat!(
