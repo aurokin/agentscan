@@ -2,12 +2,14 @@
 
 This note records the ambiguous pane evidence introduced for AUR-36. The
 fixture lives in `tests/fixtures/tmux_snapshot_ambiguous.txt`; tests in
-`src/app/tests.rs` lock the current unresolved behavior.
+`src/app/tests.rs` lock both the tmux-only unresolved behavior and the targeted
+fallback behavior for AUR-39.
 
 The purpose is to identify where the current metadata, command, and title
-classification path runs out of trustworthy evidence. This note does not define
-new fallback behavior by itself. Wrapper metadata expectations for cases like
-`%600` are defined in `docs/integration.md`.
+classification path runs out of trustworthy evidence. Snapshot construction may
+now use the targeted Linux `/proc` fallback for the explicit runtime-launcher
+cases below after the tmux-only path fails. Wrapper metadata expectations for
+cases like `%600` are defined in `docs/integration.md`.
 
 ## Decision Matrix
 
@@ -29,3 +31,6 @@ new fallback behavior by itself. Wrapper metadata expectations for cases like
   out of bounds.
 - Cases that cannot be resolved with specific evidence should remain
   `unknown`.
+- AUR-39 fallback is scoped to unresolved `node` and `python3` launcher panes
+  and records `proc_process_tree` provenance when it finds a known descendant
+  provider command.
