@@ -318,17 +318,12 @@ pub(crate) fn parse_tmux_client_rows(input: &str) -> Result<Vec<TmuxClientRow>> 
 }
 
 fn split_tmux_fields(line: &str) -> Vec<&str> {
-    let fields: Vec<_> = line.split(TMUX_FORMAT_DELIM).collect();
-    if fields.len() > 1 {
-        return fields;
-    }
-
     let fields: Vec<_> = line.split(PANE_DELIM).collect();
     if fields.len() > 1 {
         return fields;
     }
 
-    line.split(r"\037").collect()
+    line.split(TMUX_FORMAT_DELIM).collect()
 }
 
 pub(crate) fn select_best_client_tty(clients: &[TmuxClientRow]) -> Option<String> {

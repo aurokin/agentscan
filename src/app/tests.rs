@@ -299,13 +299,15 @@ fn parses_tmux_output_with_escaped_delimiters() {
 }
 
 #[test]
-fn parses_tmux_output_with_printable_delimiters() {
-    let input = "notes||AGENTSCAN||4||AGENTSCAN||1||AGENTSCAN||%41||AGENTSCAN||324026||AGENTSCAN||claude||AGENTSCAN||Claude Code||AGENTSCAN||/dev/pts/44||AGENTSCAN||/home/auro/notes||AGENTSCAN||query||AGENTSCAN||$7||AGENTSCAN||@9||AGENTSCAN||codex||AGENTSCAN||Task||AGENTSCAN||/home/auro/notes||AGENTSCAN||busy||AGENTSCAN||session-1\n";
+fn tmux_output_does_not_split_on_printable_field_content() {
+    let input = r"notes\0374\0371\037%41\037324026\037claude\037Task ||AGENTSCAN|| Review\037/dev/pts/44\037/home/auro/notes\037query\037$7\037@9\037codex\037Task ||AGENTSCAN|| Review\037/home/auro/notes\037busy\037session-1
+";
 
-    let rows = tmux::parse_pane_rows(input).expect("printable tmux output should parse");
+    let rows = tmux::parse_pane_rows(input).expect("tmux output with printable token should parse");
 
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].pane_id, "%41");
+    assert_eq!(rows[0].pane_title_raw, "Task ||AGENTSCAN|| Review");
     assert_eq!(rows[0].agent_provider.as_deref(), Some("codex"));
 }
 

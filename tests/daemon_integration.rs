@@ -1286,7 +1286,7 @@ struct TmuxClientRow {
     pane_id: String,
 }
 
-const TMUX_TEST_DELIM: &str = "||AGENTSCAN||";
+const TMUX_TEST_DELIM: &str = r"\037";
 
 fn pane_from_cache<'a>(cache: &'a Value, pane_id: &str) -> Option<&'a Value> {
     cache["panes"]
@@ -1353,15 +1353,10 @@ fn shell_escape(value: &str) -> String {
 }
 
 fn split_tmux_test_fields(line: &str) -> Vec<&str> {
-    let fields: Vec<_> = line.split(TMUX_TEST_DELIM).collect();
-    if fields.len() > 1 {
-        return fields;
-    }
-
     let fields: Vec<_> = line.split('\x1f').collect();
     if fields.len() > 1 {
         return fields;
     }
 
-    line.split(r"\037").collect()
+    line.split(TMUX_TEST_DELIM).collect()
 }
