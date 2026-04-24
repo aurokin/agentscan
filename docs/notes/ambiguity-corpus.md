@@ -6,7 +6,8 @@ fixture lives in `tests/fixtures/tmux_snapshot_ambiguous.txt`; tests in
 
 The purpose is to identify where the current metadata, command, and title
 classification path runs out of trustworthy evidence. This note does not define
-new fallback behavior by itself.
+new fallback behavior by itself. Wrapper metadata expectations for cases like
+`%600` are defined in `docs/integration.md`.
 
 ## Decision Matrix
 

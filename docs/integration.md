@@ -28,11 +28,40 @@ Launch wrappers may publish explicit pane-local tmux user options:
 
 Field semantics:
 
-- `provider`: normalized provider name such as `codex`
-- `label`: short user-facing task label for list and popup display
-- `cwd`: task root or meaningful working directory
-- `state`: optional explicit state such as `busy` or `idle`
-- `session_id`: provider-specific resume or chat identifier when useful
+- `provider`: normalized provider identity. Canonical values are `codex`,
+  `claude`, `gemini`, `opencode`, `copilot`, `cursor_cli`, and `pi`. The
+  metadata helper also accepts useful aliases such as `github-copilot`,
+  `cursor-cli`, `cursor-agent`, and `pi-coding-agent`, then writes the
+  canonical value.
+- `label`: short user-facing display text for list and popup surfaces. It
+  should describe the task or conversation only when the wrapper has that
+  information directly. Do not derive richer labels from paths, generic tmux
+  titles, or weak provider guesses.
+- `cwd`: task root or meaningful working directory for the agent workflow. This
+  may differ from tmux `pane_current_path` when the wrapper launches from a
+  bootstrap directory and then attaches an agent to another project root.
+- `state`: optional explicit state. Valid values are `busy`, `idle`, and
+  `unknown`. Publish `busy` or `idle` only from direct provider state or a
+  wrapper-controlled lifecycle event; otherwise omit the field or publish
+  `unknown`.
+- `session_id`: provider-specific resume, chat, or conversation identifier when
+  one exists and is useful for later wrapper behavior. It is not a tmux session
+  id.
+
+Wrappers can publish metadata with:
+
+```sh
+agentscan tmux set-metadata \
+  --provider codex \
+  --label "Review auth flow" \
+  --cwd "$PWD" \
+  --state busy \
+  --session-id "$AGENT_SESSION_ID"
+```
+
+All fields are optional, but at least one field must be provided to
+`set-metadata`. Empty string values for `label`, `cwd`, and `session_id` are
+ignored by the helper rather than written as meaningful metadata.
 
 ## Wrapper Rules
 
@@ -43,9 +72,52 @@ Field semantics:
 - Explicit metadata overrides heuristic title parsing when present.
 - Cursor CLI wrappers should prefer explicit labels and session ids over hoping tmux titles stay rich.
 
-Whether wrappers proactively clear stale metadata on exit remains an integration
-choice. Pane disappearance is authoritative for removal, so wrappers do not need
-to treat clearing as mandatory to interoperate safely.
+## Lifecycle Guidance
+
+Wrappers should publish stable identity metadata as soon as they know it. A
+minimal early update with `provider` and `cwd` is useful even before a provider
+session id or task label exists. Later partial updates can add `label`,
+`state`, or `session_id` without rewriting the whole record.
+
+Partial updates are part of the contract. A wrapper should update only the
+fields it knows and leave the rest untouched. This lets one layer publish
+provider identity while another layer later publishes the provider session id or
+state.
+
+State publication should be conservative:
+
+- Use `busy` when the wrapper has direct evidence that the agent is actively
+  working.
+- Use `idle` when the wrapper has direct evidence that the agent is ready for
+  input or otherwise quiescent.
+- Use `unknown` when the wrapper knows the pane is agent-owned but cannot
+  honestly report activity.
+- Omit `state` when the wrapper has no state signal at all.
+
+Pane disappearance is authoritative cleanup. Wrappers do not need to clear
+metadata on normal pane exit because the pane record disappears with the pane.
+Explicit clearing is useful for long-lived panes, wrapper handoff, provider
+restart inside the same pane, or failed launches where stale metadata would
+otherwise remain visible:
+
+```sh
+agentscan tmux clear-metadata --field state --field session-id
+```
+
+Calling `clear-metadata` with no `--field` clears all `@agent.*` fields.
+
+## Provider Notes
+
+Provider-specific guidance should stay narrow and correctness-driven:
+
+- Cursor CLI should be treated as metadata-first for labels and session ids.
+  The live `cursor-agent` command is enough to identify the provider, but tmux
+  titles are often generic. Wrappers should publish `@agent.label` and
+  `@agent.session_id` when they can obtain those values.
+- Wrapper-shaped panes with generic shell commands should publish metadata
+  rather than relying on path, window name, or title inference. The ambiguity
+  corpus in `docs/notes/ambiguity-corpus.md` records examples where weak tmux
+  evidence intentionally remains `unknown`.
 
 ## Shell Boundary
 
