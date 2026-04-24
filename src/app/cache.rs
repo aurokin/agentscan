@@ -2,7 +2,8 @@ use super::*;
 
 pub(super) fn snapshot_from_tmux() -> Result<SnapshotEnvelope> {
     let rows = tmux::tmux_list_panes()?;
-    let panes = rows.into_iter().map(classify::pane_from_row).collect();
+    let proc_inspector = proc::ProcProcessInspector;
+    let panes = classify::panes_from_rows_with_proc_fallback(rows, &proc_inspector);
 
     let mut snapshot = SnapshotEnvelope {
         schema_version: CACHE_SCHEMA_VERSION,

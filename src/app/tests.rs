@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
@@ -25,7 +26,7 @@ const TMUX_AMBIGUOUS_FIXTURE: &str = include_str!(concat!(
 use super::{
     CACHE_RELATIVE_PATH, CACHE_SCHEMA_VERSION, CLAUDE_SPINNER_GLYPHS, Cli,
     DAEMON_SUBSCRIPTION_FORMAT, IDLE_GLYPHS, OutputFormat, PaneRecord, Provider, SnapshotEnvelope,
-    SourceKind, StatusKind, TmuxMetadataField, cache, classify, daemon, output, tmux,
+    SourceKind, StatusKind, TmuxMetadataField, cache, classify, daemon, output, proc, tmux,
 };
 
 #[test]
@@ -1686,6 +1687,111 @@ fn ambiguous_fixture_documents_current_unresolved_behavior() {
 }
 
 #[test]
+fn proc_fallback_resolves_only_targeted_ambiguous_candidates() {
+    let rows =
+        tmux::parse_pane_rows(TMUX_AMBIGUOUS_FIXTURE).expect("ambiguous fixture should parse");
+    let inspector = FakeProcessInspector::new([
+        (602001, vec!["codex".to_string()]),
+        (602002, vec!["cursor-agent".to_string()]),
+        (602003, vec!["claude".to_string()]),
+    ]);
+    let panes = classify::panes_from_rows_with_proc_fallback(rows, &inspector);
+
+    assert_unresolved_ambiguous_pane(pane_by_id(&panes, "%600"), "(bront) ~/code/agent-wrapper");
+
+    let node_launcher = pane_by_id(&panes, "%601");
+    assert_eq!(node_launcher.provider, Some(Provider::Codex));
+    assert_eq!(node_launcher.status.kind, StatusKind::Busy);
+    assert_eq!(
+        node_launcher.classification.matched_by,
+        Some(super::ClassificationMatchKind::ProcProcessTree)
+    );
+    assert_eq!(
+        node_launcher.classification.reasons,
+        vec!["proc_descendant_command=codex"]
+    );
+
+    let python_launcher = pane_by_id(&panes, "%602");
+    assert_eq!(python_launcher.provider, Some(Provider::CursorCli));
+    assert_eq!(python_launcher.status.kind, StatusKind::Unknown);
+    assert_eq!(
+        python_launcher.classification.matched_by,
+        Some(super::ClassificationMatchKind::ProcProcessTree)
+    );
+    assert_eq!(
+        python_launcher.classification.reasons,
+        vec!["proc_descendant_command=cursor-agent"]
+    );
+
+    assert_unresolved_ambiguous_pane(pane_by_id(&panes, "%603"), "pi - agentscan");
+    assert_unresolved_ambiguous_pane(pane_by_id(&panes, "%604"), "review_auth_flow");
+    assert_eq!(inspector.calls(), vec![602001, 602002]);
+}
+
+#[test]
+fn proc_fallback_leaves_candidate_unknown_without_provider_evidence() {
+    let mut pane = classify::pane_from_row(super::TmuxPaneRow {
+        session_name: "ambiguous".to_string(),
+        window_index: 1,
+        pane_index: 1,
+        pane_id: "%700".to_string(),
+        pane_pid: 700,
+        pane_current_command: "node".to_string(),
+        pane_title_raw: "Working".to_string(),
+        pane_tty: "/dev/pts/700".to_string(),
+        pane_current_path: "/tmp/node-wrapper".to_string(),
+        window_name: "ai".to_string(),
+        session_id: None,
+        window_id: None,
+        agent_provider: None,
+        agent_label: None,
+        agent_cwd: None,
+        agent_state: None,
+        agent_session_id: None,
+    });
+    let inspector =
+        FakeProcessInspector::new([(700, vec!["node".to_string(), "helper".to_string()])]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_unresolved_ambiguous_pane(&pane, "Working");
+    assert_eq!(inspector.calls(), vec![700]);
+}
+
+#[test]
+fn proc_fallback_skips_panes_resolved_by_existing_precedence() {
+    let mut pane = classify::pane_from_row(super::TmuxPaneRow {
+        session_name: "metadata".to_string(),
+        window_index: 1,
+        pane_index: 1,
+        pane_id: "%701".to_string(),
+        pane_pid: 701,
+        pane_current_command: "node".to_string(),
+        pane_title_raw: "Working".to_string(),
+        pane_tty: "/dev/pts/701".to_string(),
+        pane_current_path: "/tmp/node-wrapper".to_string(),
+        window_name: "ai".to_string(),
+        session_id: None,
+        window_id: None,
+        agent_provider: Some("claude".to_string()),
+        agent_label: None,
+        agent_cwd: None,
+        agent_state: None,
+        agent_session_id: None,
+    });
+    let inspector = FakeProcessInspector::new([(701, vec!["codex".to_string()])]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_eq!(pane.provider, Some(Provider::Claude));
+    assert_eq!(
+        pane.classification.matched_by,
+        Some(super::ClassificationMatchKind::PaneMetadata)
+    );
+    assert!(inspector.calls().is_empty());
+}
+
+#[test]
 fn pane_metadata_overrides_display_provider_and_status_when_title_is_ambiguous() {
     let pane = classify::pane_from_row(super::TmuxPaneRow {
         session_name: "wrapper".to_string(),
@@ -2385,6 +2491,35 @@ fn cache_path_for_test(
 
     let home = home.context("missing home")?;
     Ok(Path::new(home).join(".cache").join(CACHE_RELATIVE_PATH))
+}
+
+struct FakeProcessInspector {
+    commands_by_pid: std::collections::HashMap<u32, Vec<String>>,
+    calls: RefCell<Vec<u32>>,
+}
+
+impl FakeProcessInspector {
+    fn new(entries: impl IntoIterator<Item = (u32, Vec<String>)>) -> Self {
+        Self {
+            commands_by_pid: entries.into_iter().collect(),
+            calls: RefCell::new(Vec::new()),
+        }
+    }
+
+    fn calls(&self) -> Vec<u32> {
+        self.calls.borrow().clone()
+    }
+}
+
+impl proc::ProcessInspector for FakeProcessInspector {
+    fn descendant_commands(&self, root_pid: u32) -> anyhow::Result<Vec<String>> {
+        self.calls.borrow_mut().push(root_pid);
+        Ok(self
+            .commands_by_pid
+            .get(&root_pid)
+            .cloned()
+            .unwrap_or_default())
+    }
 }
 
 fn assert_fixture_codex_cases(panes: &[PaneRecord]) {

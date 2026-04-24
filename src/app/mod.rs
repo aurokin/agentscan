@@ -19,6 +19,7 @@ mod commands;
 mod daemon;
 mod output;
 mod popup_ui;
+mod proc;
 #[cfg(test)]
 mod tests;
 mod tmux;
@@ -362,6 +363,7 @@ enum ClassificationMatchKind {
     PaneMetadata,
     PaneCurrentCommand,
     PaneTitle,
+    ProcProcessTree,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

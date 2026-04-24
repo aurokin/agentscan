@@ -238,6 +238,38 @@ pub(crate) fn pane_from_row(row: TmuxPaneRow) -> PaneRecord {
     }
 }
 
+pub(crate) fn panes_from_rows_with_proc_fallback(
+    rows: Vec<TmuxPaneRow>,
+    inspector: &impl proc::ProcessInspector,
+) -> Vec<PaneRecord> {
+    rows.into_iter()
+        .map(|row| {
+            let mut pane = pane_from_row(row);
+            apply_proc_fallback(&mut pane, inspector);
+            pane
+        })
+        .collect()
+}
+
+pub(crate) fn apply_proc_fallback(pane: &mut PaneRecord, inspector: &impl proc::ProcessInspector) {
+    if !is_proc_fallback_candidate(pane) {
+        return;
+    }
+
+    let Ok(commands) = inspector.descendant_commands(pane.tmux.pane_pid) else {
+        return;
+    };
+
+    let Some(provider_match) = commands
+        .iter()
+        .find_map(|command| provider_match_from_proc_command(command))
+    else {
+        return;
+    };
+
+    apply_provider_match(pane, provider_match);
+}
+
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn classify_provider(
     published_provider: Option<&str>,
@@ -302,6 +334,51 @@ fn classify_provider_from_analysis(
     }
 
     None
+}
+
+fn provider_match_from_proc_command(command: &str) -> Option<ProviderMatch> {
+    let command = command.trim();
+    let (provider, exact) = provider_from_command(command)?;
+    Some(ProviderMatch {
+        provider,
+        matched_by: ClassificationMatchKind::ProcProcessTree,
+        confidence: if exact {
+            ClassificationConfidence::High
+        } else {
+            ClassificationConfidence::Medium
+        },
+        reasons: vec![format!("proc_descendant_command={command}")],
+    })
+}
+
+fn apply_provider_match(pane: &mut PaneRecord, provider_match: ProviderMatch) {
+    let title_analysis = analyze_title(&pane.tmux.pane_title_raw);
+    let provider = Some(provider_match.provider);
+    let match_kind = Some(provider_match.matched_by);
+    let title_status = infer_title_status_from_analysis(provider, match_kind, &title_analysis);
+
+    pane.provider = provider;
+    pane.status = infer_status(title_status, pane.agent_metadata.state.as_deref());
+    pane.display = display_metadata_from_analysis(
+        &title_analysis,
+        provider,
+        match_kind,
+        pane.agent_metadata.label.as_deref(),
+        &pane.tmux.pane_current_command,
+        &pane.location.window_name,
+    );
+    pane.classification = PaneClassification {
+        matched_by: match_kind,
+        confidence: Some(provider_match.confidence),
+        reasons: provider_match.reasons,
+    };
+}
+
+fn is_proc_fallback_candidate(pane: &PaneRecord) -> bool {
+    pane.provider.is_none()
+        && pane.classification.matched_by.is_none()
+        && pane.agent_metadata.provider.is_none()
+        && matches!(pane.tmux.pane_current_command.trim(), "node" | "python3")
 }
 
 fn provider_from_metadata(provider: Option<&str>) -> Option<Provider> {

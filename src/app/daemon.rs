@@ -149,6 +149,8 @@ fn contains_title_escape(payload: &str) -> bool {
 fn refresh_snapshot_pane(snapshot: &mut SnapshotEnvelope, pane_id: &str) -> Result<()> {
     let pane = tmux::tmux_list_pane(pane_id)?.map(|row| {
         let mut pane = classify::pane_from_row(row);
+        let proc_inspector = proc::ProcProcessInspector;
+        classify::apply_proc_fallback(&mut pane, &proc_inspector);
         pane.diagnostics.cache_origin = "daemon_update".to_string();
         pane
     });
@@ -191,11 +193,15 @@ fn refresh_snapshot_scope(
         .retain(|pane| !scope.matches(pane, target_id));
 
     if let Some(rows) = rows {
-        snapshot.panes.extend(rows.into_iter().map(|row| {
-            let mut pane = classify::pane_from_row(row);
-            pane.diagnostics.cache_origin = "daemon_update".to_string();
-            pane
-        }));
+        let proc_inspector = proc::ProcProcessInspector;
+        snapshot.panes.extend(
+            classify::panes_from_rows_with_proc_fallback(rows, &proc_inspector)
+                .into_iter()
+                .map(|mut pane| {
+                    pane.diagnostics.cache_origin = "daemon_update".to_string();
+                    pane
+                }),
+        );
     }
 
     merge_cached_panes(snapshot, None);

@@ -102,6 +102,9 @@ Implications:
 - prefer tmux metadata and control-mode events over process scans
 - keep labels conservative when evidence is weak
 - treat pane inspection as fallback rather than the normal path
+- `/proc` fallback is currently limited to unresolved Linux `node` and
+  `python3` launcher panes, where a descendant process command matches a known
+  provider binary
 
 ### Popup Contract
 
