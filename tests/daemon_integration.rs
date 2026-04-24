@@ -807,11 +807,7 @@ impl TestHarness {
         let mut command = Command::new("script");
         command.arg("-q");
 
-        if cfg!(target_os = "macos")
-            || cfg!(target_os = "freebsd")
-            || cfg!(target_os = "openbsd")
-            || cfg!(target_os = "netbsd")
-        {
+        if cfg!(target_os = "macos") || cfg!(target_os = "freebsd") || cfg!(target_os = "openbsd") {
             command
                 .arg("/dev/null")
                 .arg("tmux")
