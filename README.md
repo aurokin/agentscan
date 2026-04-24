@@ -106,8 +106,11 @@ It can:
 Automation contract:
 
 - `agentscan popup` is interactive-only and is not a supported machine-readable surface
-- unsupported flags on `agentscan popup` should remain normal parse errors; do not add popup-specific compatibility shims to intercept them
-- `agentscan list --format json` is the supported machine-readable command for downstream consumers
+- local unsupported flags on `agentscan popup` should remain normal parse errors,
+  and root-level `--format` routed to `popup` should fail with migration
+  guidance; do not add popup-specific compatibility shims to intercept or
+  emulate legacy formatting
+- `agentscan list --format json` is the supported machine-readable command for downstream consumers in normal automation flows
 - `agentscan list --all --format json` is the supported way to include non-agent panes in that machine-readable output
 - `agentscan cache show --format json` exposes the raw cached snapshot when a consumer explicitly needs cache envelope details rather than the normal `list` view
 - popup-shaped TSV or JSON output is not a supported long-term contract
@@ -143,9 +146,15 @@ Use:
 - `agentscan list --all --format json` if the consumer previously depended on popup-style `--all`
 - `agentscan cache show --format json` only when the consumer intentionally needs the raw cached snapshot envelope
 
+Keep `agentscan popup` in tmux key bindings and other human-facing launch paths.
+Do not call it from scripts that parse stdout, and do not depend on its current
+terminal rendering, row ordering, key labels, or error frame text as a data
+contract.
+
 If an automation consumer cannot migrate because required fields are missing from
 the documented JSON surfaces, treat that as an API gap to close in `list` or
-cache JSON. Do not add `--format` back to `popup`, including hidden or compatibility-only parser paths.
+cache JSON. Do not add `--format` back to `popup`, including hidden or
+compatibility-only parser paths.
 
 ## Reference Behavior
 
@@ -182,3 +191,8 @@ The current CLI centers on:
 - `agentscan cache` for indexed operation
 - `agentscan popup` for interactive pane selection only
 - `agentscan tmux` for tmux-facing integration helpers
+
+Shell remains the right place for aliases, launch wrappers, tmux binds, and
+popup entrypoints. `agentscan` owns pane discovery, provider classification,
+metadata consumption, cache management, and the documented JSON surfaces those
+shell entrypoints can call.

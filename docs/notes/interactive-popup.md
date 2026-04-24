@@ -13,6 +13,9 @@ Implemented in the current branch:
 
 - `agentscan popup` is wired as a first-class command in
   [src/app/commands.rs](/home/auro/code/agentscan/src/app/commands.rs:16).
+- `agentscan popup` is an interactive-only command. Automation consumers should
+  use `agentscan list --format json`, or `agentscan cache show --format json`
+  when they intentionally need the raw cache envelope.
 - The popup UI loop, raw-mode TTY handling, cache reload path, stable key
   assignment, paging, resize-aware layout, Ctrl-B passthrough, and
   missing-pane fallback live in
@@ -76,4 +79,6 @@ it into `Current State` here or delete it instead of re-planning it.
 
 - reintroducing the legacy shell popup stack as an implementation dependency
 - bringing back `agentscan tmux popup` as a compatibility layer without a real consumer
+- adding popup-shaped TSV or JSON output for scripts
+- adding hidden or compatibility-only `popup --format` paths
 - broadening provider detection or status heuristics unrelated to popup UX

@@ -67,12 +67,13 @@ changes must increment `schema_version`.
 The current command surface is organized by concern:
 
 - `agentscan scan`: direct tmux snapshot for debugging and recovery
-- `agentscan list`: normal human output and supported JSON automation output
+- `agentscan list`: normal human output and the supported JSON automation output
 - `agentscan inspect <pane_id>`: one-pane diagnostics with provenance
 - `agentscan focus <pane_id>`: tmux pane targeting by stable id
 - `agentscan daemon`: long-lived indexer and daemon health commands
-- `agentscan cache`: cache path, validation, and raw cache inspection
-- `agentscan popup`: interactive-only pane picker
+- `agentscan cache`: cache path, validation, and raw cache inspection for
+  consumers that need the cache envelope
+- `agentscan popup`: interactive-only pane picker, not a stdout automation API
 - `agentscan tmux`: tmux-facing metadata helpers
 
 The default bare `agentscan` flow is cache-backed `list`.
@@ -93,6 +94,8 @@ Current lifecycle direction:
 
 - No permanent fast versus full split.
 - Popup remains interactive-only and not a machine-readable contract.
+- Normal automation should use `agentscan list --format json`; raw cache
+  consumers should use `agentscan cache show --format json`.
 - Keep shell wrappers thin; discovery and classification belong in Rust.
 - Prefer honest labels from tmux metadata over richer weak inference.
 - Treat pane inspection as a narrow fallback, not a primary detection strategy.
