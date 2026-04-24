@@ -797,22 +797,43 @@ impl TestHarness {
 
     fn attach_client(&self, session_name: &str) -> Result<AttachedClientHandle> {
         let existing_ttys = self.client_ttys()?;
-        let attach_command = format!(
-            "tmux -S {} attach-session -t {}",
-            shell_escape_path(&self.tmux_socket_path),
-            shell_escape(session_name),
-        );
-        let child = Command::new("script")
-            .args(["-q", "-c", &attach_command, "/dev/null"])
+        let mut child = self.spawn_attached_client(session_name)?;
+
+        let tty = self.wait_for_new_client_tty(&existing_ttys, &mut child)?;
+        Ok(AttachedClientHandle { child, tty })
+    }
+
+    fn spawn_attached_client(&self, session_name: &str) -> Result<Child> {
+        let mut command = Command::new("script");
+        command.arg("-q");
+
+        if cfg!(target_os = "macos") || cfg!(target_os = "freebsd") || cfg!(target_os = "openbsd") {
+            command
+                .arg("/dev/null")
+                .arg("tmux")
+                .arg("-S")
+                .arg(&self.tmux_socket_path)
+                .args(["attach-session", "-t", session_name]);
+        } else {
+            let attach_command = format!(
+                "tmux -S {} attach-session -t {}",
+                shell_escape_path(&self.tmux_socket_path),
+                shell_escape(session_name),
+            );
+            command.args(["-c", &attach_command, "/dev/null"]);
+        }
+
+        if std::env::var_os("TERM").is_none() {
+            command.env("TERM", "xterm-256color");
+        }
+
+        command
             .env_remove("TMUX")
             .env("TMUX_TMPDIR", &self.tmux_tmpdir)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .with_context(|| format!("failed to attach tmux client to {session_name}"))?;
-
-        let tty = self.wait_for_new_client_tty(&existing_ttys)?;
-        Ok(AttachedClientHandle { child, tty })
+            .with_context(|| format!("failed to attach tmux client to {session_name}"))
     }
 
     fn send_title_escape(&self, pane_id: &str, title: &str) -> Result<()> {
@@ -932,9 +953,20 @@ impl TestHarness {
             .map(|row| row.pane_id))
     }
 
-    fn wait_for_new_client_tty(&self, existing_ttys: &[String]) -> Result<String> {
+    fn wait_for_new_client_tty(
+        &self,
+        existing_ttys: &[String],
+        client: &mut Child,
+    ) -> Result<String> {
         let deadline = Instant::now() + DAEMON_TIMEOUT;
         loop {
+            if let Some(status) = client
+                .try_wait()
+                .context("failed to poll attached tmux client")?
+            {
+                bail!("attached tmux client exited before registering with status {status}");
+            }
+
             for row in self.client_rows()? {
                 if !existing_ttys.iter().any(|tty| tty == &row.client_tty) {
                     return Ok(row.client_tty);
@@ -974,12 +1006,15 @@ impl TestHarness {
     fn wait_for_client_key_table(&self, client_tty: &str, expected_key_table: &str) -> Result<()> {
         let deadline = Instant::now() + DAEMON_TIMEOUT;
         loop {
-            let output =
-                self.tmux_output(["list-clients", "-F", "#{client_tty}\x1f#{client_key_table}"])?;
+            let output = self.tmux_output([
+                "list-clients",
+                "-F",
+                &format!("#{{client_tty}}{TMUX_TEST_DELIM}#{{client_key_table}}"),
+            ])?;
             for line in output.lines() {
-                let mut fields = line.split('\x1f');
-                let listed_client_tty = fields.next().unwrap_or_default().trim();
-                let key_table = fields.next().unwrap_or_default().trim();
+                let fields = split_tmux_test_fields(line);
+                let listed_client_tty = fields.first().copied().unwrap_or_default().trim();
+                let key_table = fields.get(1).copied().unwrap_or_default().trim();
                 if listed_client_tty == client_tty && key_table == expected_key_table {
                     return Ok(());
                 }
@@ -1107,15 +1142,19 @@ impl TestHarness {
     }
 
     fn client_rows(&self) -> Result<Vec<TmuxClientRow>> {
-        let output = self.tmux_output(["list-clients", "-F", "#{client_tty}\x1f#{pane_id}"])?;
+        let output = self.tmux_output([
+            "list-clients",
+            "-F",
+            &format!("#{{client_tty}}{TMUX_TEST_DELIM}#{{pane_id}}"),
+        ])?;
         let mut rows = Vec::new();
         for line in output.lines() {
             if line.trim().is_empty() {
                 continue;
             }
-            let mut fields = line.split('\x1f');
-            let client_tty = fields.next().unwrap_or_default().trim();
-            let pane_id = fields.next().unwrap_or_default().trim();
+            let fields = split_tmux_test_fields(line);
+            let client_tty = fields.first().copied().unwrap_or_default().trim();
+            let pane_id = fields.get(1).copied().unwrap_or_default().trim();
             if client_tty.is_empty() {
                 continue;
             }
@@ -1243,6 +1282,8 @@ struct TmuxClientRow {
     pane_id: String,
 }
 
+const TMUX_TEST_DELIM: &str = r"\037";
+
 fn pane_from_cache<'a>(cache: &'a Value, pane_id: &str) -> Option<&'a Value> {
     cache["panes"]
         .as_array()?
@@ -1305,4 +1346,13 @@ fn shell_escape(value: &str) -> String {
     }
 
     format!("'{}'", value.replace('\'', r"'\''"))
+}
+
+fn split_tmux_test_fields(line: &str) -> Vec<&str> {
+    let fields: Vec<_> = line.split('\x1f').collect();
+    if fields.len() > 1 {
+        return fields;
+    }
+
+    line.split(TMUX_TEST_DELIM).collect()
 }
