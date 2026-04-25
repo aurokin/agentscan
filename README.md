@@ -98,6 +98,7 @@ It can:
 - populate `display.activity_label` for meaningful title-driven panes and authoritative wrapper labels, including non-generic Codex wrapper titles
 - keep labels conservative: show what tmux metadata actually tells us and avoid inventing richer task names from weak signals
 - treat Cursor CLI as metadata-first: command detection is enough to identify the provider, but generic tmux titles fall back to conservative pane labels until wrappers publish stronger metadata
+- resolve unresolved Claude Code launcher panes from targeted process evidence, including Claude Code CLI paths and tmux teammate-spawn argv/env markers
 - publish, clear, and consume explicit wrapper metadata via pane-local `@agent.*` tmux options
 - refresh the existing cache immediately after repo-local metadata helper writes so wrapper-driven metadata changes stay visible to cache consumers whether the cache came from the daemon or a forced snapshot
 - emit canonical snapshot JSON

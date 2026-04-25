@@ -94,7 +94,7 @@ The default detection path is:
 
 1. explicit wrapper-published tmux metadata
 2. tmux pane metadata and terminal titles
-3. targeted `/proc` fallback for concrete ambiguous panes
+3. targeted process-tree fallback for concrete ambiguous panes
 4. incremental pane output parsing only if later justified
 
 Implications:
@@ -102,11 +102,12 @@ Implications:
 - prefer tmux metadata and control-mode events over process scans
 - keep labels conservative when evidence is weak
 - treat pane inspection as fallback rather than the normal path
-- `/proc` fallback is currently limited to unresolved Linux `node` and
-  `python3` launcher panes, where a descendant process command matches a known
-  provider binary
+- process-tree fallback is currently limited to unresolved `node`, `bun`, and
+  `python3` launcher panes. It checks descendant process command, argv, and
+  selected Claude Code environment markers on Linux, and uses targeted child
+  process traversal on macOS with argv/command evidence.
 - `inspect` reports provider source, status source, classification reasons, and
-  targeted `/proc` fallback outcomes so classification problems can be debugged
+  targeted process fallback outcomes so classification problems can be debugged
   from the CLI and JSON cache without reading implementation code
 
 ### Popup Contract
@@ -135,12 +136,14 @@ Implications:
 
 ### Platform Priority
 
-Linux is the primary target for early fallback logic.
+Linux and macOS are the primary targets for early fallback logic.
 
 Implications:
 
-- targeted `/proc` fallback may be Linux-first
-- macOS fallback behavior may remain reduced until explicitly designed
+- Linux fallback may read selected `/proc` argv/env fields for unresolved
+  launcher panes.
+- macOS fallback should stay targeted to descendant processes of unresolved
+  launcher panes rather than broad `ps` scans.
 
 ## Reference Baseline
 
@@ -174,7 +177,8 @@ Delivered baseline:
 - versioned JSON cache snapshot
 - pane metadata model for explicit tmux user options
 - daemon-backed cache maintenance from tmux control mode
-- targeted `/proc` fallback for unresolved `node` and `python3` launcher panes
+- targeted process-tree fallback for unresolved `node`, `bun`, and `python3`
+  launcher panes, including Claude Code binary-path and teammate-spawn evidence
 - inspect provenance for provider, status, classification, and fallback
   decisions
 
@@ -184,7 +188,7 @@ Definition of done for the current finish pass:
 - docs describe shipped fallback behavior, wrapper metadata, automation
   surfaces, and shell boundaries consistently
 - unresolved panes stay conservative unless wrapper metadata, tmux evidence, or
-  the targeted `/proc` fallback provides specific provider evidence
+  targeted process fallback provides specific provider evidence
 - deferred work is limited to future migration sequencing and incremental output
   parsing if later justified by concrete unresolved panes
 

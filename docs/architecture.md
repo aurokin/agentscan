@@ -24,7 +24,7 @@ Detection follows a strict precedence ladder:
 
 1. explicit wrapper-published tmux pane metadata
 2. tmux pane metadata and terminal titles
-3. targeted `/proc` fallback for confirmed ambiguous panes
+3. targeted process-tree fallback for confirmed ambiguous panes
 4. incremental pane output parsing only if later justified
 
 The steady-state path must stay tmux-first. Broad `ps` scans, repeated

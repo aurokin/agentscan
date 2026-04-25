@@ -1838,13 +1838,290 @@ fn proc_fallback_leaves_candidate_unknown_without_provider_evidence() {
     );
     assert_eq!(
         pane.diagnostics.proc_fallback.reason,
-        "no known provider command found in descendants"
+        "no known provider evidence found in descendants"
     );
     assert_eq!(
         pane.diagnostics.proc_fallback.commands,
         vec!["node".to_string(), "helper".to_string()]
     );
     assert_eq!(inspector.calls(), vec![700]);
+}
+
+#[test]
+fn proc_fallback_resolves_provider_from_argv0_when_command_is_interpreter() {
+    let mut pane = classify::pane_from_row(super::TmuxPaneRow {
+        session_name: "ambiguous".to_string(),
+        window_index: 1,
+        pane_index: 1,
+        pane_id: "%703".to_string(),
+        pane_pid: 703,
+        pane_current_command: "node".to_string(),
+        pane_title_raw: "Ready".to_string(),
+        pane_tty: "/dev/pts/703".to_string(),
+        pane_current_path: "/tmp/node-wrapper".to_string(),
+        window_name: "ai".to_string(),
+        session_id: None,
+        window_id: None,
+        agent_provider: None,
+        agent_label: None,
+        agent_cwd: None,
+        agent_state: None,
+        agent_session_id: None,
+    });
+    let inspector = FakeProcessInspector::with_processes([(
+        703,
+        vec![proc::ProcessEvidence {
+            pid: 704,
+            command: "node".to_string(),
+            argv: vec!["codex".to_string(), "/tmp/wrapper.js".to_string()],
+            env: Vec::new(),
+        }],
+    )]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_eq!(pane.provider, Some(Provider::Codex));
+    assert_eq!(
+        pane.classification.reasons,
+        vec!["proc_descendant_command=codex"]
+    );
+}
+
+#[test]
+fn proc_fallback_resolves_claude_from_node_cli_path_and_title_status() {
+    let mut pane = classify::pane_from_row(super::TmuxPaneRow {
+        session_name: "ambiguous".to_string(),
+        window_index: 1,
+        pane_index: 1,
+        pane_id: "%704".to_string(),
+        pane_pid: 704,
+        pane_current_command: "node".to_string(),
+        pane_title_raw: "✳ Refactor auth flow".to_string(),
+        pane_tty: "/dev/pts/704".to_string(),
+        pane_current_path: "/tmp/node-wrapper".to_string(),
+        window_name: "ai".to_string(),
+        session_id: None,
+        window_id: None,
+        agent_provider: None,
+        agent_label: None,
+        agent_cwd: None,
+        agent_state: None,
+        agent_session_id: None,
+    });
+    let inspector = FakeProcessInspector::with_processes([(
+        704,
+        vec![proc::ProcessEvidence {
+            pid: 705,
+            command: "node".to_string(),
+            argv: vec![
+                "node".to_string(),
+                "/Users/auro/.claude/local/node_modules/@anthropic-ai/claude-code/cli.mjs"
+                    .to_string(),
+            ],
+            env: Vec::new(),
+        }],
+    )]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_eq!(pane.provider, Some(Provider::Claude));
+    assert_eq!(pane.status.kind, StatusKind::Idle);
+    assert_eq!(pane.status.source, super::StatusSource::TmuxTitle);
+    assert_eq!(pane.display.label, "Refactor auth flow");
+    assert_eq!(
+        pane.classification.reasons,
+        vec![
+            "proc_descendant_argv=/Users/auro/.claude/local/node_modules/@anthropic-ai/claude-code/cli.mjs"
+                .to_string()
+        ]
+    );
+}
+
+#[test]
+fn proc_fallback_resolves_claude_teammate_flags_with_claudecode_env() {
+    let mut pane = classify::pane_from_row(super::TmuxPaneRow {
+        session_name: "ambiguous".to_string(),
+        window_index: 1,
+        pane_index: 1,
+        pane_id: "%705".to_string(),
+        pane_pid: 705,
+        pane_current_command: "node".to_string(),
+        pane_title_raw: "worker-a".to_string(),
+        pane_tty: "/dev/pts/705".to_string(),
+        pane_current_path: "/tmp/node-wrapper".to_string(),
+        window_name: "ai".to_string(),
+        session_id: None,
+        window_id: None,
+        agent_provider: None,
+        agent_label: None,
+        agent_cwd: None,
+        agent_state: None,
+        agent_session_id: None,
+    });
+    let inspector = FakeProcessInspector::with_processes([(
+        705,
+        vec![proc::ProcessEvidence {
+            pid: 706,
+            command: "node".to_string(),
+            argv: vec![
+                "node".to_string(),
+                "/tmp/cli.mjs".to_string(),
+                "--agent-id".to_string(),
+                "worker-a@team".to_string(),
+                "--agent-name".to_string(),
+                "worker-a".to_string(),
+                "--team-name".to_string(),
+                "team".to_string(),
+            ],
+            env: vec![("CLAUDECODE".to_string(), "1".to_string())],
+        }],
+    )]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_eq!(pane.provider, Some(Provider::Claude));
+    assert_eq!(
+        pane.classification.reasons,
+        vec!["proc_descendant_argv=claude teammate flags"]
+    );
+    assert_eq!(pane.display.label, "worker-a");
+}
+
+#[test]
+fn proc_fallback_resolves_claude_teammate_from_shell_env_assignment() {
+    let mut pane = classify::pane_from_row(super::TmuxPaneRow {
+        session_name: "ambiguous".to_string(),
+        window_index: 1,
+        pane_index: 1,
+        pane_id: "%707".to_string(),
+        pane_pid: 707,
+        pane_current_command: "node".to_string(),
+        pane_title_raw: "worker-a".to_string(),
+        pane_tty: "/dev/pts/707".to_string(),
+        pane_current_path: "/tmp/node-wrapper".to_string(),
+        window_name: "ai".to_string(),
+        session_id: None,
+        window_id: None,
+        agent_provider: None,
+        agent_label: None,
+        agent_cwd: None,
+        agent_state: None,
+        agent_session_id: None,
+    });
+    let inspector = FakeProcessInspector::with_processes([(
+        707,
+        vec![proc::ProcessEvidence {
+            pid: 708,
+            command: "sh".to_string(),
+            argv: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "env CLAUDECODE=1 claude --agent-id worker-a --agent-name worker-a --team-name team"
+                    .to_string(),
+            ],
+            env: Vec::new(),
+        }],
+    )]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_eq!(pane.provider, Some(Provider::Claude));
+    assert_eq!(
+        pane.classification.reasons,
+        vec!["proc_descendant_argv=claude teammate flags"]
+    );
+    assert_eq!(pane.display.label, "worker-a");
+}
+
+#[test]
+fn proc_fallback_does_not_treat_teammate_flags_without_claude_env_as_claude() {
+    let mut pane = classify::pane_from_row(super::TmuxPaneRow {
+        session_name: "ambiguous".to_string(),
+        window_index: 1,
+        pane_index: 1,
+        pane_id: "%706".to_string(),
+        pane_pid: 706,
+        pane_current_command: "node".to_string(),
+        pane_title_raw: "worker-a".to_string(),
+        pane_tty: "/dev/pts/706".to_string(),
+        pane_current_path: "/tmp/node-wrapper".to_string(),
+        window_name: "ai".to_string(),
+        session_id: None,
+        window_id: None,
+        agent_provider: None,
+        agent_label: None,
+        agent_cwd: None,
+        agent_state: None,
+        agent_session_id: None,
+    });
+    let inspector = FakeProcessInspector::with_processes([(
+        706,
+        vec![proc::ProcessEvidence {
+            pid: 707,
+            command: "node".to_string(),
+            argv: vec![
+                "node".to_string(),
+                "/tmp/not-claude.js".to_string(),
+                "--agent-id=worker-a".to_string(),
+                "--agent-name=worker-a".to_string(),
+                "--team-name=team".to_string(),
+            ],
+            env: Vec::new(),
+        }],
+    )]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_unresolved_ambiguous_pane(&pane, "worker-a");
+    assert_eq!(
+        pane.diagnostics.proc_fallback.outcome,
+        super::ProcFallbackOutcome::NoMatch
+    );
+}
+
+#[test]
+fn proc_fallback_does_not_treat_claude_substrings_as_claude() {
+    for (pid, argv_path) in [
+        (708, "/project/node_modules/.bin/claude-lint"),
+        (709, "/work/claude-helper/cli.mjs"),
+    ] {
+        let mut pane = classify::pane_from_row(super::TmuxPaneRow {
+            session_name: "ambiguous".to_string(),
+            window_index: 1,
+            pane_index: 1,
+            pane_id: format!("%{pid}"),
+            pane_pid: pid,
+            pane_current_command: "node".to_string(),
+            pane_title_raw: "Working".to_string(),
+            pane_tty: format!("/dev/pts/{pid}"),
+            pane_current_path: "/tmp/node-wrapper".to_string(),
+            window_name: "ai".to_string(),
+            session_id: None,
+            window_id: None,
+            agent_provider: None,
+            agent_label: None,
+            agent_cwd: None,
+            agent_state: None,
+            agent_session_id: None,
+        });
+        let inspector = FakeProcessInspector::with_processes([(
+            pid,
+            vec![proc::ProcessEvidence {
+                pid: pid + 100,
+                command: "node".to_string(),
+                argv: vec!["node".to_string(), argv_path.to_string()],
+                env: Vec::new(),
+            }],
+        )]);
+
+        classify::apply_proc_fallback(&mut pane, &inspector);
+
+        assert_unresolved_ambiguous_pane(&pane, "Working");
+        assert_eq!(
+            pane.diagnostics.proc_fallback.outcome,
+            super::ProcFallbackOutcome::NoMatch
+        );
+    }
 }
 
 #[test]
@@ -1975,7 +2252,7 @@ fn inspect_text_reports_unresolved_fallback_decision() {
     assert!(text.contains("status_source: not_checked"));
     assert!(text.contains("classification: none"));
     assert!(text.contains("proc_fallback:\n  outcome: no_match"));
-    assert!(text.contains("  reason: no known provider command found in descendants"));
+    assert!(text.contains("  reason: no known provider evidence found in descendants"));
     assert!(text.contains("  commands:\n    - node"));
 }
 
@@ -2682,14 +2959,39 @@ fn cache_path_for_test(
 }
 
 struct FakeProcessInspector {
-    commands_by_pid: std::collections::HashMap<u32, Vec<String>>,
+    processes_by_pid: std::collections::HashMap<u32, Vec<proc::ProcessEvidence>>,
     calls: RefCell<Vec<u32>>,
 }
 
 impl FakeProcessInspector {
     fn new(entries: impl IntoIterator<Item = (u32, Vec<String>)>) -> Self {
         Self {
-            commands_by_pid: entries.into_iter().collect(),
+            processes_by_pid: entries
+                .into_iter()
+                .map(|(pid, commands)| {
+                    (
+                        pid,
+                        commands
+                            .into_iter()
+                            .map(|command| proc::ProcessEvidence {
+                                pid,
+                                command: command.clone(),
+                                argv: vec![command],
+                                env: Vec::new(),
+                            })
+                            .collect(),
+                    )
+                })
+                .collect(),
+            calls: RefCell::new(Vec::new()),
+        }
+    }
+
+    fn with_processes(
+        entries: impl IntoIterator<Item = (u32, Vec<proc::ProcessEvidence>)>,
+    ) -> Self {
+        Self {
+            processes_by_pid: entries.into_iter().collect(),
             calls: RefCell::new(Vec::new()),
         }
     }
@@ -2700,10 +3002,10 @@ impl FakeProcessInspector {
 }
 
 impl proc::ProcessInspector for FakeProcessInspector {
-    fn descendant_commands(&self, root_pid: u32) -> anyhow::Result<Vec<String>> {
+    fn descendant_processes(&self, root_pid: u32) -> anyhow::Result<Vec<proc::ProcessEvidence>> {
         self.calls.borrow_mut().push(root_pid);
         Ok(self
-            .commands_by_pid
+            .processes_by_pid
             .get(&root_pid)
             .cloned()
             .unwrap_or_default())

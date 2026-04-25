@@ -1,23 +1,50 @@
 use super::*;
 
 pub(crate) trait ProcessInspector {
-    fn descendant_commands(&self, root_pid: u32) -> Result<Vec<String>>;
+    fn descendant_processes(&self, root_pid: u32) -> Result<Vec<ProcessEvidence>>;
 }
 
 #[derive(Default)]
 pub(crate) struct ProcProcessInspector;
 
 impl ProcessInspector for ProcProcessInspector {
-    fn descendant_commands(&self, root_pid: u32) -> Result<Vec<String>> {
-        descendant_commands(root_pid)
+    fn descendant_processes(&self, root_pid: u32) -> Result<Vec<ProcessEvidence>> {
+        descendant_processes(root_pid)
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ProcessEvidence {
+    pub(crate) pid: u32,
+    pub(crate) command: String,
+    pub(crate) argv: Vec<String>,
+    pub(crate) env: Vec<(String, String)>,
+}
+
+impl ProcessEvidence {
+    pub(crate) fn command_for_diagnostics(&self) -> String {
+        if !self.command.trim().is_empty() {
+            return self.command.trim().to_string();
+        }
+
+        self.argv
+            .first()
+            .and_then(|arg| command_basename(arg))
+            .unwrap_or_else(|| format!("pid:{}", self.pid))
+    }
+
+    pub(crate) fn has_env(&self, key: &str, expected: &str) -> bool {
+        self.env
+            .iter()
+            .any(|(env_key, value)| env_key == key && value == expected)
     }
 }
 
 #[cfg(target_os = "linux")]
-fn descendant_commands(root_pid: u32) -> Result<Vec<String>> {
+fn descendant_processes(root_pid: u32) -> Result<Vec<ProcessEvidence>> {
     const MAX_PROCESSES: usize = 64;
 
-    let mut commands = Vec::new();
+    let mut processes = Vec::new();
     let mut queue = children_for_pid(root_pid)?;
     let mut visited = std::collections::HashSet::new();
 
@@ -26,18 +53,41 @@ fn descendant_commands(root_pid: u32) -> Result<Vec<String>> {
             continue;
         }
 
-        if let Some(command) = command_for_pid(pid) {
-            commands.push(command);
+        if let Some(process) = process_evidence_for_pid(pid) {
+            processes.push(process);
         }
 
         queue.extend(children_for_pid(pid)?);
     }
 
-    Ok(commands)
+    Ok(processes)
 }
 
-#[cfg(not(target_os = "linux"))]
-fn descendant_commands(_root_pid: u32) -> Result<Vec<String>> {
+#[cfg(target_os = "macos")]
+fn descendant_processes(root_pid: u32) -> Result<Vec<ProcessEvidence>> {
+    const MAX_PROCESSES: usize = 64;
+
+    let mut processes = Vec::new();
+    let mut queue = children_for_pid(root_pid)?;
+    let mut visited = std::collections::HashSet::new();
+
+    while let Some(pid) = queue.pop() {
+        if !visited.insert(pid) || visited.len() > MAX_PROCESSES {
+            continue;
+        }
+
+        if let Some(process) = process_evidence_for_pid(pid) {
+            processes.push(process);
+        }
+
+        queue.extend(children_for_pid(pid)?);
+    }
+
+    Ok(processes)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn descendant_processes(_root_pid: u32) -> Result<Vec<ProcessEvidence>> {
     Ok(Vec::new())
 }
 
@@ -55,19 +105,61 @@ fn children_for_pid(pid: u32) -> Result<Vec<u32>> {
 }
 
 #[cfg(target_os = "linux")]
-fn command_for_pid(pid: u32) -> Option<String> {
-    command_from_cmdline(pid).or_else(|| command_from_comm(pid))
+fn process_evidence_for_pid(pid: u32) -> Option<ProcessEvidence> {
+    let argv = argv_for_pid(pid);
+    let command = command_from_comm(pid).or_else(|| {
+        argv.first()
+            .and_then(|argv0| command_basename(argv0))
+            .filter(|command| !command.trim().is_empty())
+    })?;
+    Some(ProcessEvidence {
+        pid,
+        command,
+        argv,
+        env: selected_env_for_pid(pid),
+    })
 }
 
 #[cfg(target_os = "linux")]
-fn command_from_cmdline(pid: u32) -> Option<String> {
+fn argv_for_pid(pid: u32) -> Vec<String> {
     let path = format!("/proc/{pid}/cmdline");
-    let contents = fs::read(path).ok()?;
-    let first = contents
+    let Ok(contents) = fs::read(path) else {
+        return Vec::new();
+    };
+
+    contents
         .split(|byte| *byte == 0)
-        .find(|part| !part.is_empty())?;
-    let raw = std::str::from_utf8(first).ok()?.trim();
-    command_basename(raw)
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| std::str::from_utf8(part).ok())
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn selected_env_for_pid(pid: u32) -> Vec<(String, String)> {
+    const SELECTED_ENV_KEYS: &[&str] = &[
+        "CLAUDECODE",
+        "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",
+        "CLAUDE_CODE_ENTRYPOINT",
+        "CLAUDE_CODE_AGENT",
+        "CLAUDE_CODE_REMOTE",
+    ];
+
+    let path = format!("/proc/{pid}/environ");
+    let Ok(contents) = fs::read(path) else {
+        return Vec::new();
+    };
+
+    contents
+        .split(|byte| *byte == 0)
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| std::str::from_utf8(part).ok())
+        .filter_map(|entry| entry.split_once('='))
+        .filter(|(key, _)| SELECTED_ENV_KEYS.contains(key))
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect()
 }
 
 #[cfg(target_os = "linux")]
@@ -77,7 +169,64 @@ fn command_from_comm(pid: u32) -> Option<String> {
     command_basename(raw.trim())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(target_os = "macos")]
+fn children_for_pid(pid: u32) -> Result<Vec<u32>> {
+    let output = Command::new("pgrep")
+        .args(["-P", &pid.to_string()])
+        .output()
+        .context("failed to execute pgrep for process fallback")?;
+
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+
+    let stdout = String::from_utf8(output.stdout).context("pgrep output was not valid UTF-8")?;
+    Ok(stdout
+        .split_whitespace()
+        .filter_map(|value| value.parse::<u32>().ok())
+        .collect())
+}
+
+#[cfg(target_os = "macos")]
+fn process_evidence_for_pid(pid: u32) -> Option<ProcessEvidence> {
+    let comm = ps_field(pid, "comm=").unwrap_or_default();
+    let args = ps_field(pid, "args=").unwrap_or_default();
+    let argv = split_process_args(&args);
+    let command = command_basename(&comm)
+        .or_else(|| argv.first().and_then(|argv0| command_basename(argv0)))?;
+
+    Some(ProcessEvidence {
+        pid,
+        command,
+        argv,
+        env: Vec::new(),
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn ps_field(pid: u32, field: &str) -> Option<String> {
+    let output = Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", field])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    String::from_utf8(output.stdout)
+        .ok()
+        .map(|stdout| stdout.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+#[cfg(target_os = "macos")]
+fn split_process_args(args: &str) -> Vec<String> {
+    args.split_whitespace()
+        .filter(|arg| !arg.trim().is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 fn command_basename(raw: &str) -> Option<String> {
     let value = raw.trim();
     if value.is_empty() {

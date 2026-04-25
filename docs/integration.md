@@ -126,6 +126,10 @@ Calling `clear-metadata` with no `--field` clears all `@agent.*` fields.
 
 Provider-specific guidance should stay narrow and correctness-driven:
 
+- Claude Code panes are strongest when wrappers publish explicit metadata. The
+  scanner can also resolve unresolved launcher panes from Claude Code process
+  evidence, including the `@anthropic-ai/claude-code` CLI path and tmux teammate
+  spawns that carry Claude Code agent flags plus `CLAUDECODE=1`.
 - Cursor CLI should be treated as metadata-first for labels and session ids.
   The live `cursor-agent` command is enough to identify the provider, but tmux
   titles are often generic. Wrappers should publish `@agent.label` and

@@ -262,8 +262,8 @@ pub(crate) fn apply_proc_fallback(pane: &mut PaneRecord, inspector: &impl proc::
         return;
     }
 
-    let commands = match inspector.descendant_commands(pane.tmux.pane_pid) {
-        Ok(commands) => commands,
+    let processes = match inspector.descendant_processes(pane.tmux.pane_pid) {
+        Ok(processes) => processes,
         Err(error) => {
             pane.diagnostics.proc_fallback = ProcFallbackDiagnostics {
                 outcome: ProcFallbackOutcome::Error,
@@ -273,14 +273,15 @@ pub(crate) fn apply_proc_fallback(pane: &mut PaneRecord, inspector: &impl proc::
             return;
         }
     };
-
-    let Some(provider_match) = commands
+    let commands: Vec<String> = processes
         .iter()
-        .find_map(|command| provider_match_from_proc_command(command))
-    else {
+        .map(proc::ProcessEvidence::command_for_diagnostics)
+        .collect();
+
+    let Some(provider_match) = processes.iter().find_map(provider_match_from_proc_evidence) else {
         pane.diagnostics.proc_fallback = ProcFallbackDiagnostics {
             outcome: ProcFallbackOutcome::NoMatch,
-            reason: "no known provider command found in descendants".to_string(),
+            reason: "no known provider evidence found in descendants".to_string(),
             commands,
         };
         return;
@@ -375,6 +376,102 @@ fn provider_match_from_proc_command(command: &str) -> Option<ProviderMatch> {
     })
 }
 
+fn provider_match_from_proc_evidence(process: &proc::ProcessEvidence) -> Option<ProviderMatch> {
+    if let Some(provider_match) = provider_match_from_proc_command(&process.command) {
+        return Some(provider_match);
+    }
+
+    if let Some(provider_match) = provider_match_from_proc_argv0(process) {
+        return Some(provider_match);
+    }
+
+    if process
+        .argv
+        .iter()
+        .any(|arg| claude_arg_has_binary_shape(arg))
+        || process.argv.first().is_some_and(|arg| {
+            command_basename(arg).is_some_and(|command| command.eq_ignore_ascii_case("claude"))
+        })
+    {
+        return Some(ProviderMatch {
+            provider: Provider::Claude,
+            matched_by: ClassificationMatchKind::ProcProcessTree,
+            confidence: ClassificationConfidence::High,
+            reasons: vec![format!("proc_descendant_argv={}", proc_arg_reason(process))],
+        });
+    }
+
+    if process_has_claude_teammate_shape(process) {
+        return Some(ProviderMatch {
+            provider: Provider::Claude,
+            matched_by: ClassificationMatchKind::ProcProcessTree,
+            confidence: ClassificationConfidence::High,
+            reasons: vec!["proc_descendant_argv=claude teammate flags".to_string()],
+        });
+    }
+
+    None
+}
+
+fn provider_match_from_proc_argv0(process: &proc::ProcessEvidence) -> Option<ProviderMatch> {
+    let argv0 = process.argv.first()?;
+    let command = command_basename(argv0)?;
+    provider_match_from_proc_command(&command)
+}
+
+fn claude_arg_has_binary_shape(arg: &str) -> bool {
+    let normalized = arg.replace('\\', "/");
+    let lower = normalized.trim().to_ascii_lowercase();
+    lower.ends_with("/claude")
+        || lower.ends_with("/claude-code")
+        || lower.ends_with("/node_modules/.bin/claude")
+        || lower.contains("/node_modules/@anthropic-ai/claude-code/")
+}
+
+fn process_has_claude_teammate_shape(process: &proc::ProcessEvidence) -> bool {
+    let has_teammate_flags = argv_has_flag(&process.argv, "--agent-id")
+        && argv_has_flag(&process.argv, "--agent-name")
+        && argv_has_flag(&process.argv, "--team-name");
+    let has_claudecode_env = process.has_env("CLAUDECODE", "1")
+        || process.has_env("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "1")
+        || argv_has_env_assignment(&process.argv, "CLAUDECODE", "1")
+        || argv_has_env_assignment(&process.argv, "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "1");
+
+    has_teammate_flags && has_claudecode_env
+}
+
+fn argv_has_flag(argv: &[String], flag: &str) -> bool {
+    argv_has_token(argv, |token| {
+        token == flag
+            || token
+                .strip_prefix(flag)
+                .is_some_and(|rest| rest.starts_with('='))
+    })
+}
+
+fn argv_has_env_assignment(argv: &[String], key: &str, expected: &str) -> bool {
+    argv_has_token(argv, |token| {
+        token
+            .split_once('=')
+            .is_some_and(|(env_key, value)| env_key == key && value == expected)
+    })
+}
+
+fn argv_has_token(argv: &[String], predicate: impl Fn(&str) -> bool) -> bool {
+    argv.iter()
+        .any(|arg| predicate(arg) || arg.split_whitespace().any(&predicate))
+}
+
+fn proc_arg_reason(process: &proc::ProcessEvidence) -> String {
+    process
+        .argv
+        .iter()
+        .find(|arg| claude_arg_has_binary_shape(arg))
+        .cloned()
+        .or_else(|| process.argv.first().cloned())
+        .unwrap_or_else(|| process.command.clone())
+}
+
 fn apply_provider_match(pane: &mut PaneRecord, provider_match: ProviderMatch) {
     let title_analysis = analyze_title(&pane.tmux.pane_title_raw);
     let provider = Some(provider_match.provider);
@@ -402,7 +499,10 @@ fn is_proc_fallback_candidate(pane: &PaneRecord) -> bool {
     pane.provider.is_none()
         && pane.classification.matched_by.is_none()
         && pane.agent_metadata.provider.is_none()
-        && matches!(pane.tmux.pane_current_command.trim(), "node" | "python3")
+        && matches!(
+            pane.tmux.pane_current_command.trim(),
+            "node" | "bun" | "python3"
+        )
 }
 
 fn proc_fallback_skip_reason(pane: &PaneRecord) -> String {
@@ -906,6 +1006,14 @@ fn matches_binary(command: &str, provider: &str, allow_suffix: bool) -> Option<b
         return Some(false);
     }
     None
+}
+
+fn command_basename(raw: &str) -> Option<String> {
+    Path::new(raw.trim())
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .map(str::to_string)
 }
 
 pub(crate) fn looks_like_codex_title(title: &str) -> bool {
