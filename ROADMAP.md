@@ -178,6 +178,16 @@ Delivered baseline:
 - inspect provenance for provider, status, classification, and fallback
   decisions
 
+Definition of done for the current finish pass:
+
+- the release-quality gates in `README.md` pass locally
+- docs describe shipped fallback behavior, wrapper metadata, automation
+  surfaces, and shell boundaries consistently
+- unresolved panes stay conservative unless wrapper metadata, tmux evidence, or
+  the targeted `/proc` fallback provides specific provider evidence
+- deferred work is limited to future migration sequencing and incremental output
+  parsing if later justified by concrete unresolved panes
+
 Further migration sequencing belongs in Linear until it becomes stable enough to
 document as a contract in the repo docs.
 
