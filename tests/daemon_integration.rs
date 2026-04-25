@@ -2,6 +2,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -326,6 +327,9 @@ fn popup_focuses_selected_pane_from_interactive_tmux_pane() -> Result<()> {
 #[test]
 fn display_popup_focuses_selected_pane_from_attached_client() -> Result<()> {
     let harness = TestHarness::new()?;
+    if !harness.supports_display_popup_key_injection()? {
+        return Ok(());
+    }
     let root_pane_id = harness.start_session("display-popup-focus", "sleep 300")?;
     let split_pane_id = harness.split_window("display-popup-focus:0.0", "sleep 300")?;
     harness.seed_popup_two_pane_cache(&root_pane_id, &split_pane_id)?;
@@ -384,6 +388,9 @@ fn popup_displays_message_when_cached_pane_no_longer_exists() -> Result<()> {
 #[test]
 fn display_popup_closes_when_cached_pane_no_longer_exists() -> Result<()> {
     let harness = TestHarness::new()?;
+    if !harness.supports_display_popup_key_injection()? {
+        return Ok(());
+    }
     let root_pane_id = harness.start_session("display-popup-missing", "sleep 300")?;
     let split_pane_id = harness.split_window("display-popup-missing:0.0", "sleep 300")?;
     harness.seed_popup_two_pane_cache(&root_pane_id, &split_pane_id)?;
@@ -419,6 +426,9 @@ fn popup_ctrl_b_passthrough_returns_to_tmux_prefix_table() -> Result<()> {
 #[test]
 fn display_popup_ctrl_b_passthrough_returns_to_tmux_prefix_table() -> Result<()> {
     let harness = TestHarness::new()?;
+    if !harness.supports_display_popup_key_injection()? {
+        return Ok(());
+    }
     let _pane_id = harness.start_session("display-popup-prefix", "sleep 300")?;
     let client = harness.attach_client("display-popup-prefix")?;
 
@@ -567,6 +577,9 @@ fn popup_pages_to_overflow_rows() -> Result<()> {
 #[test]
 fn display_popup_pages_to_overflow_rows_and_focuses_selection() -> Result<()> {
     let harness = TestHarness::new()?;
+    if !harness.supports_display_popup_key_injection()? {
+        return Ok(());
+    }
     let root_pane_id = harness.start_session("display-popup-paging", "sleep 300")?;
     let mut pane_ids = vec![root_pane_id];
 
@@ -783,6 +796,7 @@ struct TestHarness {
     cache_path: PathBuf,
     stdout_path: PathBuf,
     stderr_path: PathBuf,
+    display_popup_launch_count: AtomicUsize,
 }
 
 impl TestHarness {
@@ -807,6 +821,7 @@ impl TestHarness {
             cache_path: tempdir.path().join("cache.json"),
             stdout_path: tempdir.path().join("daemon.stdout.log"),
             stderr_path: tempdir.path().join("daemon.stderr.log"),
+            display_popup_launch_count: AtomicUsize::new(0),
             tmux_tmpdir,
             _tempdir: tempdir,
         })
@@ -1025,6 +1040,35 @@ impl TestHarness {
         String::from_utf8(output.stdout).context("tmux output was not valid UTF-8")
     }
 
+    fn supports_display_popup_key_injection(&self) -> Result<bool> {
+        if std::env::var_os("AGENTSCAN_RUN_DISPLAY_POPUP_TESTS").is_some() {
+            return Ok(true);
+        }
+
+        Ok(self
+            .tmux_version()?
+            .as_deref()
+            .and_then(parse_tmux_version)
+            .is_some_and(|version| version >= (3, 6)))
+    }
+
+    fn tmux_version(&self) -> Result<Option<String>> {
+        let output = self
+            .tmux_command()
+            .arg("-V")
+            .output()
+            .context("failed to execute tmux -V")?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+
+        let stdout = String::from_utf8(output.stdout).context("tmux -V output was not UTF-8")?;
+        Ok(stdout
+            .trim()
+            .strip_prefix("tmux ")
+            .map(|version| version.to_string()))
+    }
+
     fn start_agentscan_popup_pane(&self, target: &str, extra_args: &[&str]) -> Result<String> {
         let popup_command = self.agentscan_popup_command(extra_args)?;
         self.split_window(target, &popup_command)
@@ -1035,7 +1079,10 @@ impl TestHarness {
         client_tty: &str,
         extra_args: &[&str],
     ) -> Result<DisplayPopupHandle> {
-        let token = display_popup_token(client_tty);
+        let launch_index = self
+            .display_popup_launch_count
+            .fetch_add(1, Ordering::Relaxed);
+        let token = display_popup_token(client_tty, launch_index);
         let ready_path = self._tempdir.path().join(format!("{token}.ready"));
         let done_path = self._tempdir.path().join(format!("{token}.done"));
         let stderr_path = self._tempdir.path().join(format!("{token}.stderr.log"));
@@ -1579,7 +1626,16 @@ fn read_log(path: &Path) -> String {
     fs::read_to_string(path).unwrap_or_default()
 }
 
-fn display_popup_token(client_tty: &str) -> String {
+fn parse_tmux_version(version: &str) -> Option<(u32, u32)> {
+    let numeric = version
+        .chars()
+        .take_while(|character| character.is_ascii_digit() || *character == '.')
+        .collect::<String>();
+    let (major, minor) = numeric.split_once('.')?;
+    Some((major.parse().ok()?, minor.parse().ok()?))
+}
+
+fn display_popup_token(client_tty: &str, launch_index: usize) -> String {
     let sanitized = client_tty
         .chars()
         .map(|character| {
@@ -1590,7 +1646,7 @@ fn display_popup_token(client_tty: &str) -> String {
             }
         })
         .collect::<String>();
-    format!("display-popup-{sanitized}")
+    format!("display-popup-{sanitized}-{launch_index}")
 }
 
 fn agentscan_bin() -> Result<PathBuf> {
