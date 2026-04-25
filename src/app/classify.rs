@@ -496,13 +496,16 @@ fn apply_provider_match(pane: &mut PaneRecord, provider_match: ProviderMatch) {
 }
 
 fn is_proc_fallback_candidate(pane: &PaneRecord) -> bool {
+    let title_analysis = analyze_title(&pane.tmux.pane_title_raw);
+
     pane.provider.is_none()
         && pane.classification.matched_by.is_none()
         && pane.agent_metadata.provider.is_none()
-        && matches!(
+        && (matches!(
             pane.tmux.pane_current_command.trim(),
             "node" | "bun" | "python3"
-        )
+        ) || title_analysis.has_spinner_glyph
+            || title_analysis.has_idle_glyph)
 }
 
 fn proc_fallback_skip_reason(pane: &PaneRecord) -> String {

@@ -1938,6 +1938,45 @@ fn proc_fallback_resolves_claude_from_node_cli_path_and_title_status() {
 }
 
 #[test]
+fn proc_fallback_resolves_claude_from_title_glyph_and_descendant_command() {
+    let mut pane = classify::pane_from_row(super::TmuxPaneRow {
+        session_name: "ambiguous".to_string(),
+        window_index: 1,
+        pane_index: 1,
+        pane_id: "%711".to_string(),
+        pane_pid: 711,
+        pane_current_command: "2.1.119".to_string(),
+        pane_title_raw: "✳ Analyze Linear Issue AUR-126 and plan implementation".to_string(),
+        pane_tty: "/dev/pts/711".to_string(),
+        pane_current_path: "/tmp/claude-wrapper".to_string(),
+        window_name: "ai".to_string(),
+        session_id: None,
+        window_id: None,
+        agent_provider: None,
+        agent_label: None,
+        agent_cwd: None,
+        agent_state: None,
+        agent_session_id: None,
+    });
+    let inspector = FakeProcessInspector::new([(711, vec!["claude".to_string()])]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_eq!(pane.provider, Some(Provider::Claude));
+    assert_eq!(pane.status.kind, StatusKind::Idle);
+    assert_eq!(pane.status.source, super::StatusSource::TmuxTitle);
+    assert_eq!(
+        pane.display.label,
+        "Analyze Linear Issue AUR-126 and plan implementation"
+    );
+    assert_eq!(
+        pane.classification.reasons,
+        vec!["proc_descendant_command=claude"]
+    );
+    assert_eq!(inspector.calls(), vec![711]);
+}
+
+#[test]
 fn proc_fallback_resolves_claude_teammate_flags_with_claudecode_env() {
     let mut pane = classify::pane_from_row(super::TmuxPaneRow {
         session_name: "ambiguous".to_string(),
