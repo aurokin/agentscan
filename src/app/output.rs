@@ -34,46 +34,68 @@ fn print_list_text(panes: &[PaneRecord]) {
 }
 
 pub(super) fn print_inspect_text(pane: &PaneRecord) {
-    println!("pane_id: {}", pane.pane_id);
-    println!(
-        "location: {}:{}.{} ({})",
-        pane.location.session_name,
-        pane.location.window_index,
-        pane.location.pane_index,
-        pane.location.window_name
-    );
-    println!("location_tag: {}", pane.location_tag());
-    println!(
-        "provider: {}",
-        pane.provider
-            .map(|provider| provider.to_string())
-            .unwrap_or_else(|| "unknown".to_string())
-    );
-    println!("display_label: {}", pane.display.label);
+    print!("{}", inspect_text(pane));
+}
+
+pub(super) fn inspect_text(pane: &PaneRecord) -> String {
+    let mut lines = vec![
+        format!("pane_id: {}", pane.pane_id),
+        format!(
+            "location: {}:{}.{} ({})",
+            pane.location.session_name,
+            pane.location.window_index,
+            pane.location.pane_index,
+            pane.location.window_name
+        ),
+        format!("location_tag: {}", pane.location_tag()),
+        format!(
+            "provider: {}",
+            pane.provider
+                .map(|provider| provider.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        ),
+        format!(
+            "provider_source: {}",
+            pane.classification
+                .matched_by
+                .map(classification_match_kind_name)
+                .unwrap_or("none")
+        ),
+        format!(
+            "provider_confidence: {}",
+            pane.classification
+                .confidence
+                .map(classification_confidence_name)
+                .unwrap_or("none")
+        ),
+        format!("display_label: {}", pane.display.label),
+    ];
     if let Some(activity_label) = pane.display.activity_label.as_deref() {
-        println!("activity_label: {activity_label}");
+        lines.push(format!("activity_label: {activity_label}"));
     }
-    println!("status: {:?}", pane.status.kind);
-    println!("status_source: {:?}", pane.status.source);
-    println!(
-        "command: {}",
-        default_if_empty(&pane.tmux.pane_current_command, "<empty>")
-    );
-    println!(
-        "title_raw: {}",
-        default_if_empty(&pane.tmux.pane_title_raw, "<empty>")
-    );
-    println!(
-        "cwd: {}",
-        default_if_empty(&pane.tmux.pane_current_path, "<empty>")
-    );
-    println!("tty: {}", default_if_empty(&pane.tmux.pane_tty, "<empty>"));
+    lines.extend([
+        format!("status: {}", status_kind_name(pane.status.kind)),
+        format!("status_source: {}", status_source_name(pane.status.source)),
+        format!(
+            "command: {}",
+            default_if_empty(&pane.tmux.pane_current_command, "<empty>")
+        ),
+        format!(
+            "title_raw: {}",
+            default_if_empty(&pane.tmux.pane_title_raw, "<empty>")
+        ),
+        format!(
+            "cwd: {}",
+            default_if_empty(&pane.tmux.pane_current_path, "<empty>")
+        ),
+        format!("tty: {}", default_if_empty(&pane.tmux.pane_tty, "<empty>")),
+    ]);
     if pane.tmux.session_id.is_some() || pane.tmux.window_id.is_some() {
-        println!(
+        lines.push(format!(
             "tmux_ids: session={} window={}",
             default_if_empty(pane.tmux.session_id.as_deref().unwrap_or(""), "<empty>"),
             default_if_empty(pane.tmux.window_id.as_deref().unwrap_or(""), "<empty>")
-        );
+        ));
     }
 
     if pane.agent_metadata.provider.is_some()
@@ -82,49 +104,70 @@ pub(super) fn print_inspect_text(pane: &PaneRecord) {
         || pane.agent_metadata.state.is_some()
         || pane.agent_metadata.session_id.is_some()
     {
-        println!("agent_metadata:");
-        println!(
-            "  provider: {}",
-            default_if_empty(
-                pane.agent_metadata.provider.as_deref().unwrap_or(""),
-                "<empty>"
-            )
-        );
-        println!(
-            "  label: {}",
-            default_if_empty(
-                pane.agent_metadata.label.as_deref().unwrap_or(""),
-                "<empty>"
-            )
-        );
-        println!(
-            "  cwd: {}",
-            default_if_empty(pane.agent_metadata.cwd.as_deref().unwrap_or(""), "<empty>")
-        );
-        println!(
-            "  state: {}",
-            default_if_empty(
-                pane.agent_metadata.state.as_deref().unwrap_or(""),
-                "<empty>"
-            )
-        );
-        println!(
-            "  session_id: {}",
-            default_if_empty(
-                pane.agent_metadata.session_id.as_deref().unwrap_or(""),
-                "<empty>"
-            )
-        );
+        lines.extend([
+            "agent_metadata:".to_string(),
+            format!(
+                "  provider: {}",
+                default_if_empty(
+                    pane.agent_metadata.provider.as_deref().unwrap_or(""),
+                    "<empty>"
+                )
+            ),
+            format!(
+                "  label: {}",
+                default_if_empty(
+                    pane.agent_metadata.label.as_deref().unwrap_or(""),
+                    "<empty>"
+                )
+            ),
+            format!(
+                "  cwd: {}",
+                default_if_empty(pane.agent_metadata.cwd.as_deref().unwrap_or(""), "<empty>")
+            ),
+            format!(
+                "  state: {}",
+                default_if_empty(
+                    pane.agent_metadata.state.as_deref().unwrap_or(""),
+                    "<empty>"
+                )
+            ),
+            format!(
+                "  session_id: {}",
+                default_if_empty(
+                    pane.agent_metadata.session_id.as_deref().unwrap_or(""),
+                    "<empty>"
+                )
+            ),
+        ]);
     }
 
     if pane.classification.reasons.is_empty() {
-        println!("classification: none");
+        lines.push("classification: none".to_string());
     } else {
-        println!("classification:");
+        lines.push("classification:".to_string());
         for reason in &pane.classification.reasons {
-            println!("  - {reason}");
+            lines.push(format!("  - {reason}"));
         }
     }
+
+    lines.extend([
+        "proc_fallback:".to_string(),
+        format!(
+            "  outcome: {}",
+            proc_fallback_outcome_name(pane.diagnostics.proc_fallback.outcome)
+        ),
+        format!("  reason: {}", pane.diagnostics.proc_fallback.reason),
+    ]);
+    if !pane.diagnostics.proc_fallback.commands.is_empty() {
+        lines.push("  commands:".to_string());
+        for command in &pane.diagnostics.proc_fallback.commands {
+            lines.push(format!("    - {command}"));
+        }
+    }
+
+    let mut text = lines.join("\n");
+    text.push('\n');
+    text
 }
 
 pub(super) fn print_json<T: Serialize>(value: &T) -> Result<()> {

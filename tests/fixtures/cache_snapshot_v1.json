@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "generated_at": "2026-03-28T00:00:00Z",
   "source": {
     "kind": "daemon",
@@ -48,7 +48,12 @@
         "session_id": null
       },
       "diagnostics": {
-        "cache_origin": "daemon_snapshot"
+        "cache_origin": "daemon_snapshot",
+        "proc_fallback": {
+          "outcome": "skipped",
+          "reason": "provider already resolved by pane_current_command",
+          "commands": []
+        }
       }
     }
   ]

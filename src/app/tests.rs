@@ -1752,6 +1752,14 @@ fn proc_fallback_resolves_only_targeted_ambiguous_candidates() {
         node_launcher.classification.reasons,
         vec!["proc_descendant_command=codex"]
     );
+    assert_eq!(
+        node_launcher.diagnostics.proc_fallback.outcome,
+        super::ProcFallbackOutcome::Resolved
+    );
+    assert_eq!(
+        node_launcher.diagnostics.proc_fallback.commands,
+        vec!["codex".to_string()]
+    );
 
     let python_launcher = pane_by_id(&panes, "%602");
     assert_eq!(python_launcher.provider, Some(Provider::CursorCli));
@@ -1763,6 +1771,10 @@ fn proc_fallback_resolves_only_targeted_ambiguous_candidates() {
     assert_eq!(
         python_launcher.classification.reasons,
         vec!["proc_descendant_command=cursor-agent"]
+    );
+    assert_eq!(
+        python_launcher.diagnostics.proc_fallback.outcome,
+        super::ProcFallbackOutcome::Resolved
     );
 
     assert_unresolved_ambiguous_pane(pane_by_id(&panes, "%603"), "pi - agentscan");
@@ -1797,6 +1809,18 @@ fn proc_fallback_leaves_candidate_unknown_without_provider_evidence() {
     classify::apply_proc_fallback(&mut pane, &inspector);
 
     assert_unresolved_ambiguous_pane(&pane, "Working");
+    assert_eq!(
+        pane.diagnostics.proc_fallback.outcome,
+        super::ProcFallbackOutcome::NoMatch
+    );
+    assert_eq!(
+        pane.diagnostics.proc_fallback.reason,
+        "no known provider command found in descendants"
+    );
+    assert_eq!(
+        pane.diagnostics.proc_fallback.commands,
+        vec!["node".to_string(), "helper".to_string()]
+    );
     assert_eq!(inspector.calls(), vec![700]);
 }
 
@@ -1830,7 +1854,106 @@ fn proc_fallback_skips_panes_resolved_by_existing_precedence() {
         pane.classification.matched_by,
         Some(super::ClassificationMatchKind::PaneMetadata)
     );
+    assert_eq!(
+        pane.diagnostics.proc_fallback.outcome,
+        super::ProcFallbackOutcome::Skipped
+    );
+    assert_eq!(
+        pane.diagnostics.proc_fallback.reason,
+        "provider already resolved by pane_metadata"
+    );
     assert!(inspector.calls().is_empty());
+}
+
+#[test]
+fn proc_fallback_records_skip_reason_for_untargeted_unresolved_pane() {
+    let mut pane = classify::pane_from_row(super::TmuxPaneRow {
+        session_name: "ambiguous".to_string(),
+        window_index: 1,
+        pane_index: 1,
+        pane_id: "%702".to_string(),
+        pane_pid: 702,
+        pane_current_command: "zsh".to_string(),
+        pane_title_raw: "(bront) ~/code/agent-wrapper".to_string(),
+        pane_tty: "/dev/pts/702".to_string(),
+        pane_current_path: "/tmp/wrapper".to_string(),
+        window_name: "ai".to_string(),
+        session_id: None,
+        window_id: None,
+        agent_provider: None,
+        agent_label: None,
+        agent_cwd: None,
+        agent_state: None,
+        agent_session_id: None,
+    });
+    let inspector = FakeProcessInspector::new([(702, vec!["codex".to_string()])]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_unresolved_ambiguous_pane(&pane, "(bront) ~/code/agent-wrapper");
+    assert_eq!(
+        pane.diagnostics.proc_fallback.outcome,
+        super::ProcFallbackOutcome::Skipped
+    );
+    assert_eq!(
+        pane.diagnostics.proc_fallback.reason,
+        "pane_current_command=zsh is not a targeted proc fallback launcher"
+    );
+    assert!(inspector.calls().is_empty());
+}
+
+#[test]
+fn inspect_text_reports_provider_status_and_fallback_provenance() {
+    let rows =
+        tmux::parse_pane_rows(TMUX_AMBIGUOUS_FIXTURE).expect("ambiguous fixture should parse");
+    let inspector = FakeProcessInspector::new([(602001, vec!["codex".to_string()])]);
+    let panes = classify::panes_from_rows_with_proc_fallback(rows, &inspector);
+    let text = output::inspect_text(pane_by_id(&panes, "%601"));
+
+    assert!(text.contains("provider: codex"));
+    assert!(text.contains("provider_source: proc_process_tree"));
+    assert!(text.contains("provider_confidence: high"));
+    assert!(text.contains("status: busy"));
+    assert!(text.contains("status_source: tmux_title"));
+    assert!(text.contains("classification:\n  - proc_descendant_command=codex"));
+    assert!(text.contains("proc_fallback:\n  outcome: resolved"));
+    assert!(text.contains("  reason: resolved provider from descendant process command"));
+    assert!(text.contains("  commands:\n    - codex"));
+}
+
+#[test]
+fn inspect_text_reports_unresolved_fallback_decision() {
+    let mut pane = classify::pane_from_row(super::TmuxPaneRow {
+        session_name: "ambiguous".to_string(),
+        window_index: 1,
+        pane_index: 1,
+        pane_id: "%703".to_string(),
+        pane_pid: 703,
+        pane_current_command: "node".to_string(),
+        pane_title_raw: "Working".to_string(),
+        pane_tty: "/dev/pts/703".to_string(),
+        pane_current_path: "/tmp/node-wrapper".to_string(),
+        window_name: "ai".to_string(),
+        session_id: None,
+        window_id: None,
+        agent_provider: None,
+        agent_label: None,
+        agent_cwd: None,
+        agent_state: None,
+        agent_session_id: None,
+    });
+    let inspector = FakeProcessInspector::new([(703, vec!["node".to_string()])]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+    let text = output::inspect_text(&pane);
+
+    assert!(text.contains("provider: unknown"));
+    assert!(text.contains("provider_source: none"));
+    assert!(text.contains("status_source: not_checked"));
+    assert!(text.contains("classification: none"));
+    assert!(text.contains("proc_fallback:\n  outcome: no_match"));
+    assert!(text.contains("  reason: no known provider command found in descendants"));
+    assert!(text.contains("  commands:\n    - node"));
 }
 
 #[test]
