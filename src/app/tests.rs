@@ -565,6 +565,11 @@ fn codex_status_uses_title_only() {
         Some(super::ClassificationMatchKind::PaneTitle),
         "⠹ agentscan | Working",
     );
+    let waiting = classify::infer_title_status(
+        Some(Provider::Codex),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "Waiting",
+    );
     let idle = classify::infer_title_status(
         Some(Provider::Codex),
         Some(super::ClassificationMatchKind::PaneTitle),
@@ -572,6 +577,7 @@ fn codex_status_uses_title_only() {
     );
 
     assert_eq!(busy.kind, StatusKind::Busy);
+    assert_eq!(waiting.kind, StatusKind::Busy);
     assert_eq!(idle.kind, StatusKind::Idle);
 }
 
@@ -3112,7 +3118,7 @@ fn assert_fixture_codex_cases(panes: &[PaneRecord]) {
 
     let codex_waiting = pane_by_id(panes, "%194");
     assert_eq!(codex_waiting.provider, Some(Provider::Codex));
-    assert_eq!(codex_waiting.status.kind, StatusKind::Idle);
+    assert_eq!(codex_waiting.status.kind, StatusKind::Busy);
     assert_eq!(codex_waiting.display.label, "agentscan | Waiting");
     assert_eq!(
         codex_waiting.display.activity_label.as_deref(),

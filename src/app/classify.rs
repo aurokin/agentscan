@@ -666,17 +666,17 @@ fn infer_title_status_from_analysis(
     }
 
     if matches!(provider, Some(Provider::Codex)) {
-        if title_analysis.stripped == "Working" || title_analysis.stripped.ends_with("| Working") {
+        if title_analysis.stripped == "Working"
+            || title_analysis.stripped == "Waiting"
+            || title_analysis.stripped.ends_with("| Working")
+            || title_analysis.stripped.ends_with("| Waiting")
+        {
             return PaneStatus {
                 kind: StatusKind::Busy,
                 source: StatusSource::TmuxTitle,
             };
         }
-        if title_analysis.stripped == "Ready"
-            || title_analysis.stripped == "Waiting"
-            || title_analysis.stripped.ends_with("| Ready")
-            || title_analysis.stripped.ends_with("| Waiting")
-        {
+        if title_analysis.stripped == "Ready" || title_analysis.stripped.ends_with("| Ready") {
             return PaneStatus {
                 kind: StatusKind::Idle,
                 source: StatusSource::TmuxTitle,
