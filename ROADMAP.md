@@ -105,6 +105,9 @@ Implications:
 - `/proc` fallback is currently limited to unresolved Linux `node` and
   `python3` launcher panes, where a descendant process command matches a known
   provider binary
+- `inspect` reports provider source, status source, classification reasons, and
+  targeted `/proc` fallback outcomes so classification problems can be debugged
+  from the CLI and JSON cache without reading implementation code
 
 ### Popup Contract
 
@@ -171,6 +174,9 @@ Delivered baseline:
 - versioned JSON cache snapshot
 - pane metadata model for explicit tmux user options
 - daemon-backed cache maintenance from tmux control mode
+- targeted `/proc` fallback for unresolved `node` and `python3` launcher panes
+- inspect provenance for provider, status, classification, and fallback
+  decisions
 
 Further migration sequencing belongs in Linear until it becomes stable enough to
 document as a contract in the repo docs.
@@ -179,10 +185,8 @@ document as a contract in the repo docs.
 
 Likely next classes of durable improvement:
 
-- narrow fallback handling for real ambiguous panes
-- stronger wrapper metadata adoption
-- richer inspect provenance where justified
 - continued hardening of tmux client interaction flows
+- incremental output parsing only if later justified by concrete unresolved panes
 
 Those should move from Linear into the repo docs only when they become settled
 behavior or durable engineering policy.
