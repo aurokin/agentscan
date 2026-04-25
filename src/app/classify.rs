@@ -386,13 +386,13 @@ fn provider_match_from_proc_evidence(process: &proc::ProcessEvidence) -> Option<
         return Some(provider_match);
     }
 
-    if process
+    if process.argv.first().is_some_and(|arg| {
+        claude_argv0_has_binary_shape(arg)
+            || command_basename(arg).is_some_and(|command| command.eq_ignore_ascii_case("claude"))
+    }) || process
         .argv
         .iter()
-        .any(|arg| claude_arg_has_binary_shape(arg))
-        || process.argv.first().is_some_and(|arg| {
-            command_basename(arg).is_some_and(|command| command.eq_ignore_ascii_case("claude"))
-        })
+        .any(|arg| claude_arg_has_known_package_path(arg))
     {
         return Some(ProviderMatch {
             provider: Provider::Claude,
@@ -420,13 +420,34 @@ fn provider_match_from_proc_argv0(process: &proc::ProcessEvidence) -> Option<Pro
     provider_match_from_proc_command(&command)
 }
 
-fn claude_arg_has_binary_shape(arg: &str) -> bool {
+fn claude_argv0_has_binary_shape(arg: &str) -> bool {
     let normalized = arg.replace('\\', "/");
     let lower = normalized.trim().to_ascii_lowercase();
     lower.ends_with("/claude")
         || lower.ends_with("/claude-code")
         || lower.ends_with("/node_modules/.bin/claude")
-        || lower.contains("/node_modules/@anthropic-ai/claude-code/")
+        || claude_arg_has_known_package_path(&lower)
+}
+
+fn claude_arg_has_known_package_path(arg: &str) -> bool {
+    let normalized = arg.replace('\\', "/");
+    let lower = normalized.trim().to_ascii_lowercase();
+    lower.contains("/node_modules/@anthropic-ai/claude-code/")
+}
+
+fn claude_arg_for_reason(process: &proc::ProcessEvidence) -> Option<String> {
+    process
+        .argv
+        .first()
+        .filter(|arg| claude_argv0_has_binary_shape(arg))
+        .cloned()
+        .or_else(|| {
+            process
+                .argv
+                .iter()
+                .find(|arg| claude_arg_has_known_package_path(arg))
+                .cloned()
+        })
 }
 
 fn process_has_claude_teammate_shape(process: &proc::ProcessEvidence) -> bool {
@@ -464,11 +485,7 @@ fn argv_has_token(argv: &[String], predicate: impl Fn(&str) -> bool) -> bool {
 }
 
 fn proc_arg_reason(process: &proc::ProcessEvidence) -> String {
-    process
-        .argv
-        .iter()
-        .find(|arg| claude_arg_has_binary_shape(arg))
-        .cloned()
+    claude_arg_for_reason(process)
         .or_else(|| process.argv.first().cloned())
         .unwrap_or_else(|| process.command.clone())
 }

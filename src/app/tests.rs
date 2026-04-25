@@ -2160,6 +2160,8 @@ fn proc_fallback_does_not_treat_claude_substrings_as_claude() {
     for (pid, argv_path) in [
         (708, "/project/node_modules/.bin/claude-lint"),
         (709, "/work/claude-helper/cli.mjs"),
+        (710, "/workspace/tools/claude"),
+        (711, "/workspace/tools/claude-code"),
     ] {
         let mut pane = classify::pane_from_row(super::TmuxPaneRow {
             session_name: "ambiguous".to_string(),
