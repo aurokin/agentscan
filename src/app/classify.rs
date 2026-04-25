@@ -234,6 +234,7 @@ pub(crate) fn pane_from_row(row: TmuxPaneRow) -> PaneRecord {
         agent_metadata,
         diagnostics: PaneDiagnostics {
             cache_origin: "direct_snapshot".to_string(),
+            proc_fallback: ProcFallbackDiagnostics::default(),
         },
     }
 }
@@ -253,21 +254,44 @@ pub(crate) fn panes_from_rows_with_proc_fallback(
 
 pub(crate) fn apply_proc_fallback(pane: &mut PaneRecord, inspector: &impl proc::ProcessInspector) {
     if !is_proc_fallback_candidate(pane) {
+        pane.diagnostics.proc_fallback = ProcFallbackDiagnostics {
+            outcome: ProcFallbackOutcome::Skipped,
+            reason: proc_fallback_skip_reason(pane),
+            commands: Vec::new(),
+        };
         return;
     }
 
-    let Ok(commands) = inspector.descendant_commands(pane.tmux.pane_pid) else {
-        return;
+    let commands = match inspector.descendant_commands(pane.tmux.pane_pid) {
+        Ok(commands) => commands,
+        Err(error) => {
+            pane.diagnostics.proc_fallback = ProcFallbackDiagnostics {
+                outcome: ProcFallbackOutcome::Error,
+                reason: format!("failed to inspect descendants: {error}"),
+                commands: Vec::new(),
+            };
+            return;
+        }
     };
 
     let Some(provider_match) = commands
         .iter()
         .find_map(|command| provider_match_from_proc_command(command))
     else {
+        pane.diagnostics.proc_fallback = ProcFallbackDiagnostics {
+            outcome: ProcFallbackOutcome::NoMatch,
+            reason: "no known provider command found in descendants".to_string(),
+            commands,
+        };
         return;
     };
 
     apply_provider_match(pane, provider_match);
+    pane.diagnostics.proc_fallback = ProcFallbackDiagnostics {
+        outcome: ProcFallbackOutcome::Resolved,
+        reason: "resolved provider from descendant process command".to_string(),
+        commands,
+    };
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -379,6 +403,26 @@ fn is_proc_fallback_candidate(pane: &PaneRecord) -> bool {
         && pane.classification.matched_by.is_none()
         && pane.agent_metadata.provider.is_none()
         && matches!(pane.tmux.pane_current_command.trim(), "node" | "python3")
+}
+
+fn proc_fallback_skip_reason(pane: &PaneRecord) -> String {
+    if let Some(match_kind) = pane.classification.matched_by {
+        return format!(
+            "provider already resolved by {}",
+            classification_match_kind_name(match_kind)
+        );
+    }
+    if pane.provider.is_some() {
+        return "provider already resolved".to_string();
+    }
+    if pane.agent_metadata.provider.is_some() {
+        return "agent.provider metadata is present".to_string();
+    }
+
+    format!(
+        "pane_current_command={} is not a targeted proc fallback launcher",
+        default_if_empty(pane.tmux.pane_current_command.trim(), "<empty>")
+    )
 }
 
 fn provider_from_metadata(provider: Option<&str>) -> Option<Provider> {

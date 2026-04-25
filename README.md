@@ -88,7 +88,7 @@ It can:
 - distinguish `healthy`, `stale`, and `snapshot_only` daemon-cache states, with daemon refresh provenance in text cache diagnostics
 - force a fresh tmux snapshot and cache rewrite for `list`, `scan`, `inspect`, `focus`, `popup`, `cache show`, and `cache validate` with `-f` / `--refresh`
 - list panes through the default `list` flow
-- inspect a pane by `pane_id`
+- inspect a pane by `pane_id`, including provider source, status source, classification reasons, and targeted `/proc` fallback decisions
 - focus a pane by `pane_id`, with attached-client fallback when no explicit tty is provided and tested multi-client selection of the most recent attached client
 - open an interactive `agentscan popup` UI directly from the Rust binary
 - page popup rows when more panes exist than can fit the current key budget or viewport

@@ -30,7 +30,7 @@ const PANE_DELIM: &str = "\u{001f}";
 const TMUX_FORMAT_DELIM: &str = r"\037";
 const CACHE_ENV_VAR: &str = "AGENTSCAN_CACHE_PATH";
 const CACHE_RELATIVE_PATH: &str = "agentscan/cache-v1.json";
-const CACHE_SCHEMA_VERSION: u32 = 2;
+const CACHE_SCHEMA_VERSION: u32 = 3;
 static CACHE_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const CLAUDE_SPINNER_GLYPHS: &[char] = &[
     '⠁', '⠂', '⠄', '⡀', '⢀', '⠠', '⠐', '⠈', '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏', '⣾',
@@ -455,6 +455,33 @@ struct PaneClassification {
     reasons: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ProcFallbackOutcome {
+    NotRun,
+    Skipped,
+    NoMatch,
+    Error,
+    Resolved,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct ProcFallbackDiagnostics {
+    outcome: ProcFallbackOutcome,
+    reason: String,
+    commands: Vec<String>,
+}
+
+impl Default for ProcFallbackDiagnostics {
+    fn default() -> Self {
+        Self {
+            outcome: ProcFallbackOutcome::NotRun,
+            reason: "proc fallback was not evaluated".to_string(),
+            commands: Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 struct AgentMetadata {
     provider: Option<String>,
@@ -467,6 +494,8 @@ struct AgentMetadata {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct PaneDiagnostics {
     cache_origin: String,
+    #[serde(default)]
+    proc_fallback: ProcFallbackDiagnostics,
 }
 
 #[derive(Debug)]
@@ -534,6 +563,41 @@ fn status_kind_name(status: StatusKind) -> &'static str {
         StatusKind::Idle => "idle",
         StatusKind::Busy => "busy",
         StatusKind::Unknown => "unknown",
+    }
+}
+
+fn status_source_name(source: StatusSource) -> &'static str {
+    match source {
+        StatusSource::PaneMetadata => "pane_metadata",
+        StatusSource::TmuxTitle => "tmux_title",
+        StatusSource::NotChecked => "not_checked",
+    }
+}
+
+fn classification_match_kind_name(kind: ClassificationMatchKind) -> &'static str {
+    match kind {
+        ClassificationMatchKind::PaneMetadata => "pane_metadata",
+        ClassificationMatchKind::PaneCurrentCommand => "pane_current_command",
+        ClassificationMatchKind::PaneTitle => "pane_title",
+        ClassificationMatchKind::ProcProcessTree => "proc_process_tree",
+    }
+}
+
+fn classification_confidence_name(confidence: ClassificationConfidence) -> &'static str {
+    match confidence {
+        ClassificationConfidence::High => "high",
+        ClassificationConfidence::Medium => "medium",
+        ClassificationConfidence::Low => "low",
+    }
+}
+
+fn proc_fallback_outcome_name(outcome: ProcFallbackOutcome) -> &'static str {
+    match outcome {
+        ProcFallbackOutcome::NotRun => "not_run",
+        ProcFallbackOutcome::Skipped => "skipped",
+        ProcFallbackOutcome::NoMatch => "no_match",
+        ProcFallbackOutcome::Error => "error",
+        ProcFallbackOutcome::Resolved => "resolved",
     }
 }
 
