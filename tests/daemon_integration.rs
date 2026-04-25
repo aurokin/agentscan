@@ -617,6 +617,14 @@ fn display_popup_pages_to_overflow_rows_and_focuses_selection() -> Result<()> {
 }
 
 #[test]
+fn tmux_version_parser_handles_prefixed_development_versions() {
+    assert_eq!(parse_tmux_version("3.6a"), Some((3, 6)));
+    assert_eq!(parse_tmux_version("next-3.6"), Some((3, 6)));
+    assert_eq!(parse_tmux_version("tmux next-3.7"), Some((3, 7)));
+    assert_eq!(parse_tmux_version("unknown"), None);
+}
+
+#[test]
 fn focus_uses_attached_client_fallback_when_no_tty_is_given() -> Result<()> {
     let harness = TestHarness::new()?;
     let _root_pane_id = harness.start_session("focus-fallback", "sleep 300")?;
@@ -1627,12 +1635,19 @@ fn read_log(path: &Path) -> String {
 }
 
 fn parse_tmux_version(version: &str) -> Option<(u32, u32)> {
-    let numeric = version
-        .chars()
-        .take_while(|character| character.is_ascii_digit() || *character == '.')
-        .collect::<String>();
-    let (major, minor) = numeric.split_once('.')?;
-    Some((major.parse().ok()?, minor.parse().ok()?))
+    for numeric in version.split(|character: char| !character.is_ascii_digit() && character != '.')
+    {
+        if let Some((major, minor)) = parse_tmux_numeric_version(numeric) {
+            return Some((major, minor));
+        }
+    }
+
+    None
+}
+
+fn parse_tmux_numeric_version(numeric: &str) -> Option<(u32, u32)> {
+    let mut parts = numeric.split('.');
+    Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
 }
 
 fn display_popup_token(client_tty: &str, launch_index: usize) -> String {
