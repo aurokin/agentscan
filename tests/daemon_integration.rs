@@ -1147,13 +1147,19 @@ impl TestHarness {
         ready_path: &Path,
         done_path: &Path,
     ) -> Result<String> {
-        let popup_command = self.agentscan_popup_command(extra_args)?;
-        Ok(format!(
-            "touch {}; {}; status=$?; printf '%s\\n' \"$status\" > {}; exit \"$status\"",
+        let mut command = format!(
+            "TMUX_TMPDIR={} AGENTSCAN_CACHE_PATH={} AGENTSCAN_POPUP_READY_PATH={} AGENTSCAN_POPUP_DONE_PATH={} {} popup",
+            shell_escape_path(&self.tmux_tmpdir),
+            shell_escape_path(&self.cache_path),
             shell_escape_path(ready_path),
-            popup_command,
             shell_escape_path(done_path),
-        ))
+            shell_escape_path(&agentscan_bin()?)
+        );
+        for arg in extra_args {
+            command.push(' ');
+            command.push_str(&shell_escape(arg));
+        }
+        Ok(command)
     }
 
     fn send_keys_to_client<I, S>(&self, client_tty: &str, keys: I) -> Result<()>
@@ -1507,7 +1513,6 @@ impl DisplayPopupHandle {
         loop {
             self.ensure_running()?;
             if self.ready_path.exists() {
-                sleep(Duration::from_millis(200));
                 return Ok(());
             }
 
@@ -1521,29 +1526,13 @@ impl DisplayPopupHandle {
 
     fn wait_for_exit(&mut self) -> Result<()> {
         let deadline = Instant::now() + DAEMON_TIMEOUT;
+        let mut display_popup_status = None;
         loop {
-            if let Some(status) = self
-                .child
-                .try_wait()
-                .context("failed to poll display-popup command")?
-            {
-                if let Ok(command_status) = fs::read_to_string(&self.done_path) {
-                    let command_status = command_status.trim();
-                    if command_status != "0" {
-                        bail!("display-popup command exited with status {command_status}");
-                    }
-                }
-                if status.success() {
-                    return Ok(());
-                }
-                let stderr = read_log(&self.stderr_path);
-                if stderr.trim().is_empty() && !self.done_path.exists() {
-                    return Ok(());
-                }
-                bail!(
-                    "tmux display-popup exited with status {status}\nstderr:\n{}",
-                    stderr
-                );
+            if display_popup_status.is_none() {
+                display_popup_status = self
+                    .child
+                    .try_wait()
+                    .context("failed to poll display-popup command")?;
             }
 
             if let Ok(status) = fs::read_to_string(&self.done_path) {
@@ -1556,7 +1545,13 @@ impl DisplayPopupHandle {
             }
 
             if Instant::now() >= deadline {
-                bail!("timed out waiting for display-popup command to exit");
+                let status_context = display_popup_status
+                    .map(|status| format!("; tmux display-popup status: {status}"))
+                    .unwrap_or_default();
+                bail!(
+                    "timed out waiting for display-popup command to exit{status_context}\nstderr:\n{}",
+                    read_log(&self.stderr_path)
+                );
             }
 
             sleep(POLL_INTERVAL);

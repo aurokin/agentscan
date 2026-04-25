@@ -15,6 +15,8 @@ use super::*;
 const KEY_POLL_INTERVAL: Duration = Duration::from_millis(125);
 const FOOTER_LINE_COUNT: usize = 2;
 const MIN_SELECTABLE_POPUP_HEIGHT: usize = FOOTER_LINE_COUNT + 1;
+const POPUP_READY_PATH_ENV: &str = "AGENTSCAN_POPUP_READY_PATH";
+const POPUP_DONE_PATH_ENV: &str = "AGENTSCAN_POPUP_DONE_PATH";
 const POPUP_SELECTION_KEYS: [char; 16] = [
     '1', '2', '3', '4', '5', 'Q', 'E', 'R', 'F', 'G', 'T', 'Z', 'X', 'C', 'V', 'B',
 ];
@@ -41,6 +43,15 @@ pub(crate) struct PopupFrame {
 }
 
 pub(crate) fn run(args: &PopupArgs) -> Result<()> {
+    let result = run_popup_loop(args);
+    write_popup_marker_from_env(
+        POPUP_DONE_PATH_ENV,
+        if result.is_ok() { "0\n" } else { "1\n" },
+    )?;
+    result
+}
+
+fn run_popup_loop(args: &PopupArgs) -> Result<()> {
     let mut session = TerminalSession::enter()?;
     let cache_path = cache::cache_path().ok();
     let mut state = PopupState::default();
@@ -48,6 +59,7 @@ pub(crate) fn run(args: &PopupArgs) -> Result<()> {
 
     reload_popup_state(&mut state, args.refresh.refresh, args.all)?;
     draw_popup_frame(&mut session.stdout, &mut state)?;
+    write_popup_marker_from_env(POPUP_READY_PATH_ENV, "")?;
 
     loop {
         if event::poll(KEY_POLL_INTERVAL).context("failed to poll popup keyboard input")? {
@@ -191,6 +203,19 @@ fn load_popup_panes(refresh: bool, include_all: bool) -> Result<Vec<PaneRecord>>
     let mut snapshot = cache::load_snapshot(refresh)?;
     cache::filter_snapshot(&mut snapshot, include_all);
     Ok(snapshot.panes)
+}
+
+fn write_popup_marker_from_env(env_name: &str, contents: &str) -> Result<()> {
+    let Some(path) = env::var_os(env_name) else {
+        return Ok(());
+    };
+
+    fs::write(&path, contents).with_context(|| {
+        format!(
+            "failed to write popup marker {}",
+            Path::new(&path).display()
+        )
+    })
 }
 
 fn handle_key_event(key_event: &KeyEvent, state: &mut PopupState) -> Result<PopupLoopAction> {
