@@ -13,13 +13,13 @@ cases like `%600` are defined in `docs/integration.md`.
 
 ## Decision Matrix
 
-| Pane | Evidence | Current Result | Decision | Rationale | Follow-up |
-|------|----------|----------------|----------|-----------|-----------|
-| `%600` | `zsh` command, wrapper-shaped title `(bront) ~/code/agent-wrapper`, `ai` window | provider `unknown`, status `unknown`, conservative title label | require wrapper metadata | The title looks like wrapper context, not a provider signal. Inferring a provider from path or window name would invent evidence. | AUR-37 should define wrapper-published metadata expectations. |
-| `%601` | `node` command, generic `Working` title, `ai` window | provider `unknown`, status `unknown`, label `Working` | targeted `/proc` fallback | The title may be a provider status, but without a known provider it is not trustworthy. A narrow process-tree fallback could identify a child provider launched under Node. | AUR-39 can use this as a `/proc` candidate. |
-| `%602` | `python3` command, generic `agent bootstrap` title, `ai` window | provider `unknown`, status `unknown`, label `agent bootstrap` | targeted `/proc` fallback | The command is a launcher/runtime, not the agent. Linux process ancestry may reveal a concrete provider after tmux evidence fails. | AUR-39 can use this as a `/proc` candidate. |
-| `%603` | `zsh` command, ASCII `pi - agentscan` title | provider `unknown`, status `unknown`, label `pi - agentscan` | keep `unknown` | ASCII `pi` task titles are intentionally weak without the `pi` command, wrapper metadata, Greek pi, or a strong status glyph. | No fallback required unless stronger evidence appears. |
-| `%604` | `sh` command, task-like title `review_auth_flow`, `ai` window | provider `unknown`, status `unknown`, label `review_auth_flow` | later incremental output path | The title may be user task text rather than provider identity. Resolving it would require content from the running pane, which is outside the current fallback slice. | Defer until incremental output parsing is justified. |
+| Pane | Evidence | Current Result | Decision | Rationale | Current Handling |
+|------|----------|----------------|----------|-----------|------------------|
+| `%600` | `zsh` command, wrapper-shaped title `(bront) ~/code/agent-wrapper`, `ai` window | provider `unknown`, status `unknown`, conservative title label | require wrapper metadata | The title looks like wrapper context, not a provider signal. Inferring a provider from path or window name would invent evidence. | Wrapper metadata expectations are documented in `docs/integration.md`. |
+| `%601` | `node` command, generic `Working` title, `ai` window | provider `unknown`, status `unknown`, label `Working` | targeted `/proc` fallback | The title may be a provider status, but without a known provider it is not trustworthy. A narrow process-tree fallback can identify a child provider launched under Node. | Targeted `/proc` fallback is implemented for this launcher class. |
+| `%602` | `python3` command, generic `agent bootstrap` title, `ai` window | provider `unknown`, status `unknown`, label `agent bootstrap` | targeted `/proc` fallback | The command is a launcher/runtime, not the agent. Linux process ancestry can reveal a concrete provider after tmux evidence fails. | Targeted `/proc` fallback is implemented for this launcher class. |
+| `%603` | `zsh` command, ASCII `pi - agentscan` title | provider `unknown`, status `unknown`, label `pi - agentscan` | keep `unknown` | ASCII `pi` task titles are intentionally weak without the `pi` command, wrapper metadata, Greek pi, or a strong status glyph. | No fallback is required unless stronger evidence appears. |
+| `%604` | `sh` command, task-like title `review_auth_flow`, `ai` window | provider `unknown`, status `unknown`, label `review_auth_flow` | later incremental output path | The title may be user task text rather than provider identity. Resolving it would require content from the running pane, which is outside the current fallback slice. | Deferred until incremental output parsing is justified. |
 
 ## Guardrails
 

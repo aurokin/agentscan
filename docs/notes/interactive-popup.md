@@ -12,24 +12,22 @@ popup-specific context that is too narrow for the primary docs.
 Implemented in the current branch:
 
 - `agentscan popup` is wired as a first-class command in
-  [src/app/commands.rs](/home/auro/code/agentscan/src/app/commands.rs:16).
+  `src/app/commands.rs`.
 - `agentscan popup` is an interactive-only command. Automation consumers should
   use `agentscan list --format json`, or `agentscan cache show --format json`
   when they intentionally need the raw cache envelope.
 - The popup UI loop, raw-mode TTY handling, cache reload path, stable key
   assignment, paging, resize-aware layout, Ctrl-B passthrough, and
   missing-pane fallback live in
-  [src/app/popup_ui.rs](/home/auro/code/agentscan/src/app/popup_ui.rs:19).
+  `src/app/popup_ui.rs`.
 - Shared tmux client selection and pane-target resolution already exist in
-  [src/app/tmux.rs](/home/auro/code/agentscan/src/app/tmux.rs:318).
+  `src/app/tmux.rs`.
 - Popup unit coverage already exists in
-  [src/app/tests.rs](/home/auro/code/agentscan/src/app/tests.rs:407).
+  `src/app/tests.rs`.
 - Popup integration coverage already exists in
-  [tests/daemon_integration.rs](/home/auro/code/agentscan/tests/daemon_integration.rs:286).
+  `tests/daemon_integration.rs`.
 - The repo docs already describe `agentscan popup` in
-  [README.md](/home/auro/code/agentscan/README.md:1),
-  [ROADMAP.md](/home/auro/code/agentscan/ROADMAP.md:1), and
-  [docs/architecture.md](/home/auro/code/agentscan/docs/architecture.md:1).
+  `README.md`, `ROADMAP.md`, and `docs/architecture.md`.
 
 ## Current Baseline
 
