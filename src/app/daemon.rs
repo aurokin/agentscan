@@ -33,13 +33,19 @@ pub(super) fn daemon_run() -> Result<()> {
         .context("tmux control-mode client did not provide stdout")?;
     let (line_tx, line_rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines() {
-            if line_tx
-                .send(line.context("failed to read tmux control-mode output"))
-                .is_err()
-            {
-                break;
+        let mut reader = BufReader::new(stdout);
+        loop {
+            match read_control_mode_line(&mut reader) {
+                Ok(Some(line)) => {
+                    if line_tx.send(Ok(line)).is_err() {
+                        break;
+                    }
+                }
+                Ok(None) => break,
+                Err(error) => {
+                    let _ = line_tx.send(Err(error));
+                    break;
+                }
             }
         }
     });
@@ -91,6 +97,25 @@ pub(super) fn daemon_run() -> Result<()> {
     }
 
     Ok(())
+}
+
+pub(crate) fn read_control_mode_line(reader: &mut impl BufRead) -> Result<Option<String>> {
+    let mut bytes = Vec::new();
+    let bytes_read = reader
+        .read_until(b'\n', &mut bytes)
+        .context("failed to read tmux control-mode output")?;
+    if bytes_read == 0 {
+        return Ok(None);
+    }
+
+    if bytes.ends_with(b"\n") {
+        bytes.pop();
+    }
+    if bytes.ends_with(b"\r") {
+        bytes.pop();
+    }
+
+    Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
 }
 
 pub(crate) fn should_resnapshot_from_notification(line: &str) -> bool {

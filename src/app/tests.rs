@@ -496,6 +496,29 @@ fn output_notifications_expose_title_change_pane_id() {
 }
 
 #[test]
+fn control_mode_reader_tolerates_non_utf8_pane_output() {
+    let mut input = std::io::Cursor::new(b"%output %0 \xff\xfe plain bytes\r\n%exit\n");
+
+    let first = daemon::read_control_mode_line(&mut input)
+        .expect("line read should succeed")
+        .expect("first line should exist");
+    assert_eq!(daemon::output_title_change_pane_id(&first), None);
+    assert!(first.starts_with("%output %0 "));
+    assert!(first.contains("plain bytes"));
+
+    let second = daemon::read_control_mode_line(&mut input)
+        .expect("line read should succeed")
+        .expect("second line should exist");
+    assert_eq!(second, "%exit");
+
+    assert!(
+        daemon::read_control_mode_line(&mut input)
+            .expect("eof read should succeed")
+            .is_none()
+    );
+}
+
+#[test]
 fn daemon_subscription_format_includes_wrapper_metadata_fields() {
     assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{{pane_title}}"));
     assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{{@agent.provider}}"));
