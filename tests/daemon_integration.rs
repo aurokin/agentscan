@@ -1544,6 +1544,13 @@ impl DisplayPopupHandle {
                 bail!("display-popup command exited with status {status}");
             }
 
+            if let Some(status) = display_popup_status {
+                bail!(
+                    "tmux display-popup exited with status {status} before popup wrote done marker\nstderr:\n{}",
+                    read_log(&self.stderr_path)
+                );
+            }
+
             if Instant::now() >= deadline {
                 let status_context = display_popup_status
                     .map(|status| format!("; tmux display-popup status: {status}"))
