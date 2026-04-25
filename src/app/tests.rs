@@ -1977,6 +1977,43 @@ fn proc_fallback_resolves_claude_from_title_glyph_and_descendant_command() {
 }
 
 #[test]
+fn proc_fallback_ignores_version_like_current_command_without_other_signal() {
+    let mut pane = classify::pane_from_row(super::TmuxPaneRow {
+        session_name: "ambiguous".to_string(),
+        window_index: 1,
+        pane_index: 1,
+        pane_id: "%712".to_string(),
+        pane_pid: 712,
+        pane_current_command: "2.1.119".to_string(),
+        pane_title_raw: "Ready".to_string(),
+        pane_tty: "/dev/pts/712".to_string(),
+        pane_current_path: "/tmp/claude-wrapper".to_string(),
+        window_name: "ai".to_string(),
+        session_id: None,
+        window_id: None,
+        agent_provider: None,
+        agent_label: None,
+        agent_cwd: None,
+        agent_state: None,
+        agent_session_id: None,
+    });
+    let inspector = FakeProcessInspector::new([(712, vec!["claude".to_string()])]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_unresolved_ambiguous_pane(&pane, "Ready");
+    assert_eq!(
+        pane.diagnostics.proc_fallback.outcome,
+        super::ProcFallbackOutcome::Skipped
+    );
+    assert_eq!(
+        pane.diagnostics.proc_fallback.reason,
+        "pane_current_command is version-shaped and ignored"
+    );
+    assert!(inspector.calls().is_empty());
+}
+
+#[test]
 fn proc_fallback_resolves_claude_teammate_flags_with_claudecode_env() {
     let mut pane = classify::pane_from_row(super::TmuxPaneRow {
         session_name: "ambiguous".to_string(),

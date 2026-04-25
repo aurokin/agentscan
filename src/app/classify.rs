@@ -184,9 +184,10 @@ pub(crate) fn pane_from_row(row: TmuxPaneRow) -> PaneRecord {
         session_id: row.agent_session_id.clone(),
     };
     let title_analysis = analyze_title(&row.pane_title_raw);
+    let current_command = current_command_for_analysis(&row.pane_current_command);
     let provider_match = classify_provider_from_analysis(
         agent_metadata.provider.as_deref(),
-        &row.pane_current_command,
+        current_command,
         &title_analysis,
     );
     let provider = provider_match.as_ref().map(|matched| matched.provider);
@@ -219,7 +220,7 @@ pub(crate) fn pane_from_row(row: TmuxPaneRow) -> PaneRecord {
             provider,
             provider_match.as_ref().map(|matched| matched.matched_by),
             agent_metadata.label.as_deref(),
-            &row.pane_current_command,
+            current_command,
             &row.window_name,
         ),
         provider,
@@ -310,7 +311,7 @@ fn classify_provider_from_analysis(
     command: &str,
     title_analysis: &TitleAnalysis<'_>,
 ) -> Option<ProviderMatch> {
-    let command = command.trim();
+    let command = current_command_for_analysis(command);
 
     if let Some(provider) = provider_from_metadata(published_provider) {
         return Some(ProviderMatch {
@@ -485,7 +486,7 @@ fn apply_provider_match(pane: &mut PaneRecord, provider_match: ProviderMatch) {
         provider,
         match_kind,
         pane.agent_metadata.label.as_deref(),
-        &pane.tmux.pane_current_command,
+        current_command_for_analysis(&pane.tmux.pane_current_command),
         &pane.location.window_name,
     );
     pane.classification = PaneClassification {
@@ -497,14 +498,13 @@ fn apply_provider_match(pane: &mut PaneRecord, provider_match: ProviderMatch) {
 
 fn is_proc_fallback_candidate(pane: &PaneRecord) -> bool {
     let title_analysis = analyze_title(&pane.tmux.pane_title_raw);
+    let current_command = current_command_for_analysis(&pane.tmux.pane_current_command);
 
     pane.provider.is_none()
         && pane.classification.matched_by.is_none()
         && pane.agent_metadata.provider.is_none()
-        && (matches!(
-            pane.tmux.pane_current_command.trim(),
-            "node" | "bun" | "python3"
-        ) || title_analysis.has_spinner_glyph
+        && (matches!(current_command, "node" | "bun" | "python3")
+            || title_analysis.has_spinner_glyph
             || title_analysis.has_idle_glyph)
 }
 
@@ -520,6 +520,10 @@ fn proc_fallback_skip_reason(pane: &PaneRecord) -> String {
     }
     if pane.agent_metadata.provider.is_some() {
         return "agent.provider metadata is present".to_string();
+    }
+
+    if is_version_like_command(&pane.tmux.pane_current_command) {
+        return "pane_current_command is version-shaped and ignored".to_string();
     }
 
     format!(
@@ -560,6 +564,37 @@ fn provider_from_command(command: &str) -> Option<(Provider, bool)> {
         .find_map(|(provider, name, allow_suffix)| {
             matches_binary(command, name, *allow_suffix).map(|exact| (*provider, exact))
         })
+}
+
+fn current_command_for_analysis(command: &str) -> &str {
+    let command = command.trim();
+    if is_version_like_command(command) {
+        ""
+    } else {
+        command
+    }
+}
+
+fn is_version_like_command(command: &str) -> bool {
+    let command = command.trim();
+    let mut parts = command.split('.');
+    let Some(first) = parts.next() else {
+        return false;
+    };
+    let Some(second) = parts.next() else {
+        return false;
+    };
+    let Some(third) = parts.next() else {
+        return false;
+    };
+
+    !first.is_empty()
+        && !second.is_empty()
+        && !third.is_empty()
+        && parts.all(|part| !part.is_empty() && part.chars().all(|ch| ch.is_ascii_digit()))
+        && first.chars().all(|ch| ch.is_ascii_digit())
+        && second.chars().all(|ch| ch.is_ascii_digit())
+        && third.chars().all(|ch| ch.is_ascii_digit())
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
