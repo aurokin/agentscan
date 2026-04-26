@@ -1,6 +1,7 @@
 use super::*;
 use std::sync::mpsc;
 use std::time::Duration;
+use std::time::Instant;
 
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -50,8 +51,18 @@ pub(super) fn daemon_run() -> Result<()> {
         }
     });
 
+    let mut next_reconcile_at = Instant::now() + RECONCILE_INTERVAL;
+
     loop {
-        match line_rx.recv_timeout(RECONCILE_INTERVAL) {
+        let now = Instant::now();
+        if now >= next_reconcile_at {
+            reconcile_full_snapshot(&mut snapshot)?;
+            cache::write_snapshot_to_cache(&snapshot)?;
+            next_reconcile_at = Instant::now() + RECONCILE_INTERVAL;
+        }
+
+        let timeout = next_reconcile_at.saturating_duration_since(Instant::now());
+        match line_rx.recv_timeout(timeout) {
             Ok(line) => {
                 let line = line?;
                 if let Some(pane_id) = subscription_changed_pane_id(&line) {
@@ -84,6 +95,7 @@ pub(super) fn daemon_run() -> Result<()> {
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 reconcile_full_snapshot(&mut snapshot)?;
                 cache::write_snapshot_to_cache(&snapshot)?;
+                next_reconcile_at = Instant::now() + RECONCILE_INTERVAL;
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }

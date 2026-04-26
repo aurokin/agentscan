@@ -75,6 +75,7 @@ const PANE_FORMAT: &str = concat!(
 const DAEMON_SUBSCRIPTION_FORMAT: &str = concat!(
     "agentscan:%*:",
     "#{{pane_id}}:",
+    "#{{pane_current_command}}:",
     "#{{pane_title}}:",
     "#{{@agent.provider}}:",
     "#{{@agent.label}}:",

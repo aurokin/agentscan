@@ -31,6 +31,7 @@ struct TitleAnalysis<'a> {
     pi_label: Option<&'a str>,
     cursor_title_shaped: bool,
     provider_hint: Option<TitleProviderHint>,
+    codex_status_title: String,
     codex_normalized_label: String,
 }
 
@@ -84,7 +85,11 @@ impl<'a> TitleAnalysis<'a> {
             return Some(stripped.to_string());
         }
 
-        Some(self.codex_normalized_label.clone())
+        if matches!(provider, Some(Provider::Codex)) {
+            return Some(self.codex_normalized_label.clone());
+        }
+
+        Some(self.stripped.to_string())
     }
 }
 
@@ -148,16 +153,15 @@ fn analyze_title(raw_title: &str) -> TitleAnalysis<'_> {
     } else if stripped.to_ascii_lowercase().contains("gemini") {
         Some(TitleProviderHint {
             provider: Provider::Gemini,
-            strength: TitleHintStrength::Strong,
+            strength: TitleHintStrength::Weak,
             kind: TitleProviderHintKind::Fuzzy,
         })
     } else {
         None
     };
 
-    let codex_normalized_label = strip_codex_provider_suffix(&strip_codex_args_from_title(
-        &normalize_codex_wrapper_title(stripped),
-    ));
+    let codex_status_title = normalize_codex_title_before_status(stripped);
+    let codex_normalized_label = normalize_codex_terminal_title_label(&codex_status_title);
 
     TitleAnalysis {
         raw,
@@ -171,6 +175,7 @@ fn analyze_title(raw_title: &str) -> TitleAnalysis<'_> {
         pi_label,
         cursor_title_shaped,
         provider_hint,
+        codex_status_title,
         codex_normalized_label,
     }
 }
@@ -666,19 +671,15 @@ fn infer_title_status_from_analysis(
     }
 
     if matches!(provider, Some(Provider::Codex)) {
-        if title_analysis.stripped == "Working"
-            || title_analysis.stripped == "Waiting"
-            || title_analysis.stripped.ends_with("| Working")
-            || title_analysis.stripped.ends_with("| Waiting")
-        {
+        if title_analysis.has_spinner_glyph {
             return PaneStatus {
                 kind: StatusKind::Busy,
                 source: StatusSource::TmuxTitle,
             };
         }
-        if title_analysis.stripped == "Ready" || title_analysis.stripped.ends_with("| Ready") {
+        if let Some(status) = codex_run_state_from_title(&title_analysis.codex_status_title) {
             return PaneStatus {
-                kind: StatusKind::Idle,
+                kind: status,
                 source: StatusSource::TmuxTitle,
             };
         }
@@ -832,8 +833,14 @@ fn display_metadata_from_analysis(
         title_analysis,
         current_command,
     ) {
+        let activity_label = if matches!(provider, Some(Provider::Codex)) {
+            codex_activity_from_status_title(&title_analysis.codex_status_title)
+                .or_else(|| infer_activity_label(provider, &label))
+        } else {
+            infer_activity_label(provider, &label)
+        };
         return DisplayMetadata {
-            activity_label: infer_activity_label(provider, &label),
+            activity_label,
             label,
         };
     }
@@ -945,13 +952,9 @@ fn infer_activity_label(provider: Option<Provider>, label: &str) -> Option<Strin
     }
 
     if matches!(provider, Some(Provider::Codex))
-        && let Some((activity, status)) = label.rsplit_once(" | ")
-        && is_generic_status_label(status)
+        && let Some(activity) = codex_activity_from_status_title(label)
     {
-        let activity = activity.trim();
-        if !activity.is_empty() {
-            return Some(activity.to_string());
-        }
+        return Some(activity);
     }
 
     if is_generic_status_label(label) {
@@ -982,7 +985,10 @@ fn is_generic_provider_label(provider: Option<Provider>, label: &str) -> bool {
 }
 
 fn is_generic_status_label(label: &str) -> bool {
-    matches!(label.trim(), "Working" | "Waiting" | "Ready")
+    matches!(
+        label.trim(),
+        "Working" | "Waiting" | "Thinking" | "Starting" | "Undoing" | "Ready"
+    )
 }
 
 pub(crate) fn strip_known_status_glyph(title: &str) -> &str {
@@ -1026,6 +1032,76 @@ fn normalize_codex_wrapper_title(title: &str) -> String {
     }
 
     title.to_string()
+}
+
+fn normalize_codex_terminal_title_label(title: &str) -> String {
+    codex_activity_from_status_title(title).unwrap_or_else(|| {
+        let wrapper_label = normalize_codex_wrapper_title(title);
+        let command_label = strip_codex_args_from_title(&wrapper_label);
+        strip_codex_provider_suffix(&command_label)
+    })
+}
+
+fn normalize_codex_title_before_status(title: &str) -> String {
+    strip_codex_provider_suffix(title)
+}
+
+fn codex_activity_from_status_title(title: &str) -> Option<String> {
+    if let Some((activity, status)) = title.rsplit_once(" | ")
+        && codex_run_state_label(status).is_some()
+    {
+        let activity = activity.trim();
+        if !activity.is_empty() {
+            return Some(normalize_codex_activity_label(activity));
+        }
+    }
+
+    if let Some((status, activity)) = title.split_once(" | ")
+        && codex_run_state_label(status).is_some()
+    {
+        let activity = activity.trim();
+        if !activity.is_empty() {
+            return Some(normalize_codex_activity_label(activity));
+        }
+    }
+
+    None
+}
+
+fn normalize_codex_activity_label(activity: &str) -> String {
+    if !looks_like_codex_title(activity) {
+        return activity.to_string();
+    }
+
+    let wrapper_label = normalize_codex_wrapper_title(activity);
+    let command_label = strip_codex_args_from_title(&wrapper_label);
+    strip_codex_provider_suffix(&command_label)
+}
+
+fn codex_run_state_from_title(title: &str) -> Option<StatusKind> {
+    if let Some(status) = codex_run_state_label(title) {
+        return Some(status);
+    }
+    if let Some((_activity, status)) = title.rsplit_once(" | ")
+        && let Some(status) = codex_run_state_label(status)
+    {
+        return Some(status);
+    }
+    if let Some((status, _activity)) = title.split_once(" | ")
+        && let Some(status) = codex_run_state_label(status)
+    {
+        return Some(status);
+    }
+
+    None
+}
+
+fn codex_run_state_label(label: &str) -> Option<StatusKind> {
+    match label.trim() {
+        "Working" | "Waiting" | "Thinking" | "Starting" | "Undoing" => Some(StatusKind::Busy),
+        "Ready" => Some(StatusKind::Idle),
+        _ => None,
+    }
 }
 
 fn strip_codex_args_from_title(title: &str) -> String {

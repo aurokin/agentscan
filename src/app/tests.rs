@@ -168,6 +168,17 @@ fn classifies_cursor_agent_from_bare_title_when_command_is_generic() {
 }
 
 #[test]
+fn gemini_mentions_in_titles_do_not_classify_generic_panes() {
+    assert!(
+        classify::classify_provider(None, "zsh", "Clone Gemini CLI open source library").is_none()
+    );
+    assert!(
+        classify::classify_provider(None, "2.1.119", "✳ Clone Gemini CLI open source library")
+            .is_none()
+    );
+}
+
+#[test]
 fn classifies_from_command_before_conflicting_title() {
     let cursor_title = classify::classify_provider(None, "codex", "Cursor | Working")
         .expect("command should beat conflicting cursor title");
@@ -520,6 +531,7 @@ fn control_mode_reader_tolerates_non_utf8_pane_output() {
 
 #[test]
 fn daemon_subscription_format_includes_wrapper_metadata_fields() {
+    assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{{pane_current_command}}"));
     assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{{pane_title}}"));
     assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{{@agent.provider}}"));
     assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{{@agent.state}}"));
@@ -565,10 +577,45 @@ fn codex_status_uses_title_only() {
         Some(super::ClassificationMatchKind::PaneTitle),
         "⠹ agentscan | Working",
     );
+    let default_spinner = classify::infer_title_status(
+        Some(Provider::Codex),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "⠹ agentscan",
+    );
     let waiting = classify::infer_title_status(
         Some(Provider::Codex),
         Some(super::ClassificationMatchKind::PaneTitle),
         "Waiting",
+    );
+    let status_first_busy = classify::infer_title_status(
+        Some(Provider::Codex),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "Thinking | Review code quality in repository",
+    );
+    let status_first_idle = classify::infer_title_status(
+        Some(Provider::Codex),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "Ready | Review code quality in repository",
+    );
+    let status_last_wins = classify::infer_title_status(
+        Some(Provider::Codex),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "Ready | Working",
+    );
+    let status_last_with_codex_activity = classify::infer_title_status(
+        Some(Provider::Codex),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "review codex login | Working",
+    );
+    let lgpt_status_last = classify::infer_title_status(
+        Some(Provider::Codex),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "repo: /path/lgpt.sh | Working",
+    );
+    let wrapped_status_last_wins = classify::infer_title_status(
+        Some(Provider::Codex),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "Ready | Working: codex",
     );
     let idle = classify::infer_title_status(
         Some(Provider::Codex),
@@ -577,7 +624,14 @@ fn codex_status_uses_title_only() {
     );
 
     assert_eq!(busy.kind, StatusKind::Busy);
+    assert_eq!(default_spinner.kind, StatusKind::Busy);
     assert_eq!(waiting.kind, StatusKind::Busy);
+    assert_eq!(status_first_busy.kind, StatusKind::Busy);
+    assert_eq!(status_first_idle.kind, StatusKind::Idle);
+    assert_eq!(status_last_wins.kind, StatusKind::Busy);
+    assert_eq!(status_last_with_codex_activity.kind, StatusKind::Busy);
+    assert_eq!(lgpt_status_last.kind, StatusKind::Busy);
+    assert_eq!(wrapped_status_last_wins.kind, StatusKind::Busy);
     assert_eq!(idle.kind, StatusKind::Idle);
 }
 
@@ -2662,6 +2716,57 @@ fn title_normalization_strips_claude_and_opencode_prefixes() {
         "Cursor CLI | Parser work"
     );
     assert_eq!(
+        classify::normalize_title_for_display(
+            Some(Provider::Codex),
+            "Working | Review code quality in repository"
+        ),
+        "Review code quality in repository"
+    );
+    assert_eq!(
+        classify::normalize_title_for_display(Some(Provider::Codex), "agentscan | Waiting"),
+        "agentscan"
+    );
+    assert_eq!(
+        classify::normalize_title_for_display(Some(Provider::Codex), "Ready | Working"),
+        "Ready"
+    );
+    assert_eq!(
+        classify::normalize_title_for_display(
+            Some(Provider::Codex),
+            "review codex login | Working"
+        ),
+        "review codex login"
+    );
+    assert_eq!(
+        classify::normalize_title_for_display(
+            Some(Provider::Codex),
+            "(repo) task: codex --model gpt-5 | Working"
+        ),
+        "(repo) task"
+    );
+    assert_eq!(
+        classify::normalize_title_for_display(
+            Some(Provider::Codex),
+            "repo: /path/lgpt.sh | Working"
+        ),
+        "repo"
+    );
+    assert_eq!(
+        classify::normalize_title_for_display(
+            Some(Provider::Codex),
+            "Working | (repo) task: codex --model gpt-5"
+        ),
+        "(repo) task"
+    );
+    assert_eq!(
+        classify::normalize_title_for_display(None, "Working | deploy notes"),
+        "Working | deploy notes"
+    );
+    assert_eq!(
+        classify::normalize_title_for_display(Some(Provider::Claude), "Working | deploy notes"),
+        "Working | deploy notes"
+    );
+    assert_eq!(
         classify::normalize_title_for_display(Some(Provider::Codex), "Copilot | Review patch"),
         "Copilot | Review patch"
     );
@@ -2677,8 +2782,39 @@ fn display_metadata_extracts_activity_labels_from_titles() {
         "codex",
         "editor",
     );
-    assert_eq!(codex.label, "agentscan | Working");
+    assert_eq!(codex.label, "agentscan");
     assert_eq!(codex.activity_label.as_deref(), Some("agentscan"));
+
+    let codex_status_first = classify::display_metadata(
+        Some(Provider::Codex),
+        None,
+        None,
+        "Working | Review code quality in repository",
+        "codex",
+        "editor",
+    );
+    assert_eq!(
+        codex_status_first.label,
+        "Review code quality in repository"
+    );
+    assert_eq!(
+        codex_status_first.activity_label.as_deref(),
+        Some("Review code quality in repository")
+    );
+
+    let codex_status_last_wins = classify::display_metadata(
+        Some(Provider::Codex),
+        None,
+        None,
+        "Ready | Working",
+        "codex",
+        "editor",
+    );
+    assert_eq!(codex_status_last_wins.label, "Ready");
+    assert_eq!(
+        codex_status_last_wins.activity_label.as_deref(),
+        Some("Ready")
+    );
 
     let codex_wrapped = classify::display_metadata(
         Some(Provider::Codex),
@@ -2793,6 +2929,39 @@ fn display_metadata_extracts_activity_labels_from_titles() {
         prefixed_codex.activity_label.as_deref(),
         Some("Copilot | Review patch")
     );
+}
+
+#[test]
+fn codex_status_activity_labels_strip_wrapper_suffixes() {
+    let status_first = classify::display_metadata(
+        Some(Provider::Codex),
+        None,
+        None,
+        "Working | Review patch: codex",
+        "codex",
+        "editor",
+    );
+    assert_eq!(status_first.label, "Review patch");
+    assert_eq!(status_first.activity_label.as_deref(), Some("Review patch"));
+
+    let status_last = classify::display_metadata(
+        Some(Provider::Codex),
+        None,
+        None,
+        "Ready | Working: codex",
+        "codex",
+        "editor",
+    );
+    assert_eq!(status_last.label, "Ready");
+    assert_eq!(status_last.activity_label.as_deref(), Some("Ready"));
+}
+
+#[test]
+fn non_codex_status_shaped_titles_preserve_display_label() {
+    let unresolved =
+        classify::display_metadata(None, None, None, "Working | deploy notes", "zsh", "editor");
+    assert_eq!(unresolved.label, "Working | deploy notes");
+    assert_eq!(unresolved.activity_label, None);
 }
 
 #[test]
@@ -3142,7 +3311,7 @@ fn assert_fixture_codex_cases(panes: &[PaneRecord]) {
     let codex_working = pane_by_id(panes, "%191");
     assert_eq!(codex_working.provider, Some(Provider::Codex));
     assert_eq!(codex_working.status.kind, StatusKind::Busy);
-    assert_eq!(codex_working.display.label, "agentscan | Working");
+    assert_eq!(codex_working.display.label, "agentscan");
     assert_eq!(
         codex_working.display.activity_label.as_deref(),
         Some("agentscan")
@@ -3155,7 +3324,7 @@ fn assert_fixture_codex_cases(panes: &[PaneRecord]) {
     let codex_waiting = pane_by_id(panes, "%194");
     assert_eq!(codex_waiting.provider, Some(Provider::Codex));
     assert_eq!(codex_waiting.status.kind, StatusKind::Busy);
-    assert_eq!(codex_waiting.display.label, "agentscan | Waiting");
+    assert_eq!(codex_waiting.display.label, "agentscan");
     assert_eq!(
         codex_waiting.display.activity_label.as_deref(),
         Some("agentscan")
