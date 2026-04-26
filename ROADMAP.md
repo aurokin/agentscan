@@ -109,6 +109,11 @@ Implications:
 - `inspect` reports provider source, status source, classification reasons, and
   targeted process fallback outcomes so classification problems can be debugged
   from the CLI and JSON cache without reading implementation code
+- provider-side hooks and extensions are deep-roadmap enrichment only. They may
+  eventually publish better labels, session ids, or direct activity state, but
+  they sit behind source analysis, local probing, and plug-and-play detection
+  hardening. The core scanner must remain plug-and-play for common agent
+  launches.
 
 ### Popup Contract
 
@@ -200,6 +205,12 @@ document as a contract in the repo docs.
 Likely next classes of durable improvement:
 
 - continued hardening of tmux client interaction flows
+- provider-specific plug-and-play detection hardening, starting with evidence
+  gathered from upstream source or explicit local probing
+- optional hook support for Codex and Claude Code only as a final enrichment
+  layer after plug-and-play support is broadly settled
+- optional Pi extension support only as a final enrichment layer after default
+  Pi detection works without integration
 - incremental output parsing only if later justified by concrete unresolved panes
 
 Those should move from Linear into the repo docs only when they become settled

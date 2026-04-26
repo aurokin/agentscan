@@ -87,6 +87,10 @@ ignored by the helper rather than written as meaningful metadata.
 - Missing metadata must not block discovery.
 - Explicit metadata overrides heuristic title parsing when present.
 - Cursor CLI wrappers should prefer explicit labels and session ids over hoping tmux titles stay rich.
+- Provider hooks and extensions are deep-roadmap enrichment only. They may
+  eventually improve labels, session ids, or activity state, but baseline
+  scanner work should first exhaust source analysis, local probing, and
+  plug-and-play detection.
 
 ## Lifecycle Guidance
 
@@ -130,10 +134,23 @@ Provider-specific guidance should stay narrow and correctness-driven:
   scanner can also resolve unresolved launcher panes from Claude Code process
   evidence, including the `@anthropic-ai/claude-code` CLI path and tmux teammate
   spawns that carry Claude Code agent flags plus `CLAUDECODE=1`.
+- Codex and Claude Code are candidates for eventual hook-based metadata
+  publishing, but hook support is deferred to the end of the provider roadmap.
+  Hooks should publish explicit tmux metadata rather than becoming a required
+  detection dependency.
+- Pi should remain plug-and-play from its default `pi` process, package paths,
+  `PI_CODING_AGENT=true` environment marker, and Greek terminal title shape.
+  Pi extension support is a deep-roadmap additive path for richer metadata;
+  default Pi titles should not be used to invent busy or idle state.
 - Cursor CLI should be treated as metadata-first for labels and session ids.
   The live `cursor-agent` command is enough to identify the provider, but tmux
   titles are often generic. Wrappers should publish `@agent.label` and
   `@agent.session_id` when they can obtain those values.
+- opencode remains on the source-analysis queue. Its support should be updated
+  from upstream evidence, following the Gemini CLI and Pi analysis pattern.
+- GitHub Copilot and Cursor are closed-source enough that support should be
+  based on empirical probing. Record command, title, argv, env, and state
+  snapshots before adding or changing heuristics.
 - Wrapper-shaped panes with generic shell commands should publish metadata
   rather than relying on path, window name, or title inference. The ambiguity
   corpus in `docs/notes/ambiguity-corpus.md` records examples where weak tmux

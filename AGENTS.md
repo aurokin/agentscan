@@ -31,6 +31,9 @@ Co-Authored-By: <agent name> <email>
 
 ## Key Conventions
 - `agentscan` owns discovery, classification, indexing, caching, and structured outputs for tmux agent panes.
+- Plug-and-play detection is a core product invariant. Common agent panes should work without requiring users to install hooks, provider extensions, launch wrappers, or shell integration.
+- Provider-specific support should start from upstream source analysis for open-source agents or empirical local probing for closed-source agents. Add heuristics only when the evidence is strong and false-positive risk is understood.
+- Provider hooks and extensions are deep-roadmap enrichment only. They may eventually publish richer metadata, but they must not become a prerequisite for baseline detection.
 - Keep shell wrappers thin; launch aliases and tmux binds may stay in shell, detection logic should not.
 - Prefer tmux metadata and control-mode events over `ps` scans or repeated `capture-pane` calls.
 - Do not add a permanent `fast` vs `full` split; the target behavior is one fast path.

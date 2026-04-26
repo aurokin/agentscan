@@ -15,6 +15,13 @@ This project starts from a simpler baseline:
 - tmux metadata as the primary source of truth
 - no `ps` scan in the steady-state path
 - no fast/full mode split
+- plug-and-play detection as a core product invariant
+
+Common agent panes should be discoverable without asking users to install
+provider hooks, extensions, launch wrappers, or shell integration. Those
+integrations may eventually enrich labels, session ids, or state, but they are
+deep-roadmap additions behind source analysis, local probing, and conservative
+plug-and-play detection.
 
 The shell scripts in `~/.dotfiles` are reference material, not the target design.
 They are useful for understanding current user-visible behavior and edge cases, but
