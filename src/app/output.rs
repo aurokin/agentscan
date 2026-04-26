@@ -17,10 +17,7 @@ fn print_list_text(panes: &[PaneRecord]) {
     }
 
     for pane in panes {
-        let provider = pane
-            .provider
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "unknown".to_string());
+        let provider = provider_display_marker(pane.provider);
 
         println!(
             "{} {}:{}.{} - {}",

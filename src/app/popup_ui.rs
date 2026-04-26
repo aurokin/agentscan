@@ -466,15 +466,12 @@ fn render_pane_row(pane: &PaneRecord, selection: Option<char>, width: usize) -> 
     let selection_label = selection
         .map(|assigned_key| format!("[{assigned_key}]"))
         .unwrap_or_else(|| "   ".to_string());
-    let provider = pane
-        .provider
-        .map(|assigned_provider| assigned_provider.to_string())
-        .unwrap_or_else(|| "unknown".to_string());
+    let provider = provider_display_marker(pane.provider);
     let prefix = format!(
         "{} {} {} {} - ",
         selection_label,
-        provider,
         status_emoji(pane.status.kind),
+        provider,
         pane.location.tag()
     );
     let sanitized_label = sanitize_popup_label(pane.display.label.as_str());

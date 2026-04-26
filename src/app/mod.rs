@@ -325,6 +325,19 @@ impl fmt::Display for Provider {
     }
 }
 
+fn provider_display_marker(provider: Option<Provider>) -> String {
+    match provider {
+        Some(Provider::Codex) => "\u{f07b5}".to_string(),
+        Some(Provider::Claude) => "\u{e76f}".to_string(),
+        Some(Provider::Gemini) => "\u{e7f0}".to_string(),
+        Some(Provider::Copilot) => "\u{ec1e}".to_string(),
+        Some(Provider::CursorCli) => "\u{f12e9}".to_string(),
+        Some(Provider::Pi) => "\u{e22c}".to_string(),
+        Some(Provider::Opencode) => "\u{f07e2}".to_string(),
+        None => "unknown".to_string(),
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum SourceKind {

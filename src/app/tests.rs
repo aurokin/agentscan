@@ -1243,7 +1243,40 @@ fn popup_render_rows_include_location_status_and_key_labels() {
     super::popup_ui::synchronize_key_targets(&mut key_targets, std::slice::from_ref(&pane));
 
     let lines = super::popup_ui::render_rows(&[pane], &key_targets);
-    assert_eq!(lines, vec!["[1] claude 🟡 notes:4.1 - Working"]);
+    assert_eq!(lines, vec!["[1] 🟡 \u{e76f} notes:4.1 - Working"]);
+}
+
+#[test]
+fn provider_display_marker_uses_compact_markers_for_codex_and_claude() {
+    assert_eq!(
+        super::provider_display_marker(Some(Provider::Codex)),
+        "\u{f07b5}"
+    );
+    assert_eq!(
+        super::provider_display_marker(Some(Provider::Claude)),
+        "\u{e76f}"
+    );
+    assert_eq!(
+        super::provider_display_marker(Some(Provider::Gemini)),
+        "\u{e7f0}"
+    );
+    assert_eq!(
+        super::provider_display_marker(Some(Provider::Copilot)),
+        "\u{ec1e}"
+    );
+    assert_eq!(
+        super::provider_display_marker(Some(Provider::CursorCli)),
+        "\u{f12e9}"
+    );
+    assert_eq!(
+        super::provider_display_marker(Some(Provider::Pi)),
+        "\u{e22c}"
+    );
+    assert_eq!(
+        super::provider_display_marker(Some(Provider::Opencode)),
+        "\u{f07e2}"
+    );
+    assert_eq!(super::provider_display_marker(None), "unknown");
 }
 
 #[test]
@@ -1305,7 +1338,10 @@ fn popup_render_rows_sanitize_control_characters_and_escape_sequences() {
     super::popup_ui::synchronize_key_targets(&mut key_targets, std::slice::from_ref(&pane));
 
     let lines = super::popup_ui::render_rows(&[pane], &key_targets);
-    assert_eq!(lines, vec!["[1] claude 🟡 notes:4.1 - Task next step now"]);
+    assert_eq!(
+        lines,
+        vec!["[1] 🟡 \u{e76f} notes:4.1 - Task next step now"]
+    );
 }
 
 #[test]
@@ -1688,7 +1724,7 @@ fn popup_frame_writer_sanitizes_tmux_controlled_labels() {
             height: 3,
         },
     );
-    assert_eq!(frame.lines[0], "[1] claude 🟡 notes:4.1 - Task next step");
+    assert_eq!(frame.lines[0], "[1] 🟡 \u{e76f} notes:4.1 - Task next step");
     assert!(!frame.lines[0].contains(['\n', '\r', '\t', '\u{1b}']));
 
     let mut rendered = Vec::new();
