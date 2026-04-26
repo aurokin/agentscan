@@ -33,6 +33,15 @@ struct TitleAnalysis<'a> {
     provider_hint: Option<TitleProviderHint>,
     codex_status_title: String,
     codex_normalized_label: String,
+    gemini_title: Option<GeminiTitle>,
+}
+
+#[derive(Clone, Debug)]
+struct GeminiTitle {
+    status: Option<StatusKind>,
+    label: Option<String>,
+    activity_label: Option<String>,
+    strong_provider_signal: bool,
 }
 
 impl<'a> TitleAnalysis<'a> {
@@ -88,6 +97,14 @@ impl<'a> TitleAnalysis<'a> {
         if matches!(provider, Some(Provider::Codex)) {
             return Some(self.codex_normalized_label.clone());
         }
+        if matches!(provider, Some(Provider::Gemini))
+            && let Some(label) = self
+                .gemini_title
+                .as_ref()
+                .and_then(|title| title.label.clone())
+        {
+            return Some(label);
+        }
 
         Some(self.stripped.to_string())
     }
@@ -109,6 +126,7 @@ fn analyze_title(raw_title: &str) -> TitleAnalysis<'_> {
     let pi_label = looks_like_pi_title(stripped)
         .then_some(())
         .and_then(|_| strip_pi_title_prefix(stripped));
+    let gemini_title = parse_gemini_terminal_title(stripped);
 
     let provider_hint = if claude_label.is_some() || stripped == "Claude Code" {
         Some(TitleProviderHint {
@@ -150,6 +168,15 @@ fn analyze_title(raw_title: &str) -> TitleAnalysis<'_> {
             },
             kind: TitleProviderHintKind::Explicit,
         })
+    } else if gemini_title
+        .as_ref()
+        .is_some_and(|title| title.strong_provider_signal)
+    {
+        Some(TitleProviderHint {
+            provider: Provider::Gemini,
+            strength: TitleHintStrength::Strong,
+            kind: TitleProviderHintKind::Explicit,
+        })
     } else if stripped.to_ascii_lowercase().contains("gemini") {
         Some(TitleProviderHint {
             provider: Provider::Gemini,
@@ -177,6 +204,7 @@ fn analyze_title(raw_title: &str) -> TitleAnalysis<'_> {
         provider_hint,
         codex_status_title,
         codex_normalized_label,
+        gemini_title,
     }
 }
 
@@ -416,6 +444,19 @@ fn provider_match_from_proc_evidence(process: &proc::ProcessEvidence) -> Option<
         });
     }
 
+    if let Some(arg) = process
+        .argv
+        .iter()
+        .find(|arg| gemini_arg_has_known_package_path(arg))
+    {
+        return Some(ProviderMatch {
+            provider: Provider::Gemini,
+            matched_by: ClassificationMatchKind::ProcProcessTree,
+            confidence: ClassificationConfidence::High,
+            reasons: vec![format!("proc_descendant_argv={arg}")],
+        });
+    }
+
     None
 }
 
@@ -438,6 +479,33 @@ fn claude_arg_has_known_package_path(arg: &str) -> bool {
     let normalized = arg.replace('\\', "/");
     let lower = normalized.trim().to_ascii_lowercase();
     lower.contains("/node_modules/@anthropic-ai/claude-code/")
+}
+
+fn gemini_arg_has_known_package_path(arg: &str) -> bool {
+    let normalized = arg.replace('\\', "/");
+    let lower = normalized.trim().to_ascii_lowercase();
+
+    lower.contains("/node_modules/@google/gemini-cli/dist/index.js")
+        || lower.contains("/node_modules/@google/gemini-cli/bundle/gemini.js")
+        || lower.ends_with("/node_modules/@google/gemini-cli")
+        || gemini_arg_has_known_bin_shim_path(&lower)
+        || lower.ends_with("/gemini-cli/packages/cli/index.ts")
+        || lower.ends_with("/gemini-cli/packages/cli/dist/index.js")
+        || lower.ends_with("/gemini-cli/bundle/gemini.js")
+        || lower.ends_with("/gemini-cli/sea/sea-launch.cjs")
+}
+
+fn gemini_arg_has_known_bin_shim_path(lower: &str) -> bool {
+    lower.ends_with("/node_modules/.bin/gemini")
+        || lower.ends_with("/opt/homebrew/bin/gemini")
+        || lower.ends_with("/usr/local/bin/gemini")
+        || lower.ends_with("/usr/bin/gemini")
+        || lower.ends_with("/.volta/bin/gemini")
+        || (lower.ends_with("/bin/gemini")
+            && (lower.contains("/.nvm/versions/node/")
+                || lower.contains("/.nodenv/versions/")
+                || lower.contains("/.asdf/installs/nodejs/")
+                || lower.contains("/.local/share/mise/installs/node/")))
 }
 
 fn claude_arg_for_reason(process: &proc::ProcessEvidence) -> Option<String> {
@@ -685,18 +753,33 @@ fn infer_title_status_from_analysis(
         }
     }
 
+    if matches!(provider, Some(Provider::Gemini))
+        && let Some(status) = title_analysis
+            .gemini_title
+            .as_ref()
+            .and_then(|title| title.status)
+    {
+        return PaneStatus {
+            kind: status,
+            source: StatusSource::TmuxTitle,
+        };
+    }
+
     if matches!(provider, Some(Provider::Gemini)) {
-        if title_analysis.raw.contains("Working") {
-            return PaneStatus {
-                kind: StatusKind::Busy,
-                source: StatusSource::TmuxTitle,
-            };
-        }
-        if title_analysis.raw.contains("Ready") {
-            return PaneStatus {
-                kind: StatusKind::Idle,
-                source: StatusSource::TmuxTitle,
-            };
+        match title_analysis.stripped {
+            "Ready" => {
+                return PaneStatus {
+                    kind: StatusKind::Idle,
+                    source: StatusSource::TmuxTitle,
+                };
+            }
+            "Working" | "Working…" | "Action Required" => {
+                return PaneStatus {
+                    kind: StatusKind::Busy,
+                    source: StatusSource::TmuxTitle,
+                };
+            }
+            _ => {}
         }
     }
 
@@ -836,6 +919,18 @@ fn display_metadata_from_analysis(
         let activity_label = if matches!(provider, Some(Provider::Codex)) {
             codex_activity_from_status_title(&title_analysis.codex_status_title)
                 .or_else(|| infer_activity_label(provider, &label))
+        } else if matches!(provider, Some(Provider::Gemini)) {
+            title_analysis
+                .gemini_title
+                .as_ref()
+                .and_then(|title| title.activity_label.clone())
+                .or_else(|| {
+                    title_analysis
+                        .gemini_title
+                        .is_none()
+                        .then(|| infer_activity_label(provider, &label))
+                        .flatten()
+                })
         } else {
             infer_activity_label(provider, &label)
         };
@@ -989,6 +1084,151 @@ fn is_generic_status_label(label: &str) -> bool {
         label.trim(),
         "Working" | "Waiting" | "Thinking" | "Starting" | "Undoing" | "Ready"
     )
+}
+
+fn parse_gemini_terminal_title(title: &str) -> Option<GeminiTitle> {
+    let title = title.trim();
+    if let Some(context) = legacy_gemini_title_context(title) {
+        return Some(GeminiTitle {
+            status: None,
+            label: context,
+            activity_label: None,
+            strong_provider_signal: true,
+        });
+    }
+
+    let mut chars = title.chars();
+    let glyph = chars.next()?;
+    let after_glyph = chars.as_str();
+    let rest = after_glyph.trim_start();
+    match glyph {
+        '◇' => {
+            let label = gemini_label_after_status(rest, "Ready");
+            let has_context = gemini_status_title_has_context(rest, "Ready");
+            Some(GeminiTitle {
+                status: label.as_ref().map(|_| StatusKind::Idle),
+                activity_label: None,
+                strong_provider_signal: has_context,
+                label,
+            })
+        }
+        '✋' => {
+            let label = gemini_label_after_status(rest, "Action Required");
+            let has_context = gemini_status_title_has_context(rest, "Action Required");
+            Some(GeminiTitle {
+                status: label.as_ref().map(|_| StatusKind::Busy),
+                activity_label: None,
+                strong_provider_signal: has_context,
+                label,
+            })
+        }
+        '⏲' => {
+            let label = gemini_label_after_status(rest, "Working…")
+                .or_else(|| gemini_label_after_status(rest, "Working"));
+            let has_context = gemini_status_title_has_context(rest, "Working…")
+                || gemini_status_title_has_context(rest, "Working");
+            Some(GeminiTitle {
+                status: label.as_ref().map(|_| StatusKind::Busy),
+                activity_label: None,
+                strong_provider_signal: has_context,
+                label,
+            })
+        }
+        '✦' => {
+            let (label, activity_label) = gemini_active_title_parts(rest);
+            let has_context = split_gemini_activity_context(rest).1.is_some();
+            Some(GeminiTitle {
+                status: label.as_ref().map(|_| StatusKind::Busy),
+                activity_label,
+                strong_provider_signal: has_context,
+                label,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn legacy_gemini_title_context(title: &str) -> Option<Option<String>> {
+    if title == "Gemini CLI" {
+        return Some(None);
+    }
+
+    title
+        .strip_prefix("Gemini CLI ")
+        .and_then(gemini_title_context)
+        .map(Some)
+}
+
+fn gemini_label_after_status(rest: &str, status_label: &str) -> Option<String> {
+    let rest = rest.trim();
+    if rest == status_label {
+        return Some(status_label.to_string());
+    }
+
+    let context = rest.strip_prefix(status_label)?.trim_start();
+    if context.is_empty() {
+        return Some(status_label.to_string());
+    }
+    gemini_title_context(context)
+}
+
+fn gemini_status_title_has_context(rest: &str, status_label: &str) -> bool {
+    rest.trim()
+        .strip_prefix(status_label)
+        .is_some_and(|context| gemini_title_context(context.trim_start()).is_some())
+}
+
+fn gemini_active_title_parts(rest: &str) -> (Option<String>, Option<String>) {
+    let rest = rest.trim();
+    if rest.is_empty() {
+        return (None, None);
+    }
+
+    let (activity, context) = split_gemini_activity_context(rest);
+    let activity = activity.trim();
+    if matches!(activity, "Working" | "Working…") {
+        return (context.or_else(|| Some(activity.to_string())), None);
+    }
+    let activity = activity.to_string();
+    (Some(activity.clone()), Some(activity))
+}
+
+fn split_gemini_activity_context(rest: &str) -> (&str, Option<String>) {
+    if let Some(open_index) = trailing_gemini_context_open_index(rest)
+        && let Some(context) = gemini_title_context(&rest[open_index..])
+    {
+        return (&rest[..open_index], Some(context));
+    }
+
+    (rest, None)
+}
+
+fn trailing_gemini_context_open_index(value: &str) -> Option<usize> {
+    if !value.ends_with(')') {
+        return None;
+    }
+
+    let mut depth = 0_u32;
+    for (index, character) in value.char_indices().rev() {
+        match character {
+            ')' => depth += 1,
+            '(' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    let prefix = &value[..index];
+                    return prefix.ends_with(char::is_whitespace).then_some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn gemini_title_context(value: &str) -> Option<String> {
+    let context = value.strip_prefix('(')?.strip_suffix(')')?.trim();
+    (!context.is_empty()).then(|| context.to_string())
 }
 
 pub(crate) fn strip_known_status_glyph(title: &str) -> &str {

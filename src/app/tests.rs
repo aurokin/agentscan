@@ -154,6 +154,11 @@ fn classifies_from_title_when_command_is_generic() {
         matched.matched_by,
         super::ClassificationMatchKind::PaneTitle
     );
+
+    let gemini = classify::classify_provider(None, "zsh", "◇  Ready (workspace)")
+        .expect("should match gemini");
+    assert_eq!(gemini.provider, Provider::Gemini);
+    assert_eq!(gemini.matched_by, super::ClassificationMatchKind::PaneTitle);
 }
 
 #[test]
@@ -175,6 +180,22 @@ fn gemini_mentions_in_titles_do_not_classify_generic_panes() {
     assert!(
         classify::classify_provider(None, "2.1.119", "✳ Clone Gemini CLI open source library")
             .is_none()
+    );
+    assert!(
+        classify::classify_provider(None, "zsh", "✦ Process deployment").is_none(),
+        "arbitrary sparkle titles without Gemini context should not classify"
+    );
+    assert!(
+        classify::classify_provider(None, "zsh", "✦  Process deployment").is_none(),
+        "two-space sparkle titles without Gemini context should not classify"
+    );
+    assert!(
+        classify::classify_provider(None, "zsh", "◇ Ready for deploy").is_none(),
+        "Gemini ready glyph must match the upstream title shape"
+    );
+    assert!(
+        classify::classify_provider(None, "zsh", "◇ Ready").is_none(),
+        "Gemini ready glyph without upstream context should not classify"
     );
 }
 
@@ -559,15 +580,51 @@ fn gemini_status_uses_generic_titles_when_provider_is_known() {
         Some(super::ClassificationMatchKind::PaneTitle),
         "Ready",
     );
+    let dynamic_idle = classify::infer_title_status(
+        Some(Provider::Gemini),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "◇  Ready (workspace)",
+    );
+    let dynamic_busy = classify::infer_title_status(
+        Some(Provider::Gemini),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "✦  Working… (workspace)",
+    );
+    let thought_busy = classify::infer_title_status(
+        Some(Provider::Gemini),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "✦  Processing request (workspace)",
+    );
+    let action_required = classify::infer_title_status(
+        Some(Provider::Gemini),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "✋  Action Required (workspace)",
+    );
+    let silent_working = classify::infer_title_status(
+        Some(Provider::Gemini),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "⏲  Working… (workspace)",
+    );
     let unknown = classify::infer_title_status(
         Some(Provider::Gemini),
         Some(super::ClassificationMatchKind::PaneTitle),
         "Plan snapshot cache migration",
     );
+    let not_ready = classify::infer_title_status(
+        Some(Provider::Gemini),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "Not Ready for deploy",
+    );
 
     assert_eq!(busy.kind, StatusKind::Busy);
     assert_eq!(idle.kind, StatusKind::Idle);
+    assert_eq!(dynamic_idle.kind, StatusKind::Idle);
+    assert_eq!(dynamic_busy.kind, StatusKind::Busy);
+    assert_eq!(thought_busy.kind, StatusKind::Busy);
+    assert_eq!(action_required.kind, StatusKind::Busy);
+    assert_eq!(silent_working.kind, StatusKind::Busy);
     assert_eq!(unknown.kind, StatusKind::Unknown);
+    assert_eq!(not_ready.kind, StatusKind::Unknown);
 }
 
 #[test]
@@ -2034,6 +2091,133 @@ fn proc_fallback_resolves_claude_from_node_cli_path_and_title_status() {
 }
 
 #[test]
+fn proc_fallback_resolves_gemini_from_node_cli_path() {
+    let mut pane = classify::pane_from_row(super::TmuxPaneRow {
+        session_name: "ambiguous".to_string(),
+        window_index: 1,
+        pane_index: 1,
+        pane_id: "%705".to_string(),
+        pane_pid: 705,
+        pane_current_command: "node".to_string(),
+        pane_title_raw: "Review deployment plan".to_string(),
+        pane_tty: "/dev/pts/705".to_string(),
+        pane_current_path: "/tmp/node-wrapper".to_string(),
+        window_name: "ai".to_string(),
+        session_id: None,
+        window_id: None,
+        agent_provider: None,
+        agent_label: None,
+        agent_cwd: None,
+        agent_state: None,
+        agent_session_id: None,
+    });
+    let inspector = FakeProcessInspector::with_processes([(
+        705,
+        vec![proc::ProcessEvidence {
+            pid: 706,
+            command: "node".to_string(),
+            argv: vec![
+                "node".to_string(),
+                "/opt/homebrew/lib/node_modules/@google/gemini-cli/dist/index.js".to_string(),
+            ],
+            env: Vec::new(),
+        }],
+    )]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_eq!(pane.provider, Some(Provider::Gemini));
+    assert_eq!(pane.display.label, "Review deployment plan");
+    assert_eq!(
+        pane.classification.reasons,
+        vec![
+            "proc_descendant_argv=/opt/homebrew/lib/node_modules/@google/gemini-cli/dist/index.js"
+                .to_string()
+        ]
+    );
+}
+
+#[test]
+fn proc_fallback_resolves_gemini_from_node_bin_shim() {
+    let mut pane = classify::pane_from_row(super::TmuxPaneRow {
+        session_name: "ambiguous".to_string(),
+        window_index: 1,
+        pane_index: 1,
+        pane_id: "%706".to_string(),
+        pane_pid: 706,
+        pane_current_command: "node".to_string(),
+        pane_title_raw: "Review deployment plan".to_string(),
+        pane_tty: "/dev/pts/706".to_string(),
+        pane_current_path: "/tmp/node-wrapper".to_string(),
+        window_name: "ai".to_string(),
+        session_id: None,
+        window_id: None,
+        agent_provider: None,
+        agent_label: None,
+        agent_cwd: None,
+        agent_state: None,
+        agent_session_id: None,
+    });
+    let inspector = FakeProcessInspector::with_processes([(
+        706,
+        vec![proc::ProcessEvidence {
+            pid: 707,
+            command: "node".to_string(),
+            argv: vec!["node".to_string(), "/opt/homebrew/bin/gemini".to_string()],
+            env: Vec::new(),
+        }],
+    )]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_eq!(pane.provider, Some(Provider::Gemini));
+    assert_eq!(
+        pane.classification.reasons,
+        vec!["proc_descendant_argv=/opt/homebrew/bin/gemini"]
+    );
+}
+
+#[test]
+fn proc_fallback_does_not_treat_arbitrary_gemini_paths_as_gemini() {
+    let mut pane = classify::pane_from_row(super::TmuxPaneRow {
+        session_name: "ambiguous".to_string(),
+        window_index: 1,
+        pane_index: 1,
+        pane_id: "%707".to_string(),
+        pane_pid: 707,
+        pane_current_command: "node".to_string(),
+        pane_title_raw: "Working".to_string(),
+        pane_tty: "/dev/pts/707".to_string(),
+        pane_current_path: "/tmp/node-wrapper".to_string(),
+        window_name: "ai".to_string(),
+        session_id: None,
+        window_id: None,
+        agent_provider: None,
+        agent_label: None,
+        agent_cwd: None,
+        agent_state: None,
+        agent_session_id: None,
+    });
+    let inspector = FakeProcessInspector::with_processes([(
+        707,
+        vec![proc::ProcessEvidence {
+            pid: 708,
+            command: "node".to_string(),
+            argv: vec!["node".to_string(), "/workspace/tools/gemini".to_string()],
+            env: Vec::new(),
+        }],
+    )]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_unresolved_ambiguous_pane(&pane, "Working");
+    assert_eq!(
+        pane.diagnostics.proc_fallback.outcome,
+        super::ProcFallbackOutcome::NoMatch
+    );
+}
+
+#[test]
 fn proc_fallback_resolves_claude_from_title_glyph_and_descendant_command() {
     let mut pane = classify::pane_from_row(super::TmuxPaneRow {
         session_name: "ambiguous".to_string(),
@@ -2773,6 +2957,33 @@ fn title_normalization_strips_claude_and_opencode_prefixes() {
 }
 
 #[test]
+fn title_normalization_strips_gemini_status_titles() {
+    assert_eq!(
+        classify::normalize_title_for_display(Some(Provider::Gemini), "◇  Ready (workspace)"),
+        "workspace"
+    );
+    assert_eq!(
+        classify::normalize_title_for_display(Some(Provider::Gemini), "✦  Working… (workspace)"),
+        "workspace"
+    );
+    assert_eq!(
+        classify::normalize_title_for_display(Some(Provider::Gemini), "✦  Working… (repo (copy))"),
+        "repo (copy)"
+    );
+    assert_eq!(
+        classify::normalize_title_for_display(
+            Some(Provider::Gemini),
+            "✦  Processing request (workspace)"
+        ),
+        "Processing request"
+    );
+    assert_eq!(
+        classify::normalize_title_for_display(Some(Provider::Gemini), "Gemini CLI (workspace)"),
+        "workspace"
+    );
+}
+
+#[test]
 fn display_metadata_extracts_activity_labels_from_titles() {
     let codex = classify::display_metadata(
         Some(Provider::Codex),
@@ -2928,6 +3139,45 @@ fn display_metadata_extracts_activity_labels_from_titles() {
     assert_eq!(
         prefixed_codex.activity_label.as_deref(),
         Some("Copilot | Review patch")
+    );
+}
+
+#[test]
+fn gemini_display_metadata_separates_context_from_activity() {
+    let idle = classify::display_metadata(
+        Some(Provider::Gemini),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        None,
+        "◇  Ready (workspace)",
+        "zsh",
+        "ai",
+    );
+    assert_eq!(idle.label, "workspace");
+    assert_eq!(idle.activity_label, None);
+
+    let static_title = classify::display_metadata(
+        Some(Provider::Gemini),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        None,
+        "Gemini CLI (workspace)",
+        "zsh",
+        "ai",
+    );
+    assert_eq!(static_title.label, "workspace");
+    assert_eq!(static_title.activity_label, None);
+
+    let thought = classify::display_metadata(
+        Some(Provider::Gemini),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        None,
+        "✦  Processing request (workspace)",
+        "zsh",
+        "ai",
+    );
+    assert_eq!(thought.label, "Processing request");
+    assert_eq!(
+        thought.activity_label.as_deref(),
+        Some("Processing request")
     );
 }
 
