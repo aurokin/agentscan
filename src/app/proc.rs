@@ -45,7 +45,7 @@ fn descendant_processes(root_pid: u32) -> Result<Vec<ProcessEvidence>> {
     const MAX_PROCESSES: usize = 64;
 
     let mut processes = Vec::new();
-    let mut queue = children_for_pid(root_pid)?;
+    let mut queue = vec![root_pid];
     let mut visited = std::collections::HashSet::new();
 
     while let Some(pid) = queue.pop() {
@@ -68,7 +68,7 @@ fn descendant_processes(root_pid: u32) -> Result<Vec<ProcessEvidence>> {
     const MAX_PROCESSES: usize = 64;
 
     let mut processes = Vec::new();
-    let mut queue = children_for_pid(root_pid)?;
+    let mut queue = vec![root_pid];
     let mut visited = std::collections::HashSet::new();
 
     while let Some(pid) = queue.pop() {
@@ -238,4 +238,27 @@ fn command_basename(raw: &str) -> Option<String> {
         .and_then(|name| name.to_str())
         .filter(|name| !name.trim().is_empty())
         .map(str::to_string)
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn process_tree_fallback_includes_root_process() {
+        let mut child = Command::new("sleep")
+            .arg("5")
+            .spawn()
+            .expect("spawn sleep process");
+
+        let processes = descendant_processes(child.id()).expect("collect process evidence");
+
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert!(
+            processes.iter().any(|process| process.pid == child.id()),
+            "expected root process evidence, got {processes:?}"
+        );
+    }
 }
