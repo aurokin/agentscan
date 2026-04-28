@@ -37,13 +37,13 @@ Current upstream signals:
 - Optional terminal progress uses OSC `9;4`, but `showTerminalProgress` defaults
   false and is not yet part of agentscan's tmux evidence model.
 
-Implementation plan:
+Implementation behavior:
 
 - Classify default Greek Pi titles such as `π - agentscan` as Pi.
 - Preserve the current conservative behavior for bare ASCII `pi - <cwd>` titles
   unless another Pi signal is present.
 - Add targeted process fallback for unresolved launcher panes with:
-  - `PI_CODING_AGENT=true`
+  - Linux `PI_CODING_AGENT=true` process evidence
   - `@mariozechner/pi-coding-agent/dist/cli.js`
   - known package-manager shims such as `node_modules/.bin/pi`,
     `/opt/homebrew/bin/pi`, and `/usr/local/bin/pi`
@@ -51,6 +51,8 @@ Implementation plan:
     package or build output
 - Keep Pi status `unknown` unless there is direct state evidence. Default Pi
   titles should not be interpreted as idle or busy.
+- Treat default Greek Pi title text as context for display labels, not as an
+  activity label.
 - Use `inspect` diagnostics to expose which Pi signal won.
 
 ## Deep-Roadmap Provider-Side Enrichment

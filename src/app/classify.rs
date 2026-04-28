@@ -457,6 +457,28 @@ fn provider_match_from_proc_evidence(process: &proc::ProcessEvidence) -> Option<
         });
     }
 
+    if let Some(arg) = process
+        .argv
+        .iter()
+        .find(|arg| pi_arg_has_known_package_path(arg))
+    {
+        return Some(ProviderMatch {
+            provider: Provider::Pi,
+            matched_by: ClassificationMatchKind::ProcProcessTree,
+            confidence: ClassificationConfidence::High,
+            reasons: vec![format!("proc_descendant_argv={arg}")],
+        });
+    }
+
+    if process_has_pi_env(process) {
+        return Some(ProviderMatch {
+            provider: Provider::Pi,
+            matched_by: ClassificationMatchKind::ProcProcessTree,
+            confidence: ClassificationConfidence::High,
+            reasons: vec!["proc_descendant_env=PI_CODING_AGENT".to_string()],
+        });
+    }
+
     None
 }
 
@@ -508,6 +530,22 @@ fn gemini_arg_has_known_bin_shim_path(lower: &str) -> bool {
                 || lower.contains("/.local/share/mise/installs/node/")))
 }
 
+fn pi_arg_has_known_package_path(arg: &str) -> bool {
+    let normalized = arg.replace('\\', "/");
+    let lower = normalized.trim().to_ascii_lowercase();
+
+    lower.contains("/node_modules/@mariozechner/pi-coding-agent/")
+        || lower.ends_with("/pi-mono/packages/coding-agent/dist/cli.js")
+        || lower.ends_with("/pi-mono/packages/coding-agent/dist/pi")
+        || pi_arg_has_known_bin_shim_path(&lower)
+}
+
+fn pi_arg_has_known_bin_shim_path(lower: &str) -> bool {
+    lower.ends_with("/node_modules/.bin/pi")
+        || lower.ends_with("/opt/homebrew/bin/pi")
+        || lower.ends_with("/usr/local/bin/pi")
+}
+
 fn claude_arg_for_reason(process: &proc::ProcessEvidence) -> Option<String> {
     process
         .argv
@@ -533,6 +571,16 @@ fn process_has_claude_teammate_shape(process: &proc::ProcessEvidence) -> bool {
         || argv_has_env_assignment(&process.argv, "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "1");
 
     has_teammate_flags && has_claudecode_env
+}
+
+fn process_has_pi_env(process: &proc::ProcessEvidence) -> bool {
+    process_env_is_truthy(process, "PI_CODING_AGENT")
+}
+
+fn process_env_is_truthy(process: &proc::ProcessEvidence, key: &str) -> bool {
+    process.env.iter().any(|(env_key, value)| {
+        env_key == key && matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true")
+    })
 }
 
 fn argv_has_flag(argv: &[String], flag: &str) -> bool {
@@ -594,6 +642,7 @@ fn is_proc_fallback_candidate(pane: &PaneRecord) -> bool {
         && pane.classification.matched_by.is_none()
         && pane.agent_metadata.provider.is_none()
         && (matches!(current_command, "node" | "bun" | "python3")
+            || current_command.eq_ignore_ascii_case("pi")
             || title_analysis.has_spinner_glyph
             || title_analysis.has_idle_glyph)
 }
@@ -931,6 +980,10 @@ fn display_metadata_from_analysis(
                         .then(|| infer_activity_label(provider, &label))
                         .flatten()
                 })
+        } else if matches!(provider, Some(Provider::Pi))
+            && title_analysis.stripped.starts_with("π - ")
+        {
+            None
         } else {
             infer_activity_label(provider, &label)
         };
@@ -1404,10 +1457,24 @@ pub(crate) fn looks_like_codex_title(title: &str) -> bool {
 }
 
 fn looks_like_pi_title(title: &str) -> bool {
-    let Some(rest) = strip_pi_title_prefix(title) else {
-        return false;
-    };
+    if let Some(rest) = title.strip_prefix("π - ") {
+        return pi_title_has_nonempty_segments(rest);
+    }
 
+    if let Some(rest) = title.strip_prefix("pi - ") {
+        return pi_title_has_multiple_segments(rest);
+    }
+
+    false
+}
+
+fn pi_title_has_nonempty_segments(rest: &str) -> bool {
+    rest.split(" - ")
+        .map(str::trim)
+        .all(|segment| !segment.is_empty())
+}
+
+fn pi_title_has_multiple_segments(rest: &str) -> bool {
     let mut segments = rest.split(" - ").map(str::trim);
     let Some(first) = segments.next() else {
         return false;

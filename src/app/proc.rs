@@ -145,6 +145,7 @@ fn selected_env_for_pid(pid: u32) -> Vec<(String, String)> {
         "CLAUDE_CODE_ENTRYPOINT",
         "CLAUDE_CODE_AGENT",
         "CLAUDE_CODE_REMOTE",
+        "PI_CODING_AGENT",
     ];
 
     let path = format!("/proc/{pid}/environ");
@@ -260,5 +261,22 @@ mod tests {
             processes.iter().any(|process| process.pid == child.id()),
             "expected root process evidence, got {processes:?}"
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_process_evidence_does_not_claim_hidden_env_support() {
+        let mut child = Command::new("sleep")
+            .arg("5")
+            .env("PI_CODING_AGENT", "true")
+            .spawn()
+            .expect("spawn sleep process with env");
+
+        let evidence = process_evidence_for_pid(child.id()).expect("process evidence");
+
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert_eq!(evidence.env, Vec::<(String, String)>::new());
     }
 }

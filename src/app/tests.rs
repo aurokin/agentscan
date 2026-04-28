@@ -1049,6 +1049,41 @@ fn pi_status_uses_spinner_title_when_present() {
 }
 
 #[test]
+fn pi_default_titles_do_not_invent_activity_labels() {
+    let default_title = classify::display_metadata(
+        Some(Provider::Pi),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        None,
+        "π - agentscan",
+        "zsh",
+        "ai",
+    );
+    let session_title = classify::display_metadata(
+        Some(Provider::Pi),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        None,
+        "π - refactor - agentscan",
+        "zsh",
+        "ai",
+    );
+    let spinner_title = classify::display_metadata(
+        Some(Provider::Pi),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        None,
+        "⠋ π - refactor - agentscan",
+        "zsh",
+        "ai",
+    );
+
+    assert_eq!(default_title.label, "agentscan");
+    assert_eq!(default_title.activity_label, None);
+    assert_eq!(session_title.label, "refactor - agentscan");
+    assert_eq!(session_title.activity_label, None);
+    assert_eq!(spinner_title.label, "refactor - agentscan");
+    assert_eq!(spinner_title.activity_label, None);
+}
+
+#[test]
 fn metadata_state_fills_unknown_status_without_overriding_title_signal() {
     let unknown_from_title = classify::infer_title_status(
         Some(Provider::Codex),
@@ -1130,10 +1165,13 @@ fn detects_codex_titles() {
 fn detects_pi_titles() {
     let greek = classify::classify_provider(None, "zsh", "π - refactor - agentscan")
         .expect("greek pi title should match");
+    let default_greek = classify::classify_provider(None, "zsh", "π - agentscan")
+        .expect("default greek pi title should match");
     let ascii = classify::classify_provider(None, "pi", "pi - refactor - agentscan")
         .expect("ascii pi title should match with bare pi command");
 
     assert_eq!(greek.provider, Provider::Pi);
+    assert_eq!(default_greek.provider, Provider::Pi);
     assert_eq!(ascii.provider, Provider::Pi);
 }
 
@@ -1148,12 +1186,15 @@ fn does_not_classify_ascii_pi_task_titles_without_extra_signal() {
 }
 
 #[test]
-fn does_not_classify_generic_pi_prefix_titles() {
-    let greek = classify::classify_provider(None, "zsh", "π - agentscan");
+fn does_not_classify_ascii_or_empty_pi_prefix_titles() {
     let ascii = classify::classify_provider(None, "zsh", "pi - agentscan");
+    let empty_greek = classify::classify_provider(None, "zsh", "π - ");
 
-    assert!(greek.is_none(), "generic greek pi title should not match");
     assert!(ascii.is_none(), "generic ascii pi title should not match");
+    assert!(
+        empty_greek.is_none(),
+        "empty greek pi title should not match"
+    );
 }
 
 #[test]
@@ -2218,6 +2259,180 @@ fn proc_fallback_does_not_treat_arbitrary_gemini_paths_as_gemini() {
 }
 
 #[test]
+fn proc_fallback_resolves_pi_from_env_marker() {
+    let mut pane = proc_fallback_pane(730, "pi", "");
+    let inspector = FakeProcessInspector::with_processes([(
+        730,
+        vec![proc::ProcessEvidence {
+            pid: 730,
+            command: "pi".to_string(),
+            argv: vec!["pi".to_string()],
+            env: vec![("PI_CODING_AGENT".to_string(), "true".to_string())],
+        }],
+    )]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_eq!(pane.provider, Some(Provider::Pi));
+    assert_eq!(
+        pane.classification.reasons,
+        vec!["proc_descendant_env=PI_CODING_AGENT"]
+    );
+    assert_eq!(pane.status.kind, StatusKind::Unknown);
+}
+
+#[test]
+fn proc_fallback_resolves_pi_from_package_cli_path() {
+    let mut pane = proc_fallback_pane(731, "node", "Review plan");
+    let inspector = FakeProcessInspector::with_processes([(
+        731,
+        vec![proc::ProcessEvidence {
+            pid: 732,
+            command: "node".to_string(),
+            argv: vec![
+                "node".to_string(),
+                "/opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent/dist/cli.js"
+                    .to_string(),
+            ],
+            env: Vec::new(),
+        }],
+    )]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_eq!(pane.provider, Some(Provider::Pi));
+    assert_eq!(pane.display.label, "Review plan");
+    assert_eq!(
+        pane.classification.reasons,
+        vec![
+            "proc_descendant_argv=/opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent/dist/cli.js"
+                .to_string()
+        ]
+    );
+}
+
+#[test]
+fn proc_fallback_resolves_pi_from_build_binary_path() {
+    let mut pane = proc_fallback_pane(732, "bun", "Review plan");
+    let inspector = FakeProcessInspector::with_processes([(
+        732,
+        vec![proc::ProcessEvidence {
+            pid: 733,
+            command: "bun".to_string(),
+            argv: vec![
+                "bun".to_string(),
+                "/Users/auro/code/upstream/pi-mono/packages/coding-agent/dist/pi".to_string(),
+            ],
+            env: Vec::new(),
+        }],
+    )]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_eq!(pane.provider, Some(Provider::Pi));
+    assert_eq!(
+        pane.classification.reasons,
+        vec![
+            "proc_descendant_argv=/Users/auro/code/upstream/pi-mono/packages/coding-agent/dist/pi"
+                .to_string()
+        ]
+    );
+}
+
+#[test]
+fn proc_fallback_resolves_pi_from_known_bin_shim() {
+    let mut pane = proc_fallback_pane(733, "node", "Review plan");
+    let inspector = FakeProcessInspector::with_processes([(
+        733,
+        vec![proc::ProcessEvidence {
+            pid: 734,
+            command: "node".to_string(),
+            argv: vec!["node".to_string(), "/opt/homebrew/bin/pi".to_string()],
+            env: Vec::new(),
+        }],
+    )]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_eq!(pane.provider, Some(Provider::Pi));
+    assert_eq!(
+        pane.classification.reasons,
+        vec!["proc_descendant_argv=/opt/homebrew/bin/pi"]
+    );
+}
+
+#[test]
+fn proc_fallback_does_not_treat_arbitrary_pi_paths_as_pi() {
+    let mut pane = proc_fallback_pane(734, "node", "Review plan");
+    let inspector = FakeProcessInspector::with_processes([(
+        734,
+        vec![proc::ProcessEvidence {
+            pid: 735,
+            command: "node".to_string(),
+            argv: vec!["node".to_string(), "/workspace/tools/pi".to_string()],
+            env: Vec::new(),
+        }],
+    )]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_unresolved_ambiguous_pane(&pane, "Review plan");
+    assert_eq!(
+        pane.diagnostics.proc_fallback.outcome,
+        super::ProcFallbackOutcome::NoMatch
+    );
+}
+
+#[test]
+fn proc_fallback_does_not_treat_bare_pi_process_as_pi() {
+    let mut pane = proc_fallback_pane(735, "pi", "");
+    let inspector = FakeProcessInspector::with_processes([(
+        735,
+        vec![proc::ProcessEvidence {
+            pid: 735,
+            command: "pi".to_string(),
+            argv: vec!["pi".to_string()],
+            env: Vec::new(),
+        }],
+    )]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_eq!(pane.provider, None);
+    assert_eq!(
+        pane.diagnostics.proc_fallback.outcome,
+        super::ProcFallbackOutcome::NoMatch
+    );
+}
+
+#[test]
+fn proc_fallback_does_not_treat_pi_env_text_in_argv_as_pi() {
+    let mut pane = proc_fallback_pane(736, "node", "Review plan");
+    let inspector = FakeProcessInspector::with_processes([(
+        736,
+        vec![proc::ProcessEvidence {
+            pid: 737,
+            command: "node".to_string(),
+            argv: vec![
+                "node".to_string(),
+                "script.js".to_string(),
+                "--data".to_string(),
+                "PI_CODING_AGENT=true".to_string(),
+            ],
+            env: Vec::new(),
+        }],
+    )]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_unresolved_ambiguous_pane(&pane, "Review plan");
+    assert_eq!(
+        pane.diagnostics.proc_fallback.outcome,
+        super::ProcFallbackOutcome::NoMatch
+    );
+}
+
+#[test]
 fn proc_fallback_resolves_claude_from_title_glyph_and_descendant_command() {
     let mut pane = classify::pane_from_row(super::TmuxPaneRow {
         session_name: "ambiguous".to_string(),
@@ -3125,7 +3340,7 @@ fn display_metadata_extracts_activity_labels_from_titles() {
         "ai",
     );
     assert_eq!(pi.label, "refactor - agentscan");
-    assert_eq!(pi.activity_label.as_deref(), Some("refactor - agentscan"));
+    assert_eq!(pi.activity_label, None);
 
     let prefixed_codex = classify::display_metadata(
         Some(Provider::Codex),
@@ -3497,6 +3712,28 @@ fn cache_path_for_test(
     Ok(Path::new(home).join(".cache").join(CACHE_RELATIVE_PATH))
 }
 
+fn proc_fallback_pane(pid: u32, command: &str, title: &str) -> PaneRecord {
+    classify::pane_from_row(super::TmuxPaneRow {
+        session_name: "ambiguous".to_string(),
+        window_index: 1,
+        pane_index: 1,
+        pane_id: format!("%{pid}"),
+        pane_pid: pid,
+        pane_current_command: command.to_string(),
+        pane_title_raw: title.to_string(),
+        pane_tty: format!("/dev/pts/{pid}"),
+        pane_current_path: "/tmp/proc-wrapper".to_string(),
+        window_name: "ai".to_string(),
+        session_id: None,
+        window_id: None,
+        agent_provider: None,
+        agent_label: None,
+        agent_cwd: None,
+        agent_state: None,
+        agent_session_id: None,
+    })
+}
+
 struct FakeProcessInspector {
     processes_by_pid: std::collections::HashMap<u32, Vec<proc::ProcessEvidence>>,
     calls: RefCell<Vec<u32>>,
@@ -3735,20 +3972,14 @@ fn assert_fixture_pi_case(panes: &[PaneRecord]) {
     assert_eq!(pi.display.label, "refactor - pi_proj");
     assert_eq!(pi.status.kind, StatusKind::Unknown);
     assert_eq!(pi.status.source, super::StatusSource::NotChecked);
-    assert_eq!(
-        pi.display.activity_label.as_deref(),
-        Some("refactor - pi_proj")
-    );
+    assert_eq!(pi.display.activity_label, None);
 
     let pi_busy = pane_by_id(panes, "%312");
     assert_eq!(pi_busy.provider, Some(Provider::Pi));
     assert_eq!(pi_busy.status.kind, StatusKind::Busy);
     assert_eq!(pi_busy.status.source, super::StatusSource::TmuxTitle);
     assert_eq!(pi_busy.display.label, "refactor - pi_proj");
-    assert_eq!(
-        pi_busy.display.activity_label.as_deref(),
-        Some("refactor - pi_proj")
-    );
+    assert_eq!(pi_busy.display.activity_label, None);
 
     let pi_command = pane_by_id(panes, "%313");
     assert_eq!(pi_command.provider, Some(Provider::Pi));
