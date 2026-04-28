@@ -2,6 +2,11 @@ use super::*;
 
 pub(crate) trait ProcessInspector {
     fn descendant_processes(&self, root_pid: u32) -> Result<Vec<ProcessEvidence>>;
+
+    fn foreground_processes(&self, pane_tty: &str) -> Result<Vec<ProcessEvidence>> {
+        let _ = pane_tty;
+        Ok(Vec::new())
+    }
 }
 
 #[derive(Default)]
@@ -10,6 +15,10 @@ pub(crate) struct ProcProcessInspector;
 impl ProcessInspector for ProcProcessInspector {
     fn descendant_processes(&self, root_pid: u32) -> Result<Vec<ProcessEvidence>> {
         descendant_processes(root_pid)
+    }
+
+    fn foreground_processes(&self, pane_tty: &str) -> Result<Vec<ProcessEvidence>> {
+        foreground_processes(pane_tty)
     }
 }
 
@@ -89,6 +98,60 @@ fn descendant_processes(root_pid: u32) -> Result<Vec<ProcessEvidence>> {
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn descendant_processes(_root_pid: u32) -> Result<Vec<ProcessEvidence>> {
     Ok(Vec::new())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn foreground_processes(pane_tty: &str) -> Result<Vec<ProcessEvidence>> {
+    let Some(tty) = ps_tty_name(pane_tty) else {
+        return Ok(Vec::new());
+    };
+
+    foreground_pids_for_tty(&tty).map(|pids| {
+        pids.into_iter()
+            .filter_map(process_evidence_for_pid)
+            .collect()
+    })
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn foreground_processes(_pane_tty: &str) -> Result<Vec<ProcessEvidence>> {
+    Ok(Vec::new())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn foreground_pids_for_tty(tty: &str) -> Result<Vec<u32>> {
+    let output = Command::new("ps")
+        .args(["-t", tty, "-o", "pid=", "-o", "stat="])
+        .output()
+        .context("failed to execute ps for foreground process fallback")?;
+
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+
+    let stdout = String::from_utf8(output.stdout).context("ps output was not valid UTF-8")?;
+    Ok(stdout
+        .lines()
+        .filter_map(foreground_pid_from_ps_line)
+        .collect())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn foreground_pid_from_ps_line(line: &str) -> Option<u32> {
+    let mut parts = line.split_whitespace();
+    let pid = parts.next()?.parse::<u32>().ok()?;
+    let stat = parts.next()?;
+    stat.contains('+').then_some(pid)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn ps_tty_name(pane_tty: &str) -> Option<String> {
+    let tty = pane_tty.trim();
+    if tty.is_empty() || tty == "not a tty" {
+        return None;
+    }
+
+    Some(tty.strip_prefix("/dev/").unwrap_or(tty).to_string())
 }
 
 #[cfg(target_os = "linux")]
@@ -265,6 +328,17 @@ mod tests {
             processes.iter().any(|process| process.pid == child.id()),
             "expected root process evidence, got {processes:?}"
         );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn foreground_ps_helpers_accept_only_foreground_rows() {
+        assert_eq!(foreground_pid_from_ps_line("1234 Ss+"), Some(1234));
+        assert_eq!(foreground_pid_from_ps_line("1235 S"), None);
+        assert_eq!(foreground_pid_from_ps_line("not-a-pid Ss+"), None);
+        assert_eq!(ps_tty_name("/dev/ttys001").as_deref(), Some("ttys001"));
+        assert_eq!(ps_tty_name("/dev/pts/4").as_deref(), Some("pts/4"));
+        assert_eq!(ps_tty_name("not a tty"), None);
     }
 
     #[cfg(target_os = "macos")]

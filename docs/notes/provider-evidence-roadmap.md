@@ -14,12 +14,20 @@ The detection ladder stays:
 
 1. explicit tmux metadata when present
 2. provider-specific tmux title and pane metadata signals
-3. targeted process-tree fallback for ambiguous launcher panes
-4. optional hooks, extensions, or wrappers as the final enrichment layer only
+3. targeted live process fallback for ambiguous launcher panes and shell
+   wrappers
+4. shallow provider-scoped pane output parsing only if later justified
+5. optional hooks, extensions, or wrappers as the final enrichment layer only
 
 Hooks and extensions are deep-roadmap work. They should come after we have
 exhausted upstream source analysis, local probing, and conservative
 plug-and-play support for each provider.
+
+Provider logs, transcript files, session databases, telemetry files, and other
+historical state stores are not baseline detection inputs. They can be used to
+understand a closed-source provider during research, but shipped
+plug-and-play detection should rely on live tmux metadata, terminal titles,
+foreground/root/descendant process evidence, and tightly scoped pane output.
 
 ## Pi Coding Agent Plan
 
@@ -99,9 +107,13 @@ after restart/resume:
 
 - tmux title
 - `pane_current_command`
-- process argv and selected environment
-- terminal output/status lines only if later justified
-- any stable local files, sockets, or logs that indicate state without secrets
+- foreground process group from the pane TTY
+- root/descendant process argv and selected environment
+- terminal output/status lines only if later justified and scoped to panes that
+  already have provider evidence
+
+Local files, sockets, logs, and provider session stores are research-only unless
+a future roadmap item explicitly promotes them into an opt-in integration.
 
 Closed-source queue:
 
@@ -111,3 +123,25 @@ Closed-source queue:
 Closed-source probing should produce a written evidence matrix before code
 changes. If a signal is weak, agentscan should prefer `unknown` over a richer
 but invented classification.
+
+## Closed-Source Implementation Direction
+
+GitHub Copilot CLI:
+
+- Treat exact live `copilot` / `github-copilot` foreground commands as provider
+  evidence.
+- Treat `COPILOT_HOME`, `COPILOT_MODEL`, and similar environment variables as
+  supporting process context only, not provider identity by themselves.
+- Treat Copilot hooks, plugins, statusline/footer customization, and session
+  stores as deferred optional integrations.
+- Do not read Copilot session-state files or logs in baseline detection.
+
+Cursor CLI:
+
+- Keep exact `cursor-agent` command evidence as the safe baseline.
+- Treat bare `agent` as too generic unless future local probing finds strong
+  Cursor-specific argv or path evidence.
+- Treat `CURSOR_AGENT` and `CURSOR_CLI` environment variables as supporting
+  context only, not provider identity by themselves.
+- Use pane output patterns such as approval prompts or busy indicators only as
+  future provider-scoped status signals after identity is already established.

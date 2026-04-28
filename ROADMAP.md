@@ -102,10 +102,14 @@ Implications:
 - prefer tmux metadata and control-mode events over process scans
 - keep labels conservative when evidence is weak
 - treat pane inspection as fallback rather than the normal path
-- process-tree fallback is currently limited to unresolved `node`, `bun`, and
-  `python3` launcher panes. It checks descendant process command, argv, and
-  selected Claude Code environment markers on Linux, and uses targeted child
-  process traversal on macOS with argv/command evidence.
+- process fallback is targeted live process inspection, not broad system
+  scanning. It is limited to concrete ambiguous panes, checks the foreground
+  process group for shell or wrapper panes, and checks root/descendant process
+  command, argv, and selected environment markers for known launcher panes.
+- provider logs, transcript files, session databases, and other historical
+  state stores are not core detection inputs. They may be useful during
+  research, but baseline detection must rely on live tmux, process, title, and
+  tightly scoped pane evidence.
 - `inspect` reports provider source, status source, classification reasons, and
   targeted process fallback outcomes so classification problems can be debugged
   from the CLI and JSON cache without reading implementation code

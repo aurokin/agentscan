@@ -3023,7 +3023,7 @@ fn proc_fallback_records_skip_reason_for_untargeted_unresolved_pane() {
         pane_index: 1,
         pane_id: "%702".to_string(),
         pane_pid: 702,
-        pane_current_command: "zsh".to_string(),
+        pane_current_command: "make".to_string(),
         pane_title_raw: "(bront) ~/code/agent-wrapper".to_string(),
         pane_tty: "/dev/pts/702".to_string(),
         pane_current_path: "/tmp/wrapper".to_string(),
@@ -3047,9 +3047,32 @@ fn proc_fallback_records_skip_reason_for_untargeted_unresolved_pane() {
     );
     assert_eq!(
         pane.diagnostics.proc_fallback.reason,
-        "pane_current_command=zsh is not a targeted proc fallback launcher"
+        "pane_current_command=make is not a targeted proc fallback launcher"
     );
     assert!(inspector.calls().is_empty());
+}
+
+#[test]
+fn proc_fallback_resolves_shell_pane_from_foreground_process() {
+    let mut pane = proc_fallback_pane(740, "zsh", "agent wrapper");
+    pane.tmux.pane_tty = "/dev/ttys740".to_string();
+    let inspector = FakeProcessInspector::with_foreground(
+        [(740, vec!["background-codex".to_string()])],
+        [("/dev/ttys740".to_string(), vec!["copilot".to_string()])],
+    );
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_eq!(pane.provider, Some(Provider::Copilot));
+    assert_eq!(
+        pane.classification.reasons,
+        vec!["proc_foreground_command=copilot"]
+    );
+    assert_eq!(inspector.calls(), Vec::<u32>::new());
+    assert_eq!(
+        inspector.foreground_calls(),
+        vec!["/dev/ttys740".to_string()]
+    );
 }
 
 #[test]
@@ -3067,7 +3090,7 @@ fn inspect_text_reports_provider_status_and_fallback_provenance() {
     assert!(text.contains("status_source: tmux_title"));
     assert!(text.contains("classification:\n  - proc_descendant_command=codex"));
     assert!(text.contains("proc_fallback:\n  outcome: resolved"));
-    assert!(text.contains("  reason: resolved provider from descendant process command"));
+    assert!(text.contains("  reason: resolved provider from process evidence"));
     assert!(text.contains("  commands:\n    - codex"));
 }
 
@@ -4038,7 +4061,9 @@ fn proc_fallback_pane(pid: u32, command: &str, title: &str) -> PaneRecord {
 
 struct FakeProcessInspector {
     processes_by_pid: std::collections::HashMap<u32, Vec<proc::ProcessEvidence>>,
+    foreground_by_tty: std::collections::HashMap<String, Vec<proc::ProcessEvidence>>,
     calls: RefCell<Vec<u32>>,
+    foreground_calls: RefCell<Vec<String>>,
 }
 
 impl FakeProcessInspector {
@@ -4061,7 +4086,9 @@ impl FakeProcessInspector {
                     )
                 })
                 .collect(),
+            foreground_by_tty: std::collections::HashMap::new(),
             calls: RefCell::new(Vec::new()),
+            foreground_calls: RefCell::new(Vec::new()),
         }
     }
 
@@ -4070,12 +4097,43 @@ impl FakeProcessInspector {
     ) -> Self {
         Self {
             processes_by_pid: entries.into_iter().collect(),
+            foreground_by_tty: std::collections::HashMap::new(),
             calls: RefCell::new(Vec::new()),
+            foreground_calls: RefCell::new(Vec::new()),
         }
+    }
+
+    fn with_foreground(
+        descendants: impl IntoIterator<Item = (u32, Vec<String>)>,
+        foreground: impl IntoIterator<Item = (String, Vec<String>)>,
+    ) -> Self {
+        let mut inspector = Self::new(descendants);
+        inspector.foreground_by_tty = foreground
+            .into_iter()
+            .map(|(tty, commands)| {
+                (
+                    tty,
+                    commands
+                        .into_iter()
+                        .map(|command| proc::ProcessEvidence {
+                            pid: 0,
+                            command: command.clone(),
+                            argv: vec![command],
+                            env: Vec::new(),
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
+        inspector
     }
 
     fn calls(&self) -> Vec<u32> {
         self.calls.borrow().clone()
+    }
+
+    fn foreground_calls(&self) -> Vec<String> {
+        self.foreground_calls.borrow().clone()
     }
 }
 
@@ -4085,6 +4143,17 @@ impl proc::ProcessInspector for FakeProcessInspector {
         Ok(self
             .processes_by_pid
             .get(&root_pid)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    fn foreground_processes(&self, pane_tty: &str) -> anyhow::Result<Vec<proc::ProcessEvidence>> {
+        self.foreground_calls
+            .borrow_mut()
+            .push(pane_tty.to_string());
+        Ok(self
+            .foreground_by_tty
+            .get(pane_tty)
             .cloned()
             .unwrap_or_default())
     }

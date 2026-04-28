@@ -16,6 +16,8 @@ This project starts from a simpler baseline:
 - no `ps` scan in the steady-state path
 - no fast/full mode split
 - plug-and-play detection as a core product invariant
+- no provider log, transcript, or session-store scanning in the default
+  detection path
 
 Common agent panes should be discoverable without asking users to install
 provider hooks, extensions, launch wrappers, or shell integration. Those
@@ -104,6 +106,8 @@ It can:
 - normalize noisy provider prefixes and wrapper/script suffixes out of display labels for title-driven panes
 - populate `display.activity_label` for meaningful title-driven panes and authoritative wrapper labels, including non-generic Codex wrapper titles
 - keep labels conservative: show what tmux metadata actually tells us and avoid inventing richer task names from weak signals
+- use targeted live process evidence, including pane TTY foreground process
+  groups, only for unresolved ambiguous panes
 - treat Cursor CLI as metadata-first: command detection is enough to identify the provider, but generic tmux titles fall back to conservative pane labels until wrappers publish stronger metadata
 - resolve unresolved Claude Code launcher panes from targeted process evidence, including Claude Code CLI paths and tmux teammate-spawn argv/env markers
 - classify Pi coding agent panes from upstream-observed Greek terminal titles,

@@ -296,26 +296,29 @@ pub(crate) fn apply_proc_fallback(pane: &mut PaneRecord, inspector: &impl proc::
         return;
     }
 
-    let processes = match inspector.descendant_processes(pane.tmux.pane_pid) {
-        Ok(processes) => processes,
+    let evidence = match proc_fallback_evidence(pane, inspector) {
+        Ok(evidence) => evidence,
         Err(error) => {
             pane.diagnostics.proc_fallback = ProcFallbackDiagnostics {
                 outcome: ProcFallbackOutcome::Error,
-                reason: format!("failed to inspect descendants: {error}"),
+                reason: error,
                 commands: Vec::new(),
             };
             return;
         }
     };
-    let commands: Vec<String> = processes
+    let commands: Vec<String> = evidence
         .iter()
-        .map(proc::ProcessEvidence::command_for_diagnostics)
+        .map(|evidence| evidence.process.command_for_diagnostics())
         .collect();
 
-    let Some(provider_match) = processes.iter().find_map(provider_match_from_proc_evidence) else {
+    let Some(provider_match) = evidence
+        .iter()
+        .find_map(|evidence| provider_match_from_proc_evidence(&evidence.process, evidence.source))
+    else {
         pane.diagnostics.proc_fallback = ProcFallbackDiagnostics {
             outcome: ProcFallbackOutcome::NoMatch,
-            reason: "no known provider evidence found in descendants".to_string(),
+            reason: proc_fallback_no_match_reason(&evidence),
             commands,
         };
         return;
@@ -324,9 +327,89 @@ pub(crate) fn apply_proc_fallback(pane: &mut PaneRecord, inspector: &impl proc::
     apply_provider_match(pane, provider_match);
     pane.diagnostics.proc_fallback = ProcFallbackDiagnostics {
         outcome: ProcFallbackOutcome::Resolved,
-        reason: "resolved provider from descendant process command".to_string(),
+        reason: "resolved provider from process evidence".to_string(),
         commands,
     };
+}
+
+#[derive(Clone)]
+struct ProcFallbackEvidence {
+    source: ProcEvidenceSource,
+    process: proc::ProcessEvidence,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ProcEvidenceSource {
+    Foreground,
+    Descendant,
+}
+
+impl ProcEvidenceSource {
+    fn reason_prefix(self) -> &'static str {
+        match self {
+            Self::Foreground => "proc_foreground",
+            Self::Descendant => "proc_descendant",
+        }
+    }
+}
+
+fn proc_fallback_evidence(
+    pane: &PaneRecord,
+    inspector: &impl proc::ProcessInspector,
+) -> Result<Vec<ProcFallbackEvidence>, String> {
+    let mut foreground = Vec::new();
+    let mut descendants = Vec::new();
+    let mut errors = Vec::new();
+
+    if proc_fallback_uses_foreground(pane) {
+        match inspector.foreground_processes(&pane.tmux.pane_tty) {
+            Ok(processes) => foreground = processes,
+            Err(error) => errors.push(format!("failed to inspect foreground process: {error}")),
+        }
+    }
+
+    if proc_fallback_uses_descendants(pane) {
+        match inspector.descendant_processes(pane.tmux.pane_pid) {
+            Ok(processes) => descendants = processes,
+            Err(error) => errors.push(format!("failed to inspect descendants: {error}")),
+        }
+    }
+
+    if foreground.is_empty() && descendants.is_empty() && !errors.is_empty() {
+        return Err(errors.join("; "));
+    }
+
+    let evidence = foreground
+        .into_iter()
+        .map(|process| ProcFallbackEvidence {
+            source: ProcEvidenceSource::Foreground,
+            process,
+        })
+        .chain(descendants.into_iter().map(|process| ProcFallbackEvidence {
+            source: ProcEvidenceSource::Descendant,
+            process,
+        }))
+        .collect::<Vec<_>>();
+
+    Ok(evidence)
+}
+
+fn proc_fallback_no_match_reason(evidence: &[ProcFallbackEvidence]) -> String {
+    let has_foreground = evidence
+        .iter()
+        .any(|evidence| evidence.source == ProcEvidenceSource::Foreground);
+    let has_descendant = evidence
+        .iter()
+        .any(|evidence| evidence.source == ProcEvidenceSource::Descendant);
+
+    match (has_foreground, has_descendant) {
+        (true, true) => {
+            "no known provider evidence found in foreground process or descendants".to_string()
+        }
+        (true, false) => "no known provider evidence found in foreground process".to_string(),
+        (false, true) => "no known provider evidence found in descendants".to_string(),
+        (false, false) => "no process evidence found".to_string(),
+    }
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -395,7 +478,10 @@ fn classify_provider_from_analysis(
     None
 }
 
-fn provider_match_from_proc_command(command: &str) -> Option<ProviderMatch> {
+fn provider_match_from_proc_command(
+    command: &str,
+    source: ProcEvidenceSource,
+) -> Option<ProviderMatch> {
     let command = command.trim();
     let (provider, exact) = provider_from_command(command)?;
     Some(ProviderMatch {
@@ -406,16 +492,19 @@ fn provider_match_from_proc_command(command: &str) -> Option<ProviderMatch> {
         } else {
             ClassificationConfidence::Medium
         },
-        reasons: vec![format!("proc_descendant_command={command}")],
+        reasons: vec![format!("{}_command={command}", source.reason_prefix())],
     })
 }
 
-fn provider_match_from_proc_evidence(process: &proc::ProcessEvidence) -> Option<ProviderMatch> {
-    if let Some(provider_match) = provider_match_from_proc_command(&process.command) {
+fn provider_match_from_proc_evidence(
+    process: &proc::ProcessEvidence,
+    source: ProcEvidenceSource,
+) -> Option<ProviderMatch> {
+    if let Some(provider_match) = provider_match_from_proc_command(&process.command, source) {
         return Some(provider_match);
     }
 
-    if let Some(provider_match) = provider_match_from_proc_argv0(process) {
+    if let Some(provider_match) = provider_match_from_proc_argv0(process, source) {
         return Some(provider_match);
     }
 
@@ -431,7 +520,11 @@ fn provider_match_from_proc_evidence(process: &proc::ProcessEvidence) -> Option<
             provider: Provider::Claude,
             matched_by: ClassificationMatchKind::ProcProcessTree,
             confidence: ClassificationConfidence::High,
-            reasons: vec![format!("proc_descendant_argv={}", proc_arg_reason(process))],
+            reasons: vec![format!(
+                "{}_argv={}",
+                source.reason_prefix(),
+                proc_arg_reason(process)
+            )],
         });
     }
 
@@ -440,7 +533,10 @@ fn provider_match_from_proc_evidence(process: &proc::ProcessEvidence) -> Option<
             provider: Provider::Claude,
             matched_by: ClassificationMatchKind::ProcProcessTree,
             confidence: ClassificationConfidence::High,
-            reasons: vec!["proc_descendant_argv=claude teammate flags".to_string()],
+            reasons: vec![format!(
+                "{}_argv=claude teammate flags",
+                source.reason_prefix()
+            )],
         });
     }
 
@@ -453,7 +549,7 @@ fn provider_match_from_proc_evidence(process: &proc::ProcessEvidence) -> Option<
             provider: Provider::Gemini,
             matched_by: ClassificationMatchKind::ProcProcessTree,
             confidence: ClassificationConfidence::High,
-            reasons: vec![format!("proc_descendant_argv={arg}")],
+            reasons: vec![format!("{}_argv={arg}", source.reason_prefix())],
         });
     }
 
@@ -466,7 +562,7 @@ fn provider_match_from_proc_evidence(process: &proc::ProcessEvidence) -> Option<
             provider: Provider::Opencode,
             matched_by: ClassificationMatchKind::ProcProcessTree,
             confidence: ClassificationConfidence::High,
-            reasons: vec![format!("proc_descendant_argv={arg}")],
+            reasons: vec![format!("{}_argv={arg}", source.reason_prefix())],
         });
     }
 
@@ -475,7 +571,7 @@ fn provider_match_from_proc_evidence(process: &proc::ProcessEvidence) -> Option<
             provider: Provider::Opencode,
             matched_by: ClassificationMatchKind::ProcProcessTree,
             confidence: ClassificationConfidence::High,
-            reasons: vec!["proc_descendant_env=OPENCODE".to_string()],
+            reasons: vec![format!("{}_env=OPENCODE", source.reason_prefix())],
         });
     }
 
@@ -488,7 +584,7 @@ fn provider_match_from_proc_evidence(process: &proc::ProcessEvidence) -> Option<
             provider: Provider::Pi,
             matched_by: ClassificationMatchKind::ProcProcessTree,
             confidence: ClassificationConfidence::High,
-            reasons: vec![format!("proc_descendant_argv={arg}")],
+            reasons: vec![format!("{}_argv={arg}", source.reason_prefix())],
         });
     }
 
@@ -497,17 +593,20 @@ fn provider_match_from_proc_evidence(process: &proc::ProcessEvidence) -> Option<
             provider: Provider::Pi,
             matched_by: ClassificationMatchKind::ProcProcessTree,
             confidence: ClassificationConfidence::High,
-            reasons: vec!["proc_descendant_env=PI_CODING_AGENT".to_string()],
+            reasons: vec![format!("{}_env=PI_CODING_AGENT", source.reason_prefix())],
         });
     }
 
     None
 }
 
-fn provider_match_from_proc_argv0(process: &proc::ProcessEvidence) -> Option<ProviderMatch> {
+fn provider_match_from_proc_argv0(
+    process: &proc::ProcessEvidence,
+    source: ProcEvidenceSource,
+) -> Option<ProviderMatch> {
     let argv0 = process.argv.first()?;
     let command = command_basename(argv0)?;
-    provider_match_from_proc_command(&command)
+    provider_match_from_proc_command(&command, source)
 }
 
 fn claude_argv0_has_binary_shape(arg: &str) -> bool {
@@ -724,16 +823,56 @@ fn apply_provider_match(pane: &mut PaneRecord, provider_match: ProviderMatch) {
 }
 
 fn is_proc_fallback_candidate(pane: &PaneRecord) -> bool {
-    let title_analysis = analyze_title(&pane.tmux.pane_title_raw);
-    let current_command = current_command_for_analysis(&pane.tmux.pane_current_command);
-
     pane.provider.is_none()
         && pane.classification.matched_by.is_none()
         && pane.agent_metadata.provider.is_none()
-        && (matches!(current_command, "node" | "bun" | "python3")
-            || current_command.eq_ignore_ascii_case("pi")
+        && (proc_fallback_uses_foreground(pane) || proc_fallback_uses_descendants(pane))
+}
+
+fn proc_fallback_uses_foreground(pane: &PaneRecord) -> bool {
+    let title_analysis = analyze_title(&pane.tmux.pane_title_raw);
+    let current_command = current_command_for_analysis(&pane.tmux.pane_current_command);
+
+    !pane.tmux.pane_tty.trim().is_empty()
+        && !pane.tmux.pane_tty.trim().eq_ignore_ascii_case("not a tty")
+        && (is_proc_fallback_launcher_command(current_command)
+            || is_shell_or_wrapper_command(current_command)
             || title_analysis.has_spinner_glyph
             || title_analysis.has_idle_glyph)
+}
+
+fn proc_fallback_uses_descendants(pane: &PaneRecord) -> bool {
+    let title_analysis = analyze_title(&pane.tmux.pane_title_raw);
+    let current_command = current_command_for_analysis(&pane.tmux.pane_current_command);
+
+    is_proc_fallback_launcher_command(current_command)
+        || title_analysis.has_spinner_glyph
+        || title_analysis.has_idle_glyph
+}
+
+fn is_proc_fallback_launcher_command(command: &str) -> bool {
+    matches!(command, "node" | "bun" | "python3") || command.eq_ignore_ascii_case("pi")
+}
+
+fn is_shell_or_wrapper_command(command: &str) -> bool {
+    matches!(
+        command,
+        "sh" | "bash"
+            | "zsh"
+            | "fish"
+            | "dash"
+            | "ksh"
+            | "nu"
+            | "xonsh"
+            | "pwsh"
+            | "env"
+            | "npx"
+            | "pnpm"
+            | "npm"
+            | "yarn"
+            | "bunx"
+            | "uv"
+    )
 }
 
 fn proc_fallback_skip_reason(pane: &PaneRecord) -> String {
