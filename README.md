@@ -109,6 +109,10 @@ It can:
 - classify Pi coding agent panes from upstream-observed Greek terminal titles,
   Linux `PI_CODING_AGENT=true` process evidence, and targeted package or shim
   path evidence while keeping bare `pi` commands conservative
+- classify opencode panes from upstream-observed `OpenCode` / `OC | ...`
+  terminal titles, targeted package or shim path evidence, and Linux
+  `OPENCODE` process evidence while keeping default opencode status unknown
+  unless explicit metadata publishes state
 - publish, clear, and consume explicit wrapper metadata via pane-local `@agent.*` tmux options
 - refresh the existing cache immediately after repo-local metadata helper writes so wrapper-driven metadata changes stay visible to cache consumers whether the cache came from the daemon or a forced snapshot
 - emit canonical snapshot JSON

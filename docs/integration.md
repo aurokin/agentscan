@@ -146,8 +146,11 @@ Provider-specific guidance should stay narrow and correctness-driven:
   The live `cursor-agent` command is enough to identify the provider, but tmux
   titles are often generic. Wrappers should publish `@agent.label` and
   `@agent.session_id` when they can obtain those values.
-- opencode remains on the source-analysis queue. Its support should be updated
-  from upstream evidence, following the Gemini CLI and Pi analysis pattern.
+- opencode should remain plug-and-play from its upstream `OpenCode` and
+  `OC | ...` terminal title shapes, targeted package or shim path evidence, and
+  Linux `OPENCODE` environment marker. Its default terminal title does not
+  publish busy or idle state; keep status unknown unless explicit tmux metadata
+  supplies state.
 - GitHub Copilot and Cursor are closed-source enough that support should be
   based on empirical probing. Record command, title, argv, env, and state
   snapshots before adding or changing heuristics.

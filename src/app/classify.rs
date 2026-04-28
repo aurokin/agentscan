@@ -134,7 +134,7 @@ fn analyze_title(raw_title: &str) -> TitleAnalysis<'_> {
             strength: TitleHintStrength::Strong,
             kind: TitleProviderHintKind::Explicit,
         })
-    } else if opencode_label.is_some() {
+    } else if opencode_label.is_some() || stripped == "OpenCode" {
         Some(TitleProviderHint {
             provider: Provider::Opencode,
             strength: TitleHintStrength::Strong,
@@ -460,6 +460,28 @@ fn provider_match_from_proc_evidence(process: &proc::ProcessEvidence) -> Option<
     if let Some(arg) = process
         .argv
         .iter()
+        .find(|arg| opencode_arg_has_known_package_path(arg))
+    {
+        return Some(ProviderMatch {
+            provider: Provider::Opencode,
+            matched_by: ClassificationMatchKind::ProcProcessTree,
+            confidence: ClassificationConfidence::High,
+            reasons: vec![format!("proc_descendant_argv={arg}")],
+        });
+    }
+
+    if process_has_opencode_env(process) {
+        return Some(ProviderMatch {
+            provider: Provider::Opencode,
+            matched_by: ClassificationMatchKind::ProcProcessTree,
+            confidence: ClassificationConfidence::High,
+            reasons: vec!["proc_descendant_env=OPENCODE".to_string()],
+        });
+    }
+
+    if let Some(arg) = process
+        .argv
+        .iter()
         .find(|arg| pi_arg_has_known_package_path(arg))
     {
         return Some(ProviderMatch {
@@ -546,6 +568,52 @@ fn pi_arg_has_known_bin_shim_path(lower: &str) -> bool {
         || lower.ends_with("/usr/local/bin/pi")
 }
 
+fn opencode_arg_has_known_package_path(arg: &str) -> bool {
+    let normalized = arg.replace('\\', "/");
+    let lower = normalized.trim().to_ascii_lowercase();
+
+    lower.ends_with("/node_modules/opencode/bin/opencode")
+        || lower.ends_with("/node_modules/opencode-ai/bin/opencode")
+        || opencode_arg_has_platform_package_path(&lower)
+        || lower.ends_with("/opencode/packages/opencode/bin/opencode")
+        || lower.ends_with("/opencode/packages/opencode/src/index.ts")
+        || opencode_arg_has_known_bin_shim_path(&lower)
+}
+
+fn opencode_arg_has_platform_package_path(lower: &str) -> bool {
+    const PACKAGES: &[&str] = &[
+        "opencode-darwin-arm64",
+        "opencode-darwin-x64",
+        "opencode-darwin-x64-baseline",
+        "opencode-linux-arm64",
+        "opencode-linux-arm64-musl",
+        "opencode-linux-x64",
+        "opencode-linux-x64-baseline",
+        "opencode-linux-x64-musl",
+        "opencode-linux-x64-baseline-musl",
+        "opencode-windows-arm64",
+        "opencode-windows-x64",
+        "opencode-windows-x64-baseline",
+    ];
+
+    PACKAGES
+        .iter()
+        .any(|package| lower.ends_with(&format!("/node_modules/{package}/bin/opencode")))
+}
+
+fn opencode_arg_has_known_bin_shim_path(lower: &str) -> bool {
+    lower.ends_with("/node_modules/.bin/opencode")
+        || lower.ends_with("/opt/homebrew/bin/opencode")
+        || lower.ends_with("/usr/local/bin/opencode")
+        || lower.ends_with("/usr/bin/opencode")
+        || lower.ends_with("/.volta/bin/opencode")
+        || (lower.ends_with("/bin/opencode")
+            && (lower.contains("/.nvm/versions/node/")
+                || lower.contains("/.nodenv/versions/")
+                || lower.contains("/.asdf/installs/nodejs/")
+                || lower.contains("/.local/share/mise/installs/node/")))
+}
+
 fn claude_arg_for_reason(process: &proc::ProcessEvidence) -> Option<String> {
     process
         .argv
@@ -575,6 +643,27 @@ fn process_has_claude_teammate_shape(process: &proc::ProcessEvidence) -> bool {
 
 fn process_has_pi_env(process: &proc::ProcessEvidence) -> bool {
     process_env_is_truthy(process, "PI_CODING_AGENT")
+}
+
+fn process_has_opencode_env(process: &proc::ProcessEvidence) -> bool {
+    if !process_env_is_truthy(process, "OPENCODE") {
+        return false;
+    }
+
+    process_env_value(process, "OPENCODE_PID")
+        .is_some_and(|pid| pid.trim() == process.pid.to_string())
+        || process_env_value(process, "OPENCODE_PROCESS_ROLE")
+            .is_some_and(|role| matches!(role.trim(), "main" | "worker"))
+        || process_env_value(process, "OPENCODE_RUN_ID")
+            .is_some_and(|run_id| !run_id.trim().is_empty())
+}
+
+fn process_env_value<'a>(process: &'a proc::ProcessEvidence, key: &str) -> Option<&'a str> {
+    process
+        .env
+        .iter()
+        .find(|(env_key, _)| env_key == key)
+        .map(|(_, value)| value.as_str())
 }
 
 fn process_env_is_truthy(process: &proc::ProcessEvidence, key: &str) -> bool {
@@ -832,23 +921,6 @@ fn infer_title_status_from_analysis(
         }
     }
 
-    if matches!(provider, Some(Provider::Opencode))
-        && let Some(rest) = title_analysis.opencode_label
-    {
-        if rest == "Working" || rest.starts_with("Working ") {
-            return PaneStatus {
-                kind: StatusKind::Busy,
-                source: StatusSource::TmuxTitle,
-            };
-        }
-        if rest == "Ready" || rest.starts_with("Ready ") {
-            return PaneStatus {
-                kind: StatusKind::Idle,
-                source: StatusSource::TmuxTitle,
-            };
-        }
-    }
-
     if matches!(provider, Some(Provider::Copilot))
         && let Some(rest) = title_analysis.copilot_label
     {
@@ -980,9 +1052,7 @@ fn display_metadata_from_analysis(
                         .then(|| infer_activity_label(provider, &label))
                         .flatten()
                 })
-        } else if matches!(provider, Some(Provider::Pi))
-            && title_analysis.stripped.starts_with("π - ")
-        {
+        } else if title_activity_should_stay_empty(provider, title_analysis) {
             None
         } else {
             infer_activity_label(provider, &label)
@@ -1003,6 +1073,15 @@ fn display_metadata_from_analysis(
         label: current_command.trim().to_string(),
         activity_label: None,
     }
+}
+
+fn title_activity_should_stay_empty(
+    provider: Option<Provider>,
+    title_analysis: &TitleAnalysis<'_>,
+) -> bool {
+    (matches!(provider, Some(Provider::Pi)) && title_analysis.stripped.starts_with("π - "))
+        || (matches!(provider, Some(Provider::Opencode))
+            && (title_analysis.opencode_label.is_some() || title_analysis.stripped == "OpenCode"))
 }
 
 fn display_label_from_title(
@@ -1122,14 +1201,16 @@ fn infer_activity_label(provider: Option<Provider>, label: &str) -> Option<Strin
 }
 
 fn is_generic_provider_label(provider: Option<Provider>, label: &str) -> bool {
-    matches!(
-        provider,
-        Some(Provider::CursorCli)
-            if label.eq_ignore_ascii_case("Cursor Agent")
+    match provider {
+        Some(Provider::CursorCli) => {
+            label.eq_ignore_ascii_case("Cursor Agent")
                 || label.eq_ignore_ascii_case("cursor-agent")
                 || label.eq_ignore_ascii_case("Cursor CLI")
                 || label.eq_ignore_ascii_case("Cursor")
-    )
+        }
+        Some(Provider::Opencode) => label.eq_ignore_ascii_case("OpenCode"),
+        _ => false,
+    }
 }
 
 fn is_generic_status_label(label: &str) -> bool {

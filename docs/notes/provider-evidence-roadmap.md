@@ -86,10 +86,12 @@ Each analysis should record:
 - false-positive risks
 - tests needed in agentscan
 
-Known source-analysis queue:
+Completed source-analysis baselines:
 
-- opencode: perform the same source-level analysis already done for Gemini CLI
-  and Pi.
+- opencode: source analysis found `OpenCode` / `OC | ...` title shapes,
+  package and platform binary paths, and Linux `OPENCODE` process markers.
+  Default opencode titles do not carry run state; richer status should remain a
+  later optional plugin/metadata path.
 
 Closed-source providers require empirical probing and conservative inference.
 For each provider, capture snapshots while idle, busy, waiting for input, and

@@ -146,6 +146,10 @@ fn selected_env_for_pid(pid: u32) -> Vec<(String, String)> {
         "CLAUDE_CODE_AGENT",
         "CLAUDE_CODE_REMOTE",
         "PI_CODING_AGENT",
+        "OPENCODE",
+        "OPENCODE_PID",
+        "OPENCODE_RUN_ID",
+        "OPENCODE_PROCESS_ROLE",
     ];
 
     let path = format!("/proc/{pid}/environ");

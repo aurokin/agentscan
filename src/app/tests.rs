@@ -159,6 +159,22 @@ fn classifies_from_title_when_command_is_generic() {
         .expect("should match gemini");
     assert_eq!(gemini.provider, Provider::Gemini);
     assert_eq!(gemini.matched_by, super::ClassificationMatchKind::PaneTitle);
+
+    let opencode_default =
+        classify::classify_provider(None, "zsh", "OpenCode").expect("should match opencode");
+    assert_eq!(opencode_default.provider, Provider::Opencode);
+    assert_eq!(
+        opencode_default.matched_by,
+        super::ClassificationMatchKind::PaneTitle
+    );
+
+    let opencode_session = classify::classify_provider(None, "zsh", "OC | Query planner")
+        .expect("should match opencode session title");
+    assert_eq!(opencode_session.provider, Provider::Opencode);
+    assert_eq!(
+        opencode_session.matched_by,
+        super::ClassificationMatchKind::PaneTitle
+    );
 }
 
 #[test]
@@ -169,6 +185,18 @@ fn classifies_cursor_agent_from_bare_title_when_command_is_generic() {
     assert_eq!(
         matched.matched_by,
         super::ClassificationMatchKind::PaneTitle
+    );
+}
+
+#[test]
+fn opencode_title_matches_stay_exact() {
+    assert!(
+        classify::classify_provider(None, "zsh", "OpenCoder").is_none(),
+        "nearby product names should not classify as opencode"
+    );
+    assert!(
+        classify::classify_provider(None, "zsh", "Review opencode implementation").is_none(),
+        "generic mentions should not classify as opencode"
     );
 }
 
@@ -733,7 +761,7 @@ fn claude_status_uses_textual_titles_without_spinner_glyphs() {
 }
 
 #[test]
-fn opencode_status_uses_title_prefix_when_present() {
+fn opencode_status_does_not_infer_state_from_session_title() {
     let busy = classify::infer_title_status(
         Some(Provider::Opencode),
         Some(super::ClassificationMatchKind::PaneTitle),
@@ -750,8 +778,8 @@ fn opencode_status_uses_title_prefix_when_present() {
         "OC | Query planner",
     );
 
-    assert_eq!(busy.kind, StatusKind::Busy);
-    assert_eq!(idle.kind, StatusKind::Idle);
+    assert_eq!(busy.kind, StatusKind::Unknown);
+    assert_eq!(idle.kind, StatusKind::Unknown);
     assert_eq!(unknown.kind, StatusKind::Unknown);
 }
 
@@ -2259,6 +2287,255 @@ fn proc_fallback_does_not_treat_arbitrary_gemini_paths_as_gemini() {
 }
 
 #[test]
+fn proc_fallback_resolves_opencode_from_node_package_shim() {
+    let mut pane = proc_fallback_pane(720, "node", "Review plan");
+    let inspector = FakeProcessInspector::with_processes([(
+        720,
+        vec![proc::ProcessEvidence {
+            pid: 721,
+            command: "node".to_string(),
+            argv: vec![
+                "node".to_string(),
+                "/Users/auro/project/node_modules/opencode/bin/opencode".to_string(),
+            ],
+            env: Vec::new(),
+        }],
+    )]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_eq!(pane.provider, Some(Provider::Opencode));
+    assert_eq!(pane.status.kind, StatusKind::Unknown);
+    assert_eq!(pane.display.label, "Review plan");
+    assert_eq!(pane.display.activity_label.as_deref(), Some("Review plan"));
+    assert_eq!(
+        pane.classification.reasons,
+        vec!["proc_descendant_argv=/Users/auro/project/node_modules/opencode/bin/opencode"]
+    );
+}
+
+#[test]
+fn proc_fallback_resolves_opencode_from_published_npm_package() {
+    let mut pane = proc_fallback_pane(728, "node", "Review plan");
+    let inspector = FakeProcessInspector::with_processes([(
+        728,
+        vec![proc::ProcessEvidence {
+            pid: 729,
+            command: "node".to_string(),
+            argv: vec![
+                "node".to_string(),
+                "/Users/auro/project/node_modules/opencode-ai/bin/opencode".to_string(),
+            ],
+            env: Vec::new(),
+        }],
+    )]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_eq!(pane.provider, Some(Provider::Opencode));
+    assert_eq!(
+        pane.classification.reasons,
+        vec!["proc_descendant_argv=/Users/auro/project/node_modules/opencode-ai/bin/opencode"]
+    );
+}
+
+#[test]
+fn proc_fallback_resolves_opencode_from_platform_binary_package() {
+    let mut pane = proc_fallback_pane(721, "node", "Review plan");
+    let inspector = FakeProcessInspector::with_processes([(
+        721,
+        vec![proc::ProcessEvidence {
+            pid: 722,
+            command: "node".to_string(),
+            argv: vec![
+                "node".to_string(),
+                "/Users/auro/project/node_modules/opencode-darwin-arm64/bin/opencode".to_string(),
+            ],
+            env: Vec::new(),
+        }],
+    )]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_eq!(pane.provider, Some(Provider::Opencode));
+    assert_eq!(
+        pane.classification.reasons,
+        vec![
+            "proc_descendant_argv=/Users/auro/project/node_modules/opencode-darwin-arm64/bin/opencode"
+                .to_string()
+        ]
+    );
+}
+
+#[test]
+fn proc_fallback_resolves_opencode_from_source_entrypoint() {
+    let mut pane = proc_fallback_pane(722, "bun", "Review plan");
+    let inspector = FakeProcessInspector::with_processes([(
+        722,
+        vec![proc::ProcessEvidence {
+            pid: 723,
+            command: "bun".to_string(),
+            argv: vec![
+                "bun".to_string(),
+                "/Users/auro/code/upstream/opencode/packages/opencode/src/index.ts".to_string(),
+            ],
+            env: Vec::new(),
+        }],
+    )]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_eq!(pane.provider, Some(Provider::Opencode));
+    assert_eq!(pane.display.label, "Review plan");
+    assert_eq!(pane.display.activity_label.as_deref(), Some("Review plan"));
+    assert_eq!(
+        pane.classification.reasons,
+        vec![
+            "proc_descendant_argv=/Users/auro/code/upstream/opencode/packages/opencode/src/index.ts"
+                .to_string()
+        ]
+    );
+}
+
+#[test]
+fn proc_fallback_resolves_opencode_from_known_bin_shim() {
+    let mut pane = proc_fallback_pane(723, "node", "Review plan");
+    let inspector = FakeProcessInspector::with_processes([(
+        723,
+        vec![proc::ProcessEvidence {
+            pid: 724,
+            command: "node".to_string(),
+            argv: vec!["node".to_string(), "/opt/homebrew/bin/opencode".to_string()],
+            env: Vec::new(),
+        }],
+    )]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_eq!(pane.provider, Some(Provider::Opencode));
+    assert_eq!(
+        pane.classification.reasons,
+        vec!["proc_descendant_argv=/opt/homebrew/bin/opencode"]
+    );
+}
+
+#[test]
+fn proc_fallback_resolves_opencode_from_env_marker() {
+    let mut pane = proc_fallback_pane(724, "node", "");
+    let inspector = FakeProcessInspector::with_processes([(
+        724,
+        vec![proc::ProcessEvidence {
+            pid: 724,
+            command: "node".to_string(),
+            argv: vec!["node".to_string()],
+            env: vec![
+                ("OPENCODE".to_string(), "1".to_string()),
+                ("OPENCODE_PID".to_string(), "724".to_string()),
+            ],
+        }],
+    )]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_eq!(pane.provider, Some(Provider::Opencode));
+    assert_eq!(
+        pane.classification.reasons,
+        vec!["proc_descendant_env=OPENCODE"]
+    );
+}
+
+#[test]
+fn proc_fallback_does_not_treat_arbitrary_opencode_paths_as_opencode() {
+    for (pid, argv_path) in [
+        (725, "/workspace/tools/opencode"),
+        (
+            726,
+            "/Users/auro/project/node_modules/opencode/bin/opencode-helper",
+        ),
+        (
+            727,
+            "/Users/auro/project/node_modules/opencode-helper/bin/opencode",
+        ),
+        (
+            728,
+            "/Users/auro/project/node_modules/opencode-ai-helper/bin/opencode",
+        ),
+    ] {
+        let mut pane = proc_fallback_pane(pid, "node", "Review plan");
+        let inspector = FakeProcessInspector::with_processes([(
+            pid,
+            vec![proc::ProcessEvidence {
+                pid: pid + 100,
+                command: "node".to_string(),
+                argv: vec!["node".to_string(), argv_path.to_string()],
+                env: Vec::new(),
+            }],
+        )]);
+
+        classify::apply_proc_fallback(&mut pane, &inspector);
+
+        assert_unresolved_ambiguous_pane(&pane, "Review plan");
+        assert_eq!(
+            pane.diagnostics.proc_fallback.outcome,
+            super::ProcFallbackOutcome::NoMatch,
+            "unexpected opencode match for {argv_path}"
+        );
+    }
+}
+
+#[test]
+fn proc_fallback_does_not_treat_opencode_env_text_in_argv_as_opencode() {
+    let mut pane = proc_fallback_pane(726, "node", "Review plan");
+    let inspector = FakeProcessInspector::with_processes([(
+        726,
+        vec![proc::ProcessEvidence {
+            pid: 727,
+            command: "node".to_string(),
+            argv: vec![
+                "node".to_string(),
+                "script.js".to_string(),
+                "--data".to_string(),
+                "OPENCODE=1 OPENCODE_PID=727".to_string(),
+            ],
+            env: Vec::new(),
+        }],
+    )]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_unresolved_ambiguous_pane(&pane, "Review plan");
+    assert_eq!(
+        pane.diagnostics.proc_fallback.outcome,
+        super::ProcFallbackOutcome::NoMatch
+    );
+}
+
+#[test]
+fn proc_fallback_requires_correlated_opencode_env() {
+    let mut pane = proc_fallback_pane(727, "node", "Review plan");
+    let inspector = FakeProcessInspector::with_processes([(
+        727,
+        vec![proc::ProcessEvidence {
+            pid: 728,
+            command: "node".to_string(),
+            argv: vec!["node".to_string()],
+            env: vec![
+                ("OPENCODE".to_string(), "1".to_string()),
+                ("AGENT".to_string(), "1".to_string()),
+            ],
+        }],
+    )]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_unresolved_ambiguous_pane(&pane, "Review plan");
+    assert_eq!(
+        pane.diagnostics.proc_fallback.outcome,
+        super::ProcFallbackOutcome::NoMatch
+    );
+}
+
+#[test]
 fn proc_fallback_resolves_pi_from_env_marker() {
     let mut pane = proc_fallback_pane(730, "pi", "");
     let inspector = FakeProcessInspector::with_processes([(
@@ -3358,6 +3635,31 @@ fn display_metadata_extracts_activity_labels_from_titles() {
 }
 
 #[test]
+fn opencode_display_metadata_uses_title_without_activity_state() {
+    let opencode = classify::display_metadata(
+        Some(Provider::Opencode),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        None,
+        "OC | Review patch",
+        "zsh",
+        "ai",
+    );
+    assert_eq!(opencode.label, "Review patch");
+    assert_eq!(opencode.activity_label, None);
+
+    let opencode_default = classify::display_metadata(
+        Some(Provider::Opencode),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        None,
+        "OpenCode",
+        "zsh",
+        "ai",
+    );
+    assert_eq!(opencode_default.label, "OpenCode");
+    assert_eq!(opencode_default.activity_label, None);
+}
+
+#[test]
 fn gemini_display_metadata_separates_context_from_activity() {
     let idle = classify::display_metadata(
         Some(Provider::Gemini),
@@ -3892,24 +4194,31 @@ fn assert_fixture_opencode_case(panes: &[PaneRecord]) {
     assert_eq!(opencode.status.kind, StatusKind::Unknown);
     assert_eq!(opencode.status.source, super::StatusSource::NotChecked);
     assert_eq!(opencode.display.label, "Query planner");
-    assert_eq!(
-        opencode.display.activity_label.as_deref(),
-        Some("Query planner")
-    );
+    assert_eq!(opencode.display.activity_label, None);
 
     let opencode_busy = pane_by_id(panes, "%308");
     assert_eq!(opencode_busy.provider, Some(Provider::Opencode));
-    assert_eq!(opencode_busy.status.kind, StatusKind::Busy);
-    assert_eq!(opencode_busy.status.source, super::StatusSource::TmuxTitle);
+    assert_eq!(opencode_busy.status.kind, StatusKind::Unknown);
+    assert_eq!(opencode_busy.status.source, super::StatusSource::NotChecked);
     assert_eq!(opencode_busy.display.label, "Working");
     assert_eq!(opencode_busy.display.activity_label, None);
 
     let opencode_idle = pane_by_id(panes, "%309");
     assert_eq!(opencode_idle.provider, Some(Provider::Opencode));
-    assert_eq!(opencode_idle.status.kind, StatusKind::Idle);
-    assert_eq!(opencode_idle.status.source, super::StatusSource::TmuxTitle);
+    assert_eq!(opencode_idle.status.kind, StatusKind::Unknown);
+    assert_eq!(opencode_idle.status.source, super::StatusSource::NotChecked);
     assert_eq!(opencode_idle.display.label, "Ready");
     assert_eq!(opencode_idle.display.activity_label, None);
+
+    let opencode_default = pane_by_id(panes, "%314");
+    assert_eq!(opencode_default.provider, Some(Provider::Opencode));
+    assert_eq!(opencode_default.status.kind, StatusKind::Unknown);
+    assert_eq!(
+        opencode_default.status.source,
+        super::StatusSource::NotChecked
+    );
+    assert_eq!(opencode_default.display.label, "OpenCode");
+    assert_eq!(opencode_default.display.activity_label, None);
 }
 
 fn assert_fixture_copilot_case(panes: &[PaneRecord]) {

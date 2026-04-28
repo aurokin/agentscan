@@ -184,6 +184,9 @@ Delivered baseline:
 - daemon-backed cache maintenance from tmux control mode
 - targeted process-tree fallback for unresolved `node`, `bun`, and `python3`
   launcher panes, including Claude Code binary-path and teammate-spawn evidence
+- provider-specific plug-and-play hardening for Gemini CLI, Pi, and opencode
+  from upstream source evidence, while keeping weak status inference
+  conservative
 - inspect provenance for provider, status, classification, and fallback
   decisions
 
