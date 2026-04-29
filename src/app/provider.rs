@@ -31,6 +31,7 @@ pub(crate) struct ProviderInfo {
     metadata_aliases: &'static [&'static str],
     command_aliases: &'static [ProviderCommandAlias],
     title_prefixes: &'static [&'static str],
+    title_aliases: &'static [&'static str],
     generic_display_labels: &'static [&'static str],
 }
 
@@ -54,6 +55,7 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
         metadata_aliases: &["codex"],
         command_aliases: &[ProviderCommandAlias::new("codex", true)],
         title_prefixes: &[],
+        title_aliases: &[],
         generic_display_labels: &[],
     },
     ProviderInfo {
@@ -63,6 +65,7 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
         metadata_aliases: &["claude"],
         command_aliases: &[ProviderCommandAlias::new("claude", true)],
         title_prefixes: &["Claude Code | ", "Claude | "],
+        title_aliases: &["Claude Code"],
         generic_display_labels: &[],
     },
     ProviderInfo {
@@ -72,6 +75,7 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
         metadata_aliases: &["gemini"],
         command_aliases: &[ProviderCommandAlias::new("gemini", true)],
         title_prefixes: &[],
+        title_aliases: &[],
         generic_display_labels: &[],
     },
     ProviderInfo {
@@ -81,6 +85,7 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
         metadata_aliases: &["opencode"],
         command_aliases: &[ProviderCommandAlias::new("opencode", true)],
         title_prefixes: &["OC | "],
+        title_aliases: &["OpenCode"],
         generic_display_labels: &["OpenCode"],
     },
     ProviderInfo {
@@ -93,6 +98,7 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
             ProviderCommandAlias::new("github-copilot", false),
         ],
         title_prefixes: &["GitHub Copilot | ", "Copilot | "],
+        title_aliases: &["GitHub Copilot"],
         generic_display_labels: &["GitHub Copilot"],
     },
     ProviderInfo {
@@ -105,6 +111,7 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
             ProviderCommandAlias::new("cursor-agent", false),
         ],
         title_prefixes: &["Cursor CLI | ", "Cursor Agent | ", "Cursor | "],
+        title_aliases: &["Cursor Agent", "Cursor CLI", "Cursor"],
         generic_display_labels: &["Cursor Agent", "cursor-agent", "Cursor CLI", "Cursor"],
     },
     ProviderInfo {
@@ -114,6 +121,7 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
         metadata_aliases: &["pi", "pi-coding-agent", "pi coding agent"],
         command_aliases: &[ProviderCommandAlias::new("pi-coding-agent", false)],
         title_prefixes: &["π - ", "pi - "],
+        title_aliases: &[],
         generic_display_labels: &[],
     },
 ];
@@ -130,6 +138,10 @@ pub(crate) fn provider_summary_order() -> impl Iterator<Item = Provider> {
 
 pub(crate) fn provider_title_prefixes(provider: Provider) -> &'static [&'static str] {
     provider_info(provider).title_prefixes
+}
+
+pub(crate) fn provider_title_aliases(provider: Provider) -> &'static [&'static str] {
+    provider_info(provider).title_aliases
 }
 
 pub(crate) fn provider_generic_display_labels(provider: Provider) -> &'static [&'static str] {

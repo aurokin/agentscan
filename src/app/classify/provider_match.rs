@@ -18,49 +18,49 @@ pub(super) fn classify_provider_from_analysis(
     let command = current_command_for_analysis(command);
 
     if let Some(provider) = provider_from_metadata(published_provider) {
-        return Some(ProviderMatch {
+        return Some(ProviderMatch::single_reason(
             provider,
-            matched_by: ClassificationMatchKind::PaneMetadata,
-            confidence: ClassificationConfidence::High,
-            reasons: vec![format!(
+            ClassificationMatchKind::PaneMetadata,
+            ClassificationConfidence::High,
+            format!(
                 "agent.provider={}",
                 published_provider.unwrap_or_default().trim()
-            )],
-        });
+            ),
+        ));
     }
 
     if let Some((provider, exact)) = provider_from_command(command) {
-        return Some(ProviderMatch {
+        return Some(ProviderMatch::single_reason(
             provider,
-            matched_by: ClassificationMatchKind::PaneCurrentCommand,
-            confidence: if exact {
+            ClassificationMatchKind::PaneCurrentCommand,
+            if exact {
                 ClassificationConfidence::High
             } else {
                 ClassificationConfidence::Medium
             },
-            reasons: vec![format!("pane_current_command={command}")],
-        });
+            format!("pane_current_command={command}"),
+        ));
     }
 
     if let Some(provider) = title_analysis.classifyable_provider() {
-        return Some(ProviderMatch {
+        return Some(ProviderMatch::single_reason(
             provider,
-            matched_by: ClassificationMatchKind::PaneTitle,
-            confidence: ClassificationConfidence::High,
-            reasons: vec![format!("pane_title={}", title_analysis.raw)],
-        });
+            ClassificationMatchKind::PaneTitle,
+            ClassificationConfidence::High,
+            format!("pane_title={}", title_analysis.raw),
+        ));
     }
 
     if command.eq_ignore_ascii_case("pi") && title_analysis.pi_label.is_some() {
-        return Some(ProviderMatch {
-            provider: Provider::Pi,
-            matched_by: ClassificationMatchKind::PaneCurrentCommand,
-            confidence: ClassificationConfidence::Medium,
-            reasons: vec![
+        return Some(ProviderMatch::new(
+            Provider::Pi,
+            ClassificationMatchKind::PaneCurrentCommand,
+            ClassificationConfidence::Medium,
+            vec![
                 format!("pane_current_command={command}"),
                 format!("pane_title={}", title_analysis.raw),
             ],
-        });
+        ));
     }
 
     None

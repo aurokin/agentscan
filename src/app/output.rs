@@ -55,14 +55,14 @@ pub(super) fn inspect_text(pane: &PaneRecord) -> String {
             "provider_source: {}",
             pane.classification
                 .matched_by
-                .map(classification_match_kind_name)
+                .map(ClassificationMatchKind::as_str)
                 .unwrap_or("none")
         ),
         format!(
             "provider_confidence: {}",
             pane.classification
                 .confidence
-                .map(classification_confidence_name)
+                .map(ClassificationConfidence::as_str)
                 .unwrap_or("none")
         ),
         format!("display_label: {}", pane.display.label),
@@ -71,8 +71,8 @@ pub(super) fn inspect_text(pane: &PaneRecord) -> String {
         lines.push(format!("activity_label: {activity_label}"));
     }
     lines.extend([
-        format!("status: {}", status_kind_name(pane.status.kind)),
-        format!("status_source: {}", status_source_name(pane.status.source)),
+        format!("status: {}", pane.status.kind.as_str()),
+        format!("status_source: {}", pane.status.source.as_str()),
         format!(
             "command: {}",
             default_if_empty(&pane.tmux.pane_current_command, "<empty>")
@@ -151,7 +151,7 @@ pub(super) fn inspect_text(pane: &PaneRecord) -> String {
         "proc_fallback:".to_string(),
         format!(
             "  outcome: {}",
-            proc_fallback_outcome_name(pane.diagnostics.proc_fallback.outcome)
+            pane.diagnostics.proc_fallback.outcome.as_str()
         ),
         format!("  reason: {}", pane.diagnostics.proc_fallback.reason),
     ]);
@@ -272,7 +272,7 @@ fn print_daemon_refresh_fields(snapshot: &SnapshotEnvelope, diagnostics: &CacheD
 fn print_daemon_cache_diagnostics(diagnostics: &CacheDiagnostics) {
     println!(
         "daemon_cache_status: {}",
-        daemon_cache_status_name(diagnostics.daemon_cache_status)
+        diagnostics.daemon_cache_status.as_str()
     );
     println!("daemon_cache_reason: {}", diagnostics.daemon_status_reason);
 }
@@ -302,7 +302,7 @@ fn format_status_counts(counts: &[(StatusKind, usize)]) -> String {
 
     counts
         .iter()
-        .map(|(status, count)| format!("{}={count}", status_kind_name(*status)))
+        .map(|(status, count)| format!("{}={count}", status.as_str()))
         .collect::<Vec<_>>()
         .join(", ")
 }

@@ -26,7 +26,6 @@ pub(crate) use status::infer_title_status;
 use status::infer_title_status_from_analysis;
 use title::{
     TitleAnalysis, analyze_title, codex_activity_from_status_title, codex_run_state_from_title,
-    command_basename,
 };
 #[cfg(test)]
 pub(crate) use title::{looks_like_codex_title, strip_known_status_glyph};

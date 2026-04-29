@@ -116,26 +116,27 @@ pub(super) fn analyze_title(raw_title: &str) -> TitleAnalysis<'_> {
     let stripped = strip_known_status_glyph(raw).trim();
     let has_spinner_glyph = has_spinner_glyph(raw);
     let has_idle_glyph = has_idle_glyph(raw);
-    let claude_label = strip_claude_title_prefix(stripped);
-    let opencode_label = strip_opencode_title_prefix(stripped);
-    let copilot_label = strip_copilot_title_prefix(stripped);
-    let cursor_label = strip_cursor_cli_title_prefix(stripped);
+    let claude_label = provider_prefixed_title_label(Provider::Claude, stripped);
+    let opencode_label = provider_prefixed_title_label(Provider::Opencode, stripped);
+    let copilot_label = provider_prefixed_title_label(Provider::Copilot, stripped);
+    let cursor_label = provider_prefixed_title_label(Provider::CursorCli, stripped);
     let cursor_title_shaped = cursor_label.is_some()
-        || stripped.eq_ignore_ascii_case("Cursor Agent")
-        || stripped.eq_ignore_ascii_case("Cursor CLI")
-        || stripped.eq_ignore_ascii_case("Cursor");
+        || provider_title_aliases(Provider::CursorCli)
+            .iter()
+            .any(|alias| stripped.eq_ignore_ascii_case(alias));
     let pi_label = looks_like_pi_title(stripped)
         .then_some(())
-        .and_then(|_| strip_pi_title_prefix(stripped));
+        .and_then(|_| provider_prefixed_title_label(Provider::Pi, stripped));
     let gemini_title = parse_gemini_terminal_title(stripped);
 
-    let provider_hint = if claude_label.is_some() || stripped == "Claude Code" {
+    let provider_hint = if claude_label.is_some() || title_matches_alias(Provider::Claude, stripped)
+    {
         Some(TitleProviderHint {
             provider: Provider::Claude,
             strength: TitleHintStrength::Strong,
             kind: TitleProviderHintKind::Explicit,
         })
-    } else if opencode_label.is_some() || stripped == "OpenCode" {
+    } else if opencode_label.is_some() || title_matches_alias(Provider::Opencode, stripped) {
         Some(TitleProviderHint {
             provider: Provider::Opencode,
             strength: TitleHintStrength::Strong,
@@ -147,7 +148,7 @@ pub(super) fn analyze_title(raw_title: &str) -> TitleAnalysis<'_> {
             strength: TitleHintStrength::Strong,
             kind: TitleProviderHintKind::Explicit,
         })
-    } else if copilot_label.is_some() || stripped.eq_ignore_ascii_case("GitHub Copilot") {
+    } else if copilot_label.is_some() || title_matches_alias(Provider::Copilot, stripped) {
         Some(TitleProviderHint {
             provider: Provider::Copilot,
             strength: TitleHintStrength::Strong,
@@ -208,30 +209,16 @@ pub(super) fn analyze_title(raw_title: &str) -> TitleAnalysis<'_> {
         gemini_title,
     }
 }
-fn strip_claude_title_prefix(title: &str) -> Option<&str> {
-    strip_provider_title_prefix(Provider::Claude, title)
-}
-
-fn strip_opencode_title_prefix(title: &str) -> Option<&str> {
-    strip_provider_title_prefix(Provider::Opencode, title)
-}
-
-fn strip_copilot_title_prefix(title: &str) -> Option<&str> {
-    strip_provider_title_prefix(Provider::Copilot, title)
-}
-
-fn strip_cursor_cli_title_prefix(title: &str) -> Option<&str> {
-    strip_provider_title_prefix(Provider::CursorCli, title)
-}
-
-fn strip_pi_title_prefix(title: &str) -> Option<&str> {
-    strip_provider_title_prefix(Provider::Pi, title)
-}
-
-fn strip_provider_title_prefix(provider: Provider, title: &str) -> Option<&str> {
+fn provider_prefixed_title_label(provider: Provider, title: &str) -> Option<&str> {
     provider_title_prefixes(provider)
         .iter()
         .find_map(|prefix| title.strip_prefix(prefix))
+}
+
+fn title_matches_alias(provider: Provider, title: &str) -> bool {
+    provider_title_aliases(provider)
+        .iter()
+        .any(|alias| title.eq_ignore_ascii_case(alias))
 }
 
 fn parse_gemini_terminal_title(title: &str) -> Option<GeminiTitle> {
@@ -504,14 +491,6 @@ fn strip_codex_provider_suffix(title: &str) -> String {
     }
 
     title.to_string()
-}
-
-pub(super) fn command_basename(raw: &str) -> Option<String> {
-    Path::new(raw.trim())
-        .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.trim().is_empty())
-        .map(str::to_string)
 }
 
 #[cfg_attr(not(test), allow(dead_code))]

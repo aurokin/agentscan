@@ -25,8 +25,9 @@ const TMUX_AMBIGUOUS_FIXTURE: &str = include_str!(concat!(
 #[allow(unused_imports)]
 use super::{
     CACHE_RELATIVE_PATH, CACHE_SCHEMA_VERSION, CLAUDE_SPINNER_GLYPHS, Cli,
-    DAEMON_SUBSCRIPTION_FORMAT, IDLE_GLYPHS, OutputFormat, PaneRecord, Provider, SnapshotEnvelope,
-    SourceKind, StatusKind, TmuxMetadataField, cache, classify, daemon, output, proc, tmux,
+    DAEMON_SUBSCRIPTION_FORMAT, IDLE_GLYPHS, OutputFormat, PaneRecord, PaneStatus, Provider,
+    SnapshotEnvelope, SourceKind, StatusKind, TmuxMetadataField, cache, classify, daemon, output,
+    proc, tmux,
 };
 
 include!("support.rs");

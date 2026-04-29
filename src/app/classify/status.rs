@@ -17,47 +17,29 @@ pub(super) fn infer_title_status_from_analysis(
     title_analysis: &TitleAnalysis<'_>,
 ) -> PaneStatus {
     if title_analysis.conflicts_with_resolved_provider(provider, provider_match_kind) {
-        return PaneStatus {
-            kind: StatusKind::Unknown,
-            source: StatusSource::NotChecked,
-        };
+        return PaneStatus::not_checked();
     }
 
     if matches!(provider, Some(Provider::Claude)) {
         if title_analysis.has_spinner_glyph {
-            return PaneStatus {
-                kind: StatusKind::Busy,
-                source: StatusSource::TmuxTitle,
-            };
+            return PaneStatus::title(StatusKind::Busy);
         }
         if title_analysis.has_idle_glyph {
-            return PaneStatus {
-                kind: StatusKind::Idle,
-                source: StatusSource::TmuxTitle,
-            };
+            return PaneStatus::title(StatusKind::Idle);
         }
         if let Some(rest) = title_analysis.claude_label
             && let Some(status) = status_from_ready_working_prefix(rest)
         {
-            return PaneStatus {
-                kind: status,
-                source: StatusSource::TmuxTitle,
-            };
+            return PaneStatus::title(status);
         }
     }
 
     if matches!(provider, Some(Provider::Codex)) {
         if title_analysis.has_spinner_glyph {
-            return PaneStatus {
-                kind: StatusKind::Busy,
-                source: StatusSource::TmuxTitle,
-            };
+            return PaneStatus::title(StatusKind::Busy);
         }
         if let Some(status) = codex_run_state_from_title(&title_analysis.codex_status_title) {
-            return PaneStatus {
-                kind: status,
-                source: StatusSource::TmuxTitle,
-            };
+            return PaneStatus::title(status);
         }
     }
 
@@ -67,55 +49,37 @@ pub(super) fn infer_title_status_from_analysis(
             .as_ref()
             .and_then(|title| title.status)
     {
-        return PaneStatus {
-            kind: status,
-            source: StatusSource::TmuxTitle,
-        };
+        return PaneStatus::title(status);
     }
 
     if matches!(provider, Some(Provider::Gemini))
         && let Some(status) = status_from_gemini_generic_title(title_analysis.stripped)
     {
-        return PaneStatus {
-            kind: status,
-            source: StatusSource::TmuxTitle,
-        };
+        return PaneStatus::title(status);
     }
 
     if matches!(provider, Some(Provider::Copilot))
         && let Some(rest) = title_analysis.copilot_label
         && let Some(status) = status_from_ready_working_prefix(rest)
     {
-        return PaneStatus {
-            kind: status,
-            source: StatusSource::TmuxTitle,
-        };
+        return PaneStatus::title(status);
     }
 
     if matches!(provider, Some(Provider::CursorCli))
         && let Some(rest) = title_analysis.cursor_label
         && let Some(status) = status_from_ready_working_prefix(rest)
     {
-        return PaneStatus {
-            kind: status,
-            source: StatusSource::TmuxTitle,
-        };
+        return PaneStatus::title(status);
     }
 
     if matches!(provider, Some(Provider::Pi))
         && title_analysis.pi_label.is_some()
         && title_analysis.has_spinner_glyph
     {
-        return PaneStatus {
-            kind: StatusKind::Busy,
-            source: StatusSource::TmuxTitle,
-        };
+        return PaneStatus::title(StatusKind::Busy);
     }
 
-    PaneStatus {
-        kind: StatusKind::Unknown,
-        source: StatusSource::NotChecked,
-    }
+    PaneStatus::not_checked()
 }
 
 pub(crate) fn infer_status(title_status: PaneStatus, published_state: Option<&str>) -> PaneStatus {
@@ -124,18 +88,9 @@ pub(crate) fn infer_status(title_status: PaneStatus, published_state: Option<&st
     }
 
     match published_state.map(|value| value.trim().to_ascii_lowercase()) {
-        Some(state) if state == "busy" => PaneStatus {
-            kind: StatusKind::Busy,
-            source: StatusSource::PaneMetadata,
-        },
-        Some(state) if state == "idle" => PaneStatus {
-            kind: StatusKind::Idle,
-            source: StatusSource::PaneMetadata,
-        },
-        Some(state) if state == "unknown" => PaneStatus {
-            kind: StatusKind::Unknown,
-            source: StatusSource::PaneMetadata,
-        },
+        Some(state) if state == "busy" => PaneStatus::metadata(StatusKind::Busy),
+        Some(state) if state == "idle" => PaneStatus::metadata(StatusKind::Idle),
+        Some(state) if state == "unknown" => PaneStatus::metadata(StatusKind::Unknown),
         _ => title_status,
     }
 }

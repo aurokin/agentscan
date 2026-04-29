@@ -20,10 +20,7 @@ pub(crate) fn apply_pane_output_status_fallback(pane: &mut PaneRecord, output: &
     };
 
     if let Some(kind) = status {
-        pane.status = PaneStatus {
-            kind,
-            source: StatusSource::PaneOutput,
-        };
+        pane.status = PaneStatus::pane_output(kind);
     }
 }
 

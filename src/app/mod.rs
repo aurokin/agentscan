@@ -19,7 +19,8 @@ mod commands;
 mod daemon;
 mod model;
 mod output;
-mod popup_ui;
+mod path;
+mod popup;
 mod proc;
 mod provider;
 mod scanner;
@@ -30,6 +31,7 @@ mod tmux;
 pub(crate) use cli::*;
 pub use commands::run;
 pub(crate) use model::*;
+pub(crate) use path::*;
 pub(crate) use provider::*;
 
 const PANE_DELIM: &str = "\u{001f}";

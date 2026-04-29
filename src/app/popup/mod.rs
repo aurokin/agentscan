@@ -1,16 +1,21 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
-use std::io::{IsTerminal, Stdout, Write, stdout};
+use std::io::{Stdout, Write};
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-use crossterm::cursor::{Hide, MoveTo, Show};
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::cursor::MoveTo;
+use crossterm::event::{self, Event};
+use crossterm::queue;
 use crossterm::terminal::{self, Clear, ClearType};
-use crossterm::{execute, queue};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::*;
+use input::{PopupLoopAction, handle_key_event, is_key_press};
+use terminal_session::TerminalSession;
+
+mod input;
+mod terminal_session;
 
 const KEY_POLL_INTERVAL: Duration = Duration::from_millis(125);
 const FOOTER_LINE_COUNT: usize = 2;
@@ -20,12 +25,6 @@ const POPUP_DONE_PATH_ENV: &str = "AGENTSCAN_POPUP_DONE_PATH";
 const POPUP_SELECTION_KEYS: [char; 16] = [
     '1', '2', '3', '4', '5', 'Q', 'E', 'R', 'F', 'G', 'T', 'Z', 'X', 'C', 'V', 'B',
 ];
-
-enum PopupLoopAction {
-    Continue,
-    Redraw,
-    Close,
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PopupTerminalSize {
@@ -162,30 +161,6 @@ impl PopupState {
     }
 }
 
-struct TerminalSession {
-    stdout: Stdout,
-}
-
-impl TerminalSession {
-    fn enter() -> Result<Self> {
-        if !std::io::stdin().is_terminal() || !stdout().is_terminal() {
-            bail!("`agentscan popup` requires an interactive tty");
-        }
-
-        terminal::enable_raw_mode().context("failed to enable terminal raw mode")?;
-        let mut stdout = stdout();
-        execute!(stdout, Hide).context("failed to hide cursor for popup session")?;
-        Ok(Self { stdout })
-    }
-}
-
-impl Drop for TerminalSession {
-    fn drop(&mut self) {
-        let _ = execute!(self.stdout, Show);
-        let _ = terminal::disable_raw_mode();
-    }
-}
-
 fn reload_popup_state(state: &mut PopupState, refresh: bool, include_all: bool) -> Result<()> {
     match load_popup_panes(refresh, include_all) {
         Ok(panes) => {
@@ -216,93 +191,6 @@ fn write_popup_marker_from_env(env_name: &str, contents: &str) -> Result<()> {
             Path::new(&path).display()
         )
     })
-}
-
-fn handle_key_event(key_event: &KeyEvent, state: &mut PopupState) -> Result<PopupLoopAction> {
-    if is_popup_close_key(key_event) {
-        return Ok(PopupLoopAction::Close);
-    }
-
-    if key_event.modifiers.contains(KeyModifiers::CONTROL)
-        && matches!(key_event.code, KeyCode::Char('b') | KeyCode::Char('B'))
-    {
-        tmux::switch_tmux_client_to_prefix(None)?;
-        return Ok(PopupLoopAction::Continue);
-    }
-
-    if is_popup_previous_page_key(key_event) {
-        return Ok(if state.previous_page() {
-            PopupLoopAction::Redraw
-        } else {
-            PopupLoopAction::Continue
-        });
-    }
-
-    if is_popup_next_page_key(key_event) {
-        return Ok(if state.next_page() {
-            PopupLoopAction::Redraw
-        } else {
-            PopupLoopAction::Continue
-        });
-    }
-
-    let Some(selection) = popup_selection_from_key_event(key_event) else {
-        return Ok(PopupLoopAction::Continue);
-    };
-
-    let Some(target_pane_id) = state.key_targets.get(&selection) else {
-        return Ok(PopupLoopAction::Continue);
-    };
-
-    let focus_target = tmux::resolve_focus_target(target_pane_id, None)?;
-    if focus_target.pane_exists {
-        match tmux::focus_tmux_pane(target_pane_id, focus_target.client_tty.as_deref())? {
-            tmux::FocusTmuxPaneResult::Focused => {}
-            tmux::FocusTmuxPaneResult::Missing => {
-                tmux::display_tmux_message(
-                    focus_target.client_tty.as_deref(),
-                    &format!("pane {} is no longer available", target_pane_id),
-                )?;
-            }
-        }
-    } else {
-        tmux::display_tmux_message(
-            focus_target.client_tty.as_deref(),
-            &format!("pane {} is no longer available", target_pane_id),
-        )?;
-    }
-
-    Ok(PopupLoopAction::Close)
-}
-
-fn is_popup_close_key(key_event: &KeyEvent) -> bool {
-    matches!(key_event.code, KeyCode::Esc)
-        || (key_event.modifiers.contains(KeyModifiers::CONTROL)
-            && matches!(key_event.code, KeyCode::Char('c') | KeyCode::Char('C')))
-}
-
-fn is_popup_previous_page_key(key_event: &KeyEvent) -> bool {
-    matches!(key_event.code, KeyCode::Left | KeyCode::PageUp)
-        || matches!(key_event.code, KeyCode::Char('p' | 'P'))
-}
-
-fn is_popup_next_page_key(key_event: &KeyEvent) -> bool {
-    matches!(key_event.code, KeyCode::Right | KeyCode::PageDown)
-        || matches!(key_event.code, KeyCode::Char('n' | 'N'))
-}
-
-fn popup_selection_from_key_event(key_event: &KeyEvent) -> Option<char> {
-    match key_event.code {
-        KeyCode::Char(character) => Some(character.to_ascii_uppercase()),
-        _ => None,
-    }
-}
-
-fn is_key_press(key_event: KeyEvent) -> bool {
-    match key_event.kind {
-        KeyEventKind::Press | KeyEventKind::Repeat => true,
-        KeyEventKind::Release => false,
-    }
 }
 
 fn draw_popup_frame(stdout: &mut Stdout, state: &mut PopupState) -> Result<()> {

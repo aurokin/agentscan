@@ -272,19 +272,6 @@ fn split_process_args(args: &str) -> Vec<String> {
         .collect()
 }
 
-fn command_basename(raw: &str) -> Option<String> {
-    let value = raw.trim();
-    if value.is_empty() {
-        return None;
-    }
-
-    Path::new(value)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.trim().is_empty())
-        .map(str::to_string)
-}
-
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod tests {
     use super::*;

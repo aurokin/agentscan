@@ -1417,11 +1417,11 @@ fn validate_snapshot_rejects_stale_cache_when_max_age_is_exceeded() {
 
 #[test]
 fn status_names_match_serialized_values() {
-    assert_eq!(super::status_kind_name(StatusKind::Busy), "busy");
-    assert_eq!(super::status_kind_name(StatusKind::Idle), "idle");
-    assert_eq!(super::status_kind_name(StatusKind::Unknown), "unknown");
+    assert_eq!(StatusKind::Busy.as_str(), "busy");
+    assert_eq!(StatusKind::Idle.as_str(), "idle");
+    assert_eq!(StatusKind::Unknown.as_str(), "unknown");
     assert_eq!(
-        super::status_source_name(super::StatusSource::PaneOutput),
+        super::StatusSource::PaneOutput.as_str(),
         "pane_output"
     );
 }
@@ -1766,12 +1766,7 @@ fn copilot_default_title_does_not_invent_activity_label() {
 
 #[test]
 fn copilot_pane_output_marks_busy_only_after_provider_is_known() {
-    let mut copilot = proc_fallback_pane(745, "node", "GitHub Copilot");
-    copilot.provider = Some(Provider::Copilot);
-    copilot.status = super::PaneStatus {
-        kind: StatusKind::Unknown,
-        source: super::StatusSource::NotChecked,
-    };
+    let mut copilot = pane_output_status_pane(745, Provider::Copilot, "GitHub Copilot");
 
     classify::apply_pane_output_status_fallback(
         &mut copilot,
@@ -1805,12 +1800,7 @@ fn copilot_pane_output_marks_busy_only_after_provider_is_known() {
 
 #[test]
 fn copilot_pane_output_ignores_stale_thinking_lines() {
-    let mut copilot = proc_fallback_pane(748, "node", "GitHub Copilot");
-    copilot.provider = Some(Provider::Copilot);
-    copilot.status = super::PaneStatus {
-        kind: StatusKind::Unknown,
-        source: super::StatusSource::NotChecked,
-    };
+    let mut copilot = pane_output_status_pane(748, Provider::Copilot, "GitHub Copilot");
 
     classify::apply_pane_output_status_fallback(
         &mut copilot,
@@ -1830,12 +1820,7 @@ fn copilot_pane_output_ignores_stale_thinking_lines() {
 
 #[test]
 fn copilot_pane_output_marks_current_trust_prompt_busy() {
-    let mut copilot = proc_fallback_pane(749, "node", "GitHub Copilot");
-    copilot.provider = Some(Provider::Copilot);
-    copilot.status = super::PaneStatus {
-        kind: StatusKind::Unknown,
-        source: super::StatusSource::NotChecked,
-    };
+    let mut copilot = pane_output_status_pane(749, Provider::Copilot, "GitHub Copilot");
 
     classify::apply_pane_output_status_fallback(
         &mut copilot,
@@ -1853,12 +1838,7 @@ fn copilot_pane_output_marks_current_trust_prompt_busy() {
 
 #[test]
 fn copilot_pane_output_does_not_infer_idle_from_prompt() {
-    let mut copilot = proc_fallback_pane(747, "node", "GitHub Copilot");
-    copilot.provider = Some(Provider::Copilot);
-    copilot.status = super::PaneStatus {
-        kind: StatusKind::Unknown,
-        source: super::StatusSource::NotChecked,
-    };
+    let mut copilot = pane_output_status_pane(747, Provider::Copilot, "GitHub Copilot");
 
     classify::apply_pane_output_status_fallback(
         &mut copilot,
@@ -1871,12 +1851,7 @@ fn copilot_pane_output_does_not_infer_idle_from_prompt() {
 
 #[test]
 fn copilot_pane_output_marks_current_prompt_idle() {
-    let mut copilot = proc_fallback_pane(757, "node", "GitHub Copilot");
-    copilot.provider = Some(Provider::Copilot);
-    copilot.status = super::PaneStatus {
-        kind: StatusKind::Unknown,
-        source: super::StatusSource::NotChecked,
-    };
+    let mut copilot = pane_output_status_pane(757, Provider::Copilot, "GitHub Copilot");
 
     classify::apply_pane_output_status_fallback(
         &mut copilot,
@@ -1899,12 +1874,7 @@ fn copilot_pane_output_marks_current_prompt_idle() {
 
 #[test]
 fn copilot_pane_output_marks_absolute_path_prompt_idle() {
-    let mut copilot = proc_fallback_pane(759, "node", "GitHub Copilot");
-    copilot.provider = Some(Provider::Copilot);
-    copilot.status = super::PaneStatus {
-        kind: StatusKind::Unknown,
-        source: super::StatusSource::NotChecked,
-    };
+    let mut copilot = pane_output_status_pane(759, Provider::Copilot, "GitHub Copilot");
 
     classify::apply_pane_output_status_fallback(
         &mut copilot,
@@ -1927,12 +1897,7 @@ fn copilot_pane_output_marks_absolute_path_prompt_idle() {
 
 #[test]
 fn copilot_pane_output_uses_current_prompt_over_stale_thinking() {
-    let mut copilot = proc_fallback_pane(758, "node", "GitHub Copilot");
-    copilot.provider = Some(Provider::Copilot);
-    copilot.status = super::PaneStatus {
-        kind: StatusKind::Unknown,
-        source: super::StatusSource::NotChecked,
-    };
+    let mut copilot = pane_output_status_pane(758, Provider::Copilot, "GitHub Copilot");
 
     classify::apply_pane_output_status_fallback(
         &mut copilot,
@@ -1952,12 +1917,7 @@ fn copilot_pane_output_uses_current_prompt_over_stale_thinking() {
 
 #[test]
 fn cursor_cli_pane_output_marks_current_running_prompt_busy() {
-    let mut cursor = proc_fallback_pane(750, "node", "Command Runner");
-    cursor.provider = Some(Provider::CursorCli);
-    cursor.status = super::PaneStatus {
-        kind: StatusKind::Unknown,
-        source: super::StatusSource::NotChecked,
-    };
+    let mut cursor = pane_output_status_pane(750, Provider::CursorCli, "Command Runner");
 
     classify::apply_pane_output_status_fallback(
         &mut cursor,
@@ -1978,12 +1938,7 @@ fn cursor_cli_pane_output_marks_current_running_prompt_busy() {
 
 #[test]
 fn cursor_cli_pane_output_marks_prompt_footer_running_busy() {
-    let mut cursor = proc_fallback_pane(753, "node", "Command Runner");
-    cursor.provider = Some(Provider::CursorCli);
-    cursor.status = super::PaneStatus {
-        kind: StatusKind::Unknown,
-        source: super::StatusSource::NotChecked,
-    };
+    let mut cursor = pane_output_status_pane(753, Provider::CursorCli, "Command Runner");
 
     classify::apply_pane_output_status_fallback(
         &mut cursor,
@@ -2004,12 +1959,7 @@ fn cursor_cli_pane_output_marks_prompt_footer_running_busy() {
 
 #[test]
 fn cursor_cli_pane_output_ignores_stale_running_lines() {
-    let mut cursor = proc_fallback_pane(751, "node", "Command Runner");
-    cursor.provider = Some(Provider::CursorCli);
-    cursor.status = super::PaneStatus {
-        kind: StatusKind::Unknown,
-        source: super::StatusSource::NotChecked,
-    };
+    let mut cursor = pane_output_status_pane(751, Provider::CursorCli, "Command Runner");
 
     classify::apply_pane_output_status_fallback(
         &mut cursor,
@@ -2032,12 +1982,7 @@ fn cursor_cli_pane_output_ignores_stale_running_lines() {
 
 #[test]
 fn cursor_cli_pane_output_uses_latest_footer() {
-    let mut cursor = proc_fallback_pane(752, "node", "Command Runner");
-    cursor.provider = Some(Provider::CursorCli);
-    cursor.status = super::PaneStatus {
-        kind: StatusKind::Unknown,
-        source: super::StatusSource::NotChecked,
-    };
+    let mut cursor = pane_output_status_pane(752, Provider::CursorCli, "Command Runner");
 
     classify::apply_pane_output_status_fallback(
         &mut cursor,
@@ -2063,12 +2008,7 @@ fn cursor_cli_pane_output_uses_latest_footer() {
 
 #[test]
 fn cursor_cli_pane_output_ignores_stale_running_footer_block() {
-    let mut cursor = proc_fallback_pane(754, "node", "Command Runner");
-    cursor.provider = Some(Provider::CursorCli);
-    cursor.status = super::PaneStatus {
-        kind: StatusKind::Unknown,
-        source: super::StatusSource::NotChecked,
-    };
+    let mut cursor = pane_output_status_pane(754, Provider::CursorCli, "Command Runner");
 
     classify::apply_pane_output_status_fallback(
         &mut cursor,
@@ -2095,12 +2035,7 @@ fn cursor_cli_pane_output_ignores_stale_running_footer_block() {
 
 #[test]
 fn cursor_cli_pane_output_ignores_response_text_before_idle_footer() {
-    let mut cursor = proc_fallback_pane(755, "node", "Command Runner");
-    cursor.provider = Some(Provider::CursorCli);
-    cursor.status = super::PaneStatus {
-        kind: StatusKind::Unknown,
-        source: super::StatusSource::NotChecked,
-    };
+    let mut cursor = pane_output_status_pane(755, Provider::CursorCli, "Command Runner");
 
     classify::apply_pane_output_status_fallback(
         &mut cursor,
@@ -2119,12 +2054,7 @@ fn cursor_cli_pane_output_ignores_response_text_before_idle_footer() {
 
 #[test]
 fn cursor_cli_pane_output_marks_initial_prompt_idle() {
-    let mut cursor = proc_fallback_pane(756, "node", "Cursor Agent");
-    cursor.provider = Some(Provider::CursorCli);
-    cursor.status = super::PaneStatus {
-        kind: StatusKind::Unknown,
-        source: super::StatusSource::NotChecked,
-    };
+    let mut cursor = pane_output_status_pane(756, Provider::CursorCli, "Cursor Agent");
 
     classify::apply_pane_output_status_fallback(
         &mut cursor,

@@ -37,6 +37,13 @@ fn proc_fallback_pane(pid: u32, command: &str, title: &str) -> PaneRecord {
     })
 }
 
+fn pane_output_status_pane(pid: u32, provider: Provider, title: &str) -> PaneRecord {
+    let mut pane = proc_fallback_pane(pid, "node", title);
+    pane.provider = Some(provider);
+    pane.status = PaneStatus::not_checked();
+    pane
+}
+
 struct FakeProcessInspector {
     processes_by_pid: std::collections::HashMap<u32, Vec<proc::ProcessEvidence>>,
     foreground_by_tty: std::collections::HashMap<String, Vec<proc::ProcessEvidence>>,

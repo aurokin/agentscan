@@ -97,6 +97,19 @@ fn run_tmux_text_output(
         .context(utf8_context)
 }
 
+fn run_tmux_status(args: &[&str], context: &str, failure_context: &str) -> Result<()> {
+    let output = run_tmux_output(args, context)?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = tmux_stderr(&output);
+    if stderr.is_empty() {
+        bail!("{failure_context} failed with status {}", output.status);
+    }
+    bail!("{failure_context} failed: {stderr}");
+}
+
 fn tmux_stderr(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stderr).trim().to_string()
 }
@@ -186,12 +199,14 @@ fn empty_to_none(value: &str) -> Option<String> {
 }
 
 pub(crate) fn tmux_version() -> Option<String> {
-    let output = Command::new("tmux").arg("-V").output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-
-    let stdout = String::from_utf8(output.stdout).ok()?;
+    let stdout = run_tmux_text_output(
+        &["-V"],
+        "tmux -V",
+        "tmux -V",
+        |_| false,
+        "tmux version output was not valid UTF-8",
+    )
+    .ok()??;
     stdout
         .trim()
         .strip_prefix("tmux ")
@@ -200,30 +215,29 @@ pub(crate) fn tmux_version() -> Option<String> {
 }
 
 pub(crate) fn default_session_target() -> Result<String> {
-    if env::var_os("TMUX").is_some() {
-        let output = Command::new("tmux")
-            .args(["display-message", "-p", "#{session_id}"])
-            .output()
-            .context("failed to query current tmux session")?;
-        if output.status.success() {
-            let stdout =
-                String::from_utf8(output.stdout).context("current session was not UTF-8")?;
-            let session = stdout.trim();
-            if !session.is_empty() {
-                return Ok(session.to_string());
-            }
+    if env::var_os("TMUX").is_some()
+        && let Some(stdout) = run_tmux_text_output(
+            &["display-message", "-p", "#{session_id}"],
+            "current tmux session",
+            "tmux display-message for current session",
+            |_| true,
+            "current session was not UTF-8",
+        )?
+    {
+        let session = stdout.trim();
+        if !session.is_empty() {
+            return Ok(session.to_string());
         }
     }
 
-    let output = Command::new("tmux")
-        .args(["list-sessions", "-F", "#{session_id}"])
-        .output()
-        .context("failed to list tmux sessions")?;
-    if !output.status.success() {
-        bail!("tmux list-sessions failed with status {}", output.status);
-    }
-
-    let stdout = String::from_utf8(output.stdout).context("tmux sessions output was not UTF-8")?;
+    let stdout = run_tmux_text_output(
+        &["list-sessions", "-F", "#{session_id}"],
+        "tmux list-sessions",
+        "tmux list-sessions",
+        |_| false,
+        "tmux sessions output was not UTF-8",
+    )?
+    .context("tmux list-sessions unexpectedly returned no output")?;
     let session = stdout
         .lines()
         .find(|line| !line.trim().is_empty())
@@ -236,16 +250,17 @@ fn current_pane_id() -> Result<Option<String>> {
         return Ok(None);
     }
 
-    let output = Command::new("tmux")
-        .args(["display-message", "-p", "#{pane_id}"])
-        .output()
-        .context("failed to query current tmux pane id")?;
-    if !output.status.success() {
+    let Some(stdout) = run_tmux_text_output(
+        &["display-message", "-p", "#{pane_id}"],
+        "current tmux pane id",
+        "tmux display-message for current pane id",
+        |_| true,
+        "current pane id output was not UTF-8",
+    )?
+    else {
         return Ok(None);
-    }
+    };
 
-    let stdout =
-        String::from_utf8(output.stdout).context("current pane id output was not UTF-8")?;
     let pane_id = stdout.trim();
     if pane_id.is_empty() {
         Ok(None)
@@ -270,16 +285,17 @@ fn current_client_tty() -> Result<Option<String>> {
         return Ok(None);
     }
 
-    let output = Command::new("tmux")
-        .args(["display-message", "-p", "#{client_tty}"])
-        .output()
-        .context("failed to query current tmux client tty")?;
-    if !output.status.success() {
+    let Some(stdout) = run_tmux_text_output(
+        &["display-message", "-p", "#{client_tty}"],
+        "current tmux client tty",
+        "tmux display-message for current client tty",
+        |_| true,
+        "current client tty output was not UTF-8",
+    )?
+    else {
         return Ok(None);
-    }
+    };
 
-    let stdout =
-        String::from_utf8(output.stdout).context("current client tty output was not UTF-8")?;
     let tty = stdout.trim();
     if tty.is_empty() {
         Ok(None)
@@ -289,18 +305,18 @@ fn current_client_tty() -> Result<Option<String>> {
 }
 
 fn attached_client_tty() -> Result<Option<String>> {
-    let output = Command::new("tmux")
-        .args(["list-clients", "-F"])
-        .arg(format!(
-            "#{{client_tty}}{TMUX_FORMAT_DELIM}#{{client_activity}}"
-        ))
-        .output()
-        .context("failed to list tmux clients")?;
-    if !output.status.success() {
+    let format = format!("#{{client_tty}}{TMUX_FORMAT_DELIM}#{{client_activity}}");
+    let Some(stdout) = run_tmux_text_output(
+        &["list-clients", "-F", &format],
+        "tmux list-clients",
+        "tmux list-clients",
+        |_| true,
+        "tmux client output was not UTF-8",
+    )?
+    else {
         return Ok(None);
-    }
+    };
 
-    let stdout = String::from_utf8(output.stdout).context("tmux client output was not UTF-8")?;
     let clients = parse_tmux_client_rows(&stdout)?;
     Ok(select_best_client_tty(&clients))
 }
@@ -440,40 +456,36 @@ fn run_tmux_switch_client(
 
 pub(crate) fn switch_tmux_client_to_prefix(client_tty: Option<&str>) -> Result<()> {
     let client_tty = resolve_focus_client_tty(client_tty)?;
-    let status = if let Some(client_tty) = client_tty.as_deref() {
-        Command::new("tmux")
-            .args(["switch-client", "-c", client_tty, "-T", "prefix"])
-            .status()
-            .context("failed to execute tmux switch-client -T prefix with client tty")?
+    if let Some(client_tty) = client_tty.as_deref() {
+        run_tmux_status(
+            &["switch-client", "-c", client_tty, "-T", "prefix"],
+            "tmux switch-client -T prefix with client tty",
+            "tmux switch-client -T prefix",
+        )
     } else {
-        Command::new("tmux")
-            .args(["switch-client", "-T", "prefix"])
-            .status()
-            .context("failed to execute tmux switch-client -T prefix")?
-    };
-    if !status.success() {
-        bail!("tmux switch-client -T prefix failed with status {status}");
+        run_tmux_status(
+            &["switch-client", "-T", "prefix"],
+            "tmux switch-client -T prefix",
+            "tmux switch-client -T prefix",
+        )
     }
-    Ok(())
 }
 
 pub(crate) fn display_tmux_message(client_tty: Option<&str>, message: &str) -> Result<()> {
     let client_tty = resolve_focus_client_tty(client_tty)?;
-    let status = if let Some(client_tty) = client_tty.as_deref() {
-        Command::new("tmux")
-            .args(["display-message", "-c", client_tty, message])
-            .status()
-            .context("failed to execute tmux display-message with client tty")?
+    if let Some(client_tty) = client_tty.as_deref() {
+        run_tmux_status(
+            &["display-message", "-c", client_tty, message],
+            "tmux display-message with client tty",
+            "tmux display-message",
+        )
     } else {
-        Command::new("tmux")
-            .args(["display-message", message])
-            .status()
-            .context("failed to execute tmux display-message")?
-    };
-    if !status.success() {
-        bail!("tmux display-message failed with status {status}");
+        run_tmux_status(
+            &["display-message", message],
+            "tmux display-message",
+            "tmux display-message",
+        )
     }
-    Ok(())
 }
 
 pub(crate) fn tmux_target_is_missing(stderr: &[u8]) -> bool {
@@ -515,7 +527,7 @@ pub(crate) fn tmux_metadata_updates(args: &TmuxSetMetadataArgs) -> Vec<(&'static
         updates.push(("@agent.cwd", cwd.to_string()));
     }
     if let Some(state) = args.state {
-        updates.push(("@agent.state", status_kind_name(state).to_string()));
+        updates.push(("@agent.state", state.as_str().to_string()));
     }
     if let Some(session_id) = args
         .session_id
@@ -553,25 +565,17 @@ pub(crate) fn tmux_metadata_fields_to_clear(fields: &[TmuxMetadataField]) -> Vec
 }
 
 pub(crate) fn set_tmux_pane_option(pane_id: &str, option_name: &str, value: &str) -> Result<()> {
-    let status = Command::new("tmux")
-        .args(["set-option", "-p", "-t", pane_id, option_name, value])
-        .status()
-        .with_context(|| format!("failed to set tmux option {option_name} on {pane_id}"))?;
-    if !status.success() {
-        bail!("tmux set-option failed for {option_name} on {pane_id}");
-    }
-
-    Ok(())
+    run_tmux_status(
+        &["set-option", "-p", "-t", pane_id, option_name, value],
+        &format!("tmux set-option {option_name} on {pane_id}"),
+        &format!("tmux set-option for {option_name} on {pane_id}"),
+    )
 }
 
 pub(crate) fn unset_tmux_pane_option(pane_id: &str, option_name: &str) -> Result<()> {
-    let status = Command::new("tmux")
-        .args(["set-option", "-p", "-u", "-t", pane_id, option_name])
-        .status()
-        .with_context(|| format!("failed to clear tmux option {option_name} on {pane_id}"))?;
-    if !status.success() {
-        bail!("tmux set-option -u failed for {option_name} on {pane_id}");
-    }
-
-    Ok(())
+    run_tmux_status(
+        &["set-option", "-p", "-u", "-t", pane_id, option_name],
+        &format!("tmux set-option -u {option_name} on {pane_id}"),
+        &format!("tmux set-option -u for {option_name} on {pane_id}"),
+    )
 }

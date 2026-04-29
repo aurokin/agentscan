@@ -1277,11 +1277,11 @@ fn daemon_cache_status_reports_health_states() {
         super::DaemonCacheStatus::Healthy
     );
     assert_eq!(
-        super::daemon_cache_status_name(super::DaemonCacheStatus::Healthy),
+        super::DaemonCacheStatus::Healthy.as_str(),
         "healthy"
     );
     assert_eq!(
-        super::daemon_cache_status_name(super::DaemonCacheStatus::SnapshotOnly),
+        super::DaemonCacheStatus::SnapshotOnly.as_str(),
         "snapshot_only"
     );
 

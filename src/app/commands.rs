@@ -116,23 +116,37 @@ fn reject_root_list_args(root_list_args: &ListArgs, command_name: &str) -> Resul
 }
 
 fn command_scan(args: &ListArgs) -> Result<()> {
-    let mut snapshot = if args.refresh.refresh {
-        cache::refresh_cache_from_tmux()?
+    emit_filtered_snapshot(
+        snapshot_for_scan(args.refresh.refresh)?,
+        args.all,
+        args.format,
+    )
+}
+
+fn snapshot_for_scan(refresh: bool) -> Result<SnapshotEnvelope> {
+    if refresh {
+        cache::refresh_cache_from_tmux()
     } else {
-        scanner::snapshot_from_tmux()?
-    };
-    cache::filter_snapshot(&mut snapshot, args.all);
-    output::emit_snapshot(&snapshot, args.format)
+        scanner::snapshot_from_tmux()
+    }
 }
 
 fn command_list(args: &ListArgs) -> Result<()> {
-    let mut snapshot = cache::load_snapshot(args.refresh.refresh)?;
-    cache::filter_snapshot(&mut snapshot, args.all);
-    output::emit_snapshot(&snapshot, args.format)
+    let snapshot = cache::load_snapshot(args.refresh.refresh)?;
+    emit_filtered_snapshot(snapshot, args.all, args.format)
+}
+
+fn emit_filtered_snapshot(
+    mut snapshot: SnapshotEnvelope,
+    include_all: bool,
+    format: OutputFormat,
+) -> Result<()> {
+    cache::filter_snapshot(&mut snapshot, include_all);
+    output::emit_snapshot(&snapshot, format)
 }
 
 fn command_popup(args: &PopupArgs) -> Result<()> {
-    popup_ui::run(args)
+    popup::run(args)
 }
 
 fn command_inspect(args: &InspectArgs) -> Result<()> {
@@ -220,19 +234,8 @@ fn command_cache(args: &CacheArgs, root_list_args: &ListArgs) -> Result<()> {
             reject_root_all(root_list_args, "cache show")?;
             let snapshot =
                 cache::load_snapshot(args.refresh.refresh || root_list_args.refresh.refresh)?;
-            let format = if args.format == OutputFormat::Text {
-                root_list_args.format
-            } else {
-                args.format
-            };
-            match args.format {
-                OutputFormat::Text => {
-                    if format == OutputFormat::Text {
-                        output::print_cache_summary_text(&snapshot)?
-                    } else {
-                        output::print_json(&snapshot)?
-                    }
-                }
+            match merged_output_format(args.format, root_list_args.format) {
+                OutputFormat::Text => output::print_cache_summary_text(&snapshot)?,
                 OutputFormat::Json => output::print_json(&snapshot)?,
             }
         }
@@ -255,6 +258,14 @@ fn command_cache(args: &CacheArgs, root_list_args: &ListArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn merged_output_format(command_format: OutputFormat, root_format: OutputFormat) -> OutputFormat {
+    if command_format == OutputFormat::Text {
+        root_format
+    } else {
+        command_format
+    }
 }
 
 fn command_tmux(args: &TmuxArgs, root_list_args: &ListArgs) -> Result<()> {

@@ -127,6 +127,28 @@ pub(crate) struct PaneStatus {
     pub(crate) source: StatusSource,
 }
 
+impl PaneStatus {
+    pub(crate) const fn new(kind: StatusKind, source: StatusSource) -> Self {
+        Self { kind, source }
+    }
+
+    pub(crate) const fn title(kind: StatusKind) -> Self {
+        Self::new(kind, StatusSource::TmuxTitle)
+    }
+
+    pub(crate) const fn metadata(kind: StatusKind) -> Self {
+        Self::new(kind, StatusSource::PaneMetadata)
+    }
+
+    pub(crate) const fn pane_output(kind: StatusKind) -> Self {
+        Self::new(kind, StatusSource::PaneOutput)
+    }
+
+    pub(crate) const fn not_checked() -> Self {
+        Self::new(StatusKind::Unknown, StatusSource::NotChecked)
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct PaneClassification {
     pub(crate) matched_by: Option<ClassificationMatchKind>,
@@ -231,61 +253,98 @@ pub(crate) struct ProviderMatch {
     pub(crate) reasons: Vec<String>,
 }
 
+impl ProviderMatch {
+    pub(crate) fn new(
+        provider: Provider,
+        matched_by: ClassificationMatchKind,
+        confidence: ClassificationConfidence,
+        reasons: Vec<String>,
+    ) -> Self {
+        Self {
+            provider,
+            matched_by,
+            confidence,
+            reasons,
+        }
+    }
+
+    pub(crate) fn single_reason(
+        provider: Provider,
+        matched_by: ClassificationMatchKind,
+        confidence: ClassificationConfidence,
+        reason: String,
+    ) -> Self {
+        Self::new(provider, matched_by, confidence, vec![reason])
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct TmuxClientRow {
     pub(crate) client_tty: String,
     pub(crate) client_activity: i64,
 }
 
-pub(crate) fn status_kind_name(status: StatusKind) -> &'static str {
-    match status {
-        StatusKind::Idle => "idle",
-        StatusKind::Busy => "busy",
-        StatusKind::Unknown => "unknown",
+impl StatusKind {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Busy => "busy",
+            Self::Unknown => "unknown",
+        }
     }
 }
 
-pub(crate) fn status_source_name(source: StatusSource) -> &'static str {
-    match source {
-        StatusSource::PaneMetadata => "pane_metadata",
-        StatusSource::TmuxTitle => "tmux_title",
-        StatusSource::PaneOutput => "pane_output",
-        StatusSource::NotChecked => "not_checked",
+impl StatusSource {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::PaneMetadata => "pane_metadata",
+            Self::TmuxTitle => "tmux_title",
+            Self::PaneOutput => "pane_output",
+            Self::NotChecked => "not_checked",
+        }
     }
 }
 
-pub(crate) fn classification_match_kind_name(kind: ClassificationMatchKind) -> &'static str {
-    match kind {
-        ClassificationMatchKind::PaneMetadata => "pane_metadata",
-        ClassificationMatchKind::PaneCurrentCommand => "pane_current_command",
-        ClassificationMatchKind::PaneTitle => "pane_title",
-        ClassificationMatchKind::ProcProcessTree => "proc_process_tree",
+impl ClassificationMatchKind {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::PaneMetadata => "pane_metadata",
+            Self::PaneCurrentCommand => "pane_current_command",
+            Self::PaneTitle => "pane_title",
+            Self::ProcProcessTree => "proc_process_tree",
+        }
     }
 }
 
-pub(crate) fn classification_confidence_name(confidence: ClassificationConfidence) -> &'static str {
-    match confidence {
-        ClassificationConfidence::High => "high",
-        ClassificationConfidence::Medium => "medium",
-        ClassificationConfidence::Low => "low",
+impl ClassificationConfidence {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::High => "high",
+            Self::Medium => "medium",
+            Self::Low => "low",
+        }
     }
 }
 
-pub(crate) fn proc_fallback_outcome_name(outcome: ProcFallbackOutcome) -> &'static str {
-    match outcome {
-        ProcFallbackOutcome::NotRun => "not_run",
-        ProcFallbackOutcome::Skipped => "skipped",
-        ProcFallbackOutcome::NoMatch => "no_match",
-        ProcFallbackOutcome::Error => "error",
-        ProcFallbackOutcome::Resolved => "resolved",
+impl ProcFallbackOutcome {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::NotRun => "not_run",
+            Self::Skipped => "skipped",
+            Self::NoMatch => "no_match",
+            Self::Error => "error",
+            Self::Resolved => "resolved",
+        }
     }
 }
 
-pub(crate) fn daemon_cache_status_name(status: DaemonCacheStatus) -> &'static str {
-    match status {
-        DaemonCacheStatus::Healthy => "healthy",
-        DaemonCacheStatus::Stale => "stale",
-        DaemonCacheStatus::SnapshotOnly => "snapshot_only",
-        DaemonCacheStatus::Unavailable => "unavailable",
+impl DaemonCacheStatus {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Healthy => "healthy",
+            Self::Stale => "stale",
+            Self::SnapshotOnly => "snapshot_only",
+            Self::Unavailable => "unavailable",
+        }
     }
 }

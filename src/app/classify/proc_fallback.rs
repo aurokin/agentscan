@@ -131,16 +131,16 @@ fn provider_match_from_proc_command(
 ) -> Option<ProviderMatch> {
     let command = command.trim();
     let (provider, exact) = provider_from_command(command)?;
-    Some(ProviderMatch {
+    Some(ProviderMatch::single_reason(
         provider,
-        matched_by: ClassificationMatchKind::ProcProcessTree,
-        confidence: if exact {
+        ClassificationMatchKind::ProcProcessTree,
+        if exact {
             ClassificationConfidence::High
         } else {
             ClassificationConfidence::Medium
         },
-        reasons: vec![format!("{}_command={command}", source.reason_prefix())],
-    })
+        format!("{}_command={command}", source.reason_prefix()),
+    ))
 }
 
 fn provider_match_from_proc_evidence(
@@ -163,28 +163,25 @@ fn provider_match_from_proc_evidence(
         .iter()
         .any(|arg| claude_arg_has_known_package_path(arg))
     {
-        return Some(ProviderMatch {
-            provider: Provider::Claude,
-            matched_by: ClassificationMatchKind::ProcProcessTree,
-            confidence: ClassificationConfidence::High,
-            reasons: vec![format!(
+        return Some(ProviderMatch::single_reason(
+            Provider::Claude,
+            ClassificationMatchKind::ProcProcessTree,
+            ClassificationConfidence::High,
+            format!(
                 "{}_argv={}",
                 source.reason_prefix(),
                 proc_arg_reason(process)
-            )],
-        });
+            ),
+        ));
     }
 
     if process_has_claude_teammate_shape(process) {
-        return Some(ProviderMatch {
-            provider: Provider::Claude,
-            matched_by: ClassificationMatchKind::ProcProcessTree,
-            confidence: ClassificationConfidence::High,
-            reasons: vec![format!(
-                "{}_argv=claude teammate flags",
-                source.reason_prefix()
-            )],
-        });
+        return Some(ProviderMatch::single_reason(
+            Provider::Claude,
+            ClassificationMatchKind::ProcProcessTree,
+            ClassificationConfidence::High,
+            format!("{}_argv=claude teammate flags", source.reason_prefix()),
+        ));
     }
 
     if let Some(arg) = process
@@ -192,12 +189,7 @@ fn provider_match_from_proc_evidence(
         .iter()
         .find(|arg| gemini_arg_has_known_package_path(arg))
     {
-        return Some(ProviderMatch {
-            provider: Provider::Gemini,
-            matched_by: ClassificationMatchKind::ProcProcessTree,
-            confidence: ClassificationConfidence::High,
-            reasons: vec![format!("{}_argv={arg}", source.reason_prefix())],
-        });
+        return Some(proc_provider_arg_match(Provider::Gemini, source, arg));
     }
 
     if let Some(arg) = process
@@ -205,21 +197,15 @@ fn provider_match_from_proc_evidence(
         .iter()
         .find(|arg| opencode_arg_has_known_package_path(arg))
     {
-        return Some(ProviderMatch {
-            provider: Provider::Opencode,
-            matched_by: ClassificationMatchKind::ProcProcessTree,
-            confidence: ClassificationConfidence::High,
-            reasons: vec![format!("{}_argv={arg}", source.reason_prefix())],
-        });
+        return Some(proc_provider_arg_match(Provider::Opencode, source, arg));
     }
 
     if process_has_opencode_env(process) {
-        return Some(ProviderMatch {
-            provider: Provider::Opencode,
-            matched_by: ClassificationMatchKind::ProcProcessTree,
-            confidence: ClassificationConfidence::High,
-            reasons: vec![format!("{}_env=OPENCODE", source.reason_prefix())],
-        });
+        return Some(proc_provider_env_match(
+            Provider::Opencode,
+            source,
+            "OPENCODE",
+        ));
     }
 
     if let Some(arg) = process
@@ -227,24 +213,44 @@ fn provider_match_from_proc_evidence(
         .iter()
         .find(|arg| pi_arg_has_known_package_path(arg))
     {
-        return Some(ProviderMatch {
-            provider: Provider::Pi,
-            matched_by: ClassificationMatchKind::ProcProcessTree,
-            confidence: ClassificationConfidence::High,
-            reasons: vec![format!("{}_argv={arg}", source.reason_prefix())],
-        });
+        return Some(proc_provider_arg_match(Provider::Pi, source, arg));
     }
 
     if process_has_pi_env(process) {
-        return Some(ProviderMatch {
-            provider: Provider::Pi,
-            matched_by: ClassificationMatchKind::ProcProcessTree,
-            confidence: ClassificationConfidence::High,
-            reasons: vec![format!("{}_env=PI_CODING_AGENT", source.reason_prefix())],
-        });
+        return Some(proc_provider_env_match(
+            Provider::Pi,
+            source,
+            "PI_CODING_AGENT",
+        ));
     }
 
     None
+}
+
+fn proc_provider_arg_match(
+    provider: Provider,
+    source: ProcEvidenceSource,
+    arg: &str,
+) -> ProviderMatch {
+    ProviderMatch::single_reason(
+        provider,
+        ClassificationMatchKind::ProcProcessTree,
+        ClassificationConfidence::High,
+        format!("{}_argv={arg}", source.reason_prefix()),
+    )
+}
+
+fn proc_provider_env_match(
+    provider: Provider,
+    source: ProcEvidenceSource,
+    env_key: &str,
+) -> ProviderMatch {
+    ProviderMatch::single_reason(
+        provider,
+        ClassificationMatchKind::ProcProcessTree,
+        ClassificationConfidence::High,
+        format!("{}_env={env_key}", source.reason_prefix()),
+    )
 }
 
 fn provider_match_from_proc_argv0(
@@ -543,10 +549,7 @@ fn is_shell_or_wrapper_command(command: &str) -> bool {
 
 fn proc_fallback_skip_reason(pane: &PaneRecord) -> String {
     if let Some(match_kind) = pane.classification.matched_by {
-        return format!(
-            "provider already resolved by {}",
-            classification_match_kind_name(match_kind)
-        );
+        return format!("provider already resolved by {}", match_kind.as_str());
     }
     if pane.provider.is_some() {
         return "provider already resolved".to_string();
