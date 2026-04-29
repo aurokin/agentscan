@@ -130,6 +130,16 @@ GitHub Copilot CLI:
 
 - Treat exact live `copilot` / `github-copilot` foreground commands as provider
   evidence.
+- Current local probing used GitHub Copilot CLI 1.0.36 in an isolated tmux
+  session. tmux reported `pane_current_command=node`, default title
+  `GitHub Copilot`, and foreground process evidence from the pane TTY resolved
+  the native package binary as `copilot`.
+- A custom `--name` value becomes the tmux title, so arbitrary Copilot titles
+  should be treated as labels only when process evidence already establishes
+  the provider.
+- During work, the live pane rendered `Thinking (Esc to cancel)`, but the tmux
+  title remained stable. Treat pane-output status parsing as the next
+  provider-scoped fallback if Copilot status is needed without hooks.
 - Treat `COPILOT_HOME`, `COPILOT_MODEL`, and similar environment variables as
   supporting process context only, not provider identity by themselves.
 - Treat Copilot hooks, plugins, statusline/footer customization, and session

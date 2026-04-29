@@ -175,6 +175,14 @@ fn classifies_from_title_when_command_is_generic() {
         opencode_session.matched_by,
         super::ClassificationMatchKind::PaneTitle
     );
+
+    let copilot_default = classify::classify_provider(None, "zsh", "GitHub Copilot")
+        .expect("should match default GitHub Copilot title");
+    assert_eq!(copilot_default.provider, Provider::Copilot);
+    assert_eq!(
+        copilot_default.matched_by,
+        super::ClassificationMatchKind::PaneTitle
+    );
 }
 
 #[test]
@@ -3655,6 +3663,21 @@ fn display_metadata_extracts_activity_labels_from_titles() {
         prefixed_codex.activity_label.as_deref(),
         Some("Copilot | Review patch")
     );
+}
+
+#[test]
+fn copilot_default_title_does_not_invent_activity_label() {
+    let copilot_default = classify::display_metadata(
+        Some(Provider::Copilot),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        None,
+        "GitHub Copilot",
+        "node",
+        "ai",
+    );
+
+    assert_eq!(copilot_default.label, "GitHub Copilot");
+    assert_eq!(copilot_default.activity_label, None);
 }
 
 #[test]

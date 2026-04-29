@@ -146,7 +146,7 @@ fn analyze_title(raw_title: &str) -> TitleAnalysis<'_> {
             strength: TitleHintStrength::Strong,
             kind: TitleProviderHintKind::Explicit,
         })
-    } else if copilot_label.is_some() {
+    } else if copilot_label.is_some() || stripped.eq_ignore_ascii_case("GitHub Copilot") {
         Some(TitleProviderHint {
             provider: Provider::Copilot,
             strength: TitleHintStrength::Strong,
@@ -1347,6 +1347,7 @@ fn is_generic_provider_label(provider: Option<Provider>, label: &str) -> bool {
                 || label.eq_ignore_ascii_case("Cursor CLI")
                 || label.eq_ignore_ascii_case("Cursor")
         }
+        Some(Provider::Copilot) => label.eq_ignore_ascii_case("GitHub Copilot"),
         Some(Provider::Opencode) => label.eq_ignore_ascii_case("OpenCode"),
         _ => false,
     }
