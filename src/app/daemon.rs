@@ -188,7 +188,7 @@ fn refresh_snapshot_pane(snapshot: &mut SnapshotEnvelope, pane_id: &str) -> Resu
         let mut pane = classify::pane_from_row(row);
         let proc_inspector = proc::ProcProcessInspector;
         classify::apply_proc_fallback(&mut pane, &proc_inspector);
-        cache::apply_pane_output_status_fallbacks(std::slice::from_mut(&mut pane));
+        scanner::apply_pane_output_status_fallbacks(std::slice::from_mut(&mut pane));
         pane.diagnostics.cache_origin = "daemon_update".to_string();
         pane
     });
@@ -233,7 +233,7 @@ fn refresh_snapshot_scope(
     if let Some(rows) = rows {
         let proc_inspector = proc::ProcProcessInspector;
         let mut panes = classify::panes_from_rows_with_proc_fallback(rows, &proc_inspector);
-        cache::apply_pane_output_status_fallbacks(&mut panes);
+        scanner::apply_pane_output_status_fallbacks(&mut panes);
         snapshot.panes.extend(panes.into_iter().map(|mut pane| {
             pane.diagnostics.cache_origin = "daemon_update".to_string();
             pane

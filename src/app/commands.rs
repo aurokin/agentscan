@@ -119,7 +119,7 @@ fn command_scan(args: &ListArgs) -> Result<()> {
     let mut snapshot = if args.refresh.refresh {
         cache::refresh_cache_from_tmux()?
     } else {
-        cache::snapshot_from_tmux()?
+        scanner::snapshot_from_tmux()?
     };
     cache::filter_snapshot(&mut snapshot, args.all);
     output::emit_snapshot(&snapshot, args.format)

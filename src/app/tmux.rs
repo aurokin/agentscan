@@ -12,10 +12,7 @@ pub(crate) enum FocusTmuxPaneResult {
 }
 
 pub(crate) fn tmux_list_panes() -> Result<Vec<TmuxPaneRow>> {
-    let output = Command::new("tmux")
-        .args(["list-panes", "-a", "-F", PANE_FORMAT])
-        .output()
-        .context("failed to execute tmux")?;
+    let output = run_tmux_output(&["list-panes", "-a", "-F", PANE_FORMAT], "tmux")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -31,14 +28,13 @@ pub(crate) fn tmux_list_panes() -> Result<Vec<TmuxPaneRow>> {
 }
 
 pub(crate) fn tmux_list_panes_target(target: &str) -> Result<Option<Vec<TmuxPaneRow>>> {
-    let output = Command::new("tmux")
-        .args(["list-panes", "-t", target, "-F", PANE_FORMAT])
-        .output()
-        .with_context(|| format!("failed to execute tmux list-panes for target {target}"))?;
+    let output = run_tmux_output(
+        &["list-panes", "-t", target, "-F", PANE_FORMAT],
+        &format!("tmux list-panes for target {target}"),
+    )?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stderr = stderr.trim();
+        let stderr = tmux_stderr(&output);
         if stderr.contains("can't find window")
             || stderr.contains("can't find session")
             || stderr.contains("can't find pane")
@@ -60,14 +56,13 @@ pub(crate) fn tmux_list_panes_target(target: &str) -> Result<Option<Vec<TmuxPane
 }
 
 pub(crate) fn tmux_list_pane(pane_id: &str) -> Result<Option<TmuxPaneRow>> {
-    let output = Command::new("tmux")
-        .args(["list-panes", "-t", pane_id, "-F", PANE_FORMAT])
-        .output()
-        .with_context(|| format!("failed to execute tmux list-panes for {pane_id}"))?;
+    let output = run_tmux_output(
+        &["list-panes", "-t", pane_id, "-F", PANE_FORMAT],
+        &format!("tmux list-panes for {pane_id}"),
+    )?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stderr = stderr.trim();
+        let stderr = tmux_stderr(&output);
         if stderr.contains("can't find pane") || stderr.contains("can't find window") {
             return Ok(None);
         }
@@ -87,14 +82,13 @@ pub(crate) fn tmux_list_pane(pane_id: &str) -> Result<Option<TmuxPaneRow>> {
 
 pub(crate) fn tmux_capture_pane_tail(pane_id: &str, line_count: usize) -> Result<Option<String>> {
     let start = format!("-{}", line_count.max(1));
-    let output = Command::new("tmux")
-        .args(["capture-pane", "-t", pane_id, "-p", "-S", &start])
-        .output()
-        .with_context(|| format!("failed to execute tmux capture-pane for {pane_id}"))?;
+    let output = run_tmux_output(
+        &["capture-pane", "-t", pane_id, "-p", "-S", &start],
+        &format!("tmux capture-pane for {pane_id}"),
+    )?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stderr = stderr.trim();
+        let stderr = tmux_stderr(&output);
         if stderr.contains("can't find pane") || stderr.contains("can't find window") {
             return Ok(None);
         }
@@ -110,6 +104,17 @@ pub(crate) fn tmux_capture_pane_tail(pane_id: &str, line_count: usize) -> Result
     String::from_utf8(output.stdout)
         .map(Some)
         .context("tmux capture-pane output was not valid UTF-8")
+}
+
+fn run_tmux_output(args: &[&str], context: &str) -> Result<std::process::Output> {
+    Command::new("tmux")
+        .args(args)
+        .output()
+        .with_context(|| format!("failed to execute {context}"))
+}
+
+fn tmux_stderr(output: &std::process::Output) -> String {
+    String::from_utf8_lossy(&output.stderr).trim().to_string()
 }
 
 pub(crate) fn parse_pane_rows(input: &str) -> Result<Vec<TmuxPaneRow>> {
@@ -391,59 +396,54 @@ pub(crate) fn focus_tmux_pane(
 ) -> Result<FocusTmuxPaneResult> {
     let client_tty = resolve_focus_client_tty(client_tty)?;
 
-    if let Some(client_tty) = client_tty.as_deref() {
-        let primary = Command::new("tmux")
-            .args(["switch-client", "-Z", "-c", client_tty, "-t", pane_id])
-            .output()
-            .context("failed to execute tmux switch-client with client tty")?;
-        if primary.status.success() {
-            return Ok(FocusTmuxPaneResult::Focused);
-        }
-        if tmux_target_is_missing(&primary.stderr) {
-            return Ok(FocusTmuxPaneResult::Missing);
-        }
-
-        let fallback = Command::new("tmux")
-            .args(["switch-client", "-c", client_tty, "-t", pane_id])
-            .output()
-            .context("failed to execute tmux switch-client fallback with client tty")?;
-        if fallback.status.success() {
-            Ok(FocusTmuxPaneResult::Focused)
-        } else if tmux_target_is_missing(&fallback.stderr) {
-            Ok(FocusTmuxPaneResult::Missing)
-        } else {
-            bail!(format_tmux_switch_client_error(
-                "tmux switch-client fallback with client tty",
-                &fallback,
-            ));
-        }
-    } else {
-        let primary = Command::new("tmux")
-            .args(["switch-client", "-Z", "-t", pane_id])
-            .output()
-            .context("failed to execute tmux switch-client")?;
-        if primary.status.success() {
-            return Ok(FocusTmuxPaneResult::Focused);
-        }
-        if tmux_target_is_missing(&primary.stderr) {
-            return Ok(FocusTmuxPaneResult::Missing);
-        }
-
-        let fallback = Command::new("tmux")
-            .args(["switch-client", "-t", pane_id])
-            .output()
-            .context("failed to execute tmux switch-client fallback")?;
-        if fallback.status.success() {
-            Ok(FocusTmuxPaneResult::Focused)
-        } else if tmux_target_is_missing(&fallback.stderr) {
-            Ok(FocusTmuxPaneResult::Missing)
-        } else {
-            bail!(format_tmux_switch_client_error(
-                "tmux switch-client fallback",
-                &fallback,
-            ));
-        }
+    let primary = run_tmux_switch_client(pane_id, client_tty.as_deref(), true)?;
+    if primary.status.success() {
+        return Ok(FocusTmuxPaneResult::Focused);
     }
+    if tmux_target_is_missing(&primary.stderr) {
+        return Ok(FocusTmuxPaneResult::Missing);
+    }
+
+    let fallback = run_tmux_switch_client(pane_id, client_tty.as_deref(), false)?;
+    if fallback.status.success() {
+        Ok(FocusTmuxPaneResult::Focused)
+    } else if tmux_target_is_missing(&fallback.stderr) {
+        Ok(FocusTmuxPaneResult::Missing)
+    } else {
+        let context = if client_tty.is_some() {
+            "tmux switch-client fallback with client tty"
+        } else {
+            "tmux switch-client fallback"
+        };
+        bail!(format_tmux_switch_client_error(context, &fallback));
+    }
+}
+
+fn run_tmux_switch_client(
+    pane_id: &str,
+    client_tty: Option<&str>,
+    zoom: bool,
+) -> Result<std::process::Output> {
+    let mut command = Command::new("tmux");
+    command.arg("switch-client");
+    if zoom {
+        command.arg("-Z");
+    }
+    if let Some(client_tty) = client_tty {
+        command.args(["-c", client_tty]);
+    }
+    command.args(["-t", pane_id]);
+
+    let context = match (zoom, client_tty.is_some()) {
+        (true, true) => "tmux switch-client with client tty",
+        (true, false) => "tmux switch-client",
+        (false, true) => "tmux switch-client fallback with client tty",
+        (false, false) => "tmux switch-client fallback",
+    };
+
+    command
+        .output()
+        .with_context(|| format!("failed to execute {context}"))
 }
 
 pub(crate) fn switch_tmux_client_to_prefix(client_tty: Option<&str>) -> Result<()> {

@@ -1,43 +1,7 @@
 use super::*;
 
-pub(super) fn snapshot_from_tmux() -> Result<SnapshotEnvelope> {
-    let rows = tmux::tmux_list_panes()?;
-    let proc_inspector = proc::ProcProcessInspector;
-    let mut panes = classify::panes_from_rows_with_proc_fallback(rows, &proc_inspector);
-    apply_pane_output_status_fallbacks(&mut panes);
-
-    let mut snapshot = SnapshotEnvelope {
-        schema_version: CACHE_SCHEMA_VERSION,
-        generated_at: now_rfc3339()?,
-        source: SnapshotSource {
-            kind: SourceKind::Snapshot,
-            tmux_version: tmux::tmux_version(),
-            daemon_generated_at: None,
-        },
-        panes,
-    };
-    sort_snapshot_panes(&mut snapshot);
-    Ok(snapshot)
-}
-
-pub(crate) fn apply_pane_output_status_fallbacks(panes: &mut [PaneRecord]) {
-    const PANE_OUTPUT_STATUS_LINES: usize = 30;
-
-    for pane in panes {
-        if !classify::pane_output_status_fallback_candidate(pane) {
-            continue;
-        }
-
-        if let Ok(Some(output)) =
-            tmux::tmux_capture_pane_tail(&pane.pane_id, PANE_OUTPUT_STATUS_LINES)
-        {
-            classify::apply_pane_output_status_fallback(pane, &output);
-        }
-    }
-}
-
 pub(super) fn daemon_snapshot_from_tmux() -> Result<SnapshotEnvelope> {
-    let mut snapshot = snapshot_from_tmux()?;
+    let mut snapshot = scanner::snapshot_from_tmux()?;
     set_snapshot_cache_origin(&mut snapshot, "daemon_snapshot");
     mark_snapshot_as_daemon(&mut snapshot)?;
     Ok(snapshot)
@@ -52,7 +16,7 @@ pub(super) fn mark_snapshot_as_daemon(snapshot: &mut SnapshotEnvelope) -> Result
 
 pub(super) fn refresh_cache_from_tmux() -> Result<SnapshotEnvelope> {
     let existing = read_existing_snapshot_if_valid();
-    let mut snapshot = snapshot_from_tmux()?;
+    let mut snapshot = scanner::snapshot_from_tmux()?;
     preserve_last_daemon_refresh(&mut snapshot, existing.as_ref());
     write_snapshot_to_cache(&snapshot)?;
     Ok(snapshot)
@@ -127,7 +91,7 @@ pub(super) fn refresh_existing_cache_from_tmux() -> Result<()> {
     }
 
     let existing = read_existing_snapshot_if_valid();
-    let mut snapshot = snapshot_from_tmux()?;
+    let mut snapshot = scanner::snapshot_from_tmux()?;
     preserve_last_daemon_refresh(&mut snapshot, existing.as_ref());
     write_snapshot_to_cache(&snapshot)
 }
@@ -176,7 +140,7 @@ pub(crate) fn sort_snapshot_panes(snapshot: &mut SnapshotEnvelope) {
     });
 }
 
-fn now_rfc3339() -> Result<String> {
+pub(crate) fn now_rfc3339() -> Result<String> {
     OffsetDateTime::now_utc()
         .format(&Rfc3339)
         .context("failed to format current time")
@@ -220,25 +184,16 @@ pub(crate) fn summarize_snapshot(snapshot: &SnapshotEnvelope) -> Result<CacheSum
         .filter(|pane| pane.provider.is_some())
         .count();
 
-    let provider_counts = [
-        Provider::Codex,
-        Provider::Claude,
-        Provider::Gemini,
-        Provider::Opencode,
-        Provider::Copilot,
-        Provider::CursorCli,
-        Provider::Pi,
-    ]
-    .into_iter()
-    .filter_map(|provider| {
-        let count = snapshot
-            .panes
-            .iter()
-            .filter(|pane| pane.provider == Some(provider))
-            .count();
-        (count > 0).then_some((provider, count))
-    })
-    .collect();
+    let provider_counts = provider_summary_order()
+        .filter_map(|provider| {
+            let count = snapshot
+                .panes
+                .iter()
+                .filter(|pane| pane.provider == Some(provider))
+                .count();
+            (count > 0).then_some((provider, count))
+        })
+        .collect();
 
     let status_counts = [StatusKind::Busy, StatusKind::Idle, StatusKind::Unknown]
         .into_iter()
