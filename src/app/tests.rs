@@ -3311,9 +3311,26 @@ fn snapshot_sort_orders_panes_by_location() {
 fn validate_snapshot_rejects_unsupported_schema_version() {
     let mut snapshot: SnapshotEnvelope =
         serde_json::from_str(CACHE_SNAPSHOT_FIXTURE).expect("cache fixture should parse");
+    snapshot.schema_version = CACHE_SCHEMA_VERSION - 1;
+
+    let error =
+        cache::validate_snapshot(&snapshot, None).expect_err("old schema version should fail");
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported cache schema version"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn validate_snapshot_rejects_future_schema_version() {
+    let mut snapshot: SnapshotEnvelope =
+        serde_json::from_str(CACHE_SNAPSHOT_FIXTURE).expect("cache fixture should parse");
     snapshot.schema_version = CACHE_SCHEMA_VERSION + 1;
 
-    let error = cache::validate_snapshot(&snapshot, None).expect_err("schema mismatch should fail");
+    let error =
+        cache::validate_snapshot(&snapshot, None).expect_err("future schema version should fail");
     assert!(
         error
             .to_string()
@@ -3695,7 +3712,13 @@ fn copilot_pane_output_marks_busy_only_after_provider_is_known() {
 
     classify::apply_pane_output_status_fallback(
         &mut copilot,
-        "❯ Review patch\n\n● Thinking (Esc to cancel · 616 B)\n",
+        "❯ Review patch\n\n\
+         ● Thinking (Esc to cancel · 616 B)\n\
+         /tmp/probe [main]\n\
+         ────────────────────\n\
+         ❯\n\
+         ────────────────────\n\
+         / commands · ? help\n",
     );
 
     assert_eq!(copilot.status.kind, StatusKind::Busy);
@@ -3704,11 +3727,65 @@ fn copilot_pane_output_marks_busy_only_after_provider_is_known() {
     let mut unknown = proc_fallback_pane(746, "node", "custom title");
     classify::apply_pane_output_status_fallback(
         &mut unknown,
-        "❯ Review patch\n\n● Thinking (Esc to cancel · 616 B)\n",
+        "❯ Review patch\n\n\
+         ● Thinking (Esc to cancel · 616 B)\n\
+         /tmp/probe [main]\n\
+         ────────────────────\n\
+         ❯\n\
+         ────────────────────\n\
+         / commands · ? help\n",
     );
 
     assert_eq!(unknown.status.kind, StatusKind::Unknown);
     assert_eq!(unknown.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn copilot_pane_output_ignores_stale_thinking_lines() {
+    let mut copilot = proc_fallback_pane(748, "node", "GitHub Copilot");
+    copilot.provider = Some(Provider::Copilot);
+    copilot.status = super::PaneStatus {
+        kind: StatusKind::Unknown,
+        source: super::StatusSource::NotChecked,
+    };
+
+    classify::apply_pane_output_status_fallback(
+        &mut copilot,
+        "● Thinking (Esc to cancel · 616 B)\n\
+         ● Done! Created result.txt.\n\
+         \n\
+         /tmp/probe [main]\n\
+         ────────────────────\n\
+         ❯\n\
+         ────────────────────\n\
+         / commands · ? help\n",
+    );
+
+    assert_eq!(copilot.status.kind, StatusKind::Unknown);
+    assert_eq!(copilot.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn copilot_pane_output_marks_current_trust_prompt_busy() {
+    let mut copilot = proc_fallback_pane(749, "node", "GitHub Copilot");
+    copilot.provider = Some(Provider::Copilot);
+    copilot.status = super::PaneStatus {
+        kind: StatusKind::Unknown,
+        source: super::StatusSource::NotChecked,
+    };
+
+    classify::apply_pane_output_status_fallback(
+        &mut copilot,
+        "╭──────────────────────────────────────────────────────────────────────────────╮\n\
+         │ Confirm folder trust                                                         │\n\
+         │ Do you trust the files in this folder?                                       │\n\
+         │ ❯ 1. Yes                                                                     │\n\
+         │   2. Yes, and remember this folder for future sessions                       │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯\n",
+    );
+
+    assert_eq!(copilot.status.kind, StatusKind::Busy);
+    assert_eq!(copilot.status.source, super::StatusSource::PaneOutput);
 }
 
 #[test]

@@ -30,7 +30,7 @@ const PANE_DELIM: &str = "\u{001f}";
 const TMUX_FORMAT_DELIM: &str = r"\037";
 const CACHE_ENV_VAR: &str = "AGENTSCAN_CACHE_PATH";
 const CACHE_RELATIVE_PATH: &str = "agentscan/cache-v1.json";
-const CACHE_SCHEMA_VERSION: u32 = 3;
+const CACHE_SCHEMA_VERSION: u32 = 4;
 static CACHE_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const CLAUDE_SPINNER_GLYPHS: &[char] = &[
     '⠁', '⠂', '⠄', '⡀', '⢀', '⠠', '⠐', '⠈', '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏', '⣾',

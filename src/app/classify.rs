@@ -354,12 +354,41 @@ pub(crate) fn apply_pane_output_status_fallback(pane: &mut PaneRecord, output: &
 }
 
 fn copilot_pane_output_indicates_busy(output: &str) -> bool {
-    output.lines().rev().take(30).any(|line| {
-        let line = line.trim();
-        line.contains("Thinking (Esc to cancel")
-            || line.contains("Confirm folder trust")
-            || line.contains("Do you trust the files in this folder?")
-    })
+    copilot_current_status_line(output).is_some_and(|line| line.contains("Thinking (Esc to cancel"))
+        || copilot_current_trust_prompt_visible(output)
+}
+
+fn copilot_current_status_line(output: &str) -> Option<&str> {
+    let lines: Vec<&str> = output.lines().collect();
+    let prompt_index = lines.iter().rposition(|line| line.trim() == "❯")?;
+    let context_index = lines[..prompt_index]
+        .iter()
+        .rposition(|line| copilot_prompt_context_line(line))?;
+
+    let status_line = lines[..context_index].last()?.trim();
+    (!status_line.is_empty()).then_some(status_line)
+}
+
+fn copilot_prompt_context_line(line: &str) -> bool {
+    let line = line.trim();
+    (line.starts_with('/') || line.starts_with("~/")) && line.contains('[') && line.contains(']')
+}
+
+fn copilot_current_trust_prompt_visible(output: &str) -> bool {
+    let lines: Vec<&str> = output.lines().collect();
+    let Some(modal_index) = lines
+        .iter()
+        .rposition(|line| line.contains("Confirm folder trust"))
+    else {
+        return false;
+    };
+
+    let modal_lines = &lines[modal_index..];
+    let normal_prompt_after_modal = modal_lines.iter().any(|line| line.trim() == "❯");
+    !normal_prompt_after_modal
+        && modal_lines
+            .iter()
+            .any(|line| line.contains("Do you trust the files in this folder?"))
 }
 
 #[derive(Clone)]
