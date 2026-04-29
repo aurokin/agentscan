@@ -385,7 +385,7 @@ fn copilot_current_status_line(output: &str) -> Option<&str> {
 
 fn copilot_prompt_context_line(line: &str) -> bool {
     let line = line.trim();
-    (line.starts_with('/') || line.starts_with("~/")) && line.contains('[') && line.contains(']')
+    (line.starts_with('/') || line.starts_with("~/")) && !line.starts_with("/ commands")
 }
 
 fn copilot_current_prompt_visible(output: &str) -> bool {

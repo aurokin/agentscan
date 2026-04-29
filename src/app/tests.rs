@@ -3835,6 +3835,34 @@ fn copilot_pane_output_marks_current_prompt_idle() {
 }
 
 #[test]
+fn copilot_pane_output_marks_absolute_path_prompt_idle() {
+    let mut copilot = proc_fallback_pane(759, "node", "GitHub Copilot");
+    copilot.provider = Some(Provider::Copilot);
+    copilot.status = super::PaneStatus {
+        kind: StatusKind::Unknown,
+        source: super::StatusSource::NotChecked,
+    };
+
+    classify::apply_pane_output_status_fallback(
+        &mut copilot,
+        "╭──────────────────────────────────────────────────────────────────────────╮\n\
+         │  GitHub Copilot v1.0.39                                           │\n\
+         ╰──────────────────────────────────────────────────────────────────────────╯\n\
+         \n\
+         ● Environment loaded: 22 skills, 1 MCP server, 2 agents\n\
+         \n\
+         /private/tmp/agentscan-copilot-idle-smoke\n\
+         ──────────────────────────────────────────────────────────────────────────\n\
+         ❯\n\
+         ──────────────────────────────────────────────────────────────────────────\n\
+          / commands · ? help                                      Claude Haiku 4.5\n",
+    );
+
+    assert_eq!(copilot.status.kind, StatusKind::Idle);
+    assert_eq!(copilot.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
 fn copilot_pane_output_uses_current_prompt_over_stale_thinking() {
     let mut copilot = proc_fallback_pane(758, "node", "GitHub Copilot");
     copilot.provider = Some(Provider::Copilot);
