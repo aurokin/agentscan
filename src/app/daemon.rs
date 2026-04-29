@@ -65,34 +65,13 @@ pub(super) fn daemon_run() -> Result<()> {
         match line_rx.recv_timeout(timeout) {
             Ok(line) => {
                 let line = line?;
-                if let Some(pane_id) = subscription_changed_pane_id(&line) {
-                    refresh_snapshot_pane(&mut snapshot, pane_id)?;
-                    merge_cached_panes(&mut snapshot, Some(pane_id));
-                    cache::write_snapshot_to_cache(&snapshot)?;
-                } else if let Some(change) = output_title_change(&line) {
-                    refresh_snapshot_pane_with_title(
-                        &mut snapshot,
-                        change.pane_id,
-                        Some(change.title.as_str()),
-                    )?;
-                    merge_cached_panes(&mut snapshot, Some(change.pane_id));
-                    cache::write_snapshot_to_cache(&snapshot)?;
-                } else if let Some(window_id) = window_notification_target(&line) {
-                    refresh_snapshot_window(&mut snapshot, window_id).or_else(|error| {
-                        fallback_to_full_resnapshot(&mut snapshot, &line, error)
-                    })?;
-                    cache::write_snapshot_to_cache(&snapshot)?;
-                } else if let Some(session_id) = session_notification_target(&line) {
-                    refresh_snapshot_session(&mut snapshot, session_id).or_else(|error| {
-                        fallback_to_full_resnapshot(&mut snapshot, &line, error)
-                    })?;
-                    cache::write_snapshot_to_cache(&snapshot)?;
-                } else if should_resnapshot_from_notification(&line) {
-                    reconcile_full_snapshot(&mut snapshot)?;
+                let event = control_event_from_line(&line);
+                let should_exit = event == ControlEvent::Exit;
+                if apply_control_event(&mut snapshot, &line, &event)? {
                     cache::write_snapshot_to_cache(&snapshot)?;
                 }
 
-                if line.starts_with("%exit") {
+                if should_exit {
                     break;
                 }
             }
@@ -113,6 +92,82 @@ pub(super) fn daemon_run() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum ControlEvent {
+    PaneChanged(String),
+    TitleChanged { pane_id: String, title: String },
+    WindowChanged(String),
+    SessionChanged(String),
+    Resnapshot,
+    Exit,
+    Ignored,
+}
+
+fn control_event_from_line(line: &str) -> ControlEvent {
+    if line.starts_with("%exit") {
+        return ControlEvent::Exit;
+    }
+
+    if let Some(pane_id) = subscription_changed_pane_id(line) {
+        return ControlEvent::PaneChanged(pane_id.to_string());
+    }
+
+    if let Some(change) = output_title_change(line) {
+        return ControlEvent::TitleChanged {
+            pane_id: change.pane_id.to_string(),
+            title: change.title,
+        };
+    }
+
+    if let Some(window_id) = window_notification_target(line) {
+        return ControlEvent::WindowChanged(window_id.to_string());
+    }
+
+    if let Some(session_id) = session_notification_target(line) {
+        return ControlEvent::SessionChanged(session_id.to_string());
+    }
+
+    if should_resnapshot_from_notification(line) {
+        return ControlEvent::Resnapshot;
+    }
+
+    ControlEvent::Ignored
+}
+
+fn apply_control_event(
+    snapshot: &mut SnapshotEnvelope,
+    line: &str,
+    event: &ControlEvent,
+) -> Result<bool> {
+    match event {
+        ControlEvent::PaneChanged(pane_id) => {
+            refresh_snapshot_pane(snapshot, pane_id)?;
+            merge_cached_panes(snapshot, Some(pane_id));
+            Ok(true)
+        }
+        ControlEvent::TitleChanged { pane_id, title } => {
+            refresh_snapshot_pane_with_title(snapshot, pane_id, Some(title.as_str()))?;
+            merge_cached_panes(snapshot, Some(pane_id));
+            Ok(true)
+        }
+        ControlEvent::WindowChanged(window_id) => {
+            refresh_snapshot_window(snapshot, window_id)
+                .or_else(|error| fallback_to_full_resnapshot(snapshot, line, error))?;
+            Ok(true)
+        }
+        ControlEvent::SessionChanged(session_id) => {
+            refresh_snapshot_session(snapshot, session_id)
+                .or_else(|error| fallback_to_full_resnapshot(snapshot, line, error))?;
+            Ok(true)
+        }
+        ControlEvent::Resnapshot => {
+            reconcile_full_snapshot(snapshot)?;
+            Ok(true)
+        }
+        ControlEvent::Exit | ControlEvent::Ignored => Ok(false),
+    }
 }
 
 pub(crate) fn read_control_mode_line(reader: &mut impl BufRead) -> Result<Option<String>> {

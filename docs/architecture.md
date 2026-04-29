@@ -85,6 +85,22 @@ The current command surface is organized by concern:
 
 The default bare `agentscan` flow is cache-backed `list`.
 
+## Internal Module Boundaries
+
+The Rust implementation keeps high-churn behavior behind small concern-focused
+modules:
+
+- provider-specific process evidence lives under `classify::proc_evidence`
+  instead of the fallback orchestration path
+- tmux command execution, parsing, focus/client handling, and pane metadata
+  helpers are split under `tmux::*`
+- popup terminal lifecycle, popup state/key assignment, and popup frame
+  rendering are separated under `popup::*`
+
+These boundaries are internal, but they protect the product-level invariants
+above: classification remains conservative, tmux remains the primary source, and
+popup remains an interactive cache consumer rather than an automation API.
+
 ## Daemon Lifecycle Policy
 
 The daemon is an explicit entrypoint. Short-lived commands stay passive by

@@ -2,6 +2,7 @@ use super::*;
 
 mod display;
 mod pane_output;
+mod proc_evidence;
 mod proc_fallback;
 mod provider_match;
 mod status;
