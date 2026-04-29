@@ -573,6 +573,28 @@ fn output_notifications_expose_title_change_pane_id() {
 }
 
 #[test]
+fn output_notifications_expose_title_payload() {
+    assert_eq!(
+        daemon::output_title_change_title("%output %0 \\033]0;Working\\007sh-3.2$ ")
+            .as_deref(),
+        Some("Working")
+    );
+    assert_eq!(
+        daemon::output_title_change_title("%output %0 \\033]2;Review patch\\033\\\\")
+            .as_deref(),
+        Some("Review patch")
+    );
+}
+
+#[test]
+fn output_title_payload_ignores_typed_backslash_escapes() {
+    assert_eq!(
+        daemon::output_title_change_title("%output %0 printf '\\134033]0;Working\\134007'"),
+        None
+    );
+}
+
+#[test]
 fn control_mode_reader_tolerates_non_utf8_pane_output() {
     let mut input = std::io::Cursor::new(b"%output %0 \xff\xfe plain bytes\r\n%exit\n");
 

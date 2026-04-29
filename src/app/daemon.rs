@@ -69,9 +69,13 @@ pub(super) fn daemon_run() -> Result<()> {
                     refresh_snapshot_pane(&mut snapshot, pane_id)?;
                     merge_cached_panes(&mut snapshot, Some(pane_id));
                     cache::write_snapshot_to_cache(&snapshot)?;
-                } else if let Some(pane_id) = output_title_change_pane_id(&line) {
-                    refresh_snapshot_pane(&mut snapshot, pane_id)?;
-                    merge_cached_panes(&mut snapshot, Some(pane_id));
+                } else if let Some(change) = output_title_change(&line) {
+                    refresh_snapshot_pane_with_title(
+                        &mut snapshot,
+                        change.pane_id,
+                        Some(change.title.as_str()),
+                    )?;
+                    merge_cached_panes(&mut snapshot, Some(change.pane_id));
                     cache::write_snapshot_to_cache(&snapshot)?;
                 } else if let Some(window_id) = window_notification_target(&line) {
                     refresh_snapshot_window(&mut snapshot, window_id).or_else(|error| {
@@ -161,7 +165,22 @@ pub(crate) fn subscription_changed_pane_id(line: &str) -> Option<&str> {
     pane_id.starts_with('%').then_some(pane_id)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn output_title_change_pane_id(line: &str) -> Option<&str> {
+    output_title_change(line).map(|change| change.pane_id)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn output_title_change_title(line: &str) -> Option<String> {
+    output_title_change(line).map(|change| change.title)
+}
+
+struct OutputTitleChange<'a> {
+    pane_id: &'a str,
+    title: String,
+}
+
+fn output_title_change(line: &str) -> Option<OutputTitleChange<'_>> {
     let mut fields = line.splitn(3, ' ');
     if fields.next()? != "%output" {
         return None;
@@ -169,22 +188,105 @@ pub(crate) fn output_title_change_pane_id(line: &str) -> Option<&str> {
 
     let pane_id = fields.next()?;
     let payload = fields.next()?;
-    if !pane_id.starts_with('%') || !contains_title_escape(payload) {
+    let title = terminal_title_from_control_payload(payload)?;
+    if !pane_id.starts_with('%') {
         return None;
     }
 
-    Some(pane_id)
+    Some(OutputTitleChange { pane_id, title })
 }
 
-fn contains_title_escape(payload: &str) -> bool {
-    payload.contains("\u{1b}]0;")
-        || payload.contains("\u{1b}]2;")
-        || payload.contains("\\033]0;")
-        || payload.contains("\\033]2;")
+fn terminal_title_from_control_payload(payload: &str) -> Option<String> {
+    let decoded = decode_tmux_control_payload(payload);
+    terminal_title_from_decoded_output(&decoded)
+}
+
+fn decode_tmux_control_payload(payload: &str) -> String {
+    let bytes = payload.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if bytes[index] == b'\\'
+            && index + 3 < bytes.len()
+            && is_octal_digit(bytes[index + 1])
+            && is_octal_digit(bytes[index + 2])
+            && is_octal_digit(bytes[index + 3])
+        {
+            let value = ((bytes[index + 1] - b'0') << 6)
+                | ((bytes[index + 2] - b'0') << 3)
+                | (bytes[index + 3] - b'0');
+            decoded.push(value);
+            index += 4;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+const fn is_octal_digit(byte: u8) -> bool {
+    byte >= b'0' && byte <= b'7'
+}
+
+fn terminal_title_from_decoded_output(output: &str) -> Option<String> {
+    let bytes = output.as_bytes();
+    let mut index = 0;
+    let mut title = None;
+
+    while index + 4 <= bytes.len() {
+        if bytes[index] == 0x1b
+            && bytes[index + 1] == b']'
+            && matches!(bytes[index + 2], b'0' | b'2')
+            && bytes[index + 3] == b';'
+        {
+            let title_start = index + 4;
+            let mut title_end = title_start;
+            while title_end < bytes.len() {
+                if bytes[title_end] == 0x07 {
+                    title =
+                        Some(String::from_utf8_lossy(&bytes[title_start..title_end]).into_owned());
+                    index = title_end + 1;
+                    break;
+                }
+                if title_end + 1 < bytes.len()
+                    && bytes[title_end] == 0x1b
+                    && bytes[title_end + 1] == b'\\'
+                {
+                    title =
+                        Some(String::from_utf8_lossy(&bytes[title_start..title_end]).into_owned());
+                    index = title_end + 2;
+                    break;
+                }
+                title_end += 1;
+            }
+
+            if title_end == bytes.len() {
+                break;
+            }
+        } else {
+            index += 1;
+        }
+    }
+
+    title
 }
 
 fn refresh_snapshot_pane(snapshot: &mut SnapshotEnvelope, pane_id: &str) -> Result<()> {
-    let pane = tmux::tmux_list_pane(pane_id)?.map(|row| {
+    refresh_snapshot_pane_with_title(snapshot, pane_id, None)
+}
+
+fn refresh_snapshot_pane_with_title(
+    snapshot: &mut SnapshotEnvelope,
+    pane_id: &str,
+    title_override: Option<&str>,
+) -> Result<()> {
+    let pane = tmux::tmux_list_pane(pane_id)?.map(|mut row| {
+        if let Some(title) = title_override {
+            row.pane_title_raw = title.to_string();
+        }
         let mut pane = classify::pane_from_row(row);
         let proc_inspector = proc::ProcProcessInspector;
         classify::apply_proc_fallback(&mut pane, &proc_inspector);
