@@ -192,9 +192,9 @@ Delivered baseline:
 - daemon-backed cache maintenance from tmux control mode
 - targeted process-tree fallback for unresolved `node`, `bun`, and `python3`
   launcher panes, including Claude Code binary-path and teammate-spawn evidence
-- provider-specific plug-and-play hardening for Gemini CLI, Pi, and opencode
-  from upstream source evidence, while keeping weak status inference
-  conservative
+- provider-specific plug-and-play hardening for Gemini CLI, GitHub Copilot CLI,
+  Pi, and opencode from upstream source evidence and local probing, while
+  keeping weak status inference conservative
 - provider-specific pane-output status fallback for already-identified GitHub
   Copilot and Cursor CLI panes, including current idle and busy prompt/footer
   shapes while ignoring stale output

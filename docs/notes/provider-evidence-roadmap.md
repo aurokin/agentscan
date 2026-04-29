@@ -134,10 +134,14 @@ GitHub Copilot CLI:
 
 - Treat exact live `copilot` / `github-copilot` foreground commands as provider
   evidence.
-- Current local probing used GitHub Copilot CLI 1.0.36 in an isolated tmux
+- Current local probing used GitHub Copilot CLI 1.0.39 in an isolated tmux
   session. tmux reported `pane_current_command=node`, default title
   `GitHub Copilot`, and foreground process evidence from the pane TTY resolved
   the native package binary as `copilot`.
+- The npm install path uses `@github/copilot/npm-loader.js`, which delegates to
+  a platform package such as `@github/copilot-darwin-arm64/copilot`; these
+  package paths are strong process-tree evidence even when tmux title updates
+  are disabled.
 - A custom `--name` value becomes the tmux title, so arbitrary Copilot titles
   should be treated as labels only when process evidence already establishes
   the provider.

@@ -516,6 +516,79 @@ fn proc_fallback_resolves_opencode_from_env_marker() {
 }
 
 #[test]
+fn proc_fallback_resolves_copilot_from_npm_loader_path() {
+    let mut pane = proc_fallback_pane(760, "node", "agent wrapper");
+    let loader_path =
+        "/Users/auro/.local/share/mise/installs/npm-github-copilot/latest/lib/node_modules/@github/copilot/npm-loader.js";
+    let inspector = FakeProcessInspector::with_processes([(
+        760,
+        vec![proc::ProcessEvidence {
+            pid: 761,
+            command: "node".to_string(),
+            argv: vec!["node".to_string(), loader_path.to_string(), "--yolo".to_string()],
+            env: Vec::new(),
+        }],
+    )]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_eq!(pane.provider, Some(Provider::Copilot));
+    assert_eq!(
+        pane.classification.reasons,
+        vec![format!("proc_descendant_argv={loader_path}")]
+    );
+}
+
+#[test]
+fn proc_fallback_resolves_copilot_from_platform_package_path() {
+    let mut pane = proc_fallback_pane(761, "node", "agent wrapper");
+    let native_path =
+        "/Users/auro/.local/share/mise/installs/npm-github-copilot/1.0.39/lib/node_modules/@github/copilot/node_modules/@github/copilot-darwin-arm64/copilot";
+    let inspector = FakeProcessInspector::with_processes([(
+        761,
+        vec![proc::ProcessEvidence {
+            pid: 762,
+            command: "/Users/auro/.loc".to_string(),
+            argv: vec![native_path.to_string(), "--yolo".to_string()],
+            env: Vec::new(),
+        }],
+    )]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_eq!(pane.provider, Some(Provider::Copilot));
+    assert_eq!(
+        pane.classification.reasons,
+        vec!["proc_descendant_command=copilot"]
+    );
+}
+
+#[test]
+fn proc_fallback_does_not_treat_arbitrary_copilot_paths_as_copilot() {
+    let mut pane = proc_fallback_pane(762, "node", "agent wrapper");
+    let inspector = FakeProcessInspector::with_processes([(
+        762,
+        vec![proc::ProcessEvidence {
+            pid: 763,
+            command: "node".to_string(),
+            argv: vec![
+                "node".to_string(),
+                "/tmp/copilot-experiment/npm-loader.js".to_string(),
+            ],
+            env: Vec::new(),
+        }],
+    )]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_eq!(pane.provider, None);
+    assert_eq!(
+        pane.diagnostics.proc_fallback.outcome,
+        super::ProcFallbackOutcome::NoMatch
+    );
+}
+
+#[test]
 fn proc_fallback_does_not_treat_arbitrary_opencode_paths_as_opencode() {
     for (pid, argv_path) in [
         (725, "/workspace/tools/opencode"),

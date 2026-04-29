@@ -211,6 +211,14 @@ fn provider_match_from_proc_evidence(
     if let Some(arg) = process
         .argv
         .iter()
+        .find(|arg| copilot_arg_has_known_package_path(arg))
+    {
+        return Some(proc_provider_arg_match(Provider::Copilot, source, arg));
+    }
+
+    if let Some(arg) = process
+        .argv
+        .iter()
         .find(|arg| pi_arg_has_known_package_path(arg))
     {
         return Some(proc_provider_arg_match(Provider::Pi, source, arg));
@@ -345,6 +353,45 @@ fn opencode_arg_has_platform_package_path(lower: &str) -> bool {
     PACKAGES
         .iter()
         .any(|package| lower.ends_with(&format!("/node_modules/{package}/bin/opencode")))
+}
+
+fn copilot_arg_has_known_package_path(arg: &str) -> bool {
+    let lower = normalize_proc_arg(arg);
+
+    lower.ends_with("/node_modules/@github/copilot/npm-loader.js")
+        || lower.ends_with("/node_modules/@github/copilot/index.js")
+        || lower.ends_with("/node_modules/@github/copilot/app.js")
+        || copilot_arg_has_platform_package_path(&lower)
+        || copilot_arg_has_known_bin_shim_path(&lower)
+}
+
+fn copilot_arg_has_platform_package_path(lower: &str) -> bool {
+    const PACKAGES: &[&str] = &[
+        "copilot-darwin-arm64",
+        "copilot-darwin-x64",
+        "copilot-linux-arm64",
+        "copilot-linux-x64",
+        "copilot-win32-arm64",
+        "copilot-win32-x64",
+    ];
+
+    PACKAGES
+        .iter()
+        .any(|package| lower.ends_with(&format!("/node_modules/@github/{package}/copilot")))
+}
+
+fn copilot_arg_has_known_bin_shim_path(lower: &str) -> bool {
+    arg_has_known_bin_shim_path(
+        lower,
+        "copilot",
+        &[
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/.local/bin",
+        ],
+        true,
+    )
 }
 
 fn opencode_arg_has_known_bin_shim_path(lower: &str) -> bool {
