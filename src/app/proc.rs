@@ -49,30 +49,7 @@ impl ProcessEvidence {
     }
 }
 
-#[cfg(target_os = "linux")]
-fn descendant_processes(root_pid: u32) -> Result<Vec<ProcessEvidence>> {
-    const MAX_PROCESSES: usize = 64;
-
-    let mut processes = Vec::new();
-    let mut queue = vec![root_pid];
-    let mut visited = std::collections::HashSet::new();
-
-    while let Some(pid) = queue.pop() {
-        if !visited.insert(pid) || visited.len() > MAX_PROCESSES {
-            continue;
-        }
-
-        if let Some(process) = process_evidence_for_pid(pid) {
-            processes.push(process);
-        }
-
-        queue.extend(children_for_pid(pid)?);
-    }
-
-    Ok(processes)
-}
-
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn descendant_processes(root_pid: u32) -> Result<Vec<ProcessEvidence>> {
     const MAX_PROCESSES: usize = 64;
 

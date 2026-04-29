@@ -1,3 +1,4 @@
+use super::status_label::status_from_codex_run_state_label;
 use super::*;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -208,32 +209,29 @@ pub(super) fn analyze_title(raw_title: &str) -> TitleAnalysis<'_> {
     }
 }
 fn strip_claude_title_prefix(title: &str) -> Option<&str> {
-    title
-        .strip_prefix("Claude Code | ")
-        .or_else(|| title.strip_prefix("Claude | "))
+    strip_provider_title_prefix(Provider::Claude, title)
 }
 
 fn strip_opencode_title_prefix(title: &str) -> Option<&str> {
-    title.strip_prefix("OC | ")
+    strip_provider_title_prefix(Provider::Opencode, title)
 }
 
 fn strip_copilot_title_prefix(title: &str) -> Option<&str> {
-    title
-        .strip_prefix("GitHub Copilot | ")
-        .or_else(|| title.strip_prefix("Copilot | "))
+    strip_provider_title_prefix(Provider::Copilot, title)
 }
 
 fn strip_cursor_cli_title_prefix(title: &str) -> Option<&str> {
-    title
-        .strip_prefix("Cursor CLI | ")
-        .or_else(|| title.strip_prefix("Cursor Agent | "))
-        .or_else(|| title.strip_prefix("Cursor | "))
+    strip_provider_title_prefix(Provider::CursorCli, title)
 }
 
 fn strip_pi_title_prefix(title: &str) -> Option<&str> {
-    title
-        .strip_prefix("π - ")
-        .or_else(|| title.strip_prefix("pi - "))
+    strip_provider_title_prefix(Provider::Pi, title)
+}
+
+fn strip_provider_title_prefix(provider: Provider, title: &str) -> Option<&str> {
+    provider_title_prefixes(provider)
+        .iter()
+        .find_map(|prefix| title.strip_prefix(prefix))
 }
 
 fn parse_gemini_terminal_title(title: &str) -> Option<GeminiTitle> {
@@ -439,7 +437,7 @@ fn normalize_codex_title_before_status(title: &str) -> String {
 
 pub(super) fn codex_activity_from_status_title(title: &str) -> Option<String> {
     if let Some((activity, status)) = title.rsplit_once(" | ")
-        && codex_run_state_label(status).is_some()
+        && status_from_codex_run_state_label(status).is_some()
     {
         let activity = activity.trim();
         if !activity.is_empty() {
@@ -448,7 +446,7 @@ pub(super) fn codex_activity_from_status_title(title: &str) -> Option<String> {
     }
 
     if let Some((status, activity)) = title.split_once(" | ")
-        && codex_run_state_label(status).is_some()
+        && status_from_codex_run_state_label(status).is_some()
     {
         let activity = activity.trim();
         if !activity.is_empty() {
@@ -470,29 +468,21 @@ fn normalize_codex_activity_label(activity: &str) -> String {
 }
 
 pub(super) fn codex_run_state_from_title(title: &str) -> Option<StatusKind> {
-    if let Some(status) = codex_run_state_label(title) {
+    if let Some(status) = status_from_codex_run_state_label(title) {
         return Some(status);
     }
     if let Some((_activity, status)) = title.rsplit_once(" | ")
-        && let Some(status) = codex_run_state_label(status)
+        && let Some(status) = status_from_codex_run_state_label(status)
     {
         return Some(status);
     }
     if let Some((status, _activity)) = title.split_once(" | ")
-        && let Some(status) = codex_run_state_label(status)
+        && let Some(status) = status_from_codex_run_state_label(status)
     {
         return Some(status);
     }
 
     None
-}
-
-fn codex_run_state_label(label: &str) -> Option<StatusKind> {
-    match label.trim() {
-        "Working" | "Waiting" | "Thinking" | "Starting" | "Undoing" => Some(StatusKind::Busy),
-        "Ready" => Some(StatusKind::Idle),
-        _ => None,
-    }
 }
 
 fn strip_codex_args_from_title(title: &str) -> String {

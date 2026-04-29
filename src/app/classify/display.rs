@@ -1,3 +1,4 @@
+use super::status_label::is_generic_display_status_label;
 use super::*;
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -178,22 +179,13 @@ fn infer_activity_label(provider: Option<Provider>, label: &str) -> Option<Strin
 }
 
 fn is_generic_provider_label(provider: Option<Provider>, label: &str) -> bool {
-    match provider {
-        Some(Provider::CursorCli) => {
-            label.eq_ignore_ascii_case("Cursor Agent")
-                || label.eq_ignore_ascii_case("cursor-agent")
-                || label.eq_ignore_ascii_case("Cursor CLI")
-                || label.eq_ignore_ascii_case("Cursor")
-        }
-        Some(Provider::Copilot) => label.eq_ignore_ascii_case("GitHub Copilot"),
-        Some(Provider::Opencode) => label.eq_ignore_ascii_case("OpenCode"),
-        _ => false,
-    }
+    provider.is_some_and(|provider| {
+        provider_generic_display_labels(provider)
+            .iter()
+            .any(|generic| label.eq_ignore_ascii_case(generic))
+    })
 }
 
 fn is_generic_status_label(label: &str) -> bool {
-    matches!(
-        label.trim(),
-        "Working" | "Waiting" | "Thinking" | "Starting" | "Undoing" | "Ready"
-    )
+    is_generic_display_status_label(label)
 }

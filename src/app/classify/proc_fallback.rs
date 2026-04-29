@@ -257,8 +257,7 @@ fn provider_match_from_proc_argv0(
 }
 
 fn claude_argv0_has_binary_shape(arg: &str) -> bool {
-    let normalized = arg.replace('\\', "/");
-    let lower = normalized.trim().to_ascii_lowercase();
+    let lower = normalize_proc_arg(arg);
     lower.ends_with("/claude")
         || lower.ends_with("/claude-code")
         || lower.ends_with("/node_modules/.bin/claude")
@@ -266,14 +265,12 @@ fn claude_argv0_has_binary_shape(arg: &str) -> bool {
 }
 
 fn claude_arg_has_known_package_path(arg: &str) -> bool {
-    let normalized = arg.replace('\\', "/");
-    let lower = normalized.trim().to_ascii_lowercase();
+    let lower = normalize_proc_arg(arg);
     lower.contains("/node_modules/@anthropic-ai/claude-code/")
 }
 
 fn gemini_arg_has_known_package_path(arg: &str) -> bool {
-    let normalized = arg.replace('\\', "/");
-    let lower = normalized.trim().to_ascii_lowercase();
+    let lower = normalize_proc_arg(arg);
 
     lower.contains("/node_modules/@google/gemini-cli/dist/index.js")
         || lower.contains("/node_modules/@google/gemini-cli/bundle/gemini.js")
@@ -286,21 +283,21 @@ fn gemini_arg_has_known_package_path(arg: &str) -> bool {
 }
 
 fn gemini_arg_has_known_bin_shim_path(lower: &str) -> bool {
-    lower.ends_with("/node_modules/.bin/gemini")
-        || lower.ends_with("/opt/homebrew/bin/gemini")
-        || lower.ends_with("/usr/local/bin/gemini")
-        || lower.ends_with("/usr/bin/gemini")
-        || lower.ends_with("/.volta/bin/gemini")
-        || (lower.ends_with("/bin/gemini")
-            && (lower.contains("/.nvm/versions/node/")
-                || lower.contains("/.nodenv/versions/")
-                || lower.contains("/.asdf/installs/nodejs/")
-                || lower.contains("/.local/share/mise/installs/node/")))
+    arg_has_known_bin_shim_path(
+        lower,
+        "gemini",
+        &[
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/.volta/bin",
+        ],
+        true,
+    )
 }
 
 fn pi_arg_has_known_package_path(arg: &str) -> bool {
-    let normalized = arg.replace('\\', "/");
-    let lower = normalized.trim().to_ascii_lowercase();
+    let lower = normalize_proc_arg(arg);
 
     lower.contains("/node_modules/@mariozechner/pi-coding-agent/")
         || lower.ends_with("/pi-mono/packages/coding-agent/dist/cli.js")
@@ -309,14 +306,11 @@ fn pi_arg_has_known_package_path(arg: &str) -> bool {
 }
 
 fn pi_arg_has_known_bin_shim_path(lower: &str) -> bool {
-    lower.ends_with("/node_modules/.bin/pi")
-        || lower.ends_with("/opt/homebrew/bin/pi")
-        || lower.ends_with("/usr/local/bin/pi")
+    arg_has_known_bin_shim_path(lower, "pi", &["/opt/homebrew/bin", "/usr/local/bin"], false)
 }
 
 fn opencode_arg_has_known_package_path(arg: &str) -> bool {
-    let normalized = arg.replace('\\', "/");
-    let lower = normalized.trim().to_ascii_lowercase();
+    let lower = normalize_proc_arg(arg);
 
     lower.ends_with("/node_modules/opencode/bin/opencode")
         || lower.ends_with("/node_modules/opencode-ai/bin/opencode")
@@ -348,16 +342,49 @@ fn opencode_arg_has_platform_package_path(lower: &str) -> bool {
 }
 
 fn opencode_arg_has_known_bin_shim_path(lower: &str) -> bool {
-    lower.ends_with("/node_modules/.bin/opencode")
-        || lower.ends_with("/opt/homebrew/bin/opencode")
-        || lower.ends_with("/usr/local/bin/opencode")
-        || lower.ends_with("/usr/bin/opencode")
-        || lower.ends_with("/.volta/bin/opencode")
-        || (lower.ends_with("/bin/opencode")
-            && (lower.contains("/.nvm/versions/node/")
-                || lower.contains("/.nodenv/versions/")
-                || lower.contains("/.asdf/installs/nodejs/")
-                || lower.contains("/.local/share/mise/installs/node/")))
+    arg_has_known_bin_shim_path(
+        lower,
+        "opencode",
+        &[
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/.volta/bin",
+        ],
+        true,
+    )
+}
+
+fn normalize_proc_arg(arg: &str) -> String {
+    arg.replace('\\', "/").trim().to_ascii_lowercase()
+}
+
+fn arg_has_known_bin_shim_path(
+    lower: &str,
+    binary: &str,
+    direct_bin_dirs: &[&str],
+    allow_node_manager_bin: bool,
+) -> bool {
+    lower.ends_with(&format!("/node_modules/.bin/{binary}"))
+        || direct_bin_dirs
+            .iter()
+            .any(|dir| lower.ends_with(&format!("{dir}/{binary}")))
+        || (allow_node_manager_bin
+            && lower.ends_with(&format!("/bin/{binary}"))
+            && arg_has_node_manager_prefix(lower))
+}
+
+fn arg_has_node_manager_prefix(lower: &str) -> bool {
+    const NODE_MANAGER_PATHS: &[&str] = &[
+        "/.nvm/versions/node/",
+        "/.nodenv/versions/",
+        "/.asdf/installs/nodejs/",
+        "/.local/share/mise/installs/node/",
+    ];
+
+    NODE_MANAGER_PATHS
+        .iter()
+        .any(|node_manager_path| lower.contains(node_manager_path))
 }
 
 fn claude_arg_for_reason(process: &proc::ProcessEvidence) -> Option<String> {
@@ -448,25 +475,17 @@ fn proc_arg_reason(process: &proc::ProcessEvidence) -> String {
 
 fn apply_provider_match(pane: &mut PaneRecord, provider_match: ProviderMatch) {
     let title_analysis = analyze_title(&pane.tmux.pane_title_raw);
-    let provider = Some(provider_match.provider);
-    let match_kind = Some(provider_match.matched_by);
-    let title_status = infer_title_status_from_analysis(provider, match_kind, &title_analysis);
-
-    pane.provider = provider;
-    pane.status = infer_status(title_status, pane.agent_metadata.state.as_deref());
-    pane.display = display_metadata_from_analysis(
+    let derived = pane_derived_fields(
         &title_analysis,
-        provider,
-        match_kind,
-        pane.agent_metadata.label.as_deref(),
+        Some(provider_match),
+        &pane.agent_metadata,
         current_command_for_analysis(&pane.tmux.pane_current_command),
         &pane.location.window_name,
     );
-    pane.classification = PaneClassification {
-        matched_by: match_kind,
-        confidence: Some(provider_match.confidence),
-        reasons: provider_match.reasons,
-    };
+    pane.provider = derived.provider;
+    pane.status = derived.status;
+    pane.display = derived.display;
+    pane.classification = derived.classification;
 }
 
 fn is_proc_fallback_candidate(pane: &PaneRecord) -> bool {

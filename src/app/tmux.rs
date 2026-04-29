@@ -12,98 +12,58 @@ pub(crate) enum FocusTmuxPaneResult {
 }
 
 pub(crate) fn tmux_list_panes() -> Result<Vec<TmuxPaneRow>> {
-    let output = run_tmux_output(&["list-panes", "-a", "-F", PANE_FORMAT], "tmux")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stderr = stderr.trim();
-        if stderr.is_empty() {
-            bail!("tmux list-panes failed with status {}", output.status);
-        }
-        bail!("tmux list-panes failed: {stderr}");
-    }
-
-    let stdout = String::from_utf8(output.stdout).context("tmux output was not valid UTF-8")?;
+    let stdout = run_tmux_text_output(
+        &["list-panes", "-a", "-F", PANE_FORMAT],
+        "tmux",
+        "tmux list-panes",
+        |_| false,
+        "tmux output was not valid UTF-8",
+    )?
+    .context("tmux list-panes unexpectedly returned no output")?;
     parse_pane_rows(&stdout)
 }
 
 pub(crate) fn tmux_list_panes_target(target: &str) -> Result<Option<Vec<TmuxPaneRow>>> {
-    let output = run_tmux_output(
+    let Some(stdout) = run_tmux_text_output(
         &["list-panes", "-t", target, "-F", PANE_FORMAT],
         &format!("tmux list-panes for target {target}"),
-    )?;
+        &format!("tmux list-panes -t {target}"),
+        tmux_scope_target_is_missing,
+        "tmux output was not valid UTF-8",
+    )?
+    else {
+        return Ok(None);
+    };
 
-    if !output.status.success() {
-        let stderr = tmux_stderr(&output);
-        if stderr.contains("can't find window")
-            || stderr.contains("can't find session")
-            || stderr.contains("can't find pane")
-        {
-            return Ok(None);
-        }
-        if stderr.is_empty() {
-            bail!(
-                "tmux list-panes -t {target} failed with status {}",
-                output.status
-            );
-        }
-        bail!("tmux list-panes -t {target} failed: {stderr}");
-    }
-
-    let stdout = String::from_utf8(output.stdout).context("tmux output was not valid UTF-8")?;
     let rows = parse_pane_rows(&stdout)?;
     Ok(Some(rows))
 }
 
 pub(crate) fn tmux_list_pane(pane_id: &str) -> Result<Option<TmuxPaneRow>> {
-    let output = run_tmux_output(
+    let Some(stdout) = run_tmux_text_output(
         &["list-panes", "-t", pane_id, "-F", PANE_FORMAT],
         &format!("tmux list-panes for {pane_id}"),
-    )?;
+        &format!("tmux list-panes -t {pane_id}"),
+        tmux_pane_target_is_missing,
+        "tmux output was not valid UTF-8",
+    )?
+    else {
+        return Ok(None);
+    };
 
-    if !output.status.success() {
-        let stderr = tmux_stderr(&output);
-        if stderr.contains("can't find pane") || stderr.contains("can't find window") {
-            return Ok(None);
-        }
-        if stderr.is_empty() {
-            bail!(
-                "tmux list-panes -t {pane_id} failed with status {}",
-                output.status
-            );
-        }
-        bail!("tmux list-panes -t {pane_id} failed: {stderr}");
-    }
-
-    let stdout = String::from_utf8(output.stdout).context("tmux output was not valid UTF-8")?;
     let mut rows = parse_pane_rows(&stdout)?;
     Ok(rows.pop())
 }
 
 pub(crate) fn tmux_capture_pane_tail(pane_id: &str, line_count: usize) -> Result<Option<String>> {
     let start = format!("-{}", line_count.max(1));
-    let output = run_tmux_output(
+    run_tmux_text_output(
         &["capture-pane", "-t", pane_id, "-p", "-S", &start],
         &format!("tmux capture-pane for {pane_id}"),
-    )?;
-
-    if !output.status.success() {
-        let stderr = tmux_stderr(&output);
-        if stderr.contains("can't find pane") || stderr.contains("can't find window") {
-            return Ok(None);
-        }
-        if stderr.is_empty() {
-            bail!(
-                "tmux capture-pane -t {pane_id} failed with status {}",
-                output.status
-            );
-        }
-        bail!("tmux capture-pane -t {pane_id} failed: {stderr}");
-    }
-
-    String::from_utf8(output.stdout)
-        .map(Some)
-        .context("tmux capture-pane output was not valid UTF-8")
+        &format!("tmux capture-pane -t {pane_id}"),
+        tmux_pane_target_is_missing,
+        "tmux capture-pane output was not valid UTF-8",
+    )
 }
 
 fn run_tmux_output(args: &[&str], context: &str) -> Result<std::process::Output> {
@@ -113,8 +73,40 @@ fn run_tmux_output(args: &[&str], context: &str) -> Result<std::process::Output>
         .with_context(|| format!("failed to execute {context}"))
 }
 
+fn run_tmux_text_output(
+    args: &[&str],
+    context: &str,
+    failure_context: &str,
+    missing_target: impl Fn(&str) -> bool,
+    utf8_context: &'static str,
+) -> Result<Option<String>> {
+    let output = run_tmux_output(args, context)?;
+    if !output.status.success() {
+        let stderr = tmux_stderr(&output);
+        if missing_target(&stderr) {
+            return Ok(None);
+        }
+        if stderr.is_empty() {
+            bail!("{failure_context} failed with status {}", output.status);
+        }
+        bail!("{failure_context} failed: {stderr}");
+    }
+
+    String::from_utf8(output.stdout)
+        .map(Some)
+        .context(utf8_context)
+}
+
 fn tmux_stderr(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stderr).trim().to_string()
+}
+
+fn tmux_scope_target_is_missing(stderr: &str) -> bool {
+    tmux_pane_target_is_missing(stderr) || stderr.contains("can't find session")
+}
+
+fn tmux_pane_target_is_missing(stderr: &str) -> bool {
+    stderr.contains("can't find pane") || stderr.contains("can't find window")
 }
 
 pub(crate) fn parse_pane_rows(input: &str) -> Result<Vec<TmuxPaneRow>> {

@@ -1,3 +1,4 @@
+use super::status_label::{status_from_gemini_generic_title, status_from_ready_working_prefix};
 use super::*;
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -35,19 +36,13 @@ pub(super) fn infer_title_status_from_analysis(
                 source: StatusSource::TmuxTitle,
             };
         }
-        if let Some(rest) = title_analysis.claude_label {
-            if rest == "Working" || rest.starts_with("Working ") {
-                return PaneStatus {
-                    kind: StatusKind::Busy,
-                    source: StatusSource::TmuxTitle,
-                };
-            }
-            if rest == "Ready" || rest.starts_with("Ready ") {
-                return PaneStatus {
-                    kind: StatusKind::Idle,
-                    source: StatusSource::TmuxTitle,
-                };
-            }
+        if let Some(rest) = title_analysis.claude_label
+            && let Some(status) = status_from_ready_working_prefix(rest)
+        {
+            return PaneStatus {
+                kind: status,
+                source: StatusSource::TmuxTitle,
+            };
         }
     }
 
@@ -78,56 +73,33 @@ pub(super) fn infer_title_status_from_analysis(
         };
     }
 
-    if matches!(provider, Some(Provider::Gemini)) {
-        match title_analysis.stripped {
-            "Ready" => {
-                return PaneStatus {
-                    kind: StatusKind::Idle,
-                    source: StatusSource::TmuxTitle,
-                };
-            }
-            "Working" | "Working…" | "Action Required" => {
-                return PaneStatus {
-                    kind: StatusKind::Busy,
-                    source: StatusSource::TmuxTitle,
-                };
-            }
-            _ => {}
-        }
+    if matches!(provider, Some(Provider::Gemini))
+        && let Some(status) = status_from_gemini_generic_title(title_analysis.stripped)
+    {
+        return PaneStatus {
+            kind: status,
+            source: StatusSource::TmuxTitle,
+        };
     }
 
     if matches!(provider, Some(Provider::Copilot))
         && let Some(rest) = title_analysis.copilot_label
+        && let Some(status) = status_from_ready_working_prefix(rest)
     {
-        if rest == "Working" || rest.starts_with("Working ") {
-            return PaneStatus {
-                kind: StatusKind::Busy,
-                source: StatusSource::TmuxTitle,
-            };
-        }
-        if rest == "Ready" || rest.starts_with("Ready ") {
-            return PaneStatus {
-                kind: StatusKind::Idle,
-                source: StatusSource::TmuxTitle,
-            };
-        }
+        return PaneStatus {
+            kind: status,
+            source: StatusSource::TmuxTitle,
+        };
     }
 
     if matches!(provider, Some(Provider::CursorCli))
         && let Some(rest) = title_analysis.cursor_label
+        && let Some(status) = status_from_ready_working_prefix(rest)
     {
-        if rest == "Working" || rest.starts_with("Working ") {
-            return PaneStatus {
-                kind: StatusKind::Busy,
-                source: StatusSource::TmuxTitle,
-            };
-        }
-        if rest == "Ready" || rest.starts_with("Ready ") {
-            return PaneStatus {
-                kind: StatusKind::Idle,
-                source: StatusSource::TmuxTitle,
-            };
-        }
+        return PaneStatus {
+            kind: status,
+            source: StatusSource::TmuxTitle,
+        };
     }
 
     if matches!(provider, Some(Provider::Pi))

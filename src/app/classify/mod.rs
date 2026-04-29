@@ -5,6 +5,7 @@ mod pane_output;
 mod proc_fallback;
 mod provider_match;
 mod status;
+mod status_label;
 mod title;
 
 use display::display_metadata_from_analysis;
@@ -45,13 +46,13 @@ pub(crate) fn pane_from_row(row: TmuxPaneRow) -> PaneRecord {
         current_command,
         &title_analysis,
     );
-    let provider = provider_match.as_ref().map(|matched| matched.provider);
-    let title_status = infer_title_status_from_analysis(
-        provider,
-        provider_match.as_ref().map(|matched| matched.matched_by),
+    let derived = pane_derived_fields(
         &title_analysis,
+        provider_match,
+        &agent_metadata,
+        current_command,
+        &row.window_name,
     );
-    let status = infer_status(title_status, agent_metadata.state.as_deref());
 
     PaneRecord {
         pane_id: row.pane_id,
@@ -70,23 +71,10 @@ pub(crate) fn pane_from_row(row: TmuxPaneRow) -> PaneRecord {
             session_id: row.session_id.clone(),
             window_id: row.window_id.clone(),
         },
-        display: display_metadata_from_analysis(
-            &title_analysis,
-            provider,
-            provider_match.as_ref().map(|matched| matched.matched_by),
-            agent_metadata.label.as_deref(),
-            current_command,
-            &row.window_name,
-        ),
-        provider,
-        status,
-        classification: PaneClassification {
-            matched_by: provider_match.as_ref().map(|matched| matched.matched_by),
-            confidence: provider_match.as_ref().map(|matched| matched.confidence),
-            reasons: provider_match
-                .map(|matched| matched.reasons)
-                .unwrap_or_default(),
-        },
+        display: derived.display,
+        provider: derived.provider,
+        status: derived.status,
+        classification: derived.classification,
         agent_metadata,
         diagnostics: PaneDiagnostics {
             cache_origin: "direct_snapshot".to_string(),
@@ -106,4 +94,46 @@ pub(crate) fn panes_from_rows_with_proc_fallback(
             pane
         })
         .collect()
+}
+
+pub(in crate::app::classify) struct PaneDerivedFields {
+    provider: Option<Provider>,
+    status: PaneStatus,
+    display: DisplayMetadata,
+    classification: PaneClassification,
+}
+
+pub(in crate::app::classify) fn pane_derived_fields(
+    title_analysis: &TitleAnalysis<'_>,
+    provider_match: Option<ProviderMatch>,
+    agent_metadata: &AgentMetadata,
+    current_command: &str,
+    window_name: &str,
+) -> PaneDerivedFields {
+    let provider = provider_match.as_ref().map(|matched| matched.provider);
+    let match_kind = provider_match.as_ref().map(|matched| matched.matched_by);
+    let title_status = infer_title_status_from_analysis(provider, match_kind, title_analysis);
+    let status = infer_status(title_status, agent_metadata.state.as_deref());
+    let display = display_metadata_from_analysis(
+        title_analysis,
+        provider,
+        match_kind,
+        agent_metadata.label.as_deref(),
+        current_command,
+        window_name,
+    );
+    let classification = PaneClassification {
+        matched_by: match_kind,
+        confidence: provider_match.as_ref().map(|matched| matched.confidence),
+        reasons: provider_match
+            .map(|matched| matched.reasons)
+            .unwrap_or_default(),
+    };
+
+    PaneDerivedFields {
+        provider,
+        status,
+        display,
+        classification,
+    }
 }

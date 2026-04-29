@@ -30,6 +30,8 @@ pub(crate) struct ProviderInfo {
     display_marker: &'static str,
     metadata_aliases: &'static [&'static str],
     command_aliases: &'static [ProviderCommandAlias],
+    title_prefixes: &'static [&'static str],
+    generic_display_labels: &'static [&'static str],
 }
 
 #[derive(Clone, Copy)]
@@ -51,6 +53,8 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
         display_marker: "\u{f07b5}",
         metadata_aliases: &["codex"],
         command_aliases: &[ProviderCommandAlias::new("codex", true)],
+        title_prefixes: &[],
+        generic_display_labels: &[],
     },
     ProviderInfo {
         provider: Provider::Claude,
@@ -58,6 +62,8 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
         display_marker: "\u{e76f}",
         metadata_aliases: &["claude"],
         command_aliases: &[ProviderCommandAlias::new("claude", true)],
+        title_prefixes: &["Claude Code | ", "Claude | "],
+        generic_display_labels: &[],
     },
     ProviderInfo {
         provider: Provider::Gemini,
@@ -65,6 +71,8 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
         display_marker: "\u{e7f0}",
         metadata_aliases: &["gemini"],
         command_aliases: &[ProviderCommandAlias::new("gemini", true)],
+        title_prefixes: &[],
+        generic_display_labels: &[],
     },
     ProviderInfo {
         provider: Provider::Opencode,
@@ -72,6 +80,8 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
         display_marker: "\u{f07e2}",
         metadata_aliases: &["opencode"],
         command_aliases: &[ProviderCommandAlias::new("opencode", true)],
+        title_prefixes: &["OC | "],
+        generic_display_labels: &["OpenCode"],
     },
     ProviderInfo {
         provider: Provider::Copilot,
@@ -82,6 +92,8 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
             ProviderCommandAlias::new("copilot", false),
             ProviderCommandAlias::new("github-copilot", false),
         ],
+        title_prefixes: &["GitHub Copilot | ", "Copilot | "],
+        generic_display_labels: &["GitHub Copilot"],
     },
     ProviderInfo {
         provider: Provider::CursorCli,
@@ -92,6 +104,8 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
             ProviderCommandAlias::new("cursor-cli", false),
             ProviderCommandAlias::new("cursor-agent", false),
         ],
+        title_prefixes: &["Cursor CLI | ", "Cursor Agent | ", "Cursor | "],
+        generic_display_labels: &["Cursor Agent", "cursor-agent", "Cursor CLI", "Cursor"],
     },
     ProviderInfo {
         provider: Provider::Pi,
@@ -99,6 +113,8 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
         display_marker: "\u{e22c}",
         metadata_aliases: &["pi", "pi-coding-agent", "pi coding agent"],
         command_aliases: &[ProviderCommandAlias::new("pi-coding-agent", false)],
+        title_prefixes: &["π - ", "pi - "],
+        generic_display_labels: &[],
     },
 ];
 
@@ -110,6 +126,14 @@ pub(crate) fn provider_display_marker(provider: Option<Provider>) -> String {
 
 pub(crate) fn provider_summary_order() -> impl Iterator<Item = Provider> {
     PROVIDER_INFOS.iter().map(|info| info.provider)
+}
+
+pub(crate) fn provider_title_prefixes(provider: Provider) -> &'static [&'static str] {
+    provider_info(provider).title_prefixes
+}
+
+pub(crate) fn provider_generic_display_labels(provider: Provider) -> &'static [&'static str] {
+    provider_info(provider).generic_display_labels
 }
 
 pub(crate) fn provider_from_metadata(provider: Option<&str>) -> Option<Provider> {

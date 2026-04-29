@@ -223,9 +223,7 @@ pub(super) fn print_daemon_status_text(
     max_age_seconds: Option<u64>,
 ) {
     print_daemon_cache_diagnostics(diagnostics);
-    println!("path: {}", path.display());
-    println!("generated_at: {}", snapshot.generated_at);
-    println!("cache_age_seconds: {}", diagnostics.cache_age_seconds);
+    print_cache_file_fields(path, snapshot, diagnostics, false);
     print_daemon_refresh_fields(snapshot, diagnostics);
     println!("source: {:?}", snapshot.source.kind);
     println!("pane_count: {}", summary.pane_count);
@@ -238,14 +236,23 @@ fn print_cache_snapshot_fields(
     diagnostics: &CacheDiagnostics,
     include_schema: bool,
 ) {
+    print_cache_file_fields(path, snapshot, diagnostics, include_schema);
+    println!("source: {:?}", snapshot.source.kind);
+    print_daemon_refresh_fields(snapshot, diagnostics);
+}
+
+fn print_cache_file_fields(
+    path: &Path,
+    snapshot: &SnapshotEnvelope,
+    diagnostics: &CacheDiagnostics,
+    include_schema: bool,
+) {
     println!("path: {}", path.display());
     if include_schema {
         println!("schema_version: {}", snapshot.schema_version);
     }
     println!("generated_at: {}", snapshot.generated_at);
     println!("cache_age_seconds: {}", diagnostics.cache_age_seconds);
-    println!("source: {:?}", snapshot.source.kind);
-    print_daemon_refresh_fields(snapshot, diagnostics);
 }
 
 fn print_daemon_refresh_fields(snapshot: &SnapshotEnvelope, diagnostics: &CacheDiagnostics) {
