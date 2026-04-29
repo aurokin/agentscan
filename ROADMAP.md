@@ -95,13 +95,17 @@ The default detection path is:
 1. explicit wrapper-published tmux metadata
 2. tmux pane metadata and terminal titles
 3. targeted process-tree fallback for concrete ambiguous panes
-4. incremental pane output parsing only if later justified
+4. tightly scoped provider-specific pane output parsing for status only, after
+   provider identity has already been established
 
 Implications:
 
 - prefer tmux metadata and control-mode events over process scans
 - keep labels conservative when evidence is weak
 - treat pane inspection as fallback rather than the normal path
+- pane output is not a provider-identity signal. When used, it must be
+  provider-scoped, anchored to current prompt/footer/status shapes, and reported
+  through `status.source="pane_output"`.
 - process fallback is targeted live process inspection, not broad system
   scanning. It is limited to concrete ambiguous panes, checks the foreground
   process group for shell or wrapper panes, and checks root/descendant process
@@ -191,6 +195,9 @@ Delivered baseline:
 - provider-specific plug-and-play hardening for Gemini CLI, Pi, and opencode
   from upstream source evidence, while keeping weak status inference
   conservative
+- provider-specific pane-output status fallback for already-identified GitHub
+  Copilot and Cursor CLI panes, including current idle and busy prompt/footer
+  shapes while ignoring stale output
 - inspect provenance for provider, status, classification, and fallback
   decisions
 
@@ -201,8 +208,8 @@ Definition of done for the current finish pass:
   surfaces, and shell boundaries consistently
 - unresolved panes stay conservative unless wrapper metadata, tmux evidence, or
   targeted process fallback provides specific provider evidence
-- deferred work is limited to future migration sequencing and incremental output
-  parsing if later justified by concrete unresolved panes
+- deferred work is limited to future migration sequencing and additional
+  provider-scoped output parsing only if justified by concrete unresolved panes
 
 Further migration sequencing belongs in Linear until it becomes stable enough to
 document as a contract in the repo docs.

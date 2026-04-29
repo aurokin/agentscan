@@ -16,7 +16,8 @@ The detection ladder stays:
 2. provider-specific tmux title and pane metadata signals
 3. targeted live process fallback for ambiguous launcher panes and shell
    wrappers
-4. shallow provider-scoped pane output parsing only if later justified
+4. shallow provider-scoped pane output parsing for status only, after provider
+   identity is already known and current prompt/footer shapes are stable enough
 5. optional hooks, extensions, or wrappers as the final enrichment layer only
 
 Hooks and extensions are deep-roadmap work. They should come after we have
@@ -28,6 +29,8 @@ historical state stores are not baseline detection inputs. They can be used to
 understand a closed-source provider during research, but shipped
 plug-and-play detection should rely on live tmux metadata, terminal titles,
 foreground/root/descendant process evidence, and tightly scoped pane output.
+When pane output supplies state, JSON should expose that provenance as
+`status.source="pane_output"`.
 
 ## Pi Coding Agent Plan
 
@@ -118,7 +121,8 @@ a future roadmap item explicitly promotes them into an opt-in integration.
 Closed-source queue:
 
 - GitHub Copilot CLI: available now because a Copilot subscription is available.
-- Cursor CLI: blocked on access to a subscription or test environment.
+- Cursor CLI: available now through local `cursor-agent` installation and
+  empirical tmux probing.
 
 Closed-source probing should produce a written evidence matrix before code
 changes. If a signal is weak, agentscan should prefer `unknown` over a richer
@@ -138,12 +142,14 @@ GitHub Copilot CLI:
   should be treated as labels only when process evidence already establishes
   the provider.
 - During work, the live pane rendered `Thinking (Esc to cancel)`, but the tmux
-  title remained stable. Treat pane-output status parsing as the next
-  provider-scoped fallback if Copilot status is needed without hooks.
+  title remained stable. agentscan now treats pane-output status parsing as a
+  provider-scoped fallback after Copilot identity is known.
 - Baseline status may use a short, provider-scoped pane tail for exact live
   Copilot busy prompts such as `Thinking (Esc to cancel)` and folder-trust
-  prompts. It should not infer idle from the visible prompt, because Copilot can
-  show the input prompt while work is still in progress.
+  prompts.
+- Baseline status may infer idle only from the anchored current Copilot prompt
+  and `/ commands · ? help` footer shape. Stale `Thinking` lines above the
+  current prompt should not keep the pane busy.
 - Treat `COPILOT_HOME`, `COPILOT_MODEL`, and similar environment variables as
   supporting process context only, not provider identity by themselves.
 - Treat Copilot hooks, plugins, statusline/footer customization, and session
@@ -157,5 +163,12 @@ Cursor CLI:
   Cursor-specific argv or path evidence.
 - Treat `CURSOR_AGENT` and `CURSOR_CLI` environment variables as supporting
   context only, not provider identity by themselves.
-- Use pane output patterns such as approval prompts or busy indicators only as
-  future provider-scoped status signals after identity is already established.
+- Local probing confirmed the default idle `Cursor Agent` title can be generic
+  while `pane_current_command=node`; foreground process evidence still resolves
+  `cursor-agent`.
+- Baseline status may infer idle from anchored current Cursor footers such as
+  `→ Plan, search, build anything` and `→ Add a follow-up`.
+- Baseline status may infer busy from anchored current Cursor footer/status
+  shapes, including `ctrl+c to stop` and the Cursor spinner plus `Running`
+  status line. Ordinary response text containing the word `Running` should not
+  drive status.

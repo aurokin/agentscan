@@ -108,7 +108,15 @@ It can:
 - keep labels conservative: show what tmux metadata actually tells us and avoid inventing richer task names from weak signals
 - use targeted live process evidence, including pane TTY foreground process
   groups, only for unresolved ambiguous panes
+- use tightly scoped provider-specific pane output parsing as a final status
+  fallback for already-identified Copilot and Cursor CLI panes. When this path
+  wins, JSON reports `status.source="pane_output"`.
 - treat Cursor CLI as metadata-first: command detection is enough to identify the provider, but generic tmux titles fall back to conservative pane labels until wrappers publish stronger metadata
+- infer Cursor CLI busy/idle status from the current Cursor footer only after
+  provider identity is already established
+- infer GitHub Copilot busy/idle status from current Copilot prompt, footer,
+  thinking, and trust-prompt shapes only after provider identity is already
+  established
 - resolve unresolved Claude Code launcher panes from targeted process evidence, including Claude Code CLI paths and tmux teammate-spawn argv/env markers
 - classify Pi coding agent panes from upstream-observed Greek terminal titles,
   Linux `PI_CODING_AGENT=true` process evidence, and targeted package or shim
@@ -196,6 +204,10 @@ The useful design inputs are mostly at the data-model level:
 - wrapper-aware provider classification
 - separation between raw pane metadata and cleaned display labels
 - explicit `unknown` status when a fast answer is better than an expensive guess
+- explicit status provenance. `status.source` can be `tmux_title`,
+  `pane_metadata`, `pane_output`, or `not_checked`; `pane_output` means a
+  provider-scoped current prompt/footer pattern supplied the status after
+  stronger metadata/title sources were unavailable.
 - stable pane identity for downstream consumers such as popups or focus commands
 
 ## Current CLI Families

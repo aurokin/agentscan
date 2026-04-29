@@ -25,10 +25,15 @@ Detection follows a strict precedence ladder:
 1. explicit wrapper-published tmux pane metadata
 2. tmux pane metadata and terminal titles
 3. targeted process-tree fallback for confirmed ambiguous panes
-4. incremental pane output parsing only if later justified
+4. tightly scoped provider-specific pane output parsing for status only, after
+   provider identity has already been established
 
 The steady-state path must stay tmux-first. Broad `ps` scans, repeated
 `capture-pane` loops, and popup-time scraping are out of bounds.
+
+Pane output is not a provider-identity source. It is a last status fallback for
+providers with observed stable current prompt/footer shapes. Consumers can see
+that provenance as `status.source="pane_output"` in JSON.
 
 ## Canonical State Model
 
@@ -39,6 +44,8 @@ The canonical model is a typed Rust structure keyed by `pane_id`. It separates:
 - normalized display metadata
 - provider classification
 - explicit status fields such as `idle`, `busy`, and `unknown`
+- status provenance, including `pane_output` when a provider-scoped current
+  prompt/footer pattern supplied the status
 - classification reasons and diagnostics
 - optional wrapper-published agent metadata
 

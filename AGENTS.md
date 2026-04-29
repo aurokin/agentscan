@@ -38,6 +38,7 @@ Co-Authored-By: <agent name> <email>
 - Prefer tmux metadata and control-mode events over `ps` scans or repeated `capture-pane` calls.
 - Do not add a permanent `fast` vs `full` split; the target behavior is one fast path.
 - Treat `/proc` inspection as fallback for ambiguous panes, not the primary detection path.
+- Treat pane output parsing as provider-scoped status fallback only after provider identity is already established. It must anchor to current prompt/footer/status shapes, avoid stale scrollback, and report provenance as `status.source="pane_output"`.
 - Prefer explicit pane metadata via tmux user options when wrappers can publish it.
 - Keep output formats stable; preserve machine-readable commands even if display labels change.
 - Prefer honest labels from tmux metadata over richer but weakly inferred labels; deeper pane inspection is a later fallback, not a reason to invent display text.

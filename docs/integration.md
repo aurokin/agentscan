@@ -32,6 +32,12 @@ that as an API gap in `list` or cache JSON. Do not add hidden `popup --format`
 paths, popup-shaped TSV, or parser compatibility branches to preserve legacy
 stdout parsing.
 
+Status provenance is part of the JSON contract. `status.source="pane_output"`
+means the provider was already identified by stronger evidence, and agentscan
+then used a provider-specific current prompt/footer/status pattern to infer
+`busy` or `idle`. Pane output must not be used as provider identity evidence,
+and stale historical lines in the pane tail should not drive current status.
+
 ## Wrapper Metadata Contract
 
 Launch wrappers may publish explicit pane-local tmux user options:
@@ -145,15 +151,21 @@ Provider-specific guidance should stay narrow and correctness-driven:
 - Cursor CLI should be treated as metadata-first for labels and session ids.
   The live `cursor-agent` command is enough to identify the provider, but tmux
   titles are often generic. Wrappers should publish `@agent.label` and
-  `@agent.session_id` when they can obtain those values.
+  `@agent.session_id` when they can obtain those values. Baseline status can
+  fall back to provider-scoped pane output after identity is known: current
+  Cursor footers can report idle, and current running footer/status-line shapes
+  can report busy with `status.source="pane_output"`.
 - opencode should remain plug-and-play from its upstream `OpenCode` and
   `OC | ...` terminal title shapes, targeted package or shim path evidence, and
   Linux `OPENCODE` environment marker. Its default terminal title does not
   publish busy or idle state; keep status unknown unless explicit tmux metadata
   supplies state.
 - GitHub Copilot and Cursor are closed-source enough that support should be
-  based on empirical probing. Record command, title, argv, env, and state
-  snapshots before adding or changing heuristics.
+  based on empirical probing. Copilot baseline status can fall back to
+  provider-scoped pane output after identity is known: current prompt/footer
+  shapes can report idle, and current thinking or folder-trust prompts can
+  report busy with `status.source="pane_output"`. Record command, title, argv,
+  env, and state snapshots before adding or changing heuristics.
 - Wrapper-shaped panes with generic shell commands should publish metadata
   rather than relying on path, window name, or title inference. The ambiguity
   corpus in `docs/notes/ambiguity-corpus.md` records examples where weak tmux
