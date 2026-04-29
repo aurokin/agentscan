@@ -3761,8 +3761,8 @@ fn copilot_pane_output_ignores_stale_thinking_lines() {
          / commands · ? help\n",
     );
 
-    assert_eq!(copilot.status.kind, StatusKind::Unknown);
-    assert_eq!(copilot.status.source, super::StatusSource::NotChecked);
+    assert_eq!(copilot.status.kind, StatusKind::Idle);
+    assert_eq!(copilot.status.source, super::StatusSource::PaneOutput);
 }
 
 #[test]
@@ -3807,6 +3807,59 @@ fn copilot_pane_output_does_not_infer_idle_from_prompt() {
 }
 
 #[test]
+fn copilot_pane_output_marks_current_prompt_idle() {
+    let mut copilot = proc_fallback_pane(757, "node", "GitHub Copilot");
+    copilot.provider = Some(Provider::Copilot);
+    copilot.status = super::PaneStatus {
+        kind: StatusKind::Unknown,
+        source: super::StatusSource::NotChecked,
+    };
+
+    classify::apply_pane_output_status_fallback(
+        &mut copilot,
+        "╭──────────────────────────────────────────────────────────────────────────╮\n\
+         │  GitHub Copilot v1.0.39                                           │\n\
+         ╰──────────────────────────────────────────────────────────────────────────╯\n\
+         \n\
+         ● Environment loaded: 1 custom instruction, 22 skills\n\
+         \n\
+         ~/code/agentscan [⎇ master*]\n\
+         ──────────────────────────────────────────────────────────────────────────\n\
+         ❯\n\
+         ──────────────────────────────────────────────────────────────────────────\n\
+          / commands · ? help                                      Claude Haiku 4.5\n",
+    );
+
+    assert_eq!(copilot.status.kind, StatusKind::Idle);
+    assert_eq!(copilot.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn copilot_pane_output_uses_current_prompt_over_stale_thinking() {
+    let mut copilot = proc_fallback_pane(758, "node", "GitHub Copilot");
+    copilot.provider = Some(Provider::Copilot);
+    copilot.status = super::PaneStatus {
+        kind: StatusKind::Unknown,
+        source: super::StatusSource::NotChecked,
+    };
+
+    classify::apply_pane_output_status_fallback(
+        &mut copilot,
+        "● Thinking (Esc to cancel · 616 B)\n\
+         ● Done! Created result.txt.\n\
+         \n\
+         ~/code/agentscan [⎇ master*]\n\
+         ──────────────────────────────────────────────────────────────────────────\n\
+         ❯\n\
+         ──────────────────────────────────────────────────────────────────────────\n\
+          / commands · ? help                                      Claude Haiku 4.5\n",
+    );
+
+    assert_eq!(copilot.status.kind, StatusKind::Idle);
+    assert_eq!(copilot.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
 fn cursor_cli_pane_output_marks_current_running_prompt_busy() {
     let mut cursor = proc_fallback_pane(750, "node", "Command Runner");
     cursor.provider = Some(Provider::CursorCli);
@@ -3825,6 +3878,32 @@ fn cursor_cli_pane_output_marks_current_running_prompt_busy() {
           → Add a follow-up                                             ctrl+c to stop\n\
          ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
           Auto · 5%                                                           Auto-run\n\
+          /private/tmp/agentscan-cursor-smoke\n",
+    );
+
+    assert_eq!(cursor.status.kind, StatusKind::Busy);
+    assert_eq!(cursor.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn cursor_cli_pane_output_marks_prompt_footer_running_busy() {
+    let mut cursor = proc_fallback_pane(753, "node", "Command Runner");
+    cursor.provider = Some(Provider::CursorCli);
+    cursor.status = super::PaneStatus {
+        kind: StatusKind::Unknown,
+        source: super::StatusSource::NotChecked,
+    };
+
+    classify::apply_pane_output_status_fallback(
+        &mut cursor,
+        "  $ sleep 12; printf cursor-smoke-ok-3 > result3.txt 12s\n\
+         \n\
+         ⠜⠃ Running  238 tokens\n\
+         ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄\n\
+          → Please run exactly this shell command: sleep 12; printf cursor-smoke-ok-3\n\
+            > result3.txt. Do not edit anything else.\n\
+         ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+          Auto · 5.1%                                                         Auto-run\n\
           /private/tmp/agentscan-cursor-smoke\n",
     );
 
@@ -3856,8 +3935,8 @@ fn cursor_cli_pane_output_ignores_stale_running_lines() {
           /private/tmp/agentscan-cursor-smoke\n",
     );
 
-    assert_eq!(cursor.status.kind, StatusKind::Unknown);
-    assert_eq!(cursor.status.source, super::StatusSource::NotChecked);
+    assert_eq!(cursor.status.kind, StatusKind::Idle);
+    assert_eq!(cursor.status.source, super::StatusSource::PaneOutput);
 }
 
 #[test]
@@ -3887,8 +3966,89 @@ fn cursor_cli_pane_output_uses_latest_footer() {
           /private/tmp/agentscan-cursor-smoke\n",
     );
 
-    assert_eq!(cursor.status.kind, StatusKind::Unknown);
-    assert_eq!(cursor.status.source, super::StatusSource::NotChecked);
+    assert_eq!(cursor.status.kind, StatusKind::Idle);
+    assert_eq!(cursor.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn cursor_cli_pane_output_ignores_stale_running_footer_block() {
+    let mut cursor = proc_fallback_pane(754, "node", "Command Runner");
+    cursor.provider = Some(Provider::CursorCli);
+    cursor.status = super::PaneStatus {
+        kind: StatusKind::Unknown,
+        source: super::StatusSource::NotChecked,
+    };
+
+    classify::apply_pane_output_status_fallback(
+        &mut cursor,
+        " ⠜⠃ Running  238 tokens\n\
+         ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄\n\
+          → Please run exactly this shell command: sleep 12; printf cursor-smoke-ok-3\n\
+            > result3.txt. Do not edit anything else.\n\
+         ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+         \n\
+          Completed. I ran exactly:\n\
+         \n\
+          sleep 12; printf cursor-smoke-ok-3 > result3.txt\n\
+         \n\
+         ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄\n\
+          → Add a follow-up\n\
+         ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+          Auto · 5.1%                                                         Auto-run\n\
+          /private/tmp/agentscan-cursor-smoke\n",
+    );
+
+    assert_eq!(cursor.status.kind, StatusKind::Idle);
+    assert_eq!(cursor.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn cursor_cli_pane_output_ignores_response_text_before_idle_footer() {
+    let mut cursor = proc_fallback_pane(755, "node", "Command Runner");
+    cursor.provider = Some(Provider::CursorCli);
+    cursor.status = super::PaneStatus {
+        kind: StatusKind::Unknown,
+        source: super::StatusSource::NotChecked,
+    };
+
+    classify::apply_pane_output_status_fallback(
+        &mut cursor,
+        "  Running `cargo test` now passes.\n\
+         \n\
+         ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄\n\
+          → Add a follow-up\n\
+         ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+          Auto · 5.1%                                                         Auto-run\n\
+          /private/tmp/agentscan-cursor-smoke\n",
+    );
+
+    assert_eq!(cursor.status.kind, StatusKind::Idle);
+    assert_eq!(cursor.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn cursor_cli_pane_output_marks_initial_prompt_idle() {
+    let mut cursor = proc_fallback_pane(756, "node", "Cursor Agent");
+    cursor.provider = Some(Provider::CursorCli);
+    cursor.status = super::PaneStatus {
+        kind: StatusKind::Unknown,
+        source: super::StatusSource::NotChecked,
+    };
+
+    classify::apply_pane_output_status_fallback(
+        &mut cursor,
+        "  Cursor Agent\n\
+          v2026.04.28-e984b46\n\
+         \n\
+         ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄\n\
+          → Plan, search, build anything\n\
+         ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+          Auto\n\
+          ~/code/agentscan · master\n",
+    );
+
+    assert_eq!(cursor.status.kind, StatusKind::Idle);
+    assert_eq!(cursor.status.source, super::StatusSource::PaneOutput);
 }
 
 #[test]
