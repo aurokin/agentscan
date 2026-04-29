@@ -3807,6 +3807,91 @@ fn copilot_pane_output_does_not_infer_idle_from_prompt() {
 }
 
 #[test]
+fn cursor_cli_pane_output_marks_current_running_prompt_busy() {
+    let mut cursor = proc_fallback_pane(750, "node", "Command Runner");
+    cursor.provider = Some(Provider::CursorCli);
+    cursor.status = super::PaneStatus {
+        kind: StatusKind::Unknown,
+        source: super::StatusSource::NotChecked,
+    };
+
+    classify::apply_pane_output_status_fallback(
+        &mut cursor,
+        "  $ sleep 15; printf cursor-smoke-ok > result.txt 11s in\n\
+           /tmp/agentscan-cursor-smoke\n\
+         \n\
+         ⠳⠀ Running  187 tokens\n\
+         ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄\n\
+          → Add a follow-up                                             ctrl+c to stop\n\
+         ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+          Auto · 5%                                                           Auto-run\n\
+          /private/tmp/agentscan-cursor-smoke\n",
+    );
+
+    assert_eq!(cursor.status.kind, StatusKind::Busy);
+    assert_eq!(cursor.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn cursor_cli_pane_output_ignores_stale_running_lines() {
+    let mut cursor = proc_fallback_pane(751, "node", "Command Runner");
+    cursor.provider = Some(Provider::CursorCli);
+    cursor.status = super::PaneStatus {
+        kind: StatusKind::Unknown,
+        source: super::StatusSource::NotChecked,
+    };
+
+    classify::apply_pane_output_status_fallback(
+        &mut cursor,
+        " ⠳⠀ Running  187 tokens\n\
+         \n\
+          Completed. I ran exactly:\n\
+         \n\
+          sleep 15; printf cursor-smoke-ok > result.txt\n\
+         \n\
+         ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄\n\
+          → Add a follow-up\n\
+         ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+          Auto · 5.1%                                                         Auto-run\n\
+          /private/tmp/agentscan-cursor-smoke\n",
+    );
+
+    assert_eq!(cursor.status.kind, StatusKind::Unknown);
+    assert_eq!(cursor.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn cursor_cli_pane_output_uses_latest_footer() {
+    let mut cursor = proc_fallback_pane(752, "node", "Command Runner");
+    cursor.provider = Some(Provider::CursorCli);
+    cursor.status = super::PaneStatus {
+        kind: StatusKind::Unknown,
+        source: super::StatusSource::NotChecked,
+    };
+
+    classify::apply_pane_output_status_fallback(
+        &mut cursor,
+        " ⠳⠀ Running  187 tokens\n\
+         ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄\n\
+          → Add a follow-up                                             ctrl+c to stop\n\
+         ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+         \n\
+          Completed. I ran exactly:\n\
+         \n\
+          sleep 15; printf cursor-smoke-ok > result.txt\n\
+         \n\
+         ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄\n\
+          → Add a follow-up\n\
+         ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+          Auto · 5.1%                                                         Auto-run\n\
+          /private/tmp/agentscan-cursor-smoke\n",
+    );
+
+    assert_eq!(cursor.status.kind, StatusKind::Unknown);
+    assert_eq!(cursor.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
 fn opencode_display_metadata_uses_title_without_activity_state() {
     let opencode = classify::display_metadata(
         Some(Provider::Opencode),

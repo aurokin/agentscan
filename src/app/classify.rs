@@ -333,8 +333,10 @@ pub(crate) fn apply_proc_fallback(pane: &mut PaneRecord, inspector: &impl proc::
 }
 
 pub(crate) fn pane_output_status_fallback_candidate(pane: &PaneRecord) -> bool {
-    matches!(pane.provider, Some(Provider::Copilot))
-        && pane.status.kind == StatusKind::Unknown
+    matches!(
+        pane.provider,
+        Some(Provider::Copilot) | Some(Provider::CursorCli)
+    ) && pane.status.kind == StatusKind::Unknown
         && pane.status.source == StatusSource::NotChecked
 }
 
@@ -343,9 +345,13 @@ pub(crate) fn apply_pane_output_status_fallback(pane: &mut PaneRecord, output: &
         return;
     }
 
-    if matches!(pane.provider, Some(Provider::Copilot))
-        && copilot_pane_output_indicates_busy(output)
-    {
+    let indicates_busy = match pane.provider {
+        Some(Provider::Copilot) => copilot_pane_output_indicates_busy(output),
+        Some(Provider::CursorCli) => cursor_cli_pane_output_indicates_busy(output),
+        _ => false,
+    };
+
+    if indicates_busy {
         pane.status = PaneStatus {
             kind: StatusKind::Busy,
             source: StatusSource::PaneOutput,
@@ -389,6 +395,16 @@ fn copilot_current_trust_prompt_visible(output: &str) -> bool {
         && modal_lines
             .iter()
             .any(|line| line.contains("Do you trust the files in this folder?"))
+}
+
+fn cursor_cli_pane_output_indicates_busy(output: &str) -> bool {
+    let current_footer = output
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| line.starts_with("→ Add a follow-up"));
+
+    current_footer.is_some_and(|line| line.contains("ctrl+c to stop"))
 }
 
 #[derive(Clone)]
