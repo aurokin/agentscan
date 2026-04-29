@@ -85,6 +85,33 @@ pub(crate) fn tmux_list_pane(pane_id: &str) -> Result<Option<TmuxPaneRow>> {
     Ok(rows.pop())
 }
 
+pub(crate) fn tmux_capture_pane_tail(pane_id: &str, line_count: usize) -> Result<Option<String>> {
+    let start = format!("-{}", line_count.max(1));
+    let output = Command::new("tmux")
+        .args(["capture-pane", "-t", pane_id, "-p", "-S", &start])
+        .output()
+        .with_context(|| format!("failed to execute tmux capture-pane for {pane_id}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = stderr.trim();
+        if stderr.contains("can't find pane") || stderr.contains("can't find window") {
+            return Ok(None);
+        }
+        if stderr.is_empty() {
+            bail!(
+                "tmux capture-pane -t {pane_id} failed with status {}",
+                output.status
+            );
+        }
+        bail!("tmux capture-pane -t {pane_id} failed: {stderr}");
+    }
+
+    String::from_utf8(output.stdout)
+        .map(Some)
+        .context("tmux capture-pane output was not valid UTF-8")
+}
+
 pub(crate) fn parse_pane_rows(input: &str) -> Result<Vec<TmuxPaneRow>> {
     let mut panes = Vec::new();
 

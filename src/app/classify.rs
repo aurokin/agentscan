@@ -332,6 +332,36 @@ pub(crate) fn apply_proc_fallback(pane: &mut PaneRecord, inspector: &impl proc::
     };
 }
 
+pub(crate) fn pane_output_status_fallback_candidate(pane: &PaneRecord) -> bool {
+    matches!(pane.provider, Some(Provider::Copilot))
+        && pane.status.kind == StatusKind::Unknown
+        && pane.status.source == StatusSource::NotChecked
+}
+
+pub(crate) fn apply_pane_output_status_fallback(pane: &mut PaneRecord, output: &str) {
+    if !pane_output_status_fallback_candidate(pane) {
+        return;
+    }
+
+    if matches!(pane.provider, Some(Provider::Copilot))
+        && copilot_pane_output_indicates_busy(output)
+    {
+        pane.status = PaneStatus {
+            kind: StatusKind::Busy,
+            source: StatusSource::PaneOutput,
+        };
+    }
+}
+
+fn copilot_pane_output_indicates_busy(output: &str) -> bool {
+    output.lines().rev().take(30).any(|line| {
+        let line = line.trim();
+        line.contains("Thinking (Esc to cancel")
+            || line.contains("Confirm folder trust")
+            || line.contains("Do you trust the files in this folder?")
+    })
+}
+
 #[derive(Clone)]
 struct ProcFallbackEvidence {
     source: ProcEvidenceSource,

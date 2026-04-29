@@ -140,6 +140,10 @@ GitHub Copilot CLI:
 - During work, the live pane rendered `Thinking (Esc to cancel)`, but the tmux
   title remained stable. Treat pane-output status parsing as the next
   provider-scoped fallback if Copilot status is needed without hooks.
+- Baseline status may use a short, provider-scoped pane tail for exact live
+  Copilot busy prompts such as `Thinking (Esc to cancel)` and folder-trust
+  prompts. It should not infer idle from the visible prompt, because Copilot can
+  show the input prompt while work is still in progress.
 - Treat `COPILOT_HOME`, `COPILOT_MODEL`, and similar environment variables as
   supporting process context only, not provider identity by themselves.
 - Treat Copilot hooks, plugins, statusline/footer customization, and session

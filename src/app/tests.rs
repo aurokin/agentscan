@@ -3340,6 +3340,10 @@ fn status_names_match_serialized_values() {
     assert_eq!(super::status_kind_name(StatusKind::Busy), "busy");
     assert_eq!(super::status_kind_name(StatusKind::Idle), "idle");
     assert_eq!(super::status_kind_name(StatusKind::Unknown), "unknown");
+    assert_eq!(
+        super::status_source_name(super::StatusSource::PaneOutput),
+        "pane_output"
+    );
 }
 
 #[test]
@@ -3678,6 +3682,51 @@ fn copilot_default_title_does_not_invent_activity_label() {
 
     assert_eq!(copilot_default.label, "GitHub Copilot");
     assert_eq!(copilot_default.activity_label, None);
+}
+
+#[test]
+fn copilot_pane_output_marks_busy_only_after_provider_is_known() {
+    let mut copilot = proc_fallback_pane(745, "node", "GitHub Copilot");
+    copilot.provider = Some(Provider::Copilot);
+    copilot.status = super::PaneStatus {
+        kind: StatusKind::Unknown,
+        source: super::StatusSource::NotChecked,
+    };
+
+    classify::apply_pane_output_status_fallback(
+        &mut copilot,
+        "❯ Review patch\n\n● Thinking (Esc to cancel · 616 B)\n",
+    );
+
+    assert_eq!(copilot.status.kind, StatusKind::Busy);
+    assert_eq!(copilot.status.source, super::StatusSource::PaneOutput);
+
+    let mut unknown = proc_fallback_pane(746, "node", "custom title");
+    classify::apply_pane_output_status_fallback(
+        &mut unknown,
+        "❯ Review patch\n\n● Thinking (Esc to cancel · 616 B)\n",
+    );
+
+    assert_eq!(unknown.status.kind, StatusKind::Unknown);
+    assert_eq!(unknown.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn copilot_pane_output_does_not_infer_idle_from_prompt() {
+    let mut copilot = proc_fallback_pane(747, "node", "GitHub Copilot");
+    copilot.provider = Some(Provider::Copilot);
+    copilot.status = super::PaneStatus {
+        kind: StatusKind::Unknown,
+        source: super::StatusSource::NotChecked,
+    };
+
+    classify::apply_pane_output_status_fallback(
+        &mut copilot,
+        "/tmp/probe [main]\n────────────────────\n❯\n",
+    );
+
+    assert_eq!(copilot.status.kind, StatusKind::Unknown);
+    assert_eq!(copilot.status.source, super::StatusSource::NotChecked);
 }
 
 #[test]

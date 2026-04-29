@@ -359,6 +359,7 @@ enum StatusKind {
 enum StatusSource {
     PaneMetadata,
     TmuxTitle,
+    PaneOutput,
     NotChecked,
 }
 
@@ -584,6 +585,7 @@ fn status_source_name(source: StatusSource) -> &'static str {
     match source {
         StatusSource::PaneMetadata => "pane_metadata",
         StatusSource::TmuxTitle => "tmux_title",
+        StatusSource::PaneOutput => "pane_output",
         StatusSource::NotChecked => "not_checked",
     }
 }
