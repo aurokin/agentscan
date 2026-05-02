@@ -15,9 +15,9 @@ The repo should disclose information in layers:
 3. `ROADMAP.md`
    Durable product direction, boundaries, and architectural decisions.
 4. `docs/architecture.md`
-   Runtime model, cache contract, command families, and design guardrails.
+   Runtime model, daemon/socket contract, command families, and design guardrails.
 5. `docs/integration.md`
-   Wrapper metadata contract, automation surfaces, shell boundary, and migration posture.
+   Wrapper metadata contract, daemon-backed automation surfaces, shell boundary, and migration posture.
 6. `docs/harness-engineering.md`
    Validation posture, harness categories, and rules for what belongs in repo docs versus Linear.
 7. `docs/notes/`
@@ -33,11 +33,11 @@ documents.
 
 The repo already uses multiple harnesses to validate behavior:
 
-- fixture harnesses for tmux rows, cache snapshots, and normalization behavior
+- fixture harnesses for tmux rows, snapshot envelopes, and normalization behavior
 - unit harnesses for parser, classification, status, and output logic
-- daemon integration harnesses for tmux topology changes and metadata updates
-- popup and focus interaction harnesses for real tmux client behavior
-- cache validation harnesses for schema and daemon health behavior
+- daemon integration harnesses for tmux topology changes, metadata updates, and socket publication
+- TUI and focus interaction harnesses for real tmux client behavior
+- snapshot validation harnesses for schema and daemon health behavior
 - benchmark harnesses for hot-path regressions
 
 These harnesses should be documented in terms of the contract they protect, not

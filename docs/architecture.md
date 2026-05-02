@@ -1,22 +1,27 @@
 # Architecture
 
-`agentscan` is a daemon-first tmux agent scanner with short-lived cache readers.
-This document captures the stable engineering shape of the system. Active
-milestone sequencing lives in Linear and should be reflected back here only once
-the behavior or contract has settled.
+`agentscan` is moving to a daemon-required tmux agent scanner with short-lived
+socket clients. This document captures the adopted engineering shape of the
+system. Active milestone sequencing lives in Linear and should be reflected
+back here only once behavior or contract decisions settle.
 
 ## Runtime Model
 
 The intended steady-state model is:
 
-1. `agentscan daemon run` takes an initial tmux snapshot.
+1. Normal consumers connect to the daemon socket and auto-start the daemon when
+   it is not already running.
 2. The daemon subscribes to tmux control-mode updates.
 3. The daemon maintains in-memory pane state keyed by `pane_id`.
-4. The daemon writes a versioned JSON cache atomically.
-5. Short-lived commands and popup flows read the cache instead of rescanning tmux.
+4. The daemon publishes full versioned `SnapshotEnvelope` frames over a
+   JSON-Lines Unix socket protocol.
+5. Short-lived commands read one snapshot frame and disconnect; the TUI keeps a
+   live subscription.
 
 Direct tmux snapshots remain available for debugging and recovery through
-`agentscan scan` and `--refresh`.
+`agentscan scan` and refresh-capable command flags. `--no-auto-start` and
+`AGENTSCAN_NO_AUTO_START=1` are the opt-outs for CI and scripts that must not
+spawn a daemon.
 
 ## Source Of Truth
 
@@ -53,37 +58,37 @@ Stable raw tmux identifiers such as `session_id` and `window_id` should be
 preserved when tmux exposes them so daemon refreshes can stay local to the
 affected scope.
 
-## Cache Contract
+## Snapshot Contract
 
-The persisted cache is a versioned JSON snapshot. It is the first canonical
-persisted contract and should remain easy to inspect manually, serialize in
-fixtures, and evolve through additive schema changes when possible.
+The canonical structured state is a versioned JSON `SnapshotEnvelope`. The
+target transport is the daemon socket; a persisted cache file is no longer the
+steady-state IPC boundary.
 
-The cache envelope includes:
+The snapshot envelope includes:
 
 - `schema_version`
 - `generated_at`
 - `source`
 - `panes`
 
-The cache should be treated as an API contract for local consumers. Breaking
-changes must increment `schema_version`.
+The envelope shape should be treated as an API contract for local consumers.
+Breaking changes must increment `schema_version`.
 
 ## Command Families
 
-The current command surface is organized by concern:
+The target command surface is organized by concern:
 
 - `agentscan scan`: direct tmux snapshot for debugging and recovery
 - `agentscan list`: normal human output and the supported JSON automation output
 - `agentscan inspect <pane_id>`: one-pane diagnostics with provenance
 - `agentscan focus <pane_id>`: tmux pane targeting by stable id
 - `agentscan daemon`: long-lived indexer and daemon health commands
-- `agentscan cache`: cache path, validation, and raw cache inspection for
-  consumers that need the cache envelope
-- `agentscan popup`: interactive-only pane picker, not a stdout automation API
+- `agentscan snapshot`: raw snapshot-envelope inspection for consumers that
+  need the unfiltered envelope
+- `agentscan tui`: interactive-only pane picker, not a stdout automation API
 - `agentscan tmux`: tmux-facing metadata helpers
 
-The default bare `agentscan` flow is cache-backed `list`.
+The default bare `agentscan` flow is daemon-backed `list`.
 
 ## Internal Module Boundaries
 
@@ -94,31 +99,33 @@ modules:
   instead of the fallback orchestration path
 - tmux command execution, parsing, focus/client handling, and pane metadata
   helpers are split under `tmux::*`
-- popup terminal lifecycle, popup state/key assignment, and popup frame
-  rendering are separated under `popup::*`
+- TUI terminal lifecycle, state/key assignment, subscription handling, and
+  frame rendering are separated under `tui::*`
 
 These boundaries are internal, but they protect the product-level invariants
 above: classification remains conservative, tmux remains the primary source, and
-popup remains an interactive cache consumer rather than an automation API.
+the TUI remains an interactive socket consumer rather than an automation API.
 
 ## Daemon Lifecycle Policy
 
-The daemon is an explicit entrypoint. Short-lived commands stay passive by
-default.
+The daemon is a hard requirement for normal consumers, but users should not have
+to wire it up as a service.
 
 Current lifecycle direction:
 
-- explicit daemon startup first
+- auto-start by default for desktop commands
+- explicit `daemon start`, `stop`, `status`, and `restart` commands
+- `--no-auto-start` and `AGENTSCAN_NO_AUTO_START=1` for scripts and CI
 - `--refresh` for one-shot recovery or forced tmux snapshots
-- fail fast when tmux disappears
-- leave restart policy to an external supervisor
+- fail clearly when tmux disappears or the daemon protocol is incompatible
+- leave crash/restart policy to explicit commands or an external supervisor
 
 ## Design Guardrails
 
 - No permanent fast versus full split.
-- Popup remains interactive-only and not a machine-readable contract.
-- Normal automation should use `agentscan list --format json`; raw cache
-  consumers should use `agentscan cache show --format json`.
+- The TUI remains interactive-only and not a machine-readable contract.
+- Normal automation should use `agentscan list --format json`; raw snapshot
+  consumers should use `agentscan snapshot --format json`.
 - Keep shell wrappers thin; discovery and classification belong in Rust.
 - Prefer honest labels from tmux metadata over richer weak inference.
 - Treat pane inspection as a narrow fallback, not a primary detection strategy.

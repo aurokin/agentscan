@@ -40,8 +40,8 @@ remain unchanged until `agentscan` is ready to replace it.
 - `docs/index.md`: map of the repo's progressively disclosed documentation
 - `AGENTS.md`: repo-local agent guardrails and conventions
 - `ROADMAP.md`: durable product direction, boundaries, and decision log
-- `docs/architecture.md`: runtime model, cache contract, command families, and guardrails
-- `docs/integration.md`: wrapper metadata, automation surfaces, shell boundary, and migration posture
+- `docs/architecture.md`: runtime model, daemon/socket contract, command families, and guardrails
+- `docs/integration.md`: wrapper metadata, daemon-backed automation surfaces, shell boundary, and migration posture
 - `docs/harness-engineering.md`: progressively disclosed harness engineering approach for the repo
 
 Active milestone sequencing lives in Linear. The repo docs are intentionally for
@@ -58,26 +58,44 @@ Current local baseline:
 - `cargo test`
 
 Current test coverage also includes committed file-based fixtures for representative
-tmux title snapshots and cache snapshots, plus property tests for parser and
+tmux title snapshots and snapshot envelopes, plus property tests for parser and
 normalization invariants, so parser and schema regressions can be checked against
 both stable examples and generated inputs.
 
 Daemon reliability is also covered by isolated integration tests that start a
-temporary tmux server, run `agentscan daemon run`, and assert cache behavior for
-title changes, pane/window add-remove events, session add/remove and rename
-events, window rename events, attached-session removal, wrapper-metadata helper
-flows, and tmux server disappearance.
+temporary tmux server, run the daemon, and assert state behavior for title
+changes, pane/window add-remove events, session add/remove and rename events,
+window rename events, attached-session removal, wrapper-metadata helper flows,
+and tmux server disappearance.
 
 Current performance tooling:
 
 - `cargo bench --bench core_paths -- --noplot`
 
-The initial benchmark target covers snapshot row parsing, row-to-pane conversion,
-cache deserialization, and popup row rendering against committed fixtures.
+The benchmark target covers snapshot row parsing, row-to-pane conversion,
+snapshot deserialization, and interactive row rendering against committed
+fixtures.
 
-## Current scope
+## Adopted Target Architecture
 
-The current implementation centers on:
+The core architecture is moving to a daemon-required, socket-backed model:
+
+- the daemon is the single source of live pane state
+- normal consumers auto-start the daemon unless explicitly opted out
+- consumers read full `SnapshotEnvelope` frames over a Unix socket
+- the cache file is removed as an IPC boundary
+- `agentscan popup` is renamed to `agentscan tui`
+- `agentscan cache show` is replaced by `agentscan snapshot`
+- `agentscan scan` and refresh-capable command flags remain direct tmux
+  recovery paths that do not start or require the daemon
+
+The detailed in-flight plan is in `docs/notes/daemon-socket-migration.md`.
+Until that migration lands, some current commands still use the older
+cache-backed names and behavior.
+
+## Current Shipped Scope
+
+The current branch, before the socket migration lands, centers on:
 
 - direct tmux snapshots from `tmux list-panes -a -F ...`
 - a control-mode daemon that maintains a local JSON cache
@@ -86,16 +104,16 @@ The current implementation centers on:
 
 It can:
 
-- run an explicit daemon baseline with tmux control mode
+- run the existing explicit daemon baseline with tmux control mode
 - fail fast when the daemon loses tmux, leaving restart policy to an external supervisor
-- preserve raw tmux `session_id` and `window_id` values in the canonical pane model for cache consumers and local daemon updates
+- preserve raw tmux `session_id` and `window_id` values in the canonical pane model for current cache consumers and local daemon updates
 - refresh individual panes on daemon title and metadata updates, refresh affected windows or sessions when tmux emits stable ids for those scopes, and keep a periodic full reconcile as a safety net
 - preserve helper-published metadata across unrelated daemon writes
 - report daemon-backed cache health
 - persist and read a local JSON cache
 - show and validate the local JSON cache
 - distinguish `healthy`, `stale`, and `snapshot_only` daemon-cache states, with daemon refresh provenance in text cache diagnostics
-- force a fresh tmux snapshot and cache rewrite for `list`, `scan`, `inspect`, `focus`, `popup`, `cache show`, and `cache validate` with `-f` / `--refresh`
+- force a fresh tmux snapshot and cache rewrite for current refresh-capable commands with `-f` / `--refresh`
 - list panes through the default `list` flow
 - inspect a pane by `pane_id`, including provider source, status source, classification reasons, and targeted `/proc` fallback decisions
 - focus a pane by `pane_id`, with attached-client fallback when no explicit tty is provided and tested multi-client selection of the most recent attached client
@@ -126,62 +144,66 @@ It can:
   `OPENCODE` process evidence while keeping default opencode status unknown
   unless explicit metadata publishes state
 - publish, clear, and consume explicit wrapper metadata via pane-local `@agent.*` tmux options
-- refresh the existing cache immediately after repo-local metadata helper writes so wrapper-driven metadata changes stay visible to cache consumers whether the cache came from the daemon or a forced snapshot
+- refresh the existing cache immediately after repo-local metadata helper writes so wrapper-driven metadata changes stay visible during the cache-backed migration phase
 - emit canonical snapshot JSON
-- print the cache path
+- print the current cache path during the cache-backed migration phase
 
-Automation contract:
+Target automation contract:
 
-- `agentscan popup` is interactive-only and is not a supported machine-readable surface
-- local unsupported flags on `agentscan popup` should remain normal parse errors,
-  and root-level `--format` routed to `popup` should fail with migration
+- `agentscan tui` is interactive-only and is not a supported machine-readable surface
+- during the command rename, the same rule applies to the legacy `agentscan popup`
+- local unsupported flags on the interactive command should remain normal parse errors,
+  and root-level `--format` routed to it should fail with migration
   guidance; do not add popup-specific compatibility shims to intercept or
   emulate legacy formatting
 - `agentscan list --format json` is the supported machine-readable command for downstream consumers in normal automation flows
 - `agentscan list --all --format json` is the supported way to include non-agent panes in that machine-readable output
-- `agentscan cache show --format json` exposes the raw cached snapshot when a consumer explicitly needs cache envelope details rather than the normal `list` view
-- popup-shaped TSV or JSON output is not a supported long-term contract
+- `agentscan snapshot --format json` exposes the raw snapshot envelope when a consumer explicitly needs envelope details rather than the normal `list` view
+- popup/TUI-shaped TSV or JSON output is not a supported long-term contract
 
-Key operational commands today:
+Target operational commands:
 
 - `agentscan`
 - `agentscan scan`
 - `agentscan list`
 - `agentscan inspect <pane_id>`
 - `agentscan focus <pane_id>`
+- `agentscan daemon start`
 - `agentscan daemon run`
 - `agentscan daemon status`
-- `agentscan cache path`
-- `agentscan cache show`
-- `agentscan cache validate`
-- `agentscan popup`
+- `agentscan daemon stop`
+- `agentscan daemon restart`
+- `agentscan snapshot`
+- `agentscan tui`
 - `agentscan tmux set-metadata`
 - `agentscan tmux clear-metadata`
 
-`agentscan` without a subcommand runs the default cached `list` flow.
+`agentscan` without a subcommand runs the default daemon-backed `list` flow.
 
 For repo-local tmux popup testing without installing the binary on `PATH`, use
-`tmux display-popup -E "$PWD/target/debug/agentscan" popup` after building.
+`tmux display-popup -E "$PWD/target/debug/agentscan" tui` after building once
+the command rename lands. During the migration, the current branch still uses
+`popup`.
 
 ## Migration Note
 
-Machine-readable consumers should not call `agentscan popup`.
+Machine-readable consumers should not call `agentscan tui` or legacy
+`agentscan popup`.
 
 Use:
 
 - `agentscan list --format json` for the supported JSON automation surface
 - `agentscan list --all --format json` if the consumer previously depended on popup-style `--all`
-- `agentscan cache show --format json` only when the consumer intentionally needs the raw cached snapshot envelope
+- `agentscan snapshot --format json` only when the consumer intentionally needs the raw snapshot envelope
 
-Keep `agentscan popup` in tmux key bindings and other human-facing launch paths.
-Do not call it from scripts that parse stdout, and do not depend on its current
-terminal rendering, row ordering, key labels, or error frame text as a data
-contract.
+Keep `agentscan tui` in tmux key bindings and other human-facing launch paths.
+Do not call it from scripts that parse stdout, and do not depend on terminal
+rendering, row ordering, key labels, or error frame text as a data contract.
 
 If an automation consumer cannot migrate because required fields are missing from
 the documented JSON surfaces, treat that as an API gap to close in `list` or
-cache JSON. Do not add `--format` back to `popup`, including hidden or
-compatibility-only parser paths.
+snapshot JSON. Do not add `--format` back to the interactive command, including
+hidden or compatibility-only parser paths.
 
 ## Reference Behavior
 
@@ -210,20 +232,20 @@ The useful design inputs are mostly at the data-model level:
   stronger metadata/title sources were unavailable.
 - stable pane identity for downstream consumers such as popups or focus commands
 
-## Current CLI Families
+## Target CLI Families
 
-The current CLI centers on:
+The target CLI centers on:
 
 - `agentscan daemon` as the primary runtime
 - `agentscan scan` for direct tmux snapshots
 - `agentscan list` for normal human output and the supported JSON automation surface
 - `agentscan inspect` for one-pane diagnostics
 - `agentscan focus` for pane targeting
-- `agentscan cache` for indexed operation
-- `agentscan popup` for interactive pane selection only
+- `agentscan snapshot` for raw snapshot-envelope output
+- `agentscan tui` for interactive pane selection only
 - `agentscan tmux` for tmux-facing integration helpers
 
 Shell remains the right place for aliases, launch wrappers, tmux binds, and
-popup entrypoints. `agentscan` owns pane discovery, provider classification,
-metadata consumption, cache management, and the documented JSON surfaces those
-shell entrypoints can call.
+TUI/popup entrypoints. `agentscan` owns pane discovery, provider classification,
+metadata consumption, daemon lifecycle policy, and the documented JSON surfaces
+those shell entrypoints can call.

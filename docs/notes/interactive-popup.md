@@ -2,10 +2,11 @@
 
 ## Purpose
 
-This document is a narrow follow-up note for `agentscan popup`, not a live
-execution plan. The popup command is already implemented in the current branch
-and is part of the repo-local workflow. This note exists to preserve
-popup-specific context that is too narrow for the primary docs.
+This document is a narrow historical note for the implemented `agentscan popup`
+flow. The adopted architecture renames the user-facing interactive command to
+`agentscan tui` and moves live updates from cache polling to daemon socket
+subscription. Keep this file only as context for the pre-migration popup
+behavior until the daemon-socket migration deletes or rewrites it.
 
 ## Current State
 
@@ -14,8 +15,9 @@ Implemented in the current branch:
 - `agentscan popup` is wired as a first-class command in
   `src/app/commands.rs`.
 - `agentscan popup` is an interactive-only command. Automation consumers should
-  use `agentscan list --format json`, or `agentscan cache show --format json`
-  when they intentionally need the raw cache envelope.
+  use `agentscan list --format json`. After the socket migration, consumers
+  that intentionally need the raw envelope should use
+  `agentscan snapshot --format json`.
 - The popup UI loop, raw-mode TTY handling, cache reload path, stable key
   assignment, paging, resize-aware layout, Ctrl-B passthrough, and
   missing-pane fallback live in
@@ -49,6 +51,10 @@ The current implementation remains the baseline:
 - cache-only open by default, with `-f` / `--refresh` for on-demand recovery
 - in-popup cache error rendering instead of a raw CLI failure
 
+Target replacement behavior is tracked in
+`docs/notes/daemon-socket-migration.md`: no initial cache read, socket-only
+bootstrap, reconnect state, and a daemon connection indicator.
+
 ## Follow-up Notes
 
 ### Repo-local tmux invocation
@@ -68,15 +74,15 @@ Use one of these forms instead:
 
 ### Maintenance rule
 
-Treat this file as a narrow popup note. `README.md`, `ROADMAP.md`, and
-`docs/architecture.md` remain the primary sources of truth for shipped popup
-behavior. If a popup behavior is already implemented and documented there, move
-it into `Current State` here or delete it instead of re-planning it.
+Treat this file as a narrow legacy popup note. `README.md`, `ROADMAP.md`,
+`docs/architecture.md`, and `docs/notes/daemon-socket-migration.md` are the
+sources of truth for the adopted TUI direction. As socket phases land, delete
+sections here instead of keeping a parallel cache-polling plan alive.
 
 ## Out Of Scope
 
 - reintroducing the legacy shell popup stack as an implementation dependency
 - bringing back `agentscan tmux popup` as a compatibility layer without a real consumer
-- adding popup-shaped TSV or JSON output for scripts
-- adding hidden or compatibility-only `popup --format` paths
+- adding popup/TUI-shaped TSV or JSON output for scripts
+- adding hidden or compatibility-only interactive `--format` paths
 - broadening provider detection or status heuristics unrelated to popup UX

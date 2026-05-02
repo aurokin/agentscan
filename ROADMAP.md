@@ -12,7 +12,7 @@ This repository is the product source of truth.
 
 It owns:
 
-- the Rust scanner and cache implementation
+- the Rust scanner, daemon, socket transport, and structured snapshot model
 - the user-facing `agentscan` CLI
 - tmux-facing commands and minimal integration guidance
 - the documentation for supported contracts and workflows
@@ -63,30 +63,39 @@ Use `pane_id` as the canonical runtime key for pane state.
 Implications:
 
 - in-memory state is keyed by `pane_id`
-- cache records are keyed by `pane_id`
+- snapshot records are keyed by `pane_id`
 - inspect and focus workflows target `pane_id`
 
 ### Steady-State Architecture
 
-The intended mature architecture is a long-lived daemon plus short-lived
-readers.
+The intended mature architecture is a daemon-required runtime with short-lived
+socket clients.
 
 Implications:
 
-- popup consumers read cache instead of rescanning tmux
-- direct snapshots remain available for debugging and recovery
-- daemon startup is explicit
-- when tmux disappears, fail fast and let an external supervisor own restart policy
+- the daemon is the single source of live pane state
+- consumers connect to the daemon over a Unix socket and read
+  `SnapshotEnvelope` frames
+- daemon startup is automatic for normal desktop commands
+- direct tmux snapshots remain available for debugging and recovery through
+  `agentscan scan` and refresh-capable command flags
+- `AGENTSCAN_NO_AUTO_START=1` and `--no-auto-start` exist for CI and scripts
+  that must not leave a daemon running
+- when tmux disappears, the daemon reports failure through lifecycle/status
+  paths; restart policy remains explicit user or supervisor policy
 
-### Cache Policy
+### Snapshot Contract
 
-Use versioned JSON as the canonical persisted snapshot format.
+Use a versioned JSON `SnapshotEnvelope` as the canonical structured state
+contract. The transport is the daemon socket, not a canonical cache file.
 
 Implications:
 
-- the cache shape is an API contract
+- the snapshot envelope shape is an API contract
 - schema versioning must be explicit
+- one-shot commands read a full snapshot frame and disconnect
 - TSV is an output adapter only, not the canonical store
+- persisted cache JSON is a migration artifact, not the target IPC boundary
 
 ### Detection Policy
 
@@ -116,24 +125,26 @@ Implications:
   tightly scoped pane evidence.
 - `inspect` reports provider source, status source, classification reasons, and
   targeted process fallback outcomes so classification problems can be debugged
-  from the CLI and JSON cache without reading implementation code
+  from the CLI and snapshot JSON without reading implementation code
 - provider-side hooks and extensions are deep-roadmap enrichment only. They may
   eventually publish better labels, session ids, or direct activity state, but
   they sit behind source analysis, local probing, and plug-and-play detection
   hardening. The core scanner must remain plug-and-play for common agent
   launches.
 
-### Popup Contract
+### TUI Contract
 
-`agentscan popup` is an interactive UI, not an automation surface.
+The interactive pane picker is a TUI, not an automation surface. The target
+user-facing command name is `agentscan tui`; current `popup` naming is a
+migration artifact.
 
 Implications:
 
-- popup does not support `--format`
-- popup rendering is not a stable machine-readable contract
+- the TUI does not support `--format`
+- terminal rendering is not a stable machine-readable contract
 - automation consumers should use `agentscan list --format json` for normal pane data
-- raw cache consumers should use `agentscan cache show --format json`
-- compatibility formatting paths must not be added back to popup
+- raw snapshot-envelope consumers should use `agentscan snapshot --format json`
+- compatibility formatting paths must not be added back to the TUI
 
 ### Integration Boundary
 
@@ -142,7 +153,7 @@ Keep shell as the integration layer and Rust as the discovery and state layer.
 Implications:
 
 - shell may launch panes and bind keys
-- shell may keep aliases, provider wrappers, and popup entrypoints
+- shell may keep aliases, provider wrappers, and TUI/popup entrypoints
 - shell should not classify panes or infer activity state
 - shell should not shape machine-readable pane output
 - wrapper behavior is integration context, not a reason to move launch logic into Rust
@@ -200,6 +211,16 @@ Delivered baseline:
   shapes while ignoring stale output
 - inspect provenance for provider, status, classification, and fallback
   decisions
+
+Adopted next architecture:
+
+- daemon is required for normal `list`, `inspect`, `focus`, `tui`, and
+  `snapshot` flows
+- normal consumers auto-start the daemon unless explicitly opted out
+- live state moves from cache-file IPC to a Unix-socket JSON-Lines protocol
+- the cache file and `agentscan cache` surface are removed after socket
+  consumers are migrated
+- `agentscan popup` is renamed to `agentscan tui`
 
 Definition of done for the current finish pass:
 

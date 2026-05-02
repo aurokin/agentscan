@@ -9,13 +9,16 @@ This repo uses progressively disclosed documentation.
 - `ROADMAP.md`
   Durable product direction, boundaries, and decision log.
 - `docs/architecture.md`
-  Runtime model, cache contract, command families, and architectural guardrails.
+  Runtime model, daemon/socket contract, command families, and architectural guardrails.
 - `docs/integration.md`
-  Wrapper metadata contract, automation surfaces, shell boundary, and migration posture.
+  Wrapper metadata contract, daemon-backed automation surfaces, shell boundary, and migration posture.
 - `docs/harness-engineering.md`
   Validation posture and the rule for what belongs in repo docs versus Linear.
 - `docs/notes/`
   Narrow follow-up or historical notes that are too specific for the primary docs but still worth keeping in the repo.
+  - `docs/notes/daemon-socket-migration.md`
+    In-flight migration record for the adopted daemon-required, auto-start,
+    Unix-socket architecture.
   - `docs/notes/provider-evidence-roadmap.md`
     Provider-specific evidence plans, plug-and-play detection policy, and the
     deep-roadmap hook/extension direction.

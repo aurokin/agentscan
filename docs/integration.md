@@ -10,13 +10,14 @@ Machine-readable consumers should use:
 
 - `agentscan list --format json` for the supported pane listing surface in normal automation flows
 - `agentscan list --all --format json` when non-agent panes are intentionally needed
-- `agentscan cache show --format json` only when a consumer explicitly needs the raw cache envelope
+- `agentscan snapshot --format json` only when a consumer explicitly needs the raw snapshot envelope
 
-`agentscan popup` is interactive-only. It must not become a popup-shaped JSON or
-TSV surface, and unsupported formatting requests must not become compatibility
-shims. Local popup-only flags that do not exist should remain parser errors.
-Root-level `--format` routed to `popup` should continue to fail with migration
-guidance rather than rendering machine-readable popup output.
+`agentscan tui` is interactive-only. It must not become a TUI-shaped JSON or TSV
+surface, and unsupported formatting requests must not become compatibility
+shims. During the command rename, the same rule applies to the legacy
+`agentscan popup` name. Root-level `--format` routed to the interactive command
+should continue to fail with migration guidance rather than rendering
+machine-readable UI output.
 
 Migration targets:
 
@@ -24,13 +25,19 @@ Migration targets:
 |------------------------|------------------|
 | Parse agent panes for automation | `agentscan list --format json` |
 | Parse all tmux panes, including non-agent panes | `agentscan list --all --format json` |
-| Inspect cache provenance, schema version, or unfiltered cache envelope | `agentscan cache show --format json` |
-| Open a human pane picker from a tmux bind | `agentscan popup` |
+| Inspect schema version or the unfiltered snapshot envelope | `agentscan snapshot --format json` |
+| Open a human pane picker from a tmux bind | `agentscan tui` |
 
 If a script needs data that is missing from the documented JSON surfaces, treat
-that as an API gap in `list` or cache JSON. Do not add hidden `popup --format`
-paths, popup-shaped TSV, or parser compatibility branches to preserve legacy
+that as an API gap in `list` or snapshot JSON. Do not add hidden `tui --format`
+paths, TUI-shaped TSV, or parser compatibility branches to preserve legacy
 stdout parsing.
+
+Normal consumers are daemon-backed. They auto-start the daemon by default so
+desktop workflows do not need service setup. Scripts and CI that must avoid
+spawning a long-lived process should use `--no-auto-start`,
+`AGENTSCAN_NO_AUTO_START=1`, or direct tmux recovery paths such as
+`agentscan scan` and refresh-capable command flags.
 
 Status provenance is part of the JSON contract. `status.source="pane_output"`
 means the provider was already identified by stronger evidence, and agentscan
@@ -55,7 +62,7 @@ Field semantics:
   metadata helper also accepts useful aliases such as `github-copilot`,
   `cursor-cli`, `cursor-agent`, and `pi-coding-agent`, then writes the
   canonical value.
-- `label`: short user-facing display text for list and popup surfaces. It
+- `label`: short user-facing display text for list and TUI surfaces. It
   should describe the task or conversation only when the wrapper has that
   information directly. Do not derive richer labels from paths, generic tmux
   titles, or weak provider guesses.
@@ -177,8 +184,8 @@ Shell remains responsible for:
 
 - aliases and ergonomics in user dotfiles
 - provider launch wrappers
-- tmux key bindings and popup entrypoints
-- choosing when to invoke `agentscan list`, `agentscan focus`, or `agentscan popup` in a user workflow
+- tmux key bindings and TUI/popup entrypoints
+- choosing when to invoke `agentscan list`, `agentscan focus`, or `agentscan tui` in a user workflow
 
 Shell should not remain responsible for:
 
@@ -186,7 +193,7 @@ Shell should not remain responsible for:
 - provider classification
 - process scanning strategy
 - activity-state inference
-- cache management
+- daemon lifecycle policy
 - shaping machine-readable pane output
 
 ## Migration Posture
@@ -197,10 +204,10 @@ are stable enough to promote back into the docs.
 
 Host-specific dotfiles can migrate incrementally. During migration, shell code
 should switch parsing consumers to `agentscan list --format json` or `agentscan
-cache show --format json` and keep `popup` limited to interactive tmux flows.
+snapshot --format json` and keep `tui` limited to interactive tmux flows.
 
-The repo-local popup invocation for local testing remains:
+The repo-local tmux popup invocation for local testing is:
 
 ```sh
-tmux display-popup -E "$PWD/target/debug/agentscan" popup
+tmux display-popup -E "$PWD/target/debug/agentscan" tui
 ```
