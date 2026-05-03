@@ -99,6 +99,82 @@ fn daemon_serves_snapshot_over_owned_socket_path() -> Result<()> {
 }
 
 #[test]
+fn daemon_fans_out_live_updates_to_subscriber_socket() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let pane_id = harness.start_session("socket-subscribe", "sh")?;
+    let mut daemon = harness.start_daemon()?;
+    let cache = harness.wait_for_cache(&mut daemon, |cache| {
+        pane_from_cache(cache, &pane_id).is_some()
+    })?;
+    let schema_version = cache["schema_version"]
+        .as_u64()
+        .context("daemon cache was missing schema_version")?;
+
+    let mut stream = connect_agentscan_socket(&harness.agentscan_socket_path)?;
+    stream
+        .set_read_timeout(Some(DAEMON_TIMEOUT))
+        .context("failed to set subscriber socket read timeout")?;
+    writeln!(
+        stream,
+        "{}",
+        serde_json::json!({
+            "type": "hello",
+            "protocol_version": 1,
+            "snapshot_schema_version": schema_version,
+            "mode": "subscribe",
+        })
+    )
+    .context("failed to write daemon socket subscribe hello")?;
+
+    let mut reader = BufReader::new(
+        stream
+            .try_clone()
+            .context("failed to clone subscriber socket")?,
+    );
+    let ack = read_daemon_socket_json_line(&mut reader)?;
+    assert_eq!(ack["type"], "hello_ack");
+    let bootstrap = read_daemon_socket_json_line(&mut reader)?;
+    assert_eq!(bootstrap["type"], "snapshot");
+    assert!(
+        bootstrap["snapshot"]["panes"]
+            .as_array()
+            .context("bootstrap panes were not an array")?
+            .iter()
+            .any(|pane| pane["pane_id"] == pane_id),
+        "subscriber bootstrap did not include pane {pane_id}: {bootstrap}"
+    );
+
+    harness.send_title_escape(&pane_id, "Claude Code | Working")?;
+    let deadline = Instant::now() + DAEMON_TIMEOUT;
+    loop {
+        let frame = read_daemon_socket_json_line(&mut reader)?;
+        if frame["type"] == "snapshot"
+            && frame["snapshot"]["panes"]
+                .as_array()
+                .context("subscriber update panes were not an array")?
+                .iter()
+                .any(|pane| {
+                    pane["pane_id"] == pane_id
+                        && pane["provider"] == "claude"
+                        && pane["status"]["kind"] == "busy"
+                        && pane["display"]["label"] == "Working"
+                })
+        {
+            break;
+        }
+        if Instant::now() >= deadline {
+            bail!("subscriber did not receive title update before timeout; last frame: {frame}");
+        }
+    }
+
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .context("failed to close subscriber write side")?;
+    daemon.shutdown()?;
+    Ok(())
+}
+
+#[test]
 fn daemon_updates_cache_when_titles_change() -> Result<()> {
     let harness = TestHarness::new()?;
     let pane_id = harness.start_session("title-updates", "sh")?;

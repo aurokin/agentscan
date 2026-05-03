@@ -1,9 +1,10 @@
 use super::*;
+use std::collections::HashMap;
 use std::io::Read;
 use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 use std::time::Instant;
 
@@ -12,6 +13,13 @@ const STARTUP_FAILURE_OBSERVABILITY_WINDOW: Duration = Duration::from_millis(200
 const CONTROL_MODE_STARTUP_TIMEOUT: Duration = Duration::from_secs(2);
 const CLIENT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
 const CLIENT_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
+const SUBSCRIBER_WRITE_TIMEOUT: Duration = Duration::from_millis(250);
+const SUBSCRIBER_MONITOR_POLL_INTERVAL: Duration = Duration::from_millis(250);
+pub(crate) const MAX_PENDING_HANDSHAKES: usize = 8;
+pub(crate) const MAX_SUBSCRIBERS: usize = 64;
+
+type SubscriberId = u64;
+pub(crate) type EncodedDaemonFrame = Arc<[u8]>;
 
 pub(super) fn daemon_run() -> Result<()> {
     let socket_path = ipc::resolve_socket_path()?;
@@ -437,11 +445,19 @@ impl DaemonSocketServer {
                 match self.listener.accept() {
                     Ok((stream, _)) => {
                         let state = self.state.clone();
-                        std::thread::spawn(move || {
-                            if let Err(error) = handle_daemon_socket_client(stream, &state) {
-                                eprintln!("agentscan: daemon socket client failed: {error:#}");
-                            }
-                        });
+                        if let Some(pending_handshake) = state.try_acquire_pending_handshake() {
+                            std::thread::spawn(move || {
+                                if let Err(error) = handle_daemon_socket_client_with_pending(
+                                    stream,
+                                    &state,
+                                    pending_handshake,
+                                ) {
+                                    eprintln!("agentscan: daemon socket client failed: {error:#}");
+                                }
+                            });
+                        } else {
+                            refuse_server_busy(stream);
+                        }
                     }
                     Err(error)
                         if matches!(
@@ -505,12 +521,15 @@ enum DaemonStartupState {
 struct DaemonSocketStateInner {
     startup_state: DaemonStartupState,
     latest_snapshot: Option<SnapshotEnvelope>,
-    latest_snapshot_frame: Option<Vec<u8>>,
+    latest_snapshot_frame: Option<EncodedDaemonFrame>,
+    pending_handshakes: usize,
+    subscribers: HashMap<SubscriberId, SubscriberMailbox>,
+    next_subscriber_id: SubscriberId,
 }
 
 struct PreparedSnapshot {
     snapshot: SnapshotEnvelope,
-    frame: Vec<u8>,
+    frame: EncodedDaemonFrame,
 }
 
 impl PreparedSnapshot {
@@ -527,6 +546,9 @@ impl DaemonSocketState {
                 startup_state: DaemonStartupState::Initializing,
                 latest_snapshot: None,
                 latest_snapshot_frame: None,
+                pending_handshakes: 0,
+                subscribers: HashMap::new(),
+                next_subscriber_id: 1,
             })),
         }
     }
@@ -540,19 +562,27 @@ impl DaemonSocketState {
     }
 
     fn publish_prepared_snapshot(&self, prepared: PreparedSnapshot) {
-        let mut inner = self.lock();
-        inner.latest_snapshot = Some(prepared.snapshot);
-        inner.latest_snapshot_frame = Some(prepared.frame);
-        inner.startup_state = DaemonStartupState::Ready;
+        let subscribers = {
+            let mut inner = self.lock();
+            inner.latest_snapshot = Some(prepared.snapshot);
+            inner.latest_snapshot_frame = Some(prepared.frame.clone());
+            inner.startup_state = DaemonStartupState::Ready;
+            subscriber_mailboxes(&inner)
+        };
+        fan_out_snapshot(prepared.frame, subscribers);
     }
 
     pub(crate) fn publish_later_snapshot(&self, snapshot: SnapshotEnvelope) {
         match encode_snapshot_frame(&snapshot) {
             Ok(frame) => {
-                let mut inner = self.lock();
-                inner.latest_snapshot = Some(snapshot);
-                inner.latest_snapshot_frame = Some(frame);
-                inner.startup_state = DaemonStartupState::Ready;
+                let subscribers = {
+                    let mut inner = self.lock();
+                    inner.latest_snapshot = Some(snapshot);
+                    inner.latest_snapshot_frame = Some(frame.clone());
+                    inner.startup_state = DaemonStartupState::Ready;
+                    subscriber_mailboxes(&inner)
+                };
+                fan_out_snapshot(frame, subscribers);
             }
             Err(error) => {
                 eprintln!(
@@ -569,8 +599,12 @@ impl DaemonSocketState {
     }
 
     pub(crate) fn mark_closing(&self) {
-        let mut inner = self.lock();
-        inner.startup_state = DaemonStartupState::Closing;
+        let subscribers = {
+            let mut inner = self.lock();
+            inner.startup_state = DaemonStartupState::Closing;
+            std::mem::take(&mut inner.subscribers)
+        };
+        close_subscribers(subscribers);
     }
 
     fn snapshot_response(&self) -> DaemonSocketResponse {
@@ -601,6 +635,107 @@ impl DaemonSocketState {
         }
     }
 
+    fn subscribe_response(&self) -> SubscribeResponse {
+        let mut inner = self.lock();
+        match &inner.startup_state {
+            DaemonStartupState::Closing => SubscribeResponse::Unavailable {
+                reason: ipc::UnavailableReason::ServerClosing,
+                message: "daemon socket server is closing".to_string(),
+            },
+            DaemonStartupState::StartupFailed(message) => SubscribeResponse::Unavailable {
+                reason: ipc::UnavailableReason::StartupFailed,
+                message: message.clone(),
+            },
+            DaemonStartupState::Initializing => SubscribeResponse::Unavailable {
+                reason: ipc::UnavailableReason::DaemonNotReady,
+                message: "daemon has not published its initial snapshot yet".to_string(),
+            },
+            DaemonStartupState::Ready => {
+                let Some(bootstrap_frame) = inner.latest_snapshot_frame.clone() else {
+                    return SubscribeResponse::Unavailable {
+                        reason: ipc::UnavailableReason::StartupFailed,
+                        message: "daemon reported ready without a snapshot".to_string(),
+                    };
+                };
+                if inner.subscribers.len() >= MAX_SUBSCRIBERS {
+                    return SubscribeResponse::Unavailable {
+                        reason: ipc::UnavailableReason::SubscriberLimitReached,
+                        message: format!(
+                            "daemon subscriber limit reached ({MAX_SUBSCRIBERS} subscribers)"
+                        ),
+                    };
+                }
+
+                let id = inner.next_subscriber_id;
+                inner.next_subscriber_id = inner.next_subscriber_id.saturating_add(1);
+                let mailbox = SubscriberMailbox::new();
+                inner.subscribers.insert(id, mailbox.clone());
+                SubscribeResponse::Registered(SubscriberRegistration {
+                    id,
+                    bootstrap_frame,
+                    mailbox,
+                })
+            }
+        }
+    }
+
+    pub(crate) fn try_acquire_pending_handshake(&self) -> Option<PendingHandshake> {
+        let mut inner = self.lock();
+        if inner.pending_handshakes >= MAX_PENDING_HANDSHAKES {
+            return None;
+        }
+        inner.pending_handshakes += 1;
+        Some(PendingHandshake {
+            state: self.clone(),
+            active: true,
+        })
+    }
+
+    fn release_pending_handshake(&self) {
+        let mut inner = self.lock();
+        inner.pending_handshakes = inner.pending_handshakes.saturating_sub(1);
+    }
+
+    fn retire_subscriber(&self, id: SubscriberId) -> bool {
+        let subscriber = {
+            let mut inner = self.lock();
+            inner.subscribers.remove(&id)
+        };
+        if let Some(mailbox) = subscriber {
+            mailbox.close();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn has_subscriber(&self, id: SubscriberId) -> bool {
+        self.lock().subscribers.contains_key(&id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn subscriber_count(&self) -> usize {
+        self.lock().subscribers.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_handshake_count(&self) -> usize {
+        self.lock().pending_handshakes
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_register_subscriber_for_capacity(&self) -> Option<SubscriberId> {
+        match self.subscribe_response() {
+            SubscribeResponse::Registered(registration) => Some(registration.id),
+            SubscribeResponse::Unavailable { .. } => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_retire_subscriber(&self, id: SubscriberId) -> bool {
+        self.retire_subscriber(id)
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, DaemonSocketStateInner> {
         self.inner
             .lock()
@@ -609,14 +744,67 @@ impl DaemonSocketState {
 }
 
 enum DaemonSocketResponse {
-    Snapshot(Vec<u8>),
+    Snapshot(EncodedDaemonFrame),
     Unavailable {
         reason: ipc::UnavailableReason,
         message: String,
     },
 }
 
-fn encode_snapshot_frame(snapshot: &SnapshotEnvelope) -> Result<Vec<u8>> {
+enum SubscribeResponse {
+    Registered(SubscriberRegistration),
+    Unavailable {
+        reason: ipc::UnavailableReason,
+        message: String,
+    },
+}
+
+struct SubscriberRegistration {
+    id: SubscriberId,
+    bootstrap_frame: EncodedDaemonFrame,
+    mailbox: SubscriberMailbox,
+}
+
+pub(crate) struct PendingHandshake {
+    state: DaemonSocketState,
+    active: bool,
+}
+
+impl PendingHandshake {
+    fn release(mut self) {
+        if self.active {
+            self.active = false;
+            self.state.release_pending_handshake();
+        }
+    }
+}
+
+impl Drop for PendingHandshake {
+    fn drop(&mut self) {
+        if self.active {
+            self.active = false;
+            self.state.release_pending_handshake();
+        }
+    }
+}
+
+fn subscriber_mailboxes(inner: &DaemonSocketStateInner) -> Vec<SubscriberMailbox> {
+    inner.subscribers.values().cloned().collect()
+}
+
+fn fan_out_snapshot(frame: EncodedDaemonFrame, subscribers: Vec<SubscriberMailbox>) {
+    for subscriber in subscribers {
+        subscriber.enqueue(frame.clone());
+    }
+}
+
+fn close_subscribers(subscribers: HashMap<SubscriberId, SubscriberMailbox>) {
+    for subscriber in subscribers.into_values() {
+        subscriber.close();
+    }
+}
+
+fn encode_snapshot_frame(snapshot: &SnapshotEnvelope) -> Result<EncodedDaemonFrame> {
     let frame = ipc::DaemonFrame::Snapshot {
         snapshot: snapshot.clone(),
     };
@@ -628,12 +816,101 @@ fn encode_snapshot_frame(snapshot: &SnapshotEnvelope) -> Result<Vec<u8>> {
             ipc::DAEMON_FRAME_MAX_BYTES
         );
     }
-    Ok(encoded)
+    Ok(Arc::<[u8]>::from(encoded))
 }
 
+#[derive(Clone)]
+pub(crate) struct SubscriberMailbox {
+    inner: Arc<(Mutex<SubscriberMailboxState>, Condvar)>,
+}
+
+struct SubscriberMailboxState {
+    pending_frame: Option<EncodedDaemonFrame>,
+    closed: bool,
+}
+
+impl SubscriberMailbox {
+    pub(crate) fn new() -> Self {
+        Self {
+            inner: Arc::new((
+                Mutex::new(SubscriberMailboxState {
+                    pending_frame: None,
+                    closed: false,
+                }),
+                Condvar::new(),
+            )),
+        }
+    }
+
+    pub(crate) fn enqueue(&self, frame: EncodedDaemonFrame) {
+        let (lock, condvar) = &*self.inner;
+        let mut state = lock.lock().expect("subscriber mailbox lock poisoned");
+        if state.closed {
+            return;
+        }
+        state.pending_frame = Some(frame);
+        condvar.notify_one();
+    }
+
+    pub(crate) fn close(&self) {
+        let (lock, condvar) = &*self.inner;
+        let mut state = lock.lock().expect("subscriber mailbox lock poisoned");
+        state.closed = true;
+        state.pending_frame = None;
+        condvar.notify_all();
+    }
+
+    pub(crate) fn recv(&self) -> Option<EncodedDaemonFrame> {
+        let (lock, condvar) = &*self.inner;
+        let mut state = lock.lock().expect("subscriber mailbox lock poisoned");
+        loop {
+            if let Some(frame) = state.pending_frame.take() {
+                return Some(frame);
+            }
+            if state.closed {
+                return None;
+            }
+            state = condvar
+                .wait(state)
+                .expect("subscriber mailbox lock poisoned while waiting");
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn try_take_pending(&self) -> Option<EncodedDaemonFrame> {
+        let (lock, _) = &*self.inner;
+        lock.lock()
+            .expect("subscriber mailbox lock poisoned")
+            .pending_frame
+            .take()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_closed(&self) -> bool {
+        let (lock, _) = &*self.inner;
+        lock.lock()
+            .expect("subscriber mailbox lock poisoned")
+            .closed
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn handle_daemon_socket_client(
+    stream: std::os::unix::net::UnixStream,
+    state: &DaemonSocketState,
+) -> Result<()> {
+    if let Some(pending_handshake) = state.try_acquire_pending_handshake() {
+        handle_daemon_socket_client_with_pending(stream, state, pending_handshake)
+    } else {
+        refuse_server_busy(stream);
+        Ok(())
+    }
+}
+
+fn handle_daemon_socket_client_with_pending(
     mut stream: std::os::unix::net::UnixStream,
     state: &DaemonSocketState,
+    pending_handshake: PendingHandshake,
 ) -> Result<()> {
     stream
         .set_write_timeout(Some(CLIENT_WRITE_TIMEOUT))
@@ -648,45 +925,139 @@ pub(crate) fn handle_daemon_socket_client(
         return Ok(());
     };
 
-    match ipc::validate_client_hello(&frame) {
-        ack @ ipc::DaemonFrame::HelloAck { .. } => {
-            write_daemon_frame(&mut writer, &ack)?;
-        }
+    let ack = match ipc::validate_client_hello(&frame) {
+        ack @ ipc::DaemonFrame::HelloAck { .. } => ack,
         shutdown => {
+            pending_handshake.release();
             write_daemon_frame(&mut writer, &shutdown)?;
             return Ok(());
         }
-    }
+    };
+    pending_handshake.release();
 
     match frame {
         ipc::ClientFrame::Hello {
             mode: ipc::ClientMode::Snapshot,
             ..
-        } => match state.snapshot_response() {
-            DaemonSocketResponse::Snapshot(bytes) => writer
-                .write_all(&bytes)
-                .context("failed to write daemon snapshot frame")?,
-            DaemonSocketResponse::Unavailable { reason, message } => write_daemon_frame(
-                &mut writer,
-                &ipc::DaemonFrame::Unavailable { reason, message },
-            )?,
-        },
+        } => {
+            write_daemon_frame(&mut writer, &ack)?;
+            match state.snapshot_response() {
+                DaemonSocketResponse::Snapshot(bytes) => writer
+                    .write_all(&bytes)
+                    .context("failed to write daemon snapshot frame")?,
+                DaemonSocketResponse::Unavailable { reason, message } => write_daemon_frame(
+                    &mut writer,
+                    &ipc::DaemonFrame::Unavailable { reason, message },
+                )?,
+            }
+            writer
+                .flush()
+                .context("failed to flush daemon socket frame")
+        }
         ipc::ClientFrame::Hello {
             mode: ipc::ClientMode::Subscribe,
             ..
-        } => write_daemon_frame(
-            &mut writer,
-            &ipc::DaemonFrame::Unavailable {
-                reason: ipc::UnavailableReason::SubscribeUnavailable,
-                message: "subscribe mode is not available until daemon fan-out is enabled"
-                    .to_string(),
-            },
-        )?,
+        } => match state.subscribe_response() {
+            SubscribeResponse::Registered(registration) => {
+                write_daemon_frame(&mut writer, &ack)
+                    .and_then(|()| {
+                        writer
+                            .write_all(&registration.bootstrap_frame)
+                            .context("failed to write daemon subscriber bootstrap snapshot")
+                    })
+                    .and_then(|()| {
+                        writer
+                            .flush()
+                            .context("failed to flush daemon socket frame")
+                    })
+                    .inspect_err(|_| {
+                        state.retire_subscriber(registration.id);
+                    })?;
+                serve_subscriber(stream, writer, state.clone(), registration);
+                Ok(())
+            }
+            SubscribeResponse::Unavailable { reason, message } => {
+                write_daemon_frame(&mut writer, &ack)?;
+                write_daemon_frame(
+                    &mut writer,
+                    &ipc::DaemonFrame::Unavailable { reason, message },
+                )?;
+                writer
+                    .flush()
+                    .context("failed to flush daemon socket frame")
+            }
+        },
     }
+}
 
-    writer
-        .flush()
-        .context("failed to flush daemon socket frame")
+pub(crate) fn refuse_server_busy(mut stream: std::os::unix::net::UnixStream) {
+    let _ = stream.set_write_timeout(Some(SUBSCRIBER_WRITE_TIMEOUT));
+    let _ = write_daemon_frame(
+        &mut stream,
+        &ipc::DaemonFrame::Shutdown {
+            reason: ipc::ShutdownReason::ServerBusy,
+            message: format!("daemon is busy handling {MAX_PENDING_HANDSHAKES} pending clients"),
+        },
+    );
+    let _ = stream.flush();
+}
+
+fn serve_subscriber(
+    mut stream: std::os::unix::net::UnixStream,
+    mut writer: std::os::unix::net::UnixStream,
+    state: DaemonSocketState,
+    registration: SubscriberRegistration,
+) {
+    let SubscriberRegistration { id, mailbox, .. } = registration;
+    let writer_state = state.clone();
+    let writer_mailbox = mailbox.clone();
+    std::thread::spawn(move || {
+        writer
+            .set_write_timeout(Some(SUBSCRIBER_WRITE_TIMEOUT))
+            .ok();
+        while let Some(frame) = writer_mailbox.recv() {
+            let result = writer
+                .write_all(&frame)
+                .and_then(|()| writer.flush())
+                .with_context(|| format!("failed to write subscriber frame for {id}"));
+            if result.is_err() {
+                writer_state.retire_subscriber(id);
+                break;
+            }
+        }
+    });
+
+    stream
+        .set_read_timeout(Some(SUBSCRIBER_MONITOR_POLL_INTERVAL))
+        .ok();
+    let mut byte = [0; 1];
+    loop {
+        match stream.read(&mut byte) {
+            Ok(0) => {
+                state.retire_subscriber(id);
+                break;
+            }
+            Ok(_) => {
+                state.retire_subscriber(id);
+                break;
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                if !state.has_subscriber(id) {
+                    break;
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => {
+                state.retire_subscriber(id);
+                break;
+            }
+        }
+    }
 }
 
 fn read_client_frame_with_deadline(

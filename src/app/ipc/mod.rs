@@ -71,6 +71,7 @@ pub(crate) enum ClientFrame {
 pub(crate) enum ShutdownReason {
     ProtocolMismatch,
     SchemaMismatch,
+    ServerBusy,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -80,6 +81,7 @@ pub(crate) enum UnavailableReason {
     StartupFailed,
     ServerClosing,
     SubscribeUnavailable,
+    SubscriberLimitReached,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

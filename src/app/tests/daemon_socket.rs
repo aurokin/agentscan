@@ -1,5 +1,6 @@
 use std::io::{BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 fn empty_socket_snapshot(generated_at: &str) -> SnapshotEnvelope {
@@ -13,6 +14,14 @@ fn empty_socket_snapshot(generated_at: &str) -> SnapshotEnvelope {
         },
         panes: Vec::new(),
     }
+}
+
+fn encoded_snapshot_frame(snapshot: &SnapshotEnvelope) -> daemon::EncodedDaemonFrame {
+    let encoded = ipc::encode_frame(&ipc::DaemonFrame::Snapshot {
+        snapshot: snapshot.clone(),
+    })
+    .expect("snapshot frame should encode");
+    std::sync::Arc::<[u8]>::from(encoded)
 }
 
 fn socket_hello(mode: ipc::ClientMode) -> ipc::ClientFrame {
@@ -63,6 +72,93 @@ fn read_all_daemon_frames(client: UnixStream) -> Vec<ipc::DaemonFrame> {
         frames.push(frame);
     }
     frames
+}
+
+struct LiveSubscriber {
+    writer: UnixStream,
+    reader: BufReader<UnixStream>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl LiveSubscriber {
+    fn connect(state: daemon::DaemonSocketState) -> Self {
+        let (mut client, server) = UnixStream::pair().expect("socket pair should be created");
+        let server_state = state;
+        let handle = std::thread::spawn(move || {
+            daemon::handle_daemon_socket_client(server, &server_state)
+                .expect("subscriber client should be handled");
+        });
+        client
+            .write_all(
+                &ipc::encode_frame(&socket_hello(ipc::ClientMode::Subscribe))
+                    .expect("hello should encode"),
+            )
+            .expect("hello should be written");
+        let reader_stream = client.try_clone().expect("client should clone");
+        reader_stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("read timeout should set");
+        Self {
+            writer: client,
+            reader: BufReader::new(reader_stream),
+            handle: Some(handle),
+        }
+    }
+
+    fn read_frame(&mut self) -> ipc::DaemonFrame {
+        ipc::read_daemon_frame(&mut self.reader)
+            .expect("daemon frame should decode")
+            .expect("daemon should send a frame")
+    }
+
+    fn join(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            handle.join().expect("subscriber handler should join");
+        }
+    }
+}
+
+impl Drop for LiveSubscriber {
+    fn drop(&mut self) {
+        let _ = self.writer.shutdown(std::net::Shutdown::Write);
+        self.join();
+    }
+}
+
+fn open_ready_subscriber(
+    state: daemon::DaemonSocketState,
+    expected_snapshot: SnapshotEnvelope,
+) -> LiveSubscriber {
+    let mut subscriber = LiveSubscriber::connect(state);
+    assert_eq!(
+        subscriber.read_frame(),
+        ipc::DaemonFrame::HelloAck {
+            protocol_version: ipc::WIRE_PROTOCOL_VERSION,
+            snapshot_schema_version: CACHE_SCHEMA_VERSION,
+        }
+    );
+    assert_eq!(
+        subscriber.read_frame(),
+        ipc::DaemonFrame::Snapshot {
+            snapshot: expected_snapshot
+        }
+    );
+    subscriber
+}
+
+fn wait_for_subscriber_count(state: &daemon::DaemonSocketState, expected: usize) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if state.subscriber_count() == expected {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for subscriber count {expected}, got {}",
+            state.subscriber_count()
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 enum FakeInitialSnapshot {
@@ -326,24 +422,23 @@ fn daemon_socket_closing_state_wins_over_not_ready() {
 }
 
 #[test]
-fn daemon_socket_subscribe_mode_is_unavailable_without_registering() {
+fn daemon_socket_subscribe_client_receives_bootstrap_and_update() {
     let state = daemon::DaemonSocketState::new();
+    let initial = empty_socket_snapshot("2026-05-03T00:00:00Z");
     state
-        .publish_initial_snapshot(empty_socket_snapshot("2026-05-03T00:00:00Z"))
+        .publish_initial_snapshot(initial.clone())
         .expect("snapshot should publish");
 
-    let frames = exchange_daemon_frames(state, socket_hello(ipc::ClientMode::Subscribe));
+    let mut subscriber = open_ready_subscriber(state.clone(), initial);
+    wait_for_subscriber_count(&state, 1);
 
-    assert!(matches!(
-        frames.as_slice(),
-        [
-            ipc::DaemonFrame::HelloAck { .. },
-            ipc::DaemonFrame::Unavailable {
-                reason: ipc::UnavailableReason::SubscribeUnavailable,
-                ..
-            },
-        ]
-    ));
+    let updated = empty_socket_snapshot("2026-05-03T00:00:01Z");
+    state.publish_later_snapshot(updated.clone());
+
+    assert_eq!(
+        subscriber.read_frame(),
+        ipc::DaemonFrame::Snapshot { snapshot: updated }
+    );
 }
 
 #[test]
@@ -406,6 +501,189 @@ fn daemon_socket_oversized_later_snapshot_preserves_last_good_frame() {
             ipc::DaemonFrame::Snapshot { snapshot: initial },
         ]
     );
+}
+
+#[test]
+fn daemon_socket_subscriber_mailbox_is_latest_wins() {
+    let mailbox = daemon::SubscriberMailbox::new();
+    let older = encoded_snapshot_frame(&empty_socket_snapshot("2026-05-03T00:00:00Z"));
+    let newer = encoded_snapshot_frame(&empty_socket_snapshot("2026-05-03T00:00:01Z"));
+
+    mailbox.enqueue(older);
+    mailbox.enqueue(newer.clone());
+
+    assert_eq!(
+        mailbox
+            .try_take_pending()
+            .expect("mailbox should have pending frame")
+            .as_ref(),
+        newer.as_ref()
+    );
+    mailbox.close();
+    assert!(mailbox.is_closed());
+}
+
+#[test]
+fn daemon_socket_subscriber_limit_returns_unavailable_and_recovers_capacity() {
+    let state = daemon::DaemonSocketState::new();
+    let initial = empty_socket_snapshot("2026-05-03T00:00:00Z");
+    state
+        .publish_initial_snapshot(initial.clone())
+        .expect("snapshot should publish");
+
+    let mut subscriber_ids = Vec::new();
+    for _ in 0..daemon::MAX_SUBSCRIBERS {
+        subscriber_ids.push(
+            state
+                .test_register_subscriber_for_capacity()
+                .expect("subscriber should register"),
+        );
+    }
+    wait_for_subscriber_count(&state, daemon::MAX_SUBSCRIBERS);
+
+    let frames = exchange_daemon_frames(state.clone(), socket_hello(ipc::ClientMode::Subscribe));
+    assert!(matches!(
+        frames.as_slice(),
+        [
+            ipc::DaemonFrame::HelloAck { .. },
+            ipc::DaemonFrame::Unavailable {
+                reason: ipc::UnavailableReason::SubscriberLimitReached,
+                ..
+            },
+        ]
+    ));
+    wait_for_subscriber_count(&state, daemon::MAX_SUBSCRIBERS);
+
+    assert!(state.test_retire_subscriber(subscriber_ids[0]));
+    wait_for_subscriber_count(&state, daemon::MAX_SUBSCRIBERS - 1);
+
+    let _replacement = open_ready_subscriber(state.clone(), initial);
+    wait_for_subscriber_count(&state, daemon::MAX_SUBSCRIBERS);
+}
+
+#[test]
+fn daemon_socket_pending_handshake_limit_returns_server_busy() {
+    let state = daemon::DaemonSocketState::new();
+    let mut guards = Vec::new();
+    for _ in 0..daemon::MAX_PENDING_HANDSHAKES {
+        guards.push(
+            state
+                .try_acquire_pending_handshake()
+                .expect("pending handshake should reserve"),
+        );
+    }
+    assert!(state.try_acquire_pending_handshake().is_none());
+
+    let (client, server) = UnixStream::pair().expect("socket pair should be created");
+    daemon::refuse_server_busy(server);
+    let mut reader = BufReader::new(client.try_clone().expect("client should clone"));
+    let frame = ipc::read_daemon_frame(&mut reader)
+        .expect("shutdown frame should decode")
+        .expect("shutdown frame should be present");
+    assert!(matches!(
+        frame,
+        ipc::DaemonFrame::Shutdown {
+            reason: ipc::ShutdownReason::ServerBusy,
+            ..
+        }
+    ));
+
+    drop(guards);
+    assert_eq!(state.pending_handshake_count(), 0);
+    let _ = client.shutdown(std::net::Shutdown::Both);
+}
+
+#[test]
+fn daemon_socket_subscriber_protocol_violation_retires_and_recovers_capacity() {
+    let state = daemon::DaemonSocketState::new();
+    let initial = empty_socket_snapshot("2026-05-03T00:00:00Z");
+    state
+        .publish_initial_snapshot(initial.clone())
+        .expect("snapshot should publish");
+    let mut subscriber = open_ready_subscriber(state.clone(), initial.clone());
+    wait_for_subscriber_count(&state, 1);
+
+    subscriber
+        .writer
+        .write_all(b"unexpected post-handshake bytes\n")
+        .expect("protocol violation should write");
+    subscriber.join();
+    wait_for_subscriber_count(&state, 0);
+
+    let _replacement = open_ready_subscriber(state.clone(), initial);
+    wait_for_subscriber_count(&state, 1);
+}
+
+#[test]
+fn daemon_socket_subscriber_eof_retires_and_recovers_capacity() {
+    let state = daemon::DaemonSocketState::new();
+    let initial = empty_socket_snapshot("2026-05-03T00:00:00Z");
+    state
+        .publish_initial_snapshot(initial.clone())
+        .expect("snapshot should publish");
+    let mut subscriber = open_ready_subscriber(state.clone(), initial.clone());
+    wait_for_subscriber_count(&state, 1);
+
+    subscriber
+        .writer
+        .shutdown(std::net::Shutdown::Write)
+        .expect("subscriber EOF should close write side");
+    subscriber.join();
+    wait_for_subscriber_count(&state, 0);
+
+    let _replacement = open_ready_subscriber(state.clone(), initial);
+    wait_for_subscriber_count(&state, 1);
+}
+
+#[test]
+fn daemon_socket_oversized_update_is_skipped_for_subscribers() {
+    let state = daemon::DaemonSocketState::new();
+    let initial = empty_socket_snapshot("2026-05-03T00:00:00Z");
+    state
+        .publish_initial_snapshot(initial.clone())
+        .expect("snapshot should publish");
+    let mut subscriber = open_ready_subscriber(state.clone(), initial);
+
+    let mut oversized = empty_socket_snapshot("2026-05-03T00:00:01Z");
+    oversized.generated_at = "x".repeat(ipc::DAEMON_FRAME_MAX_BYTES);
+    state.publish_later_snapshot(oversized);
+
+    let next_good = empty_socket_snapshot("2026-05-03T00:00:02Z");
+    state.publish_later_snapshot(next_good.clone());
+    assert_eq!(
+        subscriber.read_frame(),
+        ipc::DaemonFrame::Snapshot {
+            snapshot: next_good
+        }
+    );
+}
+
+#[test]
+fn daemon_socket_closing_retires_subscribers_and_rejects_new_subscribers() {
+    let state = daemon::DaemonSocketState::new();
+    let initial = empty_socket_snapshot("2026-05-03T00:00:00Z");
+    state
+        .publish_initial_snapshot(initial.clone())
+        .expect("snapshot should publish");
+    let mut subscriber = open_ready_subscriber(state.clone(), initial);
+    wait_for_subscriber_count(&state, 1);
+
+    state.mark_closing();
+    state.mark_closing();
+    wait_for_subscriber_count(&state, 0);
+    subscriber.join();
+
+    let frames = exchange_daemon_frames(state, socket_hello(ipc::ClientMode::Subscribe));
+    assert!(matches!(
+        frames.as_slice(),
+        [
+            ipc::DaemonFrame::HelloAck { .. },
+            ipc::DaemonFrame::Unavailable {
+                reason: ipc::UnavailableReason::ServerClosing,
+                ..
+            },
+        ]
+    ));
 }
 
 #[test]
