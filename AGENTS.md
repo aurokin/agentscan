@@ -23,12 +23,6 @@
 - Keep `cargo fmt --all --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_arguments`, and `cargo test` passing.
 - Coverage tooling is not part of the baseline yet; add it intentionally rather than ad hoc.
 
-## Commit Attribution
-- AI commits MUST include:
-```text
-Co-Authored-By: <agent name> <email>
-```
-
 ## Key Conventions
 - `agentscan` owns discovery, classification, indexing, caching, and structured outputs for tmux agent panes.
 - Plug-and-play detection is a core product invariant. Common agent panes should work without requiring users to install hooks, provider extensions, launch wrappers, or shell integration.
