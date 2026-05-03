@@ -59,11 +59,11 @@ fn root_list_args_merge_into_other_refresh_capable_commands() {
         other => panic!("expected focus command, got {other:?}"),
     }
 
-    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "--all", "tui", "-f"]);
+    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "--all", "tui"]);
     match cli.command {
         Some(super::Commands::Tui(mut args)) => {
             super::commands::merge_tui_args(&mut args, &cli.list_args).unwrap();
-            assert!(args.refresh.refresh);
+            assert!(!args.auto_start.no_auto_start);
             assert!(args.all);
         }
         other => panic!("expected tui command, got {other:?}"),
@@ -124,6 +124,13 @@ fn unsupported_root_list_args_are_rejected_for_other_commands() {
         "expected clap parse error for tui-local --format, got {error:#}"
     );
 
+    let error = <Cli as clap::Parser>::try_parse_from(["agentscan", "tui", "-f"])
+        .expect_err("tui should reject local refresh during clap parsing");
+    assert!(
+        error.to_string().contains("unexpected argument '-f'"),
+        "expected clap parse error for tui-local refresh, got {error:#}"
+    );
+
     let error = <Cli as clap::Parser>::try_parse_from(["agentscan", "popup"])
         .expect_err("popup should not remain as a compatibility alias");
     assert!(
@@ -134,6 +141,19 @@ fn unsupported_root_list_args_are_rejected_for_other_commands() {
     let cli = <Cli as clap::Parser>::parse_from(["agentscan", "-f", "tmux", "set-metadata"]);
     assert!(cli.list_args.refresh.refresh);
     assert!(super::commands::reject_root_refresh(&cli.list_args, "tmux set-metadata").is_err());
+
+    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "-f", "tui"]);
+    assert!(cli.list_args.refresh.refresh);
+    match cli.command {
+        Some(super::Commands::Tui(mut args)) => {
+            let error = super::commands::merge_tui_args(&mut args, &cli.list_args).unwrap_err();
+            assert!(
+                error.to_string().contains("`--refresh` is not supported"),
+                "expected root refresh rejection, got {error:#}"
+            );
+        }
+        other => panic!("expected tui command, got {other:?}"),
+    }
 }
 
 #[test]
@@ -182,13 +202,29 @@ fn auto_start_opt_out_parses_only_for_future_daemon_backed_consumers() {
         }
         other => panic!("expected snapshot command, got {other:?}"),
     }
+
+    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "--no-auto-start", "tui"]);
+    match cli.command {
+        Some(super::Commands::Tui(mut args)) => {
+            super::commands::merge_tui_args(&mut args, &cli.list_args).unwrap();
+            assert!(args.auto_start.no_auto_start);
+        }
+        other => panic!("expected tui command, got {other:?}"),
+    }
+
+    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "tui", "--no-auto-start"]);
+    match cli.command {
+        Some(super::Commands::Tui(args)) => {
+            assert!(args.auto_start.no_auto_start);
+        }
+        other => panic!("expected tui command, got {other:?}"),
+    }
 }
 
 #[test]
 fn auto_start_opt_out_is_rejected_for_non_daemon_backed_commands() {
     for args in [
         ["agentscan", "scan", "--no-auto-start"].as_slice(),
-        ["agentscan", "tui", "--no-auto-start"].as_slice(),
         ["agentscan", "daemon", "status", "--no-auto-start"].as_slice(),
     ] {
         let error = <Cli as clap::Parser>::try_parse_from(args)

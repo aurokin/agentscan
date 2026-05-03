@@ -117,6 +117,9 @@ It can:
 - inspect a pane by `pane_id`, including provider source, status source, classification reasons, and targeted `/proc` fallback decisions
 - focus a pane by `pane_id`, with attached-client fallback when no explicit tty is provided and tested multi-client selection of the most recent attached client
 - open an interactive `agentscan tui` UI directly from the Rust binary
+- bootstrap `agentscan tui` from a live daemon socket subscription, show
+  connection state, preserve the last snapshot while reconnecting, and avoid
+  cache/direct-tmux discovery fallback in the TUI
 - page TUI rows when more panes exist than can fit the current key budget or viewport
 - redraw the TUI immediately on terminal resize and keep keys stable for rows that remain visible on the current page
 - infer likely agent panes from tmux metadata
@@ -143,7 +146,6 @@ It can:
   `OPENCODE` process evidence while keeping default opencode status unknown
   unless explicit metadata publishes state
 - publish, clear, and consume explicit wrapper metadata via pane-local `@agent.*` tmux options
-- refresh the existing cache immediately after repo-local metadata helper writes so wrapper-driven metadata changes stay visible during the remaining cache-backed TUI migration phase
 - emit canonical snapshot JSON
 - print the current cache path during the remaining cache cleanup phase
 

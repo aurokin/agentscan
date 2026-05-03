@@ -7,7 +7,8 @@ use crossterm::terminal::{Clear, ClearType};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::state::{
-    last_non_empty_page_start, page_count, page_size_for_terminal, synchronize_key_targets,
+    TuiConnectionKind, TuiConnectionState, last_non_empty_page_start, page_count,
+    page_size_for_terminal, synchronize_key_targets,
 };
 use super::*;
 
@@ -48,8 +49,13 @@ pub(crate) fn render_tui_frame_for_size(
 
     if let Some(error_message) = state.error_message.as_deref() {
         state.key_targets.clear();
+        let lines = render_body_with_footer(
+            &render_error_frame(error_message),
+            &state.connection,
+            terminal_size,
+        );
         return TuiFrame {
-            lines: fit_lines_to_terminal(&render_error_frame(error_message), terminal_size),
+            lines,
             visible_pane_ids: Vec::new(),
             page_start: 0,
             page_size: 0,
@@ -60,14 +66,19 @@ pub(crate) fn render_tui_frame_for_size(
     if state.panes.is_empty() {
         state.key_targets.clear();
         state.page_start = 0;
+        let body = if state.connection.kind == TuiConnectionKind::Connecting {
+            vec![
+                "Connecting to agentscan daemon...".to_string(),
+                state.connection.message.clone(),
+            ]
+        } else {
+            vec![
+                "No panes available in current snapshot.".to_string(),
+                "Press Esc or Ctrl-C to close.".to_string(),
+            ]
+        };
         return TuiFrame {
-            lines: fit_lines_to_terminal(
-                &[
-                    "No panes available in cache.".to_string(),
-                    "Press Esc or Ctrl-C to close.".to_string(),
-                ],
-                terminal_size,
-            ),
+            lines: render_body_with_footer(&body, &state.connection, terminal_size),
             visible_pane_ids: Vec::new(),
             page_start: 0,
             page_size: 0,
@@ -108,6 +119,7 @@ pub(crate) fn render_tui_frame_for_size(
         state.page_start,
         page_size,
         state.panes.len(),
+        &state.connection,
         row_width,
     ));
 
@@ -163,6 +175,7 @@ fn render_footer_lines(
     page_start: usize,
     page_size: usize,
     total_panes: usize,
+    connection: &TuiConnectionState,
     width: usize,
 ) -> Vec<String> {
     let page_count = page_count(total_panes, page_size);
@@ -179,22 +192,25 @@ fn render_footer_lines(
     };
     let shown_count = total_panes.saturating_sub(page_start).min(page_size.max(1));
 
-    let first_line = truncate_to_width(
+    let first_line = footer_line_with_indicator(
         "Select with highlighted key. Ctrl-B tmux prefix. Esc/Ctrl-C close.",
+        connection.indicator(),
         width,
     );
 
     let second_line = if page_count > 1 {
-        truncate_to_width(
+        footer_line_with_indicator(
             format!(
                 "Page {page_number}/{page_count} | {shown_count}/{total_panes} shown | N/P, Left/Right, or PgUp/PgDn."
             )
             .as_str(),
+            connection.message.as_str(),
             width,
         )
     } else {
-        truncate_to_width(
+        footer_line_with_indicator(
             format!("Page 1/1 | {shown_count}/{total_panes} shown").as_str(),
+            connection.message.as_str(),
             width,
         )
     };
@@ -216,10 +232,35 @@ pub(crate) fn render_error_frame(error_message: &str) -> Vec<String> {
         String::new(),
         error_message.to_string(),
         String::new(),
-        "Run `agentscan tui --refresh` for a one-shot tmux snapshot.".to_string(),
-        "Run `agentscan daemon run` for normal cached use.".to_string(),
+        "Run `agentscan daemon status` to inspect daemon health.".to_string(),
         "Press Esc or Ctrl-C to close.".to_string(),
     ]
+}
+
+fn render_body_with_footer(
+    body: &[String],
+    connection: &TuiConnectionState,
+    terminal_size: TuiTerminalSize,
+) -> Vec<String> {
+    let width = usize::from(terminal_size.width);
+    let height = usize::from(terminal_size.height);
+    if height == 0 {
+        return Vec::new();
+    }
+
+    let footer = vec![
+        footer_line_with_indicator("Esc/Ctrl-C close.", connection.indicator(), width),
+        footer_line_with_indicator(connection.message.as_str(), "", width),
+    ];
+    let body_height = height.saturating_sub(footer.len());
+    let mut lines = body
+        .iter()
+        .take(body_height)
+        .map(|line| truncate_to_width(line, width))
+        .collect::<Vec<_>>();
+    lines.extend(footer);
+    lines.truncate(height);
+    lines
 }
 
 fn fit_lines_to_terminal(lines: &[String], terminal_size: TuiTerminalSize) -> Vec<String> {
@@ -229,6 +270,35 @@ fn fit_lines_to_terminal(lines: &[String], terminal_size: TuiTerminalSize) -> Ve
         .take(usize::from(terminal_size.height))
         .map(|line| truncate_to_width(line, width))
         .collect()
+}
+
+fn footer_line_with_indicator(left: &str, indicator: &str, width: usize) -> String {
+    if width == usize::MAX {
+        return if indicator.is_empty() {
+            left.to_string()
+        } else if left.is_empty() {
+            indicator.to_string()
+        } else {
+            format!("{left} {indicator}")
+        };
+    }
+    if width == 0 {
+        return String::new();
+    }
+
+    let indicator_width = display_width(indicator);
+    if indicator_width == 0 {
+        return truncate_to_width(left, width);
+    }
+    if indicator_width >= width {
+        return truncate_to_width(indicator, width);
+    }
+
+    let left_width = width.saturating_sub(indicator_width + 1);
+    let left = truncate_to_width(left, left_width);
+    let used_width = display_width(left.as_str());
+    let spaces = width.saturating_sub(used_width + indicator_width).max(1);
+    format!("{left}{}{indicator}", " ".repeat(spaces))
 }
 
 fn format_row_with_trailing_label(prefix: &str, label: &str, width: usize) -> String {

@@ -92,7 +92,7 @@ impl TestHarness {
         Ok(output.trim().to_string())
     }
 
-    fn seed_tui_two_pane_cache(&self, root_pane_id: &str, split_pane_id: &str) -> Result<()> {
+    fn seed_tui_two_pane_metadata(&self, root_pane_id: &str, split_pane_id: &str) -> Result<()> {
         self.agentscan([
             "tmux",
             "set-metadata",
@@ -116,8 +116,7 @@ impl TestHarness {
             "Split Task",
             "--state",
             "busy",
-        ])?;
-        self.agentscan(["-f", "cache", "validate"])
+        ])
     }
 
     fn start_daemon(&self) -> Result<DaemonHandle> {
@@ -575,7 +574,10 @@ impl TestHarness {
             }
 
             if Instant::now() >= deadline {
-                bail!("timed out waiting for TUI pane {pane_id} contents to update");
+                let daemon_log = read_log(&self.agentscan_socket_path.with_extension("sock.log"));
+                bail!(
+                    "timed out waiting for TUI pane {pane_id} contents to update; last contents:\n{contents}\ndaemon log:\n{daemon_log}"
+                );
             }
 
             sleep(POLL_INTERVAL);

@@ -9,16 +9,100 @@ pub(super) const TUI_SELECTION_KEYS: [char; 16] = [
 const FOOTER_LINE_COUNT: usize = 2;
 const MIN_SELECTABLE_TUI_HEIGHT: usize = FOOTER_LINE_COUNT + 1;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum TuiConnectionKind {
+    Connecting,
+    Connected,
+    Offline,
+    Shutdown,
+    Unavailable,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TuiConnectionState {
+    pub(crate) kind: TuiConnectionKind,
+    pub(crate) message: String,
+    pub(crate) retrying: bool,
+}
+
+impl TuiConnectionState {
+    fn connecting(message: impl Into<String>) -> Self {
+        Self {
+            kind: TuiConnectionKind::Connecting,
+            message: message.into(),
+            retrying: true,
+        }
+    }
+
+    fn connected() -> Self {
+        Self {
+            kind: TuiConnectionKind::Connected,
+            message: "live daemon subscription".to_string(),
+            retrying: false,
+        }
+    }
+
+    fn offline(message: impl Into<String>, retrying: bool) -> Self {
+        Self {
+            kind: TuiConnectionKind::Offline,
+            message: message.into(),
+            retrying,
+        }
+    }
+
+    fn shutdown(message: impl Into<String>) -> Self {
+        Self {
+            kind: TuiConnectionKind::Shutdown,
+            message: message.into(),
+            retrying: false,
+        }
+    }
+
+    fn unavailable(message: impl Into<String>) -> Self {
+        Self {
+            kind: TuiConnectionKind::Unavailable,
+            message: message.into(),
+            retrying: false,
+        }
+    }
+
+    pub(crate) fn indicator(&self) -> &'static str {
+        match self.kind {
+            TuiConnectionKind::Connecting => "[connecting]",
+            TuiConnectionKind::Connected => "[live]",
+            TuiConnectionKind::Offline if self.retrying => "[reconnecting]",
+            TuiConnectionKind::Offline => "[offline]",
+            TuiConnectionKind::Shutdown => "[shutdown]",
+            TuiConnectionKind::Unavailable => "[unavailable]",
+        }
+    }
+}
+
+impl Default for TuiConnectionState {
+    fn default() -> Self {
+        Self::connecting("connecting to daemon")
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct TuiState {
     pub(super) key_targets: BTreeMap<char, String>,
     pub(super) panes: Vec<PaneRecord>,
     pub(super) error_message: Option<String>,
+    pub(super) connection: TuiConnectionState,
     pub(super) page_start: usize,
     last_terminal_size: Option<TuiTerminalSize>,
 }
 
 impl TuiState {
+    pub(crate) fn set_connecting(&mut self, message: String) {
+        self.connection = if self.panes.is_empty() {
+            TuiConnectionState::connecting(message)
+        } else {
+            TuiConnectionState::offline(message, true)
+        };
+    }
+
     pub(crate) fn replace_panes(&mut self, panes: Vec<PaneRecord>) {
         let merged_panes = merge_tui_session_panes(&self.panes, panes);
         let page_start = reanchor_page_start(
@@ -30,13 +114,23 @@ impl TuiState {
         self.panes = merged_panes;
         self.page_start = page_start;
         self.error_message = None;
+        self.connection = TuiConnectionState::connected();
     }
 
-    pub(crate) fn set_error(&mut self, message: String) {
+    pub(crate) fn set_unavailable(&mut self, message: String) {
         self.key_targets.clear();
         self.panes.clear();
         self.page_start = 0;
-        self.error_message = Some(message);
+        self.error_message = Some(message.clone());
+        self.connection = TuiConnectionState::unavailable(message);
+    }
+
+    pub(crate) fn set_offline(&mut self, message: String, retrying: bool) {
+        self.connection = TuiConnectionState::offline(message, retrying);
+    }
+
+    pub(crate) fn set_shutdown(&mut self, message: String) {
+        self.connection = TuiConnectionState::shutdown(message);
     }
 
     pub(super) fn set_terminal_size(&mut self, terminal_size: TuiTerminalSize) {

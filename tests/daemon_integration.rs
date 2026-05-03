@@ -1156,11 +1156,10 @@ fn tui_focuses_selected_pane_from_interactive_tmux_pane() -> Result<()> {
         "--state",
         "busy",
     ])?;
-    harness.agentscan(["-f", "cache", "validate"])?;
     let mut client = harness.attach_client("tui-focus")?;
 
     let tui_pane_id = harness.start_agentscan_tui_pane("tui-focus:0.0", &[])?;
-    sleep(Duration::from_millis(200));
+    harness.wait_for_pane_contents(&tui_pane_id, |contents| contents.contains("Split Task"))?;
     harness.tmux(["send-keys", "-t", &tui_pane_id, "2"])?;
     harness.wait_for_client_pane(&mut client, &split_pane_id)?;
 
@@ -1175,11 +1174,13 @@ fn display_popup_focuses_selected_pane_from_attached_client() -> Result<()> {
     }
     let root_pane_id = harness.start_session("display-tui-focus", "sleep 300")?;
     let split_pane_id = harness.split_window("display-tui-focus:0.0", "sleep 300")?;
-    harness.seed_tui_two_pane_cache(&root_pane_id, &split_pane_id)?;
+    harness.seed_tui_two_pane_metadata(&root_pane_id, &split_pane_id)?;
+    harness.agentscan(["snapshot", "--format", "json"])?;
     let mut client = harness.attach_client("display-tui-focus")?;
 
     let mut display_popup = harness.start_agentscan_display_popup(&client.tty, &[])?;
     display_popup.wait_until_ready()?;
+    sleep(Duration::from_millis(300));
     harness.send_keys_to_client(&client.tty, ["2"])?;
     display_popup.wait_for_exit()?;
     harness.wait_for_client_pane(&mut client, &split_pane_id)?;
@@ -1188,7 +1189,7 @@ fn display_popup_focuses_selected_pane_from_attached_client() -> Result<()> {
 }
 
 #[test]
-fn tui_displays_message_when_cached_pane_no_longer_exists() -> Result<()> {
+fn tui_displays_message_when_selected_pane_no_longer_exists() -> Result<()> {
     let harness = TestHarness::new()?;
     let root_pane_id = harness.start_session("tui-missing", "sleep 300")?;
     let split_pane_id = harness.split_window("tui-missing:0.0", "sleep 300")?;
@@ -1216,12 +1217,11 @@ fn tui_displays_message_when_cached_pane_no_longer_exists() -> Result<()> {
         "--state",
         "busy",
     ])?;
-    harness.agentscan(["-f", "cache", "validate"])?;
     harness.tmux(["kill-pane", "-t", &split_pane_id])?;
     let mut client = harness.attach_client("tui-missing")?;
 
     let tui_pane_id = harness.start_agentscan_tui_pane("tui-missing:0.0", &[])?;
-    sleep(Duration::from_millis(200));
+    harness.wait_for_pane_contents(&tui_pane_id, |contents| contents.contains("Root Task"))?;
     harness.tmux(["send-keys", "-t", &tui_pane_id, "2"])?;
     harness.wait_for_client_pane(&mut client, &root_pane_id)?;
 
@@ -1236,12 +1236,14 @@ fn display_popup_closes_when_cached_pane_no_longer_exists() -> Result<()> {
     }
     let root_pane_id = harness.start_session("display-tui-missing", "sleep 300")?;
     let split_pane_id = harness.split_window("display-tui-missing:0.0", "sleep 300")?;
-    harness.seed_tui_two_pane_cache(&root_pane_id, &split_pane_id)?;
-    harness.tmux(["kill-pane", "-t", &split_pane_id])?;
+    harness.seed_tui_two_pane_metadata(&root_pane_id, &split_pane_id)?;
+    harness.agentscan(["snapshot", "--format", "json"])?;
     let mut client = harness.attach_client("display-tui-missing")?;
 
     let mut display_popup = harness.start_agentscan_display_popup(&client.tty, &[])?;
     display_popup.wait_until_ready()?;
+    sleep(Duration::from_millis(300));
+    harness.tmux(["kill-pane", "-t", &split_pane_id])?;
     harness.send_keys_to_client(&client.tty, ["2"])?;
     display_popup.wait_for_exit()?;
     harness.wait_for_client_pane(&mut client, &root_pane_id)?;
@@ -1286,28 +1288,43 @@ fn display_popup_ctrl_b_passthrough_returns_to_tmux_prefix_table() -> Result<()>
 }
 
 #[test]
-fn tui_renders_cache_error_frame_when_cache_is_missing() -> Result<()> {
+fn tui_bootstraps_from_socket_when_cache_is_poisoned() -> Result<()> {
     let harness = TestHarness::new()?;
-    let _pane_id = harness.start_session("tui-cache-missing", "sleep 300")?;
+    let pane_id = harness.start_session("tui-cache-poisoned", "sleep 300")?;
+    harness.agentscan([
+        "tmux",
+        "set-metadata",
+        "--pane-id",
+        &pane_id,
+        "--provider",
+        "claude",
+        "--label",
+        "Socket Task",
+        "--state",
+        "busy",
+    ])?;
+    fs::write(&harness.cache_path, b"{invalid json").context("failed to poison cache")?;
 
-    let tui_pane_id = harness.start_agentscan_tui_pane("tui-cache-missing:0.0", &[])?;
-    sleep(Duration::from_millis(200));
+    let tui_pane_id = harness.start_agentscan_tui_pane("tui-cache-poisoned:0.0", &[])?;
+    harness.wait_for_pane_contents(&tui_pane_id, |contents| contents.contains("Socket Task"))?;
     let contents = harness.capture_pane(&tui_pane_id)?;
 
     assert!(
-        contents.contains("agentscan tui unavailable"),
-        "expected TUI error frame, got:\n{contents}"
+        contents.contains("[live]"),
+        "expected live socket indicator, got:\n{contents}"
     );
     assert!(
-        contents.contains("tui --refresh"),
-        "expected refresh guidance in TUI error frame, got:\n{contents}"
+        !contents.contains("agentscan tui unavailable"),
+        "TUI should not read poisoned cache, got:\n{contents}"
     );
 
+    harness.tmux(["send-keys", "-t", &tui_pane_id, "Escape"])?;
+    harness.wait_for_pane_closed(&tui_pane_id)?;
     Ok(())
 }
 
 #[test]
-fn tui_rerenders_when_cache_changes() -> Result<()> {
+fn tui_rerenders_when_socket_snapshot_changes() -> Result<()> {
     let harness = TestHarness::new()?;
     let pane_id = harness.start_session("tui-rerender", "sleep 300")?;
     harness.agentscan([
@@ -1322,7 +1339,6 @@ fn tui_rerenders_when_cache_changes() -> Result<()> {
         "--state",
         "busy",
     ])?;
-    harness.agentscan(["-f", "cache", "validate"])?;
 
     let tui_pane_id = harness.start_agentscan_tui_pane("tui-rerender:0.0", &[])?;
     harness.wait_for_pane_contents(&tui_pane_id, |contents| contents.contains("Initial Task"))?;
@@ -1344,6 +1360,46 @@ fn tui_rerenders_when_cache_changes() -> Result<()> {
     harness.tmux(["send-keys", "-t", &tui_pane_id, "Escape"])?;
     harness.wait_for_pane_closed(&tui_pane_id)?;
 
+    Ok(())
+}
+
+#[test]
+fn tui_reconnects_after_post_bootstrap_daemon_eof() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let pane_id = harness.start_session("tui-reconnect", "sleep 300")?;
+    harness.agentscan([
+        "tmux",
+        "set-metadata",
+        "--pane-id",
+        &pane_id,
+        "--provider",
+        "claude",
+        "--label",
+        "Reconnect Task",
+        "--state",
+        "busy",
+    ])?;
+    let mut daemon = harness.start_daemon()?;
+    harness.wait_for_cache(&mut daemon, |cache| {
+        pane_from_cache(cache, &pane_id).is_some()
+    })?;
+
+    let tui_pane_id = harness.start_agentscan_tui_pane("tui-reconnect:0.0", &[])?;
+    harness.wait_for_pane_contents(&tui_pane_id, |contents| {
+        contents.contains("Reconnect Task") && contents.contains("[live]")
+    })?;
+
+    daemon.shutdown()?;
+    harness.wait_for_pane_contents(&tui_pane_id, |contents| {
+        contents.contains("Reconnect Task")
+            && (contents.contains("[reconnecting]") || contents.contains("[live]"))
+    })?;
+    harness.wait_for_pane_contents(&tui_pane_id, |contents| {
+        contents.contains("Reconnect Task") && contents.contains("[live]")
+    })?;
+
+    harness.tmux(["send-keys", "-t", &tui_pane_id, "Escape"])?;
+    harness.wait_for_pane_closed(&tui_pane_id)?;
     Ok(())
 }
 
@@ -1401,7 +1457,6 @@ fn tui_pages_to_overflow_rows() -> Result<()> {
             "busy",
         ])?;
     }
-    harness.agentscan(["-f", "cache", "validate"])?;
 
     let _client = harness.attach_client("tui-paging")?;
     let tui_pane_id = harness.start_agentscan_tui_pane("tui-paging:0.0", &[])?;
@@ -1444,12 +1499,13 @@ fn display_popup_pages_to_overflow_rows_and_focuses_selection() -> Result<()> {
             "busy",
         ])?;
     }
-    harness.agentscan(["-f", "cache", "validate"])?;
+    harness.agentscan(["snapshot", "--format", "json"])?;
     let target_pane_id = pane_ids[16].clone();
     let mut client = harness.attach_client("display-tui-paging")?;
 
     let mut display_popup = harness.start_agentscan_display_popup(&client.tty, &[])?;
     display_popup.wait_until_ready()?;
+    sleep(Duration::from_millis(300));
     harness.send_keys_to_client(&client.tty, ["n"])?;
     sleep(Duration::from_millis(200));
     harness.send_keys_to_client(&client.tty, ["1"])?;

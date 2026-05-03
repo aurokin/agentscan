@@ -237,7 +237,10 @@ mod tests {
     #[test]
     fn explicit_agentscan_tmux_socket_adds_socket_arg_and_removes_tmux_env() {
         let command = tmux_command_from_env(
-            read_os_from(&[(TMUX_SOCKET_ENV_VAR, "/tmp/agentscan-tmux.sock")]),
+            read_os_from(&[
+                (TMUX_SOCKET_ENV_VAR, "/tmp/agentscan-tmux.sock"),
+                ("TMUX", "/tmp/other.sock,1,0"),
+            ]),
             read_from(&[("LANG", "en_US.UTF-8")]),
         );
         let args: Vec<String> = command

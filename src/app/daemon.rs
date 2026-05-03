@@ -27,6 +27,11 @@ const DAEMON_START_READINESS_TIMEOUT: Duration = Duration::from_secs(5);
 const DAEMON_STOP_TIMEOUT: Duration = Duration::from_secs(3);
 const LIFECYCLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const LOG_TRUNCATE_THRESHOLD_BYTES: u64 = 1024 * 1024;
+#[cfg(not(test))]
+const TUI_SUBSCRIPTION_INITIAL_BACKOFF: Duration = Duration::from_millis(250);
+#[cfg(test)]
+const TUI_SUBSCRIPTION_INITIAL_BACKOFF: Duration = Duration::from_millis(10);
+const TUI_SUBSCRIPTION_MAX_BACKOFF: Duration = Duration::from_secs(1);
 pub(crate) const NO_AUTO_START_ENV_VAR: &str = "AGENTSCAN_NO_AUTO_START";
 
 static DAEMON_SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -236,6 +241,28 @@ impl std::fmt::Display for DaemonSnapshotError {
 }
 
 impl std::error::Error for DaemonSnapshotError {}
+
+#[derive(Clone, Debug)]
+pub(crate) enum DaemonSubscriptionEvent {
+    Connecting { message: String },
+    Snapshot { snapshot: SnapshotEnvelope },
+    Offline { message: String, retrying: bool },
+    Shutdown { message: String },
+    Fatal { message: String },
+}
+
+enum SubscriptionConnect {
+    Subscribed {
+        reader: BufReader<std::os::unix::net::UnixStream>,
+        bootstrap: SnapshotEnvelope,
+    },
+    NotRunning(String),
+    Retryable(String),
+    StartupFailed(String),
+    ServerClosing(String),
+    Incompatible(String),
+    Unexpected(String),
+}
 
 struct DaemonStartGuard {
     lock_file: File,
@@ -524,6 +551,414 @@ fn snapshot_once_from_socket(socket_path: &Path) -> Result<SnapshotQuery> {
             "daemon returned unexpected snapshot frame {other:?}"
         ))),
     }
+}
+
+pub(crate) fn spawn_subscription_worker(
+    policy: AutoStartPolicy,
+    events: mpsc::Sender<DaemonSubscriptionEvent>,
+    cancel: Arc<AtomicBool>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let result = subscription_worker_loop(policy, &events, &cancel);
+        if let Err(error) = result {
+            let _ = events.send(DaemonSubscriptionEvent::Fatal {
+                message: error.to_string(),
+            });
+        }
+    })
+}
+
+fn subscription_worker_loop(
+    policy: AutoStartPolicy,
+    events: &mpsc::Sender<DaemonSubscriptionEvent>,
+    cancel: &Arc<AtomicBool>,
+) -> Result<()> {
+    let socket_path = ipc::resolve_socket_path()?;
+    let paths = LifecyclePaths::from_socket_path(&socket_path);
+    let mut bootstrapped = false;
+    let mut attempted_start = false;
+    let mut backoff = TUI_SUBSCRIPTION_INITIAL_BACKOFF;
+
+    while !cancel.load(Ordering::Relaxed) {
+        send_subscription_event(
+            events,
+            DaemonSubscriptionEvent::Connecting {
+                message: if bootstrapped {
+                    format!("reconnecting to daemon at {}", socket_path.display())
+                } else {
+                    format!("connecting to daemon at {}", socket_path.display())
+                },
+            },
+        )?;
+
+        match subscribe_once_from_socket(&socket_path)? {
+            SubscriptionConnect::Subscribed {
+                mut reader,
+                bootstrap,
+            } => {
+                attempted_start = false;
+                backoff = TUI_SUBSCRIPTION_INITIAL_BACKOFF;
+                bootstrapped = true;
+                send_subscription_event(
+                    events,
+                    DaemonSubscriptionEvent::Snapshot {
+                        snapshot: bootstrap,
+                    },
+                )?;
+                match read_subscription_frames(&mut reader, events, cancel) {
+                    SubscriptionReadResult::Reconnect(message) => {
+                        if cancel.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        send_subscription_event(
+                            events,
+                            DaemonSubscriptionEvent::Offline {
+                                message,
+                                retrying: true,
+                            },
+                        )?;
+                    }
+                    SubscriptionReadResult::Shutdown(message) => {
+                        send_subscription_event(
+                            events,
+                            DaemonSubscriptionEvent::Shutdown { message },
+                        )?;
+                        break;
+                    }
+                    SubscriptionReadResult::Cancelled => break,
+                }
+            }
+            SubscriptionConnect::NotRunning(reason) if policy.disabled => {
+                let event = if bootstrapped {
+                    DaemonSubscriptionEvent::Offline {
+                        message: format!("daemon auto-start is disabled: {reason}"),
+                        retrying: false,
+                    }
+                } else {
+                    DaemonSubscriptionEvent::Fatal {
+                        message: format!("daemon auto-start is disabled: {reason}"),
+                    }
+                };
+                send_subscription_event(events, event)?;
+                break;
+            }
+            SubscriptionConnect::NotRunning(reason) if !attempted_start => {
+                attempted_start = true;
+                send_subscription_event(
+                    events,
+                    DaemonSubscriptionEvent::Connecting {
+                        message: format!("starting daemon after {reason}"),
+                    },
+                )?;
+                match daemon_start_with_socket_path_and_output(&socket_path, StartOutput::Quiet) {
+                    Ok(()) => {}
+                    Err(error) => {
+                        send_subscription_event(
+                            events,
+                            DaemonSubscriptionEvent::Fatal {
+                                message: error.to_string(),
+                            },
+                        )?;
+                        break;
+                    }
+                }
+            }
+            SubscriptionConnect::NotRunning(reason) => {
+                send_subscription_event(
+                    events,
+                    DaemonSubscriptionEvent::Offline {
+                        message: reason,
+                        retrying: true,
+                    },
+                )?;
+                sleep_subscription_backoff(cancel, backoff);
+                backoff = next_subscription_backoff(backoff);
+            }
+            SubscriptionConnect::Retryable(message) => {
+                send_subscription_event(
+                    events,
+                    DaemonSubscriptionEvent::Offline {
+                        message,
+                        retrying: true,
+                    },
+                )?;
+                sleep_subscription_backoff(cancel, backoff);
+                backoff = next_subscription_backoff(backoff);
+            }
+            SubscriptionConnect::StartupFailed(message) => {
+                send_subscription_event(
+                    events,
+                    DaemonSubscriptionEvent::Fatal {
+                        message: format!(
+                            "daemon startup failed: {message}; see log {}",
+                            paths.log_path.display()
+                        ),
+                    },
+                )?;
+                break;
+            }
+            SubscriptionConnect::ServerClosing(message) => {
+                send_subscription_event(events, DaemonSubscriptionEvent::Shutdown { message })?;
+                break;
+            }
+            SubscriptionConnect::Incompatible(message) => {
+                send_subscription_event(
+                    events,
+                    DaemonSubscriptionEvent::Fatal {
+                        message: incompatible_daemon_guidance(&message),
+                    },
+                )?;
+                break;
+            }
+            SubscriptionConnect::Unexpected(message) => {
+                let event = if bootstrapped {
+                    DaemonSubscriptionEvent::Offline {
+                        message,
+                        retrying: true,
+                    }
+                } else {
+                    DaemonSubscriptionEvent::Fatal { message }
+                };
+                send_subscription_event(events, event)?;
+                if !bootstrapped {
+                    break;
+                }
+                sleep_subscription_backoff(cancel, backoff);
+                backoff = next_subscription_backoff(backoff);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn subscribe_once_from_socket(socket_path: &Path) -> Result<SubscriptionConnect> {
+    let mut stream = match std::os::unix::net::UnixStream::connect(socket_path) {
+        Ok(stream) => stream,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(SubscriptionConnect::NotRunning(
+                "socket is missing".to_string(),
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
+            return Ok(SubscriptionConnect::NotRunning(
+                "socket exists but no daemon accepted the connection".to_string(),
+            ));
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to connect to daemon socket {}",
+                    socket_path.display()
+                )
+            });
+        }
+    };
+    stream
+        .set_read_timeout(Some(CLIENT_WRITE_TIMEOUT))
+        .context("failed to set daemon subscription read timeout")?;
+    stream
+        .set_write_timeout(Some(CLIENT_WRITE_TIMEOUT))
+        .context("failed to set daemon subscription write timeout")?;
+    let hello = ipc::ClientFrame::Hello {
+        protocol_version: ipc::WIRE_PROTOCOL_VERSION,
+        snapshot_schema_version: CACHE_SCHEMA_VERSION,
+        mode: ipc::ClientMode::Subscribe,
+    };
+    stream
+        .write_all(&ipc::encode_frame(&hello)?)
+        .context("failed to write daemon subscription hello")?;
+    let mut reader = BufReader::new(stream);
+    let Some(first_frame) = (match read_subscription_bootstrap_frame(&mut reader) {
+        BootstrapFrameRead::Frame(frame) => frame,
+        BootstrapFrameRead::Connect(connect) => return Ok(connect),
+    }) else {
+        return Ok(SubscriptionConnect::Unexpected(
+            "daemon closed without subscription response".to_string(),
+        ));
+    };
+    match first_frame {
+        ipc::DaemonFrame::Shutdown {
+            reason: ipc::ShutdownReason::ServerBusy,
+            message,
+        } => Ok(SubscriptionConnect::Retryable(message)),
+        ipc::DaemonFrame::Shutdown { reason, message } => Ok(SubscriptionConnect::Incompatible(
+            format!("daemon rejected subscription handshake ({reason:?}): {message}"),
+        )),
+        ipc::DaemonFrame::HelloAck {
+            protocol_version,
+            snapshot_schema_version,
+        } if protocol_version == ipc::WIRE_PROTOCOL_VERSION
+            && snapshot_schema_version == CACHE_SCHEMA_VERSION =>
+        {
+            let Some(second_frame) = (match read_subscription_bootstrap_frame(&mut reader) {
+                BootstrapFrameRead::Frame(frame) => frame,
+                BootstrapFrameRead::Connect(connect) => return Ok(connect),
+            }) else {
+                return Ok(SubscriptionConnect::Unexpected(
+                    "daemon acknowledged subscription hello but did not send bootstrap snapshot"
+                        .to_string(),
+                ));
+            };
+            match second_frame {
+                ipc::DaemonFrame::Snapshot { snapshot } => {
+                    if let Err(error) = cache::validate_snapshot(&snapshot, None) {
+                        return Ok(SubscriptionConnect::Incompatible(format!(
+                            "daemon returned invalid bootstrap snapshot: {error:#}"
+                        )));
+                    }
+                    reader
+                        .get_ref()
+                        .set_read_timeout(None)
+                        .context("failed to clear daemon subscription frame read timeout")?;
+                    Ok(SubscriptionConnect::Subscribed {
+                        reader,
+                        bootstrap: snapshot,
+                    })
+                }
+                ipc::DaemonFrame::Unavailable {
+                    reason: ipc::UnavailableReason::DaemonNotReady,
+                    message,
+                }
+                | ipc::DaemonFrame::Unavailable {
+                    reason: ipc::UnavailableReason::SubscribeUnavailable,
+                    message,
+                }
+                | ipc::DaemonFrame::Unavailable {
+                    reason: ipc::UnavailableReason::SubscriberLimitReached,
+                    message,
+                } => Ok(SubscriptionConnect::Retryable(message)),
+                ipc::DaemonFrame::Unavailable {
+                    reason: ipc::UnavailableReason::StartupFailed,
+                    message,
+                } => Ok(SubscriptionConnect::StartupFailed(message)),
+                ipc::DaemonFrame::Unavailable {
+                    reason: ipc::UnavailableReason::ServerClosing,
+                    message,
+                } => Ok(SubscriptionConnect::ServerClosing(message)),
+                other => Ok(SubscriptionConnect::Unexpected(format!(
+                    "daemon returned unexpected subscription frame {other:?}"
+                ))),
+            }
+        }
+        ipc::DaemonFrame::HelloAck {
+            protocol_version,
+            snapshot_schema_version,
+        } => Ok(SubscriptionConnect::Incompatible(format!(
+            "daemon acknowledged incompatible subscription handshake (protocol {protocol_version}, schema {snapshot_schema_version}; expected protocol {}, schema {})",
+            ipc::WIRE_PROTOCOL_VERSION,
+            CACHE_SCHEMA_VERSION
+        ))),
+        other => Ok(SubscriptionConnect::Unexpected(format!(
+            "daemon returned unexpected subscription frame {other:?}"
+        ))),
+    }
+}
+
+enum BootstrapFrameRead {
+    Frame(Option<ipc::DaemonFrame>),
+    Connect(SubscriptionConnect),
+}
+
+fn read_subscription_bootstrap_frame(
+    reader: &mut BufReader<std::os::unix::net::UnixStream>,
+) -> BootstrapFrameRead {
+    match ipc::read_daemon_frame(reader) {
+        Ok(frame) => BootstrapFrameRead::Frame(frame),
+        Err(error) => BootstrapFrameRead::Connect(SubscriptionConnect::Retryable(format!(
+            "daemon subscription read failed: {error:#}"
+        ))),
+    }
+}
+
+enum SubscriptionReadResult {
+    Reconnect(String),
+    Shutdown(String),
+    Cancelled,
+}
+
+fn read_subscription_frames(
+    reader: &mut BufReader<std::os::unix::net::UnixStream>,
+    events: &mpsc::Sender<DaemonSubscriptionEvent>,
+    cancel: &Arc<AtomicBool>,
+) -> SubscriptionReadResult {
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return SubscriptionReadResult::Cancelled;
+        }
+
+        match ipc::read_daemon_frame(reader) {
+            Ok(Some(ipc::DaemonFrame::Snapshot { snapshot })) => {
+                if let Err(error) = cache::validate_snapshot(&snapshot, None) {
+                    return SubscriptionReadResult::Reconnect(format!(
+                        "invalid daemon snapshot: {error:#}"
+                    ));
+                }
+                if send_subscription_event(events, DaemonSubscriptionEvent::Snapshot { snapshot })
+                    .is_err()
+                {
+                    return SubscriptionReadResult::Cancelled;
+                }
+            }
+            Ok(Some(ipc::DaemonFrame::Unavailable {
+                reason: ipc::UnavailableReason::ServerClosing,
+                message,
+            }))
+            | Ok(Some(ipc::DaemonFrame::Shutdown { message, .. })) => {
+                return SubscriptionReadResult::Shutdown(message);
+            }
+            Ok(Some(ipc::DaemonFrame::Unavailable { reason, message })) => {
+                return SubscriptionReadResult::Reconnect(format!(
+                    "daemon subscription unavailable ({reason:?}): {message}"
+                ));
+            }
+            Ok(Some(other)) => {
+                return SubscriptionReadResult::Reconnect(format!(
+                    "daemon returned unexpected subscription frame {other:?}"
+                ));
+            }
+            Ok(None) => {
+                return SubscriptionReadResult::Reconnect("daemon subscription closed".to_string());
+            }
+            Err(error)
+                if error_chain_contains_io_kind(&error, std::io::ErrorKind::TimedOut)
+                    || error_chain_contains_io_kind(&error, std::io::ErrorKind::WouldBlock) => {}
+            Err(error) => {
+                return SubscriptionReadResult::Reconnect(format!(
+                    "daemon subscription read failed: {error:#}"
+                ));
+            }
+        }
+    }
+}
+
+fn send_subscription_event(
+    events: &mpsc::Sender<DaemonSubscriptionEvent>,
+    event: DaemonSubscriptionEvent,
+) -> std::result::Result<(), mpsc::SendError<DaemonSubscriptionEvent>> {
+    events.send(event)
+}
+
+fn sleep_subscription_backoff(cancel: &AtomicBool, duration: Duration) {
+    let deadline = Instant::now() + duration;
+    while Instant::now() < deadline {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn next_subscription_backoff(duration: Duration) -> Duration {
+    duration.saturating_mul(2).min(TUI_SUBSCRIPTION_MAX_BACKOFF)
+}
+
+fn error_chain_contains_io_kind(error: &anyhow::Error, kind: std::io::ErrorKind) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io_error| io_error.kind() == kind)
+    })
 }
 
 // AUR-175 foundation for AUR-176 socket-backed one-shot consumers.
@@ -1019,13 +1454,69 @@ fn daemon_start_with_socket_path_and_output(
         env::current_exe().map_err(|error| DaemonSnapshotError::UnexpectedFrame {
             message: format!("failed to resolve current executable: {error}"),
         })?;
+    let envs = daemon_start_tmux_envs();
+    let env_removes = daemon_start_env_removes();
     daemon_start_with_socket_path_output_and_command(
         socket_path,
         output,
         &executable_path,
-        &[],
-        &[],
+        &envs,
+        &env_removes,
     )
+}
+
+fn daemon_start_tmux_envs() -> Vec<(OsString, OsString)> {
+    daemon_start_tmux_envs_from(|name| env::var_os(name))
+}
+
+fn daemon_start_tmux_envs_from(
+    read_env: impl Fn(&str) -> Option<OsString>,
+) -> Vec<(OsString, OsString)> {
+    if read_env(TMUX_SOCKET_ENV_VAR).is_some() {
+        return Vec::new();
+    }
+    let Some(tmux_env) = read_env("TMUX") else {
+        return Vec::new();
+    };
+    let Some(socket_path) = tmux_socket_path_from_tmux_env(tmux_env.as_os_str()) else {
+        return Vec::new();
+    };
+    vec![(OsString::from(TMUX_SOCKET_ENV_VAR), socket_path)]
+}
+
+fn daemon_start_env_removes() -> Vec<OsString> {
+    daemon_start_env_removes_from(|name| env::var_os(name))
+}
+
+fn daemon_start_env_removes_from(read_env: impl Fn(&str) -> Option<OsString>) -> Vec<OsString> {
+    if read_env(TMUX_SOCKET_ENV_VAR).is_some() || read_env("TMUX").is_some() {
+        vec![OsString::from("TMUX")]
+    } else {
+        Vec::new()
+    }
+}
+
+fn tmux_socket_path_from_tmux_env(value: &std::ffi::OsStr) -> Option<OsString> {
+    let value = value.to_string_lossy();
+    value
+        .split(',')
+        .next()
+        .filter(|socket_path| !socket_path.is_empty())
+        .map(OsString::from)
+}
+
+#[cfg(test)]
+pub(crate) fn test_daemon_start_tmux_envs_from(
+    read_env: impl Fn(&str) -> Option<OsString>,
+) -> Vec<(OsString, OsString)> {
+    daemon_start_tmux_envs_from(read_env)
+}
+
+#[cfg(test)]
+pub(crate) fn test_daemon_start_env_removes_from(
+    read_env: impl Fn(&str) -> Option<OsString>,
+) -> Vec<OsString> {
+    daemon_start_env_removes_from(read_env)
 }
 
 fn daemon_start_with_socket_path_output_and_command(
@@ -2221,9 +2712,10 @@ fn handle_daemon_socket_client_with_pending(
         } => {
             write_daemon_frame(&mut writer, &ack)?;
             match state.snapshot_response() {
-                DaemonSocketResponse::Snapshot(bytes) => writer
-                    .write_all(&bytes)
-                    .context("failed to write daemon snapshot frame")?,
+                DaemonSocketResponse::Snapshot(bytes) => {
+                    write_all_with_deadline(&mut writer, &bytes, CLIENT_WRITE_TIMEOUT)
+                        .context("failed to write daemon snapshot frame")?
+                }
                 DaemonSocketResponse::Unavailable { reason, message } => write_daemon_frame(
                     &mut writer,
                     &ipc::DaemonFrame::Unavailable { reason, message },
@@ -2240,9 +2732,12 @@ fn handle_daemon_socket_client_with_pending(
             SubscribeResponse::Registered(registration) => {
                 write_daemon_frame(&mut writer, &ack)
                     .and_then(|()| {
-                        writer
-                            .write_all(&registration.bootstrap_frame)
-                            .context("failed to write daemon subscriber bootstrap snapshot")
+                        write_all_with_deadline(
+                            &mut writer,
+                            &registration.bootstrap_frame,
+                            CLIENT_WRITE_TIMEOUT,
+                        )
+                        .context("failed to write daemon subscriber bootstrap snapshot")
                     })
                     .and_then(|()| {
                         writer
@@ -2310,9 +2805,8 @@ fn serve_subscriber(
             .set_write_timeout(Some(SUBSCRIBER_WRITE_TIMEOUT))
             .ok();
         while let Some(frame) = writer_mailbox.recv() {
-            let result = writer
-                .write_all(&frame)
-                .and_then(|()| writer.flush())
+            let result = write_all_with_deadline(&mut writer, &frame, SUBSCRIBER_WRITE_TIMEOUT)
+                .and_then(|()| writer.flush().context("failed to flush subscriber frame"))
                 .with_context(|| format!("failed to write subscriber frame for {id}"));
             if result.is_err() {
                 writer_state.retire_subscriber(id);
@@ -2413,6 +2907,31 @@ fn write_daemon_frame(writer: &mut impl Write, frame: &ipc::DaemonFrame) -> Resu
     writer
         .write_all(&encoded)
         .context("failed to write daemon socket frame")
+}
+
+fn write_all_with_deadline(
+    writer: &mut impl Write,
+    mut bytes: &[u8],
+    timeout: Duration,
+) -> Result<()> {
+    let deadline = Instant::now() + timeout;
+    while !bytes.is_empty() {
+        match writer.write(bytes) {
+            Ok(0) => bail!("daemon socket write returned zero bytes"),
+            Ok(written) => bytes = &bytes[written..],
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) && Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => return Err(error).context("failed to write daemon socket frame"),
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Eq, PartialEq)]

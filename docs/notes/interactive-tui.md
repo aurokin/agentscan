@@ -2,12 +2,9 @@
 
 ## Purpose
 
-This document is a narrow note for the implemented `agentscan tui` flow during
-the cache-backed migration phase. The adopted architecture keeps the
-user-facing interactive command as `agentscan tui` and later moves live updates
-from cache polling to daemon socket subscription. Keep this file only as
-context for the pre-socket TUI behavior until the daemon-socket migration
-deletes or rewrites it.
+This document is a narrow note for the implemented `agentscan tui` flow. The
+adopted architecture keeps the user-facing interactive command as
+`agentscan tui` and drives live updates from the daemon socket subscription.
 
 ## Current State
 
@@ -16,10 +13,9 @@ Implemented in the current branch:
 - `agentscan tui` is wired as a first-class command in
   `src/app/commands.rs`.
 - `agentscan tui` is an interactive-only command. Automation consumers should
-  use `agentscan list --format json`. After the socket migration, consumers
-  that intentionally need the raw envelope should use
-  `agentscan snapshot --format json`.
-- The TUI loop, raw-mode TTY handling, cache reload path, stable key
+  use `agentscan list --format json`. Consumers that intentionally need the raw
+  envelope should use `agentscan snapshot --format json`.
+- The TUI loop, raw-mode TTY handling, daemon subscription path, stable key
   assignment, paging, resize-aware layout, Ctrl-B passthrough, and
   missing-pane fallback live in
   `src/app/tui/`.
@@ -39,7 +35,9 @@ The current implementation remains the baseline:
 - single-keystroke pane selection
 - explicit close keys: `Esc` and `Ctrl-C`
 - non-selection keys do not implicitly close the TUI
-- live rerender from cache changes
+- live rerender from daemon socket snapshots
+- visible daemon connection state in the footer
+- last-snapshot display while the socket reconnects after ordinary read errors
 - page overflow rows instead of rendering visible-but-unselectable entries
 - viewport-aware layout with reserved footer space
 - terminal resize redraw with stable keys for rows that remain visible on the
@@ -49,12 +47,9 @@ The current implementation remains the baseline:
   row plus the required footer
 - Ctrl-B passthrough to the tmux prefix table
 - graceful missing-pane fallback through `tmux display-message`
-- cache-only open by default, with `-f` / `--refresh` for on-demand recovery
-- in-TUI cache error rendering instead of a raw CLI failure
-
-Target replacement behavior is tracked in Linear and summarized in the primary
-architecture docs: no initial cache read, socket-only bootstrap, reconnect
-state, and a daemon connection indicator.
+- socket-only bootstrap through the daemon subscription client
+- no interactive `--refresh`, cache bootstrap, or direct tmux discovery fallback
+- in-TUI daemon unavailable rendering instead of a raw CLI failure
 
 ## Follow-up Notes
 
@@ -75,10 +70,10 @@ Use one of these forms instead:
 
 ### Maintenance rule
 
-Treat this file as a narrow cache-backed TUI note. `README.md`, `ROADMAP.md`, and
-`docs/architecture.md` are the sources of truth for the adopted TUI direction.
-As socket phases land, delete sections here instead of keeping a parallel
-cache-polling plan alive.
+Treat this file as a narrow TUI implementation note. `README.md`, `ROADMAP.md`,
+and `docs/architecture.md` are the sources of truth for the adopted TUI
+direction. Keep this note aligned with shipped behavior instead of preserving
+old cache-polling plans.
 
 ## Out Of Scope
 

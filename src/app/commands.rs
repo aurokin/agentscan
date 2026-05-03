@@ -93,8 +93,8 @@ pub(super) fn merge_focus_args(args: &mut FocusArgs, root_list_args: &ListArgs) 
 
 pub(super) fn merge_tui_args(args: &mut TuiArgs, root_list_args: &ListArgs) -> Result<()> {
     reject_tui_format(root_list_args)?;
-    reject_root_auto_start(root_list_args, "tui")?;
-    args.refresh.refresh |= root_list_args.refresh.refresh;
+    reject_root_refresh(root_list_args, "tui")?;
+    args.auto_start.no_auto_start |= root_list_args.auto_start.no_auto_start;
     args.all |= root_list_args.all;
 
     Ok(())

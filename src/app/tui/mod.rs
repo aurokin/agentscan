@@ -1,7 +1,10 @@
 use std::fs;
 use std::io::{Stdout, Write};
 use std::path::Path;
-use std::time::{Duration, SystemTime};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::time::Duration;
 
 use crossterm::event::{self, Event};
 use crossterm::terminal;
@@ -25,6 +28,12 @@ const KEY_POLL_INTERVAL: Duration = Duration::from_millis(125);
 const TUI_READY_PATH_ENV: &str = "AGENTSCAN_TUI_READY_PATH";
 const TUI_DONE_PATH_ENV: &str = "AGENTSCAN_TUI_DONE_PATH";
 
+enum TuiEvent {
+    Terminal(Event),
+    Subscription(daemon::DaemonSubscriptionEvent),
+    InputFatal(String),
+}
+
 pub(crate) fn run(args: &TuiArgs) -> Result<()> {
     let result = run_tui_loop(args);
     write_tui_marker_from_env(
@@ -36,64 +45,127 @@ pub(crate) fn run(args: &TuiArgs) -> Result<()> {
 
 fn run_tui_loop(args: &TuiArgs) -> Result<()> {
     let mut session = TerminalSession::enter()?;
-    let cache_path = cache::cache_path().ok();
     let mut state = TuiState::default();
-    let mut last_cache_mtime = cache_path.as_deref().and_then(cache_mtime);
-
-    reload_tui_state(&mut state, args.refresh.refresh, args.all)?;
+    state.set_connecting("connecting to daemon".to_string());
     draw_tui_frame(&mut session.stdout, &mut state)?;
     write_tui_marker_from_env(TUI_READY_PATH_ENV, "")?;
 
-    loop {
-        if event::poll(KEY_POLL_INTERVAL).context("failed to poll tui keyboard input")? {
-            let next_action = match event::read().context("failed to read tui event")? {
-                Event::Key(key_event) if is_key_press(key_event) => {
-                    handle_key_event(&key_event, &mut state)?
-                }
-                Event::Resize(..) => TuiLoopAction::Redraw,
-                _ => TuiLoopAction::Continue,
-            };
+    let cancel = Arc::new(AtomicBool::new(false));
+    let (events_tx, events_rx) = mpsc::channel();
+    spawn_input_worker(events_tx.clone(), cancel.clone());
+    spawn_subscription_bridge(events_tx, cancel.clone(), args.auto_start);
 
-            match next_action {
-                TuiLoopAction::Continue => {}
-                TuiLoopAction::Redraw => draw_tui_frame(&mut session.stdout, &mut state)?,
-                TuiLoopAction::Close => break,
-            }
-        }
-
-        let Some(cache_path) = cache_path.as_deref() else {
-            continue;
+    while let Ok(event) = events_rx.recv() {
+        match handle_tui_event(event, &mut state, args.all)? {
+            TuiLoopAction::Continue => {}
+            TuiLoopAction::Redraw => draw_tui_frame(&mut session.stdout, &mut state)?,
+            TuiLoopAction::Close => break,
         };
-        let current_cache_mtime = cache_mtime(cache_path);
-        if current_cache_mtime == last_cache_mtime {
-            continue;
-        }
-
-        last_cache_mtime = current_cache_mtime;
-        reload_tui_state(&mut state, false, args.all)?;
-        draw_tui_frame(&mut session.stdout, &mut state)?;
     }
 
+    cancel.store(true, Ordering::Relaxed);
     Ok(())
 }
 
-fn reload_tui_state(state: &mut TuiState, refresh: bool, include_all: bool) -> Result<()> {
-    match load_tui_panes(refresh, include_all) {
-        Ok(panes) => {
-            state.replace_panes(panes);
-            Ok(())
+fn spawn_input_worker(events: mpsc::Sender<TuiEvent>, cancel: Arc<AtomicBool>) {
+    std::thread::spawn(move || {
+        while !cancel.load(Ordering::Relaxed) {
+            match event::poll(KEY_POLL_INTERVAL) {
+                Ok(true) => match event::read() {
+                    Ok(event) => {
+                        if events.send(TuiEvent::Terminal(event)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        let _ = events.send(TuiEvent::InputFatal(format!(
+                            "failed to read tui event: {error}"
+                        )));
+                        break;
+                    }
+                },
+                Ok(false) => {}
+                Err(error) => {
+                    let _ = events.send(TuiEvent::InputFatal(format!(
+                        "failed to poll tui keyboard input: {error}"
+                    )));
+                    break;
+                }
+            }
         }
-        Err(error) => {
-            state.set_error(format_tui_error(&error));
-            Ok(())
+    });
+}
+
+fn spawn_subscription_bridge(
+    events: mpsc::Sender<TuiEvent>,
+    cancel: Arc<AtomicBool>,
+    auto_start: AutoStartArgs,
+) {
+    let (subscription_tx, subscription_rx) = mpsc::channel();
+    daemon::spawn_subscription_worker(
+        daemon::AutoStartPolicy::from_args(auto_start),
+        subscription_tx,
+        cancel.clone(),
+    );
+    std::thread::spawn(move || {
+        while !cancel.load(Ordering::Relaxed) {
+            match subscription_rx.recv_timeout(KEY_POLL_INTERVAL) {
+                Ok(event) => {
+                    if events.send(TuiEvent::Subscription(event)).is_err() {
+                        break;
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
         }
+    });
+}
+
+fn handle_tui_event(
+    event: TuiEvent,
+    state: &mut TuiState,
+    include_all: bool,
+) -> Result<TuiLoopAction> {
+    match event {
+        TuiEvent::Terminal(Event::Key(key_event)) if is_key_press(key_event) => {
+            handle_key_event(&key_event, state)
+        }
+        TuiEvent::Terminal(Event::Resize(..)) => Ok(TuiLoopAction::Redraw),
+        TuiEvent::Terminal(_) => Ok(TuiLoopAction::Continue),
+        TuiEvent::Subscription(event) => handle_subscription_event(event, state, include_all),
+        TuiEvent::InputFatal(message) => Err(anyhow::anyhow!(message)),
     }
 }
 
-fn load_tui_panes(refresh: bool, include_all: bool) -> Result<Vec<PaneRecord>> {
-    let mut snapshot = cache::load_snapshot(refresh)?;
-    cache::filter_snapshot(&mut snapshot, include_all);
-    Ok(snapshot.panes)
+fn handle_subscription_event(
+    event: daemon::DaemonSubscriptionEvent,
+    state: &mut TuiState,
+    include_all: bool,
+) -> Result<TuiLoopAction> {
+    match event {
+        daemon::DaemonSubscriptionEvent::Connecting { message } => {
+            state.set_connecting(message);
+            Ok(TuiLoopAction::Redraw)
+        }
+        daemon::DaemonSubscriptionEvent::Snapshot { mut snapshot } => {
+            cache::filter_snapshot(&mut snapshot, include_all);
+            state.replace_panes(snapshot.panes);
+            Ok(TuiLoopAction::Redraw)
+        }
+        daemon::DaemonSubscriptionEvent::Offline { message, retrying } => {
+            state.set_offline(message, retrying);
+            Ok(TuiLoopAction::Redraw)
+        }
+        daemon::DaemonSubscriptionEvent::Shutdown { message } => {
+            state.set_shutdown(message);
+            Ok(TuiLoopAction::Redraw)
+        }
+        daemon::DaemonSubscriptionEvent::Fatal { message } => {
+            state.set_unavailable(message);
+            Ok(TuiLoopAction::Redraw)
+        }
+    }
 }
 
 fn write_tui_marker_from_env(env_name: &str, contents: &str) -> Result<()> {
@@ -114,12 +186,4 @@ fn draw_tui_frame(stdout: &mut Stdout, state: &mut TuiState) -> Result<()> {
 fn terminal_size() -> Result<TuiTerminalSize> {
     let (width, height) = terminal::size().context("failed to read tui terminal size")?;
     Ok(TuiTerminalSize { width, height })
-}
-
-fn format_tui_error(error: &anyhow::Error) -> String {
-    error.to_string()
-}
-
-fn cache_mtime(path: &Path) -> Option<SystemTime> {
-    fs::metadata(path).ok()?.modified().ok()
 }

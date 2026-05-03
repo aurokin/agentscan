@@ -564,6 +564,39 @@ fn daemon_lifecycle_query_rejects_incompatible_hello_ack() {
 }
 
 #[test]
+fn daemon_auto_start_translates_tmux_env_socket_before_removing_tmux() {
+    let read_env = |name: &str| match name {
+        "TMUX" => Some(OsString::from("/tmp/custom-tmux.sock,123,0")),
+        _ => None,
+    };
+    assert_eq!(
+        daemon::test_daemon_start_tmux_envs_from(read_env),
+        vec![(
+            OsString::from(TMUX_SOCKET_ENV_VAR),
+            OsString::from("/tmp/custom-tmux.sock")
+        )]
+    );
+    assert_eq!(
+        daemon::test_daemon_start_env_removes_from(read_env),
+        vec![OsString::from("TMUX")]
+    );
+}
+
+#[test]
+fn daemon_auto_start_preserves_explicit_agentscan_tmux_socket() {
+    let read_env = |name: &str| match name {
+        TMUX_SOCKET_ENV_VAR => Some(OsString::from("/tmp/explicit.sock")),
+        "TMUX" => Some(OsString::from("/tmp/custom-tmux.sock,123,0")),
+        _ => None,
+    };
+    assert!(daemon::test_daemon_start_tmux_envs_from(read_env).is_empty());
+    assert_eq!(
+        daemon::test_daemon_start_env_removes_from(read_env),
+        vec![OsString::from("TMUX")]
+    );
+}
+
+#[test]
 fn daemon_socket_subscribe_client_receives_bootstrap_and_update() {
     let state = daemon::DaemonSocketState::new();
     let initial = empty_socket_snapshot("2026-05-03T00:00:00Z");

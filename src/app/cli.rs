@@ -113,7 +113,7 @@ pub(crate) struct FocusArgs {
 #[derive(Args, Debug)]
 pub(crate) struct TuiArgs {
     #[command(flatten)]
-    pub(crate) refresh: RefreshArgs,
+    pub(crate) auto_start: AutoStartArgs,
 
     /// Include all tmux panes, not only likely agent panes, in the interactive picker.
     #[arg(long)]

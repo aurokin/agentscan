@@ -234,11 +234,128 @@ fn tui_key_assignments_stay_stable_across_rerenders() {
 
 #[test]
 fn tui_error_frame_includes_recovery_guidance() {
-    let lines = super::tui::render_error_frame("failed to read cache");
+    let lines = super::tui::render_error_frame("failed to connect to daemon");
     assert_eq!(lines[0], "agentscan tui unavailable");
-    assert!(lines.iter().any(|line| line.contains("tui --refresh")));
+    assert!(lines.iter().any(|line| line.contains("daemon status")));
     assert!(lines.iter().any(|line| line.contains("Esc or Ctrl-C")));
-    assert!(lines.iter().any(|line| line.contains("daemon run")));
+    assert!(!lines.iter().any(|line| line.contains("tui --refresh")));
+}
+
+#[test]
+fn tui_connecting_frame_renders_before_bootstrap() {
+    let mut state = super::tui::TuiState::default();
+    state.set_connecting("starting daemon".to_string());
+
+    let frame = super::tui::render_tui_frame_for_size(
+        &mut state,
+        super::tui::TuiTerminalSize {
+            width: 80,
+            height: 6,
+        },
+    );
+
+    assert!(
+        frame
+            .lines
+            .iter()
+            .any(|line| line.contains("Connecting to agentscan daemon"))
+    );
+    assert!(frame.lines.iter().any(|line| line.contains("[connecting]")));
+    assert!(frame.lines.iter().any(|line| line.contains("starting daemon")));
+}
+
+#[test]
+fn tui_offline_state_preserves_last_snapshot_rows() {
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes(vec![tui_test_pane(1)]);
+    state.set_offline("daemon subscription closed".to_string(), true);
+
+    let frame = super::tui::render_tui_frame_for_size(
+        &mut state,
+        super::tui::TuiTerminalSize {
+            width: 80,
+            height: 5,
+        },
+    );
+
+    assert!(frame.lines.iter().any(|line| line.contains("Task 01")));
+    assert!(frame.lines.iter().any(|line| line.contains("[reconnecting]")));
+    assert!(
+        frame
+            .lines
+            .iter()
+            .any(|line| line.contains("daemon subscription closed"))
+    );
+}
+
+#[test]
+fn tui_shutdown_state_preserves_last_snapshot_rows() {
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes(vec![tui_test_pane(1)]);
+    state.set_shutdown("daemon socket server is closing".to_string());
+
+    let frame = super::tui::render_tui_frame_for_size(
+        &mut state,
+        super::tui::TuiTerminalSize {
+            width: 80,
+            height: 5,
+        },
+    );
+
+    assert!(frame.lines.iter().any(|line| line.contains("Task 01")));
+    assert!(frame.lines.iter().any(|line| line.contains("[shutdown]")));
+    assert!(
+        frame
+            .lines
+            .iter()
+            .any(|line| line.contains("daemon socket server is closing"))
+    );
+}
+
+#[test]
+fn tui_unavailable_frame_omits_refresh_guidance() {
+    let mut state = super::tui::TuiState::default();
+    state.set_unavailable("unsupported daemon protocol".to_string());
+
+    let frame = super::tui::render_tui_frame_for_size(
+        &mut state,
+        super::tui::TuiTerminalSize {
+            width: 80,
+            height: 8,
+        },
+    );
+
+    assert!(frame.lines.iter().any(|line| line.contains("[unavailable]")));
+    assert!(
+        frame
+            .lines
+            .iter()
+            .any(|line| line.contains("unsupported daemon protocol"))
+    );
+    assert!(!frame.lines.iter().any(|line| line.contains("tui --refresh")));
+}
+
+#[test]
+fn tui_footer_connection_indicator_fits_narrow_widths() {
+    for width in [0, 1, 8, 16, 24] {
+        let mut state = super::tui::TuiState::default();
+        state.replace_panes(vec![tui_test_pane(1)]);
+        state.set_offline("a very long reconnecting status message".to_string(), true);
+
+        let frame = super::tui::render_tui_frame_for_size(
+            &mut state,
+            super::tui::TuiTerminalSize { width, height: 4 },
+        );
+
+        assert!(
+            frame
+                .lines
+                .iter()
+                .all(|line| UnicodeWidthStr::width(line.as_str()) <= usize::from(width)),
+            "line exceeded width {width}: {:?}",
+            frame.lines
+        );
+    }
 }
 
 #[test]
@@ -282,7 +399,7 @@ fn tui_frame_paginates_and_limits_selection_to_visible_rows() {
 }
 
 #[test]
-fn tui_frame_clamps_to_last_non_empty_page_after_cache_removal() {
+fn tui_frame_clamps_to_last_non_empty_page_after_snapshot_removal() {
     let panes = (1..=18).map(tui_test_pane).collect::<Vec<_>>();
     let mut state = super::tui::TuiState::default();
     state.replace_panes(panes);
