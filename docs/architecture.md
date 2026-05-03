@@ -1,13 +1,13 @@
 # Architecture
 
-`agentscan` is moving to a daemon-required tmux agent scanner with short-lived
+`agentscan` is a daemon-required tmux agent scanner with short-lived
 socket clients. This document captures the adopted engineering shape of the
-system. Active milestone sequencing lives in Linear and should be reflected
+system. Active future sequencing lives in Linear and should be reflected
 back here only once behavior or contract decisions settle.
 
 ## Runtime Model
 
-The intended steady-state model is:
+The current runtime model is:
 
 1. Normal consumers connect to the daemon socket and auto-start the daemon when
    it is not already running.
@@ -61,8 +61,8 @@ affected scope.
 ## Snapshot Contract
 
 The canonical structured state is a versioned JSON `SnapshotEnvelope`. The
-target transport is the daemon socket; a persisted cache file is no longer the
-steady-state IPC boundary.
+runtime transport is the daemon socket; a persisted cache file is not a
+supported IPC boundary.
 
 The snapshot envelope includes:
 
@@ -76,7 +76,7 @@ Breaking changes must increment `schema_version`.
 
 ## Command Families
 
-The target command surface is organized by concern:
+The command surface is organized by concern:
 
 - `agentscan scan`: direct tmux snapshot for debugging and recovery
 - `agentscan list`: normal human output and the supported JSON automation output
@@ -111,7 +111,7 @@ the TUI remains an interactive socket consumer rather than an automation API.
 The daemon is a hard requirement for normal consumers, but users should not have
 to wire it up as a service.
 
-Current lifecycle direction:
+Current lifecycle policy:
 
 - auto-start by default for desktop commands
 - explicit `daemon start`, `stop`, `status`, and `restart` commands

@@ -27,6 +27,19 @@ Migration targets:
 | Parse all tmux panes, including non-agent panes | `agentscan list --all --format json` |
 | Inspect schema version or the unfiltered snapshot envelope | `agentscan snapshot --format json` |
 | Open a human pane picker from a tmux bind | `agentscan tui` |
+| Force a direct tmux read for recovery or debugging | `agentscan scan` or a supported `--refresh` flag |
+
+Removed surfaces do not have compatibility aliases:
+
+- `agentscan popup` is replaced only for human picker launch paths by
+  `agentscan tui`.
+- `agentscan cache`, `cache path`, and `cache validate` are removed. Normal
+  automation should use `list --format json`; consumers that need raw envelope
+  fields should use `snapshot --format json`.
+- `AGENTSCAN_CACHE_PATH` is removed with the cache file IPC transport.
+
+There is no cache-file IPC replacement. Socket-isolated tests and harnesses
+should use `AGENTSCAN_SOCKET_PATH` when they need a non-default daemon socket.
 
 If a script needs data that is missing from the documented JSON surfaces, treat
 that as an API gap in `list` or snapshot JSON. Do not add hidden `tui --format`

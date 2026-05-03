@@ -40,6 +40,7 @@ remain unchanged until `agentscan` is ready to replace it.
 - `docs/index.md`: map of the repo's progressively disclosed documentation
 - `AGENTS.md`: repo-local agent guardrails and conventions
 - `ROADMAP.md`: durable product direction, boundaries, and decision log
+- `CHANGELOG.md`: unreleased user-facing changes and migration notes
 - `docs/architecture.md`: runtime model, daemon/socket contract, command families, and guardrails
 - `docs/integration.md`: wrapper metadata, daemon-backed automation surfaces, shell boundary, and migration posture
 - `docs/harness-engineering.md`: progressively disclosed harness engineering approach for the repo
@@ -76,9 +77,9 @@ The benchmark target covers snapshot row parsing, row-to-pane conversion,
 snapshot deserialization, and interactive row rendering against committed
 fixtures.
 
-## Adopted Target Architecture
+## Current Architecture
 
-The core architecture is moving to a daemon-required, socket-backed model:
+The core architecture is a daemon-required, socket-backed model:
 
 - the daemon is the single source of live pane state
 - normal consumers auto-start the daemon unless explicitly opted out
@@ -90,7 +91,7 @@ The core architecture is moving to a daemon-required, socket-backed model:
 - `agentscan scan` and refresh-capable command flags remain direct tmux
   recovery paths that do not start or require the daemon
 
-Active migration sequencing lives in Linear.
+Active future sequencing lives in Linear.
 
 ## Current Shipped Scope
 
@@ -103,7 +104,7 @@ The current branch centers on:
 
 It can:
 
-- run the existing explicit daemon baseline with tmux control mode
+- run the daemon with tmux control mode and auto-start it for normal consumers
 - fail fast when the daemon loses tmux, leaving restart policy to an external supervisor
 - preserve raw tmux `session_id` and `window_id` values in the canonical pane model for socket consumers and local daemon updates
 - refresh individual panes on daemon title and metadata updates, refresh affected windows or sessions when tmux emits stable ids for those scopes, and keep a periodic full reconcile as a safety net
@@ -144,7 +145,7 @@ It can:
 - publish, clear, and consume explicit wrapper metadata via pane-local `@agent.*` tmux options
 - emit canonical snapshot JSON
 
-Target automation contract:
+Automation contract:
 
 - `agentscan tui` is interactive-only and is not a supported machine-readable surface
 - `agentscan popup` has been removed rather than kept as a compatibility alias
@@ -157,7 +158,7 @@ Target automation contract:
 - `agentscan snapshot --format json` exposes the raw snapshot envelope when a consumer explicitly needs envelope details rather than the normal `list` view
 - TUI-shaped TSV or JSON output is not a supported long-term contract
 
-Target operational commands:
+Operational commands:
 
 - `agentscan`
 - `agentscan scan`
@@ -180,7 +181,7 @@ For repo-local tmux `display-popup` testing without installing the binary on
 `PATH`, use `tmux display-popup -E "$PWD/target/debug/agentscan" tui` after
 building once.
 
-## Migration Note
+## Automation Migration
 
 Machine-readable consumers should not call `agentscan tui`. The legacy
 `agentscan popup` command has been removed and is not a compatibility path.
@@ -190,10 +191,16 @@ Use:
 - `agentscan list --format json` for the supported JSON automation surface
 - `agentscan list --all --format json` if the consumer previously depended on interactive `--all`
 - `agentscan snapshot --format json` only when the consumer intentionally needs the raw snapshot envelope
+- `agentscan scan` or supported `--refresh` flags when a script intentionally
+  needs direct tmux state instead of daemon state
 
 Keep `agentscan tui` in tmux key bindings and other human-facing launch paths.
 Do not call it from scripts that parse stdout, and do not depend on terminal
 rendering, row ordering, key labels, or error frame text as a data contract.
+
+The removed `agentscan cache` command family and `AGENTSCAN_CACHE_PATH` are not
+compatibility paths. Use daemon socket snapshots through the documented command
+surfaces instead.
 
 If an automation consumer cannot migrate because required fields are missing from
 the documented JSON surfaces, treat that as an API gap to close in `list` or
@@ -227,9 +234,9 @@ The useful design inputs are mostly at the data-model level:
   stronger metadata/title sources were unavailable.
 - stable pane identity for downstream consumers such as TUIs or focus commands
 
-## Target CLI Families
+## CLI Families
 
-The target CLI centers on:
+The CLI centers on:
 
 - `agentscan daemon` as the primary runtime
 - `agentscan scan` for direct tmux snapshots

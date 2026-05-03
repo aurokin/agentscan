@@ -68,8 +68,8 @@ Implications:
 
 ### Steady-State Architecture
 
-The intended mature architecture is a daemon-required runtime with short-lived
-socket clients.
+The current architecture is a daemon-required runtime with short-lived socket
+clients.
 
 Implications:
 
@@ -217,7 +217,7 @@ Delivered baseline:
 - inspect provenance for provider, status, classification, and fallback
   decisions
 
-Adopted next architecture:
+Delivered daemon architecture:
 
 - daemon is required for normal `list`, `inspect`, `focus`, `tui`, and
   `snapshot` flows

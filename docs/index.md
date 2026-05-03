@@ -8,6 +8,8 @@ This repo uses progressively disclosed documentation.
   Operator-facing overview, current scope, quality baseline, and primary commands.
 - `ROADMAP.md`
   Durable product direction, boundaries, and decision log.
+- `CHANGELOG.md`
+  Unreleased user-facing changes and migration notes.
 - `docs/architecture.md`
   Runtime model, daemon/socket contract, command families, and architectural guardrails.
 - `docs/integration.md`

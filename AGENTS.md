@@ -2,7 +2,7 @@
 
 ## Package Manager
 - Use `cargo`: `cargo build`, `cargo test`, `cargo run -- --format text`
-- Bare `cargo run -- ...` examples use the default cached `list` flow; direct tmux snapshots use `cargo run -- scan ...`.
+- Bare `cargo run -- ...` examples use the default daemon-backed `list` flow; direct tmux snapshots use `cargo run -- scan ...`.
 
 ## File-Scoped Commands
 | Task | Command |
@@ -24,7 +24,7 @@
 - Coverage tooling is not part of the baseline yet; add it intentionally rather than ad hoc.
 
 ## Key Conventions
-- `agentscan` owns discovery, classification, indexing, caching, and structured outputs for tmux agent panes.
+- `agentscan` owns discovery, classification, daemon indexing, and structured outputs for tmux agent panes.
 - Plug-and-play detection is a core product invariant. Common agent panes should work without requiring users to install hooks, provider extensions, launch wrappers, or shell integration.
 - Provider-specific support should start from upstream source analysis for open-source agents or empirical local probing for closed-source agents. Add heuristics only when the evidence is strong and false-positive risk is understood.
 - Provider hooks and extensions are deep-roadmap enrichment only. They may eventually publish richer metadata, but they must not become a prerequisite for baseline detection.
@@ -37,6 +37,6 @@
 - When adding features or tests that spawn `tmux` or `agentscan` subprocesses, consider tmux server isolation explicitly: live integration tests must use the harness socket and temp `TMUX_TMPDIR`, and `agentscan` subprocesses that should target the harness server must receive `AGENTSCAN_TMUX_SOCKET`. See `docs/harness-engineering.md`.
 - Keep output formats stable; preserve machine-readable commands even if display labels change.
 - Prefer honest labels from tmux metadata over richer but weakly inferred labels; deeper pane inspection is a later fallback, not a reason to invent display text.
-- Do not use TSV as the canonical cache format; use a versioned JSON snapshot for persisted state and keep TSV as an output adapter only.
+- Do not use TSV as the canonical state format; use the versioned JSON snapshot envelope and keep TSV as an output adapter only.
 - Avoid editing `~/.dotfiles` integration during core scanner work unless the task explicitly includes migration.
 - Document behavior changes in `ROADMAP.md` when they affect durable architecture, boundaries, or migration assumptions; document harness/test contracts in `docs/harness-engineering.md`.
