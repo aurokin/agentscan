@@ -298,28 +298,59 @@ fn configure_started_tmux_control_mode_client(
         .stdin
         .take()
         .context("tmux control-mode client did not provide stdin")?;
+    wait_for_control_mode_startup_response(&mut stdout_reader, "tmux control-mode attach")?;
     writeln!(stdin, "refresh-client -B '{DAEMON_SUBSCRIPTION_FORMAT}'")
         .context("failed to subscribe to pane and metadata updates")?;
     stdin
         .flush()
         .context("failed to flush tmux control commands")?;
-    wait_for_subscription_setup(&mut stdout_reader)?;
+    wait_for_control_mode_startup_response(&mut stdout_reader, "daemon subscription setup")?;
 
     Ok((stdout_reader, stdin))
 }
 
-fn wait_for_subscription_setup(reader: &mut BufReader<std::process::ChildStdout>) -> Result<()> {
+fn wait_for_control_mode_startup_response(
+    reader: &mut BufReader<std::process::ChildStdout>,
+    context: &str,
+) -> Result<()> {
     let deadline = Instant::now() + CONTROL_MODE_STARTUP_TIMEOUT;
     loop {
-        let line = read_control_mode_line_before_deadline(reader, deadline)?
-            .context("tmux control-mode client exited before confirming subscription setup")?;
-        if line.starts_with("%error") {
-            bail!("tmux rejected daemon subscription setup: {line}");
-        }
-        if line.starts_with("%end") {
+        let line =
+            read_control_mode_line_before_deadline(reader, deadline)?.with_context(|| {
+                format!("tmux control-mode client exited before confirming {context}")
+            })?;
+        if control_mode_startup_response_from_line(&line, context)? {
             return Ok(());
         }
     }
+}
+
+fn control_mode_startup_response_from_line(line: &str, context: &str) -> Result<bool> {
+    if line.starts_with("%error") {
+        bail!("tmux rejected {context}: {line}");
+    }
+    Ok(line.starts_with("%end"))
+}
+
+#[cfg(test)]
+pub(crate) fn test_wait_for_attach_then_subscription_transcript(lines: &[&str]) -> Result<()> {
+    let mut waiting_for_attach = true;
+    for line in lines {
+        let context = if waiting_for_attach {
+            "tmux control-mode attach"
+        } else {
+            "daemon subscription setup"
+        };
+        if control_mode_startup_response_from_line(line, context)? {
+            if waiting_for_attach {
+                waiting_for_attach = false;
+            } else {
+                return Ok(());
+            }
+        }
+    }
+
+    bail!("transcript ended before confirming daemon subscription setup")
 }
 
 fn read_control_mode_line_before_deadline(

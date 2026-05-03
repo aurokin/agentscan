@@ -454,6 +454,27 @@ fn daemon_socket_subscription_setup_failure_is_observable_as_startup_failed() {
 }
 
 #[test]
+fn daemon_socket_subscription_setup_waits_past_attach_response() {
+    let error = daemon::test_wait_for_attach_then_subscription_transcript(&[
+        "%begin 1777830000 100 0",
+        "%end 1777830000 100 0",
+        "%begin 1777830000 101 0",
+        "%error 1777830000 101 0 no such format",
+    ])
+    .expect_err("subscription response error after attach success should fail startup");
+    let message = format!("{error:#}");
+
+    assert!(
+        message.contains("daemon subscription setup"),
+        "expected subscription setup context, got {message:?}"
+    );
+    assert!(
+        message.contains("no such format"),
+        "expected tmux error detail, got {message:?}"
+    );
+}
+
+#[test]
 fn daemon_socket_initial_cache_publication_failure_blocks_socket_readiness() {
     assert_startup_failed_contains(
         FakeDaemonStartup::with_cache_publication_error("cache write failed"),
