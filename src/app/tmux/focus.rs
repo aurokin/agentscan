@@ -153,7 +153,7 @@ fn run_tmux_switch_client(
     client_tty: Option<&str>,
     zoom: bool,
 ) -> Result<std::process::Output> {
-    let mut command = Command::new("tmux");
+    let mut command = super::command::tmux_command();
     command.arg("switch-client");
     if zoom {
         command.arg("-Z");

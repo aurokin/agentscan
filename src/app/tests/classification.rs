@@ -893,7 +893,7 @@ fn proc_fallback_resolves_claude_from_title_glyph_and_descendant_command() {
 }
 
 #[test]
-fn proc_fallback_ignores_version_like_current_command_without_other_signal() {
+fn proc_fallback_resolves_version_like_current_command_via_process_tree() {
     let mut pane = classify::pane_from_row(super::TmuxPaneRow {
         session_name: "ambiguous".to_string(),
         window_index: 1,
@@ -917,16 +917,49 @@ fn proc_fallback_ignores_version_like_current_command_without_other_signal() {
 
     classify::apply_proc_fallback(&mut pane, &inspector);
 
+    assert_eq!(pane.provider, Some(Provider::Claude));
+    assert_eq!(
+        pane.diagnostics.proc_fallback.outcome,
+        super::ProcFallbackOutcome::Resolved
+    );
+    assert_eq!(
+        pane.classification.reasons,
+        vec!["proc_descendant_command=claude"]
+    );
+    assert_eq!(inspector.calls(), vec![712]);
+}
+
+#[test]
+fn proc_fallback_returns_no_match_for_version_like_command_without_provider_evidence() {
+    let mut pane = classify::pane_from_row(super::TmuxPaneRow {
+        session_name: "ambiguous".to_string(),
+        window_index: 1,
+        pane_index: 1,
+        pane_id: "%713".to_string(),
+        pane_pid: 713,
+        pane_current_command: "2.1.119".to_string(),
+        pane_title_raw: "Ready".to_string(),
+        pane_tty: "/dev/pts/713".to_string(),
+        pane_current_path: "/tmp/unknown".to_string(),
+        window_name: "ai".to_string(),
+        session_id: None,
+        window_id: None,
+        agent_provider: None,
+        agent_label: None,
+        agent_cwd: None,
+        agent_state: None,
+        agent_session_id: None,
+    });
+    let inspector = FakeProcessInspector::new([(713, vec!["unrelated".to_string()])]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
     assert_unresolved_ambiguous_pane(&pane, "Ready");
     assert_eq!(
         pane.diagnostics.proc_fallback.outcome,
-        super::ProcFallbackOutcome::Skipped
+        super::ProcFallbackOutcome::NoMatch
     );
-    assert_eq!(
-        pane.diagnostics.proc_fallback.reason,
-        "pane_current_command is version-shaped and ignored"
-    );
-    assert!(inspector.calls().is_empty());
+    assert_eq!(inspector.calls(), vec![713]);
 }
 
 #[test]
