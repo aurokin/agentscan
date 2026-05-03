@@ -62,6 +62,37 @@ The integration suite should keep a guard test that poisons the default
 the harness server. If that test starts reading the poisoned/default server, the
 suite should fail before any destructive tmux fixture can run.
 
+## Socket-First Daemon Harnesses
+
+Daemon integration tests should treat the daemon socket as the transport for
+daemon state. Tests that assert daemon readiness, live pane state, topology
+changes, one-shot daemon routing, or TUI subscription success should use the
+socket snapshot helpers instead of waiting for cache writes.
+
+Socket helpers must:
+
+- connect to the harness `AGENTSCAN_SOCKET_PATH` with bounded IO
+- send `hello` frames using the crate's shared protocol and snapshot schema
+  versions
+- reject incompatible `hello_ack` responses
+- validate returned snapshots through the same typed snapshot validation used by
+  the crate
+- include the last socket error, last snapshot summary, and daemon logs in
+  timeout diagnostics
+
+Fake daemon socket fixtures must bind the harness socket, use bounded accepts and
+read/write timeouts, parse and assert the incoming request, serve typed-valid
+snapshot frames, and fail on unexpected connection patterns when the test owns a
+single-request fixture.
+
+Cache waits are allowed only for cache-specific behavior:
+
+- `cache validate` and `cache show` integration tests
+- metadata helper cache refresh and invalid-cache recovery tests
+- refresh semantics that intentionally preserve `source.daemon_generated_at`
+- poisoned or missing cache guard tests where expected data is supplied by a
+  daemon socket or direct tmux snapshot path
+
 ## Quality Baseline
 
 The current baseline remains:

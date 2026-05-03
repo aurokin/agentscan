@@ -30,6 +30,23 @@ pub fn deserialize_snapshot_pane_count(input: &str) -> Result<usize> {
 }
 
 #[doc(hidden)]
+pub fn daemon_protocol_version_for_tests() -> u32 {
+    ipc::WIRE_PROTOCOL_VERSION
+}
+
+#[doc(hidden)]
+pub fn snapshot_schema_version_for_tests() -> u32 {
+    CACHE_SCHEMA_VERSION
+}
+
+#[doc(hidden)]
+pub fn validate_snapshot_json_for_tests(input: &str) -> Result<()> {
+    let snapshot: SnapshotEnvelope =
+        serde_json::from_str(input).context("snapshot should deserialize")?;
+    cache::validate_snapshot(&snapshot, None).map(|_| ())
+}
+
+#[doc(hidden)]
 pub fn daemon_snapshot_via_socket_path_for_tests(
     socket_path: &Path,
     executable_path: &Path,

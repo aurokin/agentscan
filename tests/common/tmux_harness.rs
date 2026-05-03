@@ -584,6 +584,102 @@ impl TestHarness {
         }
     }
 
+    fn daemon_snapshot(&self) -> Result<Value> {
+        let mut stream = connect_agentscan_socket(&self.agentscan_socket_path)?;
+        stream
+            .set_read_timeout(Some(DAEMON_TIMEOUT))
+            .context("failed to set daemon snapshot read timeout")?;
+        stream
+            .set_write_timeout(Some(DAEMON_TIMEOUT))
+            .context("failed to set daemon snapshot write timeout")?;
+        writeln!(
+            stream,
+            "{}",
+            serde_json::json!({
+                "type": "hello",
+                "protocol_version": daemon_protocol_version(),
+                "snapshot_schema_version": snapshot_schema_version(),
+                "mode": "snapshot",
+            })
+        )
+        .context("failed to write daemon socket snapshot hello")?;
+        stream
+            .shutdown(std::net::Shutdown::Write)
+            .context("failed to close daemon socket write side")?;
+
+        let mut reader = BufReader::new(stream);
+        let ack = read_daemon_socket_json_line(&mut reader)
+            .context("failed to read daemon socket hello ack")?;
+        if ack["type"] != "hello_ack"
+            || ack["protocol_version"] != daemon_protocol_version()
+            || ack["snapshot_schema_version"] != snapshot_schema_version()
+        {
+            bail!("daemon returned incompatible hello ack: {ack}");
+        }
+        let frame = read_daemon_socket_json_line(&mut reader)
+            .context("failed to read daemon socket snapshot frame")?;
+        if frame["type"] != "snapshot" {
+            bail!("daemon returned non-snapshot frame: {frame}");
+        }
+        let snapshot = frame["snapshot"].clone();
+        validate_snapshot_json(&snapshot).context("daemon returned invalid snapshot")?;
+        Ok(snapshot)
+    }
+
+    fn wait_for_daemon_snapshot<F>(&self, daemon: &mut DaemonHandle, predicate: F) -> Result<Value>
+    where
+        F: Fn(&Value) -> bool,
+    {
+        let deadline = Instant::now() + DAEMON_TIMEOUT;
+        let mut last_error = None;
+        let mut last_snapshot = None;
+        loop {
+            daemon.ensure_running()?;
+
+            match self.daemon_snapshot() {
+                Ok(snapshot) => {
+                    if predicate(&snapshot) {
+                        return Ok(snapshot);
+                    }
+                    last_snapshot = Some(snapshot_summary(&snapshot));
+                }
+                Err(error) => last_error = Some(format!("{error:#}")),
+            }
+
+            if Instant::now() >= deadline {
+                bail!(
+                    "timed out waiting for daemon socket snapshot at {}\nlast_error: {}\nlast_snapshot: {}\ndaemon stdout:\n{}\ndaemon stderr:\n{}",
+                    self.agentscan_socket_path.display(),
+                    last_error.unwrap_or_else(|| "none".to_string()),
+                    last_snapshot.unwrap_or_else(|| "none".to_string()),
+                    read_log(&daemon.stdout_path),
+                    read_log(&daemon.stderr_path)
+                );
+            }
+
+            sleep(POLL_INTERVAL);
+        }
+    }
+
+    fn wait_for_daemon_pane<F>(
+        &self,
+        daemon: &mut DaemonHandle,
+        pane_id: &str,
+        predicate: F,
+    ) -> Result<Value>
+    where
+        F: Fn(&Value) -> bool,
+    {
+        self.wait_for_daemon_snapshot(daemon, |snapshot| {
+            pane_from_snapshot(snapshot, pane_id).is_some_and(&predicate)
+        })
+        .and_then(|snapshot| {
+            pane_from_snapshot(&snapshot, pane_id)
+                .cloned()
+                .with_context(|| format!("pane {pane_id} not found in daemon snapshot"))
+        })
+    }
+
     fn wait_for_cache<F>(&self, daemon: &mut DaemonHandle, predicate: F) -> Result<Value>
     where
         F: Fn(&Value) -> bool,
@@ -632,25 +728,6 @@ impl TestHarness {
 
             sleep(POLL_INTERVAL);
         }
-    }
-
-    fn wait_for_pane<F>(
-        &self,
-        daemon: &mut DaemonHandle,
-        pane_id: &str,
-        predicate: F,
-    ) -> Result<Value>
-    where
-        F: Fn(&Value) -> bool,
-    {
-        self.wait_for_cache(daemon, |cache| {
-            pane_from_cache(cache, pane_id).is_some_and(&predicate)
-        })
-        .and_then(|cache| {
-            pane_from_cache(&cache, pane_id)
-                .cloned()
-                .with_context(|| format!("pane {pane_id} not found in cache"))
-        })
     }
 
     fn tmux_command(&self) -> Command {
@@ -895,6 +972,23 @@ fn pane_from_cache<'a>(cache: &'a Value, pane_id: &str) -> Option<&'a Value> {
         .as_array()?
         .iter()
         .find(|pane| pane["pane_id"].as_str() == Some(pane_id))
+}
+
+fn pane_from_snapshot<'a>(snapshot: &'a Value, pane_id: &str) -> Option<&'a Value> {
+    snapshot["panes"]
+        .as_array()?
+        .iter()
+        .find(|pane| pane["pane_id"].as_str() == Some(pane_id))
+}
+
+fn snapshot_summary(snapshot: &Value) -> String {
+    let pane_count = snapshot["panes"].as_array().map_or(0, Vec::len);
+    format!(
+        "schema={} generated_at={} source={} panes={pane_count}",
+        snapshot["schema_version"],
+        snapshot["generated_at"],
+        snapshot["source"]["kind"]
+    )
 }
 
 fn read_log(path: &Path) -> String {

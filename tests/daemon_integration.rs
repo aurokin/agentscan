@@ -5,7 +5,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -46,12 +47,9 @@ fn daemon_serves_snapshot_over_owned_socket_path() -> Result<()> {
     let harness = TestHarness::new()?;
     let pane_id = harness.start_session("socket-snapshot", "sleep 300")?;
     let mut daemon = harness.start_daemon()?;
-    let cache = harness.wait_for_cache(&mut daemon, |cache| {
-        pane_from_cache(cache, &pane_id).is_some()
+    harness.wait_for_daemon_snapshot(&mut daemon, |snapshot| {
+        pane_from_snapshot(snapshot, &pane_id).is_some()
     })?;
-    let schema_version = cache["schema_version"]
-        .as_u64()
-        .context("daemon cache was missing schema_version")?;
 
     let mut stream = connect_agentscan_socket(&harness.agentscan_socket_path)?;
     writeln!(
@@ -59,8 +57,8 @@ fn daemon_serves_snapshot_over_owned_socket_path() -> Result<()> {
         "{}",
         serde_json::json!({
             "type": "hello",
-            "protocol_version": 1,
-            "snapshot_schema_version": schema_version,
+            "protocol_version": daemon_protocol_version(),
+            "snapshot_schema_version": snapshot_schema_version(),
             "mode": "snapshot",
         })
     )
@@ -72,11 +70,12 @@ fn daemon_serves_snapshot_over_owned_socket_path() -> Result<()> {
     let mut reader = BufReader::new(stream);
     let ack = read_daemon_socket_json_line(&mut reader)?;
     assert_eq!(ack["type"], "hello_ack");
-    assert_eq!(ack["protocol_version"], 1);
-    assert_eq!(ack["snapshot_schema_version"], schema_version);
+    assert_eq!(ack["protocol_version"], daemon_protocol_version());
+    assert_eq!(ack["snapshot_schema_version"], snapshot_schema_version());
 
     let snapshot_frame = read_daemon_socket_json_line(&mut reader)?;
     assert_eq!(snapshot_frame["type"], "snapshot");
+    validate_snapshot_json(&snapshot_frame["snapshot"])?;
     assert_eq!(snapshot_frame["snapshot"]["source"]["kind"], "daemon");
     assert!(
         snapshot_frame["snapshot"]["panes"]
@@ -153,12 +152,9 @@ fn daemon_fans_out_live_updates_to_subscriber_socket() -> Result<()> {
     let harness = TestHarness::new()?;
     let pane_id = harness.start_session("socket-subscribe", "sh")?;
     let mut daemon = harness.start_daemon()?;
-    let cache = harness.wait_for_cache(&mut daemon, |cache| {
-        pane_from_cache(cache, &pane_id).is_some()
+    harness.wait_for_daemon_snapshot(&mut daemon, |snapshot| {
+        pane_from_snapshot(snapshot, &pane_id).is_some()
     })?;
-    let schema_version = cache["schema_version"]
-        .as_u64()
-        .context("daemon cache was missing schema_version")?;
 
     let mut stream = connect_agentscan_socket(&harness.agentscan_socket_path)?;
     stream
@@ -169,8 +165,8 @@ fn daemon_fans_out_live_updates_to_subscriber_socket() -> Result<()> {
         "{}",
         serde_json::json!({
             "type": "hello",
-            "protocol_version": 1,
-            "snapshot_schema_version": schema_version,
+            "protocol_version": daemon_protocol_version(),
+            "snapshot_schema_version": snapshot_schema_version(),
             "mode": "subscribe",
         })
     )
@@ -183,8 +179,11 @@ fn daemon_fans_out_live_updates_to_subscriber_socket() -> Result<()> {
     );
     let ack = read_daemon_socket_json_line(&mut reader)?;
     assert_eq!(ack["type"], "hello_ack");
+    assert_eq!(ack["protocol_version"], daemon_protocol_version());
+    assert_eq!(ack["snapshot_schema_version"], snapshot_schema_version());
     let bootstrap = read_daemon_socket_json_line(&mut reader)?;
     assert_eq!(bootstrap["type"], "snapshot");
+    validate_snapshot_json(&bootstrap["snapshot"])?;
     assert!(
         bootstrap["snapshot"]["panes"]
             .as_array()
@@ -618,22 +617,22 @@ fn daemon_lifecycle_start_failure_reports_log_and_cleans_socket() -> Result<()> 
 }
 
 #[test]
-fn daemon_updates_cache_when_titles_change() -> Result<()> {
+fn daemon_updates_socket_snapshot_when_titles_change() -> Result<()> {
     let harness = TestHarness::new()?;
     let pane_id = harness.start_session("title-updates", "sh")?;
     let mut daemon = harness.start_daemon()?;
 
-    harness.wait_for_pane(&mut daemon, &pane_id, |_| true)?;
+    harness.wait_for_daemon_pane(&mut daemon, &pane_id, |_| true)?;
 
     harness.send_title_escape(&pane_id, "Claude Code | Working")?;
-    harness.wait_for_pane(&mut daemon, &pane_id, |pane| {
+    harness.wait_for_daemon_pane(&mut daemon, &pane_id, |pane| {
         pane["provider"] == "claude"
             && pane["status"]["kind"] == "busy"
             && pane["display"]["label"] == "Working"
     })?;
 
     harness.send_title_escape(&pane_id, "Claude Code | Ready")?;
-    harness.wait_for_pane(&mut daemon, &pane_id, |pane| {
+    harness.wait_for_daemon_pane(&mut daemon, &pane_id, |pane| {
         pane["provider"] == "claude"
             && pane["status"]["kind"] == "idle"
             && pane["display"]["label"] == "Ready"
@@ -644,13 +643,13 @@ fn daemon_updates_cache_when_titles_change() -> Result<()> {
 }
 
 #[test]
-fn daemon_updates_cache_when_metadata_changes() -> Result<()> {
+fn daemon_updates_socket_snapshot_when_metadata_changes() -> Result<()> {
     let harness = TestHarness::new()?;
     let pane_id = harness.start_session("metadata-updates", "sh")?;
     harness.send_title_escape(&pane_id, "metadata-updates")?;
     let mut daemon = harness.start_daemon()?;
 
-    harness.wait_for_pane(&mut daemon, &pane_id, |_| true)?;
+    harness.wait_for_daemon_pane(&mut daemon, &pane_id, |_| true)?;
 
     harness.agentscan([
         "tmux",
@@ -664,7 +663,7 @@ fn daemon_updates_cache_when_metadata_changes() -> Result<()> {
         "--state",
         "busy",
     ])?;
-    harness.wait_for_pane(&mut daemon, &pane_id, |pane| {
+    harness.wait_for_daemon_pane(&mut daemon, &pane_id, |pane| {
         pane["provider"] == "codex"
             && pane["display"]["label"] == "Wrapper Task"
             && pane["status"]["kind"] == "busy"
@@ -683,7 +682,7 @@ fn daemon_updates_cache_when_metadata_changes() -> Result<()> {
         "--field",
         "state",
     ])?;
-    harness.wait_for_pane(&mut daemon, &pane_id, |pane| {
+    harness.wait_for_daemon_pane(&mut daemon, &pane_id, |pane| {
         pane["provider"].is_null()
             && pane["display"]["label"] == "metadata-updates"
             && pane["status"]["kind"] == "unknown"
@@ -810,8 +809,8 @@ fn metadata_helpers_survive_unrelated_daemon_updates() -> Result<()> {
     harness.send_title_escape(&metadata_pane_id, "metadata-survives")?;
     let mut daemon = harness.start_daemon()?;
 
-    harness.wait_for_pane(&mut daemon, &metadata_pane_id, |_| true)?;
-    harness.wait_for_pane(&mut daemon, &trigger_pane_id, |_| true)?;
+    harness.wait_for_daemon_pane(&mut daemon, &metadata_pane_id, |_| true)?;
+    harness.wait_for_daemon_pane(&mut daemon, &trigger_pane_id, |_| true)?;
 
     harness.agentscan([
         "tmux",
@@ -825,19 +824,19 @@ fn metadata_helpers_survive_unrelated_daemon_updates() -> Result<()> {
         "--state",
         "busy",
     ])?;
-    harness.wait_for_pane(&mut daemon, &metadata_pane_id, |pane| {
+    harness.wait_for_daemon_pane(&mut daemon, &metadata_pane_id, |pane| {
         pane["provider"] == "codex"
             && pane["display"]["label"] == "Persistent Metadata"
             && pane["status"]["kind"] == "busy"
     })?;
 
     harness.send_title_escape(&trigger_pane_id, "Claude Code | Working")?;
-    harness.wait_for_pane(&mut daemon, &trigger_pane_id, |pane| {
+    harness.wait_for_daemon_pane(&mut daemon, &trigger_pane_id, |pane| {
         pane["provider"] == "claude"
             && pane["status"]["kind"] == "busy"
             && pane["display"]["label"] == "Working"
     })?;
-    harness.wait_for_pane(&mut daemon, &metadata_pane_id, |pane| {
+    harness.wait_for_daemon_pane(&mut daemon, &metadata_pane_id, |pane| {
         pane["provider"] == "codex"
             && pane["display"]["label"] == "Persistent Metadata"
             && pane["status"]["kind"] == "busy"
@@ -909,7 +908,7 @@ fn one_shot_list_reads_daemon_socket_when_cache_is_poisoned() -> Result<()> {
             .any(|pane| pane["pane_id"] == "%67" && pane["provider"] == "codex"),
         "list should read the daemon socket snapshot, got:\n{stdout}"
     );
-    fake_daemon.join().expect("fake daemon should join");
+    fake_daemon.join();
     Ok(())
 }
 
@@ -926,7 +925,7 @@ fn one_shot_inspect_reads_daemon_socket_when_cache_is_poisoned() -> Result<()> {
 
     assert_eq!(pane["pane_id"], "%67");
     assert_eq!(pane["provider"], "codex");
-    fake_daemon.join().expect("fake daemon should join");
+    fake_daemon.join();
     Ok(())
 }
 
@@ -951,7 +950,7 @@ fn one_shot_snapshot_reads_daemon_socket_when_cache_is_poisoned() -> Result<()> 
             .any(|pane| pane["pane_id"] == "%67" && pane["provider"] == "codex"),
         "snapshot should read the daemon socket snapshot, got:\n{stdout}"
     );
-    fake_daemon.join().expect("fake daemon should join");
+    fake_daemon.join();
     Ok(())
 }
 
@@ -969,7 +968,7 @@ fn one_shot_focus_validates_with_daemon_socket_before_focusing() -> Result<()> {
     harness.agentscan(["focus", "--client-tty", &client.tty, &split_pane_id])?;
     harness.wait_for_client_pane(&mut client, &split_pane_id)?;
 
-    fake_daemon.join().expect("fake daemon should join");
+    fake_daemon.join();
     Ok(())
 }
 
@@ -1380,8 +1379,8 @@ fn tui_reconnects_after_post_bootstrap_daemon_eof() -> Result<()> {
         "busy",
     ])?;
     let mut daemon = harness.start_daemon()?;
-    harness.wait_for_cache(&mut daemon, |cache| {
-        pane_from_cache(cache, &pane_id).is_some()
+    harness.wait_for_daemon_snapshot(&mut daemon, |snapshot| {
+        pane_from_snapshot(snapshot, &pane_id).is_some()
     })?;
 
     let tui_pane_id = harness.start_agentscan_tui_pane("tui-reconnect:0.0", &[])?;
@@ -1557,15 +1556,15 @@ fn focus_prefers_most_recent_attached_client_when_multiple_are_present() -> Resu
 }
 
 #[test]
-fn daemon_updates_cache_when_panes_are_added() -> Result<()> {
+fn daemon_updates_socket_snapshot_when_panes_are_added() -> Result<()> {
     let harness = TestHarness::new()?;
     let root_pane_id = harness.start_session("pane-add", "sh")?;
     let mut daemon = harness.start_daemon()?;
 
-    harness.wait_for_pane(&mut daemon, &root_pane_id, |_| true)?;
+    harness.wait_for_daemon_pane(&mut daemon, &root_pane_id, |_| true)?;
 
     let split_pane_id = harness.split_window("pane-add:0.0", "sleep 300")?;
-    harness.wait_for_pane(&mut daemon, &split_pane_id, |pane| {
+    harness.wait_for_daemon_pane(&mut daemon, &split_pane_id, |pane| {
         pane["pane_id"].as_str() == Some(split_pane_id.as_str())
     })?;
 
@@ -1574,18 +1573,18 @@ fn daemon_updates_cache_when_panes_are_added() -> Result<()> {
 }
 
 #[test]
-fn daemon_updates_cache_when_panes_are_removed() -> Result<()> {
+fn daemon_updates_socket_snapshot_when_panes_are_removed() -> Result<()> {
     let harness = TestHarness::new()?;
     let root_pane_id = harness.start_session("pane-remove", "sh")?;
     let split_pane_id = harness.split_window("pane-remove:0.0", "sleep 300")?;
     let mut daemon = harness.start_daemon()?;
 
-    harness.wait_for_pane(&mut daemon, &root_pane_id, |_| true)?;
-    harness.wait_for_pane(&mut daemon, &split_pane_id, |_| true)?;
+    harness.wait_for_daemon_pane(&mut daemon, &root_pane_id, |_| true)?;
+    harness.wait_for_daemon_pane(&mut daemon, &split_pane_id, |_| true)?;
 
     harness.tmux(["kill-pane", "-t", &split_pane_id])?;
-    harness.wait_for_cache(&mut daemon, |cache| {
-        pane_from_cache(cache, &split_pane_id).is_none()
+    harness.wait_for_daemon_snapshot(&mut daemon, |snapshot| {
+        pane_from_snapshot(snapshot, &split_pane_id).is_none()
     })?;
 
     daemon.shutdown()?;
@@ -1599,30 +1598,30 @@ fn daemon_survives_when_attached_session_is_removed_but_server_remains() -> Resu
     let surviving_pane_id = harness.start_session("surviving-session", "sleep 300")?;
     let mut daemon = harness.start_daemon()?;
 
-    harness.wait_for_pane(&mut daemon, &attached_pane_id, |_| true)?;
-    harness.wait_for_pane(&mut daemon, &surviving_pane_id, |_| true)?;
+    harness.wait_for_daemon_pane(&mut daemon, &attached_pane_id, |_| true)?;
+    harness.wait_for_daemon_pane(&mut daemon, &surviving_pane_id, |_| true)?;
 
     harness.tmux(["kill-session", "-t", "attached-session"])?;
-    harness.wait_for_pane(&mut daemon, &surviving_pane_id, |_| true)?;
+    harness.wait_for_daemon_pane(&mut daemon, &surviving_pane_id, |_| true)?;
 
     daemon.shutdown()?;
     Ok(())
 }
 
 #[test]
-fn daemon_updates_cache_when_sessions_are_added_and_removed() -> Result<()> {
+fn daemon_updates_socket_snapshot_when_sessions_are_added_and_removed() -> Result<()> {
     let harness = TestHarness::new()?;
     let root_pane_id = harness.start_session("session-root", "sleep 300")?;
     let mut daemon = harness.start_daemon()?;
 
-    harness.wait_for_pane(&mut daemon, &root_pane_id, |_| true)?;
+    harness.wait_for_daemon_pane(&mut daemon, &root_pane_id, |_| true)?;
 
     let added_pane_id = harness.start_session("session-added", "sleep 300")?;
-    harness.wait_for_pane(&mut daemon, &added_pane_id, |_| true)?;
+    harness.wait_for_daemon_pane(&mut daemon, &added_pane_id, |_| true)?;
 
     harness.tmux(["kill-session", "-t", "session-added"])?;
-    harness.wait_for_cache(&mut daemon, |cache| {
-        pane_from_cache(cache, &added_pane_id).is_none()
+    harness.wait_for_daemon_snapshot(&mut daemon, |snapshot| {
+        pane_from_snapshot(snapshot, &added_pane_id).is_none()
     })?;
 
     daemon.shutdown()?;
@@ -1630,19 +1629,19 @@ fn daemon_updates_cache_when_sessions_are_added_and_removed() -> Result<()> {
 }
 
 #[test]
-fn daemon_updates_cache_when_windows_are_added_and_removed() -> Result<()> {
+fn daemon_updates_socket_snapshot_when_windows_are_added_and_removed() -> Result<()> {
     let harness = TestHarness::new()?;
     let root_pane_id = harness.start_session("window-root", "sleep 300")?;
     let mut daemon = harness.start_daemon()?;
 
-    harness.wait_for_pane(&mut daemon, &root_pane_id, |_| true)?;
+    harness.wait_for_daemon_pane(&mut daemon, &root_pane_id, |_| true)?;
 
     let added_pane_id = harness.new_window("window-root", "sleep 300")?;
-    harness.wait_for_pane(&mut daemon, &added_pane_id, |_| true)?;
+    harness.wait_for_daemon_pane(&mut daemon, &added_pane_id, |_| true)?;
 
     harness.tmux(["kill-window", "-t", "window-root:1"])?;
-    harness.wait_for_cache(&mut daemon, |cache| {
-        pane_from_cache(cache, &added_pane_id).is_none()
+    harness.wait_for_daemon_snapshot(&mut daemon, |snapshot| {
+        pane_from_snapshot(snapshot, &added_pane_id).is_none()
     })?;
 
     daemon.shutdown()?;
@@ -1650,15 +1649,15 @@ fn daemon_updates_cache_when_windows_are_added_and_removed() -> Result<()> {
 }
 
 #[test]
-fn daemon_updates_cache_when_session_is_renamed() -> Result<()> {
+fn daemon_updates_socket_snapshot_when_session_is_renamed() -> Result<()> {
     let harness = TestHarness::new()?;
     let pane_id = harness.start_session("rename-session", "sleep 300")?;
     let mut daemon = harness.start_daemon()?;
 
-    harness.wait_for_pane(&mut daemon, &pane_id, |_| true)?;
+    harness.wait_for_daemon_pane(&mut daemon, &pane_id, |_| true)?;
 
     harness.tmux(["rename-session", "-t", "rename-session", "renamed-session"])?;
-    harness.wait_for_pane(&mut daemon, &pane_id, |pane| {
+    harness.wait_for_daemon_pane(&mut daemon, &pane_id, |pane| {
         pane["location"]["session_name"] == "renamed-session"
     })?;
 
@@ -1667,15 +1666,15 @@ fn daemon_updates_cache_when_session_is_renamed() -> Result<()> {
 }
 
 #[test]
-fn daemon_updates_cache_when_window_is_renamed() -> Result<()> {
+fn daemon_updates_socket_snapshot_when_window_is_renamed() -> Result<()> {
     let harness = TestHarness::new()?;
     let pane_id = harness.start_session("rename-window", "sleep 300")?;
     let mut daemon = harness.start_daemon()?;
 
-    harness.wait_for_pane(&mut daemon, &pane_id, |_| true)?;
+    harness.wait_for_daemon_pane(&mut daemon, &pane_id, |_| true)?;
 
     harness.tmux(["rename-window", "-t", "rename-window:0", "ai"])?;
-    harness.wait_for_pane(&mut daemon, &pane_id, |pane| {
+    harness.wait_for_daemon_pane(&mut daemon, &pane_id, |pane| {
         pane["location"]["window_name"] == "ai"
     })?;
 
@@ -1689,7 +1688,7 @@ fn daemon_exits_when_tmux_server_disappears() -> Result<()> {
     let _pane_id = harness.start_session("server-exit", "sleep 300")?;
     let mut daemon = harness.start_daemon()?;
 
-    harness.wait_for_cache(&mut daemon, |_| true)?;
+    harness.wait_for_daemon_snapshot(&mut daemon, |_| true)?;
     harness.tmux(["kill-server"])?;
     daemon.wait_for_exit(DAEMON_TIMEOUT)?;
 
@@ -1735,10 +1734,24 @@ fn read_daemon_socket_json_line(reader: &mut impl BufRead) -> Result<Value> {
     serde_json::from_str(&line).context("daemon socket frame was not valid JSON")
 }
 
-fn serve_fake_snapshot(socket_path: &Path, snapshot: Value) -> std::thread::JoinHandle<()> {
+fn serve_fake_snapshot(socket_path: &Path, snapshot: Value) -> FakeSnapshotServer {
+    validate_snapshot_json(&snapshot).expect("fake daemon snapshot should validate");
     let listener = UnixListener::bind(socket_path).expect("fake snapshot daemon should bind");
-    std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().expect("snapshot client should connect");
+    listener
+        .set_nonblocking(true)
+        .expect("fake snapshot daemon listener should be nonblocking");
+    let protocol_version = daemon_protocol_version();
+    let schema_version = snapshot_schema_version();
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = Arc::clone(&stop);
+    let handle = std::thread::spawn(move || {
+        let mut stream = accept_fake_snapshot_connection(&listener, &thread_stop);
+        stream
+            .set_read_timeout(Some(Duration::from_secs(8)))
+            .expect("fake snapshot daemon read timeout should set");
+        stream
+            .set_write_timeout(Some(Duration::from_secs(8)))
+            .expect("fake snapshot daemon write timeout should set");
         let mut hello = String::new();
         BufReader::new(
             stream
@@ -1747,14 +1760,15 @@ fn serve_fake_snapshot(socket_path: &Path, snapshot: Value) -> std::thread::Join
         )
         .read_line(&mut hello)
         .expect("snapshot hello should read");
-        assert!(
-            hello.contains(r#""mode":"snapshot""#),
-            "expected snapshot hello, got: {hello}"
-        );
+        let hello: Value = serde_json::from_str(&hello).expect("snapshot hello should be JSON");
+        assert_eq!(hello["type"], "hello");
+        assert_eq!(hello["mode"], "snapshot");
+        assert_eq!(hello["protocol_version"], protocol_version);
+        assert_eq!(hello["snapshot_schema_version"], schema_version);
         let ack = serde_json::json!({
             "type": "hello_ack",
-            "protocol_version": 1,
-            "snapshot_schema_version": 4
+            "protocol_version": protocol_version,
+            "snapshot_schema_version": schema_version
         });
         let frame = serde_json::json!({
             "type": "snapshot",
@@ -1763,7 +1777,12 @@ fn serve_fake_snapshot(socket_path: &Path, snapshot: Value) -> std::thread::Join
         writeln!(stream, "{ack}").expect("fake snapshot ack should write");
         writeln!(stream, "{frame}").expect("fake snapshot frame should write");
         stream.flush().expect("fake snapshot frame should flush");
-    })
+        assert_no_extra_fake_snapshot_connections(&listener, &thread_stop);
+    });
+    FakeSnapshotServer {
+        stop,
+        handle: Some(handle),
+    }
 }
 
 fn write_fake_lifecycle_status(
@@ -1774,8 +1793,8 @@ fn write_fake_lifecycle_status(
 ) {
     let ack = serde_json::json!({
         "type": "hello_ack",
-        "protocol_version": 1,
-        "snapshot_schema_version": 4
+        "protocol_version": daemon_protocol_version(),
+        "snapshot_schema_version": snapshot_schema_version()
     });
     let status = serde_json::json!({
         "type": "lifecycle_status",
@@ -1787,8 +1806,8 @@ fn write_fake_lifecycle_status(
                 "executable": "/bin/sh",
                 "executable_canonical": null,
                 "socket_path": socket_path,
-                "protocol_version": 1,
-                "snapshot_schema_version": 4
+                "protocol_version": daemon_protocol_version(),
+                "snapshot_schema_version": snapshot_schema_version()
             },
             "subscriber_count": 0,
             "latest_snapshot_generated_at": null,
@@ -1800,6 +1819,64 @@ fn write_fake_lifecycle_status(
     writeln!(stream, "{ack}").expect("fake lifecycle ack should write");
     writeln!(stream, "{status}").expect("fake lifecycle status should write");
     stream.flush().expect("fake lifecycle status should flush");
+}
+
+struct FakeSnapshotServer {
+    stop: Arc<AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl FakeSnapshotServer {
+    fn join(mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        self.handle
+            .take()
+            .expect("fake snapshot daemon should have a join handle")
+            .join()
+            .expect("fake snapshot daemon should join");
+    }
+}
+
+impl Drop for FakeSnapshotServer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn accept_fake_snapshot_connection(listener: &UnixListener, stop: &AtomicBool) -> UnixStream {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        assert!(
+            !stop.load(Ordering::SeqCst),
+            "fake snapshot daemon stopped before first connection"
+        );
+        match listener.accept() {
+            Ok((stream, _)) => return stream,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out waiting for fake daemon snapshot connection"
+                );
+                sleep(POLL_INTERVAL);
+            }
+            Err(error) => panic!("fake daemon snapshot accept failed: {error}"),
+        }
+    }
+}
+
+fn assert_no_extra_fake_snapshot_connections(listener: &UnixListener, stop: &AtomicBool) {
+    while !stop.load(Ordering::SeqCst) {
+        match listener.accept() {
+            Ok((_stream, _)) => {
+                panic!("fake snapshot daemon received an unexpected extra connection")
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => sleep(POLL_INTERVAL),
+            Err(error) => panic!("fake daemon snapshot accept failed: {error}"),
+        }
+    }
 }
 
 fn accept_fake_daemon_connection(listener: &UnixListener) -> UnixStream {
@@ -1870,6 +1947,20 @@ fn lifecycle_status_value<'a>(status: &'a str, key: &str) -> Option<&'a str> {
             .and_then(|tail| tail.strip_prefix(": "))
             .map(str::trim)
     })
+}
+
+fn daemon_protocol_version() -> u32 {
+    agentscan::app::bench_support::daemon_protocol_version_for_tests()
+}
+
+fn snapshot_schema_version() -> u32 {
+    agentscan::app::bench_support::snapshot_schema_version_for_tests()
+}
+
+fn validate_snapshot_json(snapshot: &Value) -> Result<()> {
+    let snapshot_json =
+        serde_json::to_string(snapshot).context("failed to serialize snapshot JSON")?;
+    agentscan::app::bench_support::validate_snapshot_json_for_tests(&snapshot_json)
 }
 
 include!("common/tmux_harness.rs");
