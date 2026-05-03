@@ -1,144 +1,115 @@
-# AUR-178 Issue Plan: Rewrite Cache-Dependent Integration Harnesses
+# AUR-179 Issue Plan: Remove Cache Transport And Obsolete Cache Surfaces
 
 ## Scope
 
-Replace remaining cache-as-transport test dependencies with daemon/socket-aware
-fixtures so later cache removal does not erase daemon, command, or TUI coverage.
+Remove the persisted cache file as a live transport and delete the user-facing
+cache command surface now that daemon-backed consumers and integration tests use
+the daemon socket.
 
-This issue targets tests and harnesses, not product behavior:
+This issue targets product behavior, tests, and narrow migration docs:
 
-- daemon readiness checks that currently wait for cache writes
-- daemon pane-state assertions that currently inspect the cache file
-- one-shot/TUI tests that poison or seed cache only to prove socket behavior
-- reusable fixtures for fake socket servers and real daemon harnesses
+- daemon startup and update paths that still write cache files
+- `agentscan cache path` and `agentscan cache validate`
+- `AGENTSCAN_CACHE_PATH` as a supported runtime/test harness input
+- cache diagnostics and timestamp-preservation behavior that only existed for
+  the migration cache
+- tests that only prove cache preservation, cache diagnostics, or cache command
+  removal behavior
 
 ## Non-Goals
 
-- Do not remove `agentscan cache validate`, cache diagnostics, or cache-specific
-  unit/integration tests that still intentionally cover the cache surface.
-- Do not change snapshot schema or daemon wire protocol.
-- Do not remove daemon cache writes from product code; cache transport removal is
-  later milestone work.
-- Do not reduce real tmux end-to-end coverage for daemon lifecycle, command
-  behavior, focus, or TUI workflows.
+- Do not change the daemon socket wire protocol or snapshot JSON schema unless a
+  field is proven to be cache-only and safely removable in this slice.
+- Do not remove `scan --refresh` / direct tmux recovery behavior for one-shot
+  commands.
+- Do not weaken daemon socket, TUI, or focus end-to-end coverage.
+- Do not rewrite all documentation; AUR-180 owns the final docs/release notes
+  reconciliation.
 - Do not push changes; the milestone remains local until complete.
 
 ## Implementation Outline
 
-1. Classify current cache dependencies.
-   - Keep cache-specific coverage in `tests/cache_validate_integration.rs`,
-     `tests/cache_show_integration.rs`, and cache unit tests.
-   - Treat `tests/daemon_integration.rs` waits/assertions on daemon cache files
-     as migration artifacts unless the test is explicitly about cache
-     diagnostics or cache refresh semantics.
-   - Include `tests/daemon_status_integration.rs` in the audit even though it is
-     already cache-independent, so daemon status coverage does not regress.
-   - Identify all uses of `wait_for_cache`, `wait_for_cache_file`,
-     `wait_for_pane`, `pane_from_cache`, direct `harness.cache_path` fixture
-     writes, and `CACHE_SNAPSHOT_FIXTURE` in daemon-backed command/TUI tests.
-   - Define and enforce a post-conversion allowlist:
-     - allowed: cache path/schema/diagnostic unit tests
-     - allowed: `tests/cache_validate_integration.rs`
-     - allowed: `tests/cache_show_integration.rs` while removal behavior is
-       still asserted
-     - allowed: metadata helper cache-refresh tests while metadata helpers still
-       intentionally update the migration cache
-     - allowed: `cache_validate_refresh_preserves_last_daemon_refresh_semantics`
-     - allowed: `scan_refresh_preserves_existing_daemon_cache`
-     - allowed: poisoned/missing cache guard tests only when the expected data is
-       served by socket/daemon state
-     - not allowed: daemon readiness, daemon pane state, one-shot command
-       routing, or TUI success predicates that depend on cache writes
+1. Remove the CLI cache surface.
+   - Delete `Commands::Cache`, `CacheArgs`, `CacheCommands`, and
+     `CacheValidateArgs`.
+   - Remove `command_cache` and cache-specific output functions.
+   - Replace stale cache-command tests with negative coverage proving
+     `agentscan cache`, `cache path`, `cache validate`, and the already-removed
+     `cache show` are rejected.
+   - Keep root-argument rejection tests for supported non-cache commands.
 
-2. Add reusable socket snapshot helpers to the integration harness.
-   - Add a helper that reads one daemon socket snapshot using
-     `ClientMode::Snapshot`, sends `ipc::WIRE_PROTOCOL_VERSION` and
-     `CACHE_SCHEMA_VERSION` directly, validates `hello_ack`, validates the
-     snapshot, and returns a typed `SnapshotEnvelope`.
-   - Add `wait_for_daemon_snapshot(&mut daemon, predicate)` and
-     `wait_for_daemon_pane(...)` helpers that poll the socket rather than the
-     cache file.
-   - Timeout errors should include daemon stdout/stderr, socket path, last
-     socket frame/error, and a summary of the last snapshot.
-   - Keep `AGENTSCAN_SOCKET_PATH` isolation through the existing harness socket
-     path.
-   - Use socket helpers for daemon readiness instead of waiting for cache writes
-     whenever the test is not cache-specific.
-   - For repeated live update tests, prefer a subscription-based helper or
-     latest-snapshot wait when that reduces connection churn; fresh one-shot
-     snapshot polling is acceptable for low-frequency readiness checks.
+2. Remove persisted cache writes and fallback reads safely.
+   - First delete runtime file read/write/path APIs and compile out cache
+     transport code while the harness still supplies isolated cache env vars.
+   - Remove daemon initial cache publication and later
+     `write_snapshot_to_cache` calls.
+   - Simplify `StartupActions` so startup readiness depends on socket snapshot
+     publication, not cache publication.
+   - Remove metadata helper cache refresh side effects from `tmux
+     set-metadata` and `tmux clear-metadata`; daemon/socket updates remain the
+     live state path.
+   - Only after file write paths are gone, remove `AGENTSCAN_CACHE_PATH` from
+     harness subprocess environments and TUI command strings.
+   - During the transition, keep `XDG_CACHE_HOME` and `HOME` pointed at the
+     harness tempdir and add no-cache-file assertions so any missed cache write
+     cannot leak to the user's default cache path.
+   - Delete tests whose only purpose was cache write preservation, cache
+     diagnostics, or metadata helper cache refresh.
 
-3. Reuse or extract fake socket server fixtures for one-shot command tests.
-   - Consolidate the current fake snapshot daemon logic used by one-shot tests
-     into a reusable helper with explicit socket path, frame sequence, and
-     assertion hooks.
-   - Fake socket fixtures must have bounded accept/read timeouts, capture client
-     requests, join on drop, and fail on unexpected missing or extra connections
-     unless the test explicitly expects retries/reconnects.
-   - Prefer fake socket servers for command routing tests that only need to prove
-     a CLI command reads the socket and ignores poisoned cache.
-   - Move unit-ish protocol/lifecycle cases into in-process or fake-socket tests
-     when they do not need tmux subprocess behavior.
-   - Keep real daemon/tmux subprocess tests where end-to-end daemon discovery,
-     auto-start, focus, display-popup, or subscription behavior matters.
+3. Move surviving snapshot helpers out of the cache contract.
+   - Keep shared helpers for snapshot validation, summary, filtering, sorting,
+     timestamping, and daemon provenance.
+   - Prefer renaming the internal `cache` module/types to snapshot-oriented
+     names where that reduces durable cache vocabulary without causing
+     unnecessary churn.
+   - Remove persisted-cache-only helpers such as cache path resolution, cache
+     file read/write, stale-cache diagnostics, daemon cache status, and last
+     daemon refresh preservation.
+   - Keep fixture names only when they describe historical fixture files; product
+     code should no longer expose cache file paths or cache health.
 
-4. Convert daemon-backed integration tests away from cache transport.
-   - Replace readiness checks such as `wait_for_cache(... pane exists ...)` with
-     socket snapshot waits.
-   - Replace daemon update assertions that inspect cache JSON with socket
-     snapshot assertions where the intended behavior is daemon state updates.
-   - Absence checks must first observe the pane/window/session present after
-     daemon startup, then observe absence after the tmux mutation. Prefer
-     comparing a newer `generated_at` or otherwise proving a post-mutation
-     snapshot was observed.
-   - Preserve dedicated cache tests:
-     - `cache validate` diagnostics and max-age behavior
-     - metadata helper cache refresh behavior while those helpers still write the
-       migration cache
-     - `scan_refresh_preserves_existing_daemon_cache`
-     - cache path and schema validation unit tests
-   - Rename helper/test names that say "cache" when the assertion becomes
-     socket-state based.
+4. Update tests to prove cache transport is gone.
+   - Convert poisoned-cache one-shot tests into socket-only tests that do not set
+     `AGENTSCAN_CACHE_PATH`.
+   - Keep direct `--refresh` tests, but assert they bypass daemon/socket state
+     rather than asserting cache files were preserved.
+   - Update daemon integration harness fields and helpers to remove `cache_path`
+     except where a deleted test file still needs fixture-local data during the
+     same commit.
+   - Add a mechanical `rg` audit before completion for `AGENTSCAN_CACHE_PATH`,
+     `cache path`, `cache validate`, `write_snapshot_to_cache`,
+     `read_snapshot_from_cache`, `wait_for_cache`, `CacheDiagnostics`, and
+     `daemon_cache_status`.
+   - Include durable-name audit decisions for `CACHE_ENV_VAR`,
+     `CACHE_RELATIVE_PATH`, `cache show`, `cache_origin`,
+     `daemon_generated_at`, user-visible "cache schema" errors, and broad
+     `cache::` product references.
 
-5. Prove daemon-backed commands/TUI do not depend on cache writes.
-   - Keep or strengthen poisoned-cache tests for list/inspect/focus/snapshot and
-     TUI, but serve expected data from fake socket or real daemon state.
-   - Add a guard test or harness assertion that socket-backed command/TUI tests
-     can pass with a missing or invalid cache file.
-   - Avoid using cache mtime/content as the success signal except in tests whose
-     purpose is cache behavior.
-   - Add a mechanical `rg`/allowlist check as part of implementation review for
-     `wait_for_cache`, `wait_for_cache_file`, `wait_for_pane`,
-     `pane_from_cache`, `CACHE_SNAPSHOT_FIXTURE`, direct `harness.cache_path`
-     writes, and `AGENTSCAN_CACHE_PATH`.
-
-6. Keep docs/contracts aligned.
-   - Update `docs/harness-engineering.md` if new helpers define a test contract
-     around socket snapshot waits, fake socket servers, or daemon isolation.
-   - Avoid broad user-facing docs changes unless test contracts clarify
-     migration assumptions.
+5. Keep docs narrowly consistent for this slice.
+   - Update `README.md`, `ROADMAP.md`, and `docs/harness-engineering.md` only
+     where they currently claim a remaining cache surface or cache transport.
+   - Leave broad release-note and architecture cleanup for AUR-180, but do not
+     leave docs saying users can run removed commands.
 
 ## Edge Cases
 
-- Socket snapshot wait helpers must treat `DaemonNotReady`, `ServerBusy`, and
-  startup races as retryable until the test deadline.
-- Helpers must validate `hello_ack` protocol/schema before trusting snapshots.
-- Socket helper hello frames must use shared protocol/schema constants directly,
-  never values read from cache JSON.
-- Absence predicates must not pass on an initial empty/stale snapshot; tests need
-  a present-before-absent sequence or equivalent post-mutation proof.
-- Tests that start real daemon subprocesses must keep `AGENTSCAN_SOCKET_PATH`,
-  `AGENTSCAN_TMUX_SOCKET`, `AGENTSCAN_CACHE_PATH`, `TMUX_TMPDIR`, and `TMUX`
-  isolation explicit.
-- Auto-started TUI tests should either stop the daemon explicitly or document why
-  harness tmux/server teardown is sufficient for the process lifecycle.
-- Fake socket helpers must avoid accepting unexpected extra connections unless a
-  test explicitly expects retries or reconnects.
-- Cache-specific tests should remain clearly named so later cache removal can
-  delete/migrate them intentionally instead of hiding cache dependencies.
-- Do not convert tests that are intentionally proving cache preservation or
-  diagnostics; those should remain cache-based until the cache surface is
-  removed.
+- Daemon startup must still surface initial snapshot and tmux control-mode
+  startup failures through the socket startup state.
+- Removing cache publication must not make daemon readiness visible before the
+  first socket snapshot is encoded and published.
+- Metadata helper commands should remain useful for wrappers even when no daemon
+  is running; they update tmux metadata only, and daemon/socket readers observe
+  it on the next snapshot.
+- Metadata helper coverage must include live targeted updates, unrelated daemon
+  updates, and at least one full-reconcile path without relying on cached pane
+  merges.
+- `--refresh` remains a direct tmux bypass for supported one-shot commands and
+  must not attempt daemon socket or cache access.
+- TUI still has no `--refresh`, no `--format`, and no direct tmux/cache fallback.
+- Existing fixture JSON may contain `diagnostics.cache_origin`; avoid snapshot
+  schema churn unless all producer/consumer tests are updated deliberately.
+- User-visible schema validation errors should say "snapshot schema" instead of
+  "cache schema" if the validation helper survives cache removal.
 
 ## Test Plan
 
@@ -147,29 +118,13 @@ Focused tests:
 - `cargo test --test daemon_integration daemon_ -- --nocapture`
 - `cargo test --test daemon_integration one_shot -- --nocapture`
 - `cargo test --test daemon_integration tui_ -- --nocapture`
-- `cargo test --test daemon_integration display_popup -- --nocapture`
-- `cargo test cache_validate -- --nocapture`
+- `cargo test --test daemon_status_integration`
 - `cargo test daemon_socket -- --nocapture`
-
-Required coverage:
-
-- Real daemon readiness can be observed through daemon socket snapshots without
-  reading the cache file.
-- Socket snapshot helpers use protocol/schema constants rather than cache-derived
-  schema versions.
-- Daemon pane add/remove/title/metadata/session/window update tests assert socket
-  snapshot state rather than cache JSON when the cache is not the behavior under
-  test.
-- Removal tests prove present-before-absent and do not pass on an initial missing
-  pane/window/session.
-- One-shot daemon-backed commands still ignore poisoned cache contents.
-- TUI still bootstraps and rerenders from socket state with poisoned/missing
-  cache.
-- Cache-specific tests remain isolated and explicit.
-- An allowlist `rg` check proves the full suite no longer uses cache writes as a
-  prerequisite for non-cache daemon-backed behavior.
-- Expected environment-specific skips remain limited to existing display-popup
-  tmux-version/key-injection gating and are documented in harness code/docs.
+- targeted CLI parsing tests for removed `cache` commands
+- a daemon metadata full-reconcile test proving wrapper metadata survives without
+  cached-pane merging
+- a no-cache-file guard around daemon, one-shot, TUI, and metadata-helper
+  integration paths
 
 Regression gates:
 
@@ -180,22 +135,20 @@ Regression gates:
 
 ## Documentation Impact
 
-Update `docs/harness-engineering.md` with the new socket-first test helper
-contract: daemon-backed behavior should be observed through isolated sockets,
-cache helpers are reserved for cache-specific tests, and real tmux subprocess
-coverage remains only where end-to-end behavior matters. Include the cache helper
-allowlist and expected display-popup skip conditions.
+Make repo docs stop advertising the cache file as a remaining migration surface.
+Document that daemon state is served over the socket and direct snapshots use
+`scan`/`--refresh`; leave final narrative/release-note polish to AUR-180.
 
 ## Plan Review Notes
 
 Plan review required these refinements before implementation:
 
-- Add a mechanical cache-dependency allowlist instead of relying on helper-name
-  cleanup.
-- Do not derive daemon socket hello schema versions from cache JSON; use shared
-  protocol/schema constants.
-- Ensure removal/absence tests first observe presence and then observe absence
-  after mutation.
-- Require fake socket fixtures to use bounded IO, request capture, RAII cleanup,
-  and unexpected-connection assertions.
-- Keep socket wait timeout diagnostics rich enough to debug flakes.
+- Avoid test environment leakage by deleting file transport before removing
+  `AGENTSCAN_CACHE_PATH`; during the transition, set `XDG_CACHE_HOME` and `HOME`
+  to harness temp paths and assert no cache file is created.
+- Keep negative CLI coverage for the removed `cache` command family instead of
+  simply deleting all cache-command tests.
+- Add a full-reconcile metadata preservation test because cached pane merging is
+  being removed.
+- Audit durable cache vocabulary explicitly and decide what remains for snapshot
+  schema compatibility versus what should be renamed or removed in this slice.
