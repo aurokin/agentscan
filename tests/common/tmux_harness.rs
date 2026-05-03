@@ -3,7 +3,9 @@ struct TestHarness {
     tmux_tmpdir: PathBuf,
     tmux_socket_path: PathBuf,
     agentscan_socket_path: PathBuf,
-    cache_path: PathBuf,
+    cache_home: PathBuf,
+    home_dir: PathBuf,
+    legacy_cache_path: PathBuf,
     stdout_path: PathBuf,
     stderr_path: PathBuf,
     display_popup_launch_count: AtomicUsize,
@@ -30,10 +32,16 @@ impl TestHarness {
         fs::set_permissions(tmux_socket_dir, fs::Permissions::from_mode(0o700))
             .with_context(|| format!("failed to chmod {}", tmux_socket_dir.display()))?;
 
+        let cache_home = tempdir.path().join("cache-home");
+        let home_dir = tempdir.path().join("home");
+        let legacy_cache_path = cache_home.join("agentscan/cache-v1.json");
+
         Ok(Self {
             tmux_socket_path,
             agentscan_socket_path: tempdir.path().join("agentscan.sock"),
-            cache_path: tempdir.path().join("cache.json"),
+            cache_home,
+            home_dir,
+            legacy_cache_path,
             stdout_path: tempdir.path().join("daemon.stdout.log"),
             stderr_path: tempdir.path().join("daemon.stderr.log"),
             display_popup_launch_count: AtomicUsize::new(0),
@@ -130,8 +138,9 @@ impl TestHarness {
             .env_remove("TMUX")
             .env("TMUX_TMPDIR", &self.tmux_tmpdir)
             .env(AGENTSCAN_TMUX_SOCKET_ENV_VAR, &self.tmux_socket_path)
-            .env("AGENTSCAN_CACHE_PATH", &self.cache_path)
             .env("AGENTSCAN_SOCKET_PATH", &self.agentscan_socket_path)
+            .env("XDG_CACHE_HOME", &self.cache_home)
+            .env("HOME", &self.home_dir)
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr))
             .spawn()
@@ -264,8 +273,9 @@ impl TestHarness {
         command.env_remove("TMUX");
         command.env("TMUX_TMPDIR", &self.tmux_tmpdir);
         command.env(AGENTSCAN_TMUX_SOCKET_ENV_VAR, &self.tmux_socket_path);
-        command.env("AGENTSCAN_CACHE_PATH", &self.cache_path);
         command.env("AGENTSCAN_SOCKET_PATH", &self.agentscan_socket_path);
+        command.env("XDG_CACHE_HOME", &self.cache_home);
+        command.env("HOME", &self.home_dir);
         Ok(command)
     }
 
@@ -385,11 +395,12 @@ impl TestHarness {
 
     fn agentscan_tui_command(&self, extra_args: &[&str]) -> Result<String> {
         let mut command = format!(
-            "TMUX_TMPDIR={} AGENTSCAN_TMUX_SOCKET={} AGENTSCAN_CACHE_PATH={} AGENTSCAN_SOCKET_PATH={} {} tui",
+            "TMUX_TMPDIR={} AGENTSCAN_TMUX_SOCKET={} AGENTSCAN_SOCKET_PATH={} XDG_CACHE_HOME={} HOME={} {} tui",
             shell_escape_path(&self.tmux_tmpdir),
             shell_escape_path(&self.tmux_socket_path),
-            shell_escape_path(&self.cache_path),
             shell_escape_path(&self.agentscan_socket_path),
+            shell_escape_path(&self.cache_home),
+            shell_escape_path(&self.home_dir),
             shell_escape_path(&agentscan_bin()?)
         );
         for arg in extra_args {
@@ -406,11 +417,12 @@ impl TestHarness {
         done_path: &Path,
     ) -> Result<String> {
         let mut command = format!(
-            "TMUX_TMPDIR={} AGENTSCAN_TMUX_SOCKET={} AGENTSCAN_CACHE_PATH={} AGENTSCAN_SOCKET_PATH={} AGENTSCAN_TUI_READY_PATH={} AGENTSCAN_TUI_DONE_PATH={} {} tui",
+            "TMUX_TMPDIR={} AGENTSCAN_TMUX_SOCKET={} AGENTSCAN_SOCKET_PATH={} XDG_CACHE_HOME={} HOME={} AGENTSCAN_TUI_READY_PATH={} AGENTSCAN_TUI_DONE_PATH={} {} tui",
             shell_escape_path(&self.tmux_tmpdir),
             shell_escape_path(&self.tmux_socket_path),
-            shell_escape_path(&self.cache_path),
             shell_escape_path(&self.agentscan_socket_path),
+            shell_escape_path(&self.cache_home),
+            shell_escape_path(&self.home_dir),
             shell_escape_path(ready_path),
             shell_escape_path(done_path),
             shell_escape_path(&agentscan_bin()?)
@@ -680,56 +692,6 @@ impl TestHarness {
         })
     }
 
-    fn wait_for_cache<F>(&self, daemon: &mut DaemonHandle, predicate: F) -> Result<Value>
-    where
-        F: Fn(&Value) -> bool,
-    {
-        let deadline = Instant::now() + DAEMON_TIMEOUT;
-        loop {
-            daemon.ensure_running()?;
-
-            if let Ok(contents) = fs::read_to_string(&self.cache_path)
-                && let Ok(cache) = serde_json::from_str::<Value>(&contents)
-                && predicate(&cache)
-            {
-                return Ok(cache);
-            }
-
-            if Instant::now() >= deadline {
-                bail!(
-                    "timed out waiting for cache update at {}",
-                    self.cache_path.display()
-                );
-            }
-
-            sleep(POLL_INTERVAL);
-        }
-    }
-
-    fn wait_for_cache_file<F>(&self, predicate: F) -> Result<Value>
-    where
-        F: Fn(&Value) -> bool,
-    {
-        let deadline = Instant::now() + DAEMON_TIMEOUT;
-        loop {
-            if let Ok(contents) = fs::read_to_string(&self.cache_path)
-                && let Ok(cache) = serde_json::from_str::<Value>(&contents)
-                && predicate(&cache)
-            {
-                return Ok(cache);
-            }
-
-            if Instant::now() >= deadline {
-                bail!(
-                    "timed out waiting for cache update at {}",
-                    self.cache_path.display()
-                );
-            }
-
-            sleep(POLL_INTERVAL);
-        }
-    }
-
     fn tmux_command(&self) -> Command {
         let mut command = Command::new("tmux");
         command.arg("-S").arg(&self.tmux_socket_path);
@@ -775,6 +737,13 @@ impl Drop for TestHarness {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
+        if !std::thread::panicking() {
+            assert!(
+                !self.legacy_cache_path.exists(),
+                "removed cache transport wrote legacy cache file at {}",
+                self.legacy_cache_path.display()
+            );
+        }
     }
 }
 
@@ -966,13 +935,6 @@ struct TmuxClientRow {
 }
 
 const TMUX_TEST_DELIM: &str = r"\037";
-
-fn pane_from_cache<'a>(cache: &'a Value, pane_id: &str) -> Option<&'a Value> {
-    cache["panes"]
-        .as_array()?
-        .iter()
-        .find(|pane| pane["pane_id"].as_str() == Some(pane_id))
-}
 
 fn pane_from_snapshot<'a>(snapshot: &'a Value, pane_id: &str) -> Option<&'a Value> {
     snapshot["panes"]

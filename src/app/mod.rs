@@ -4,7 +4,6 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
@@ -13,7 +12,6 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 pub mod bench_support;
-mod cache;
 mod classify;
 mod cli;
 mod commands;
@@ -25,6 +23,7 @@ mod path;
 mod proc;
 mod provider;
 mod scanner;
+mod snapshot;
 #[cfg(test)]
 mod tests;
 mod tmux;
@@ -38,11 +37,8 @@ pub(crate) use provider::*;
 
 const PANE_DELIM: &str = "\u{001f}";
 const TMUX_FORMAT_DELIM: &str = r"\037";
-const CACHE_ENV_VAR: &str = "AGENTSCAN_CACHE_PATH";
 const TMUX_SOCKET_ENV_VAR: &str = "AGENTSCAN_TMUX_SOCKET";
-const CACHE_RELATIVE_PATH: &str = "agentscan/cache-v1.json";
 const CACHE_SCHEMA_VERSION: u32 = 4;
-static CACHE_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const CLAUDE_SPINNER_GLYPHS: &[char] = &[
     '⠁', '⠂', '⠄', '⡀', '⢀', '⠠', '⠐', '⠈', '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏', '⣾',
     '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷',

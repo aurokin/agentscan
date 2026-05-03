@@ -94,10 +94,6 @@ fn unsupported_root_list_args_are_rejected_for_other_commands() {
     assert!(cli.list_args.all);
     assert!(super::commands::reject_root_all(&cli.list_args, "daemon").is_err());
 
-    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "--format", "json", "cache", "path"]);
-    assert_eq!(cli.list_args.format, OutputFormat::Json);
-    assert!(super::commands::reject_root_format(&cli.list_args, "cache path").is_err());
-
     let cli = <Cli as clap::Parser>::parse_from(["agentscan", "--format", "json", "tui"]);
     assert_eq!(cli.list_args.format, OutputFormat::Json);
     match cli.command {
@@ -256,10 +252,6 @@ fn auto_start_opt_out_is_rejected_for_non_daemon_backed_commands() {
         (
             ["agentscan", "--no-auto-start", "tmux", "set-metadata"].as_slice(),
             "tmux",
-        ),
-        (
-            ["agentscan", "--no-auto-start", "cache", "path"].as_slice(),
-            "cache",
         ),
     ] {
         let cli = <Cli as clap::Parser>::parse_from(args);

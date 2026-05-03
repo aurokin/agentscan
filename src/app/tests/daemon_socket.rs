@@ -248,7 +248,6 @@ enum FakeTmuxStartup {
 struct FakeDaemonStartup {
     initial_snapshot: FakeInitialSnapshot,
     tmux_startup: FakeTmuxStartup,
-    cache_publication_error: Option<&'static str>,
 }
 
 impl FakeDaemonStartup {
@@ -256,7 +255,6 @@ impl FakeDaemonStartup {
         Self {
             initial_snapshot: FakeInitialSnapshot::Ready,
             tmux_startup: FakeTmuxStartup::Started,
-            cache_publication_error: None,
         }
     }
 
@@ -274,12 +272,6 @@ impl FakeDaemonStartup {
         }
     }
 
-    fn with_cache_publication_error(message: &'static str) -> Self {
-        Self {
-            cache_publication_error: Some(message),
-            ..Self::ready()
-        }
-    }
 }
 
 impl daemon::StartupActions for FakeDaemonStartup {
@@ -306,12 +298,6 @@ impl daemon::StartupActions for FakeDaemonStartup {
         }
     }
 
-    fn publish_initial_cache_snapshot(&self, _snapshot: &SnapshotEnvelope) -> anyhow::Result<()> {
-        match self.cache_publication_error {
-            Some(message) => anyhow::bail!("{message}"),
-            None => Ok(()),
-        }
-    }
 }
 
 fn wait_for_socket_connection(socket_path: &Path) -> UnixStream {
@@ -935,14 +921,6 @@ fn daemon_socket_subscription_setup_waits_past_attach_response() {
 }
 
 #[test]
-fn daemon_socket_initial_cache_publication_failure_blocks_socket_readiness() {
-    assert_startup_failed_contains(
-        FakeDaemonStartup::with_cache_publication_error("cache write failed"),
-        "cache write failed",
-    );
-}
-
-#[test]
 fn daemon_socket_startup_failure_removes_owned_socket_path() {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let socket_path = tempdir.path().join("agentscan.sock");
@@ -1204,7 +1182,7 @@ fn daemon_snapshot_helper_rejects_invalid_snapshot_schema() {
         daemon::DaemonSnapshotError::Incompatible { .. }
     ));
     assert!(error.to_string().contains("invalid snapshot"));
-    assert!(error.to_string().contains("unsupported cache schema version"));
+    assert!(error.to_string().contains("unsupported snapshot schema version"));
     assert_eq!(handle.join().expect("server should join"), 1);
 }
 

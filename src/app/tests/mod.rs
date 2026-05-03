@@ -1,8 +1,7 @@
 use std::cell::RefCell;
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use anyhow::Context;
 use proptest::{prelude::*, string::string_regex};
 use unicode_width::UnicodeWidthStr;
 
@@ -25,10 +24,9 @@ const TMUX_AMBIGUOUS_FIXTURE: &str = include_str!(concat!(
 
 #[allow(unused_imports)]
 use super::{
-    CACHE_RELATIVE_PATH, CACHE_SCHEMA_VERSION, CLAUDE_SPINNER_GLYPHS, Cli,
-    DAEMON_SUBSCRIPTION_FORMAT, IDLE_GLYPHS, OutputFormat, PaneRecord, PaneStatus, Provider,
-    SnapshotEnvelope, SourceKind, StatusKind, TMUX_SOCKET_ENV_VAR, TmuxMetadataField, cache,
-    classify, daemon, ipc, output, proc, tmux,
+    CACHE_SCHEMA_VERSION, CLAUDE_SPINNER_GLYPHS, Cli, DAEMON_SUBSCRIPTION_FORMAT, IDLE_GLYPHS,
+    OutputFormat, PaneRecord, PaneStatus, Provider, SnapshotEnvelope, SourceKind, StatusKind,
+    TMUX_SOCKET_ENV_VAR, TmuxMetadataField, classify, daemon, ipc, output, proc, snapshot, tmux,
 };
 
 include!("support.rs");

@@ -1388,7 +1388,7 @@ fn cache_summary_counts_fixture_contents() {
     let snapshot: SnapshotEnvelope =
         serde_json::from_str(CACHE_SNAPSHOT_FIXTURE).expect("cache fixture should parse");
 
-    let summary = cache::summarize_snapshot(&snapshot).expect("cache fixture should summarize");
+    let summary = snapshot::summarize_snapshot(&snapshot).expect("cache fixture should summarize");
     assert_eq!(summary.pane_count, 1);
     assert_eq!(summary.agent_pane_count, 1);
     assert_eq!(summary.provider_counts, vec![(Provider::Codex, 1)]);
@@ -1466,7 +1466,7 @@ fn snapshot_sort_orders_panes_by_location() {
         ],
     };
 
-    cache::sort_snapshot_panes(&mut snapshot);
+    snapshot::sort_snapshot_panes(&mut snapshot);
 
     let ordered_ids: Vec<_> = snapshot
         .panes
@@ -1483,11 +1483,11 @@ fn validate_snapshot_rejects_unsupported_schema_version() {
     snapshot.schema_version = CACHE_SCHEMA_VERSION - 1;
 
     let error =
-        cache::validate_snapshot(&snapshot, None).expect_err("old schema version should fail");
+        snapshot::validate_snapshot(&snapshot).expect_err("old schema version should fail");
     assert!(
         error
             .to_string()
-            .contains("unsupported cache schema version"),
+            .contains("unsupported snapshot schema version"),
         "unexpected error: {error}"
     );
 }
@@ -1499,24 +1499,11 @@ fn validate_snapshot_rejects_future_schema_version() {
     snapshot.schema_version = CACHE_SCHEMA_VERSION + 1;
 
     let error =
-        cache::validate_snapshot(&snapshot, None).expect_err("future schema version should fail");
+        snapshot::validate_snapshot(&snapshot).expect_err("future schema version should fail");
     assert!(
         error
             .to_string()
-            .contains("unsupported cache schema version"),
-        "unexpected error: {error}"
-    );
-}
-
-#[test]
-fn validate_snapshot_rejects_stale_cache_when_max_age_is_exceeded() {
-    let mut snapshot: SnapshotEnvelope =
-        serde_json::from_str(CACHE_SNAPSHOT_FIXTURE).expect("cache fixture should parse");
-    snapshot.generated_at = "2020-01-01T00:00:00Z".to_string();
-
-    let error = cache::validate_snapshot(&snapshot, Some(1)).expect_err("stale cache should fail");
-    assert!(
-        error.to_string().contains("cache is stale"),
+            .contains("unsupported snapshot schema version"),
         "unexpected error: {error}"
     );
 }

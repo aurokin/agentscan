@@ -176,7 +176,7 @@ pub(super) fn print_json<T: Serialize>(value: &T) -> Result<()> {
 }
 
 pub(super) fn print_snapshot_summary_text(snapshot: &SnapshotEnvelope) -> Result<()> {
-    let summary = cache::summarize_snapshot(snapshot)?;
+    let summary = snapshot::summarize_snapshot(snapshot)?;
 
     println!("schema_version: {}", snapshot.schema_version);
     println!("generated_at: {}", snapshot.generated_at);
@@ -198,73 +198,6 @@ pub(super) fn print_snapshot_summary_text(snapshot: &SnapshotEnvelope) -> Result
     println!("statuses: {}", format_status_counts(&summary.status_counts));
 
     Ok(())
-}
-
-pub(super) fn print_cache_validate_text(
-    path: &Path,
-    snapshot: &SnapshotEnvelope,
-    summary: &CacheSummary,
-    diagnostics: &CacheDiagnostics,
-    max_age_seconds: Option<u64>,
-) {
-    println!("cache_valid: yes");
-    print_cache_snapshot_fields(path, snapshot, diagnostics, true);
-    print_daemon_cache_diagnostics(diagnostics);
-    println!("pane_count: {}", summary.pane_count);
-    print_max_age_seconds(max_age_seconds);
-}
-
-fn print_cache_snapshot_fields(
-    path: &Path,
-    snapshot: &SnapshotEnvelope,
-    diagnostics: &CacheDiagnostics,
-    include_schema: bool,
-) {
-    print_cache_file_fields(path, snapshot, diagnostics, include_schema);
-    println!("source: {:?}", snapshot.source.kind);
-    print_daemon_refresh_fields(snapshot, diagnostics);
-}
-
-fn print_cache_file_fields(
-    path: &Path,
-    snapshot: &SnapshotEnvelope,
-    diagnostics: &CacheDiagnostics,
-    include_schema: bool,
-) {
-    println!("path: {}", path.display());
-    if include_schema {
-        println!("schema_version: {}", snapshot.schema_version);
-    }
-    println!("generated_at: {}", snapshot.generated_at);
-    println!("cache_age_seconds: {}", diagnostics.cache_age_seconds);
-}
-
-fn print_daemon_refresh_fields(snapshot: &SnapshotEnvelope, diagnostics: &CacheDiagnostics) {
-    println!(
-        "daemon_generated_at: {}",
-        snapshot
-            .source
-            .daemon_generated_at
-            .as_deref()
-            .unwrap_or("<none>")
-    );
-    if let Some(daemon_age_seconds) = diagnostics.daemon_age_seconds {
-        println!("daemon_age_seconds: {daemon_age_seconds}");
-    }
-}
-
-fn print_daemon_cache_diagnostics(diagnostics: &CacheDiagnostics) {
-    println!(
-        "daemon_cache_status: {}",
-        diagnostics.daemon_cache_status.as_str()
-    );
-    println!("daemon_cache_reason: {}", diagnostics.daemon_status_reason);
-}
-
-fn print_max_age_seconds(max_age_seconds: Option<u64>) {
-    if let Some(max_age_seconds) = max_age_seconds {
-        println!("max_age_seconds: {max_age_seconds}");
-    }
 }
 
 fn format_provider_counts(counts: &[(Provider, usize)]) -> String {

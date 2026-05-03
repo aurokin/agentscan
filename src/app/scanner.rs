@@ -8,7 +8,7 @@ pub(crate) fn snapshot_from_tmux() -> Result<SnapshotEnvelope> {
 
     let mut snapshot = SnapshotEnvelope {
         schema_version: CACHE_SCHEMA_VERSION,
-        generated_at: cache::now_rfc3339()?,
+        generated_at: snapshot::now_rfc3339()?,
         source: SnapshotSource {
             kind: SourceKind::Snapshot,
             tmux_version: tmux::tmux_version(),
@@ -16,7 +16,7 @@ pub(crate) fn snapshot_from_tmux() -> Result<SnapshotEnvelope> {
         },
         panes,
     };
-    cache::sort_snapshot_panes(&mut snapshot);
+    snapshot::sort_snapshot_panes(&mut snapshot);
     Ok(snapshot)
 }
 

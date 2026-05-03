@@ -43,7 +43,7 @@ pub fn snapshot_schema_version_for_tests() -> u32 {
 pub fn validate_snapshot_json_for_tests(input: &str) -> Result<()> {
     let snapshot: SnapshotEnvelope =
         serde_json::from_str(input).context("snapshot should deserialize")?;
-    cache::validate_snapshot(&snapshot, None).map(|_| ())
+    snapshot::validate_snapshot(&snapshot).map(|_| ())
 }
 
 #[doc(hidden)]

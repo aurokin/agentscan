@@ -85,19 +85,19 @@ The core architecture is moving to a daemon-required, socket-backed model:
 - consumers read full `SnapshotEnvelope` frames over a Unix socket
 - the cache file is removed as an IPC boundary
 - the interactive command is `agentscan tui`
-- `agentscan cache show` is replaced by `agentscan snapshot`
+- the `agentscan cache` command family is removed; use `agentscan snapshot`
+  for raw snapshot envelopes
 - `agentscan scan` and refresh-capable command flags remain direct tmux
   recovery paths that do not start or require the daemon
 
-Active migration sequencing lives in Linear. The remaining cache-backed surface
-is intentionally narrow while TUI subscription and cache cleanup finish.
+Active migration sequencing lives in Linear.
 
 ## Current Shipped Scope
 
 The current branch centers on:
 
 - direct tmux snapshots from `tmux list-panes -a -F ...`
-- a control-mode daemon that serves socket snapshots and maintains a temporary local JSON cache
+- a control-mode daemon that serves socket snapshots
 - repo-local tmux helpers that stay thin and call the CLI
 - a runtime split by concern under `src/app/` rather than a single monolithic application file
 
@@ -108,10 +108,6 @@ It can:
 - preserve raw tmux `session_id` and `window_id` values in the canonical pane model for socket consumers and local daemon updates
 - refresh individual panes on daemon title and metadata updates, refresh affected windows or sessions when tmux emits stable ids for those scopes, and keep a periodic full reconcile as a safety net
 - preserve helper-published metadata across unrelated daemon writes
-- report daemon-backed cache health
-- persist and read a local JSON cache
-- validate the local JSON cache while it remains a migration artifact
-- distinguish `healthy`, `stale`, and `snapshot_only` daemon-cache states, with daemon refresh provenance in text cache diagnostics
 - bypass daemon-backed state with a fresh direct tmux snapshot for refresh-capable one-shot commands using `-f` / `--refresh`
 - list panes through the default `list` flow
 - inspect a pane by `pane_id`, including provider source, status source, classification reasons, and targeted `/proc` fallback decisions
@@ -147,7 +143,6 @@ It can:
   unless explicit metadata publishes state
 - publish, clear, and consume explicit wrapper metadata via pane-local `@agent.*` tmux options
 - emit canonical snapshot JSON
-- print the current cache path during the remaining cache cleanup phase
 
 Target automation contract:
 

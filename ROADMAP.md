@@ -100,7 +100,7 @@ Implications:
   receive an explicit shutdown frame without acknowledgment
 - one-shot commands read a full snapshot frame and disconnect
 - TSV is an output adapter only, not the canonical store
-- persisted cache JSON is a migration artifact, not the target IPC boundary
+- persisted cache JSON is not a supported IPC boundary
 
 ### Detection Policy
 
@@ -203,9 +203,9 @@ Delivered baseline:
 - provider inference from tmux metadata and titles
 - text and JSON output
 - interactive `agentscan tui`
-- versioned JSON cache snapshot
+- versioned JSON snapshot envelope
 - pane metadata model for explicit tmux user options
-- daemon-backed cache maintenance from tmux control mode
+- daemon-backed socket snapshots from tmux control mode
 - targeted process-tree fallback for unresolved `node`, `bun`, and `python3`
   launcher panes, including Claude Code binary-path and teammate-spawn evidence
 - provider-specific plug-and-play hardening for Gemini CLI, GitHub Copilot CLI,
@@ -222,9 +222,8 @@ Adopted next architecture:
 - daemon is required for normal `list`, `inspect`, `focus`, `tui`, and
   `snapshot` flows
 - normal consumers auto-start the daemon unless explicitly opted out
-- live state moves from cache-file IPC to a Unix-socket JSON-Lines protocol
-- the cache file and `agentscan cache` surface are removed after socket
-  consumers are migrated
+- live state uses a Unix-socket JSON-Lines protocol
+- the cache file and `agentscan cache` surface are removed
 - `agentscan tui` is the interactive command; `agentscan popup` is removed
 
 Definition of done for the current finish pass:

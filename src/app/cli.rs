@@ -30,8 +30,6 @@ pub(crate) enum Commands {
     Daemon(DaemonArgs),
     /// tmux-facing helper commands.
     Tmux(TmuxArgs),
-    /// Inspect cache-related paths.
-    Cache(CacheArgs),
 }
 
 #[derive(Args, Clone, Copy, Debug)]
@@ -121,12 +119,6 @@ pub(crate) struct TuiArgs {
 }
 
 #[derive(Args, Debug)]
-pub(crate) struct CacheArgs {
-    #[command(subcommand)]
-    pub(crate) command: CacheCommands,
-}
-
-#[derive(Args, Debug)]
 pub(crate) struct DaemonArgs {
     #[command(subcommand)]
     pub(crate) command: DaemonCommands,
@@ -136,24 +128,6 @@ pub(crate) struct DaemonArgs {
 pub(crate) struct TmuxArgs {
     #[command(subcommand)]
     pub(crate) command: TmuxCommands,
-}
-
-#[derive(Subcommand, Debug)]
-pub(crate) enum CacheCommands {
-    /// Print the cache path.
-    Path,
-    /// Validate the current cache file.
-    Validate(CacheValidateArgs),
-}
-
-#[derive(Args, Debug)]
-pub(crate) struct CacheValidateArgs {
-    #[command(flatten)]
-    pub(crate) refresh: RefreshArgs,
-
-    /// Fail if the cache is older than this many seconds.
-    #[arg(long)]
-    pub(crate) max_age_seconds: Option<u64>,
 }
 
 #[derive(Subcommand, Debug)]

@@ -114,12 +114,16 @@ fn daemon_auto_start_helper_starts_daemon_and_reads_snapshot() -> Result<()> {
             harness.tmux_socket_path.as_os_str().to_owned(),
         ),
         (
-            OsString::from("AGENTSCAN_CACHE_PATH"),
-            harness.cache_path.as_os_str().to_owned(),
-        ),
-        (
             OsString::from("AGENTSCAN_SOCKET_PATH"),
             harness.agentscan_socket_path.as_os_str().to_owned(),
+        ),
+        (
+            OsString::from("XDG_CACHE_HOME"),
+            harness.cache_home.as_os_str().to_owned(),
+        ),
+        (
+            OsString::from("HOME"),
+            harness.home_dir.as_os_str().to_owned(),
         ),
     ];
     let env_removes = vec![OsString::from("TMUX")];
@@ -693,115 +697,6 @@ fn daemon_updates_socket_snapshot_when_metadata_changes() -> Result<()> {
 }
 
 #[test]
-fn metadata_helpers_refresh_existing_snapshot_cache_without_daemon() -> Result<()> {
-    let harness = TestHarness::new()?;
-    let pane_id = harness.start_session("metadata-cache", "sh")?;
-    harness.send_title_escape(&pane_id, "metadata-cache")?;
-
-    harness.agentscan(["-f", "cache", "validate"])?;
-    harness.wait_for_cache_file(|cache| pane_from_cache(cache, &pane_id).is_some())?;
-
-    harness.agentscan([
-        "tmux",
-        "set-metadata",
-        "--pane-id",
-        &pane_id,
-        "--provider",
-        "claude",
-        "--label",
-        "Snapshot Wrapper Task",
-        "--state",
-        "busy",
-    ])?;
-    harness.wait_for_cache_file(|cache| {
-        let Some(pane) = pane_from_cache(cache, &pane_id) else {
-            return false;
-        };
-        pane["provider"] == "claude"
-            && pane["display"]["label"] == "Snapshot Wrapper Task"
-            && pane["status"]["kind"] == "busy"
-            && pane["status"]["source"] == "pane_metadata"
-    })?;
-
-    harness.agentscan([
-        "tmux",
-        "clear-metadata",
-        "--pane-id",
-        &pane_id,
-        "--field",
-        "provider",
-        "--field",
-        "label",
-        "--field",
-        "state",
-    ])?;
-    harness.wait_for_cache_file(|cache| {
-        let Some(pane) = pane_from_cache(cache, &pane_id) else {
-            return false;
-        };
-        pane["provider"].is_null()
-            && pane["display"]["label"] == "metadata-cache"
-            && pane["status"]["kind"] == "unknown"
-    })?;
-
-    Ok(())
-}
-
-#[test]
-fn cache_validate_refresh_preserves_last_daemon_refresh_semantics() -> Result<()> {
-    let harness = TestHarness::new()?;
-    let _pane_id = harness.start_session("refresh-daemon", "sleep 300")?;
-    let mut daemon = harness.start_daemon()?;
-
-    harness.wait_for_cache(&mut daemon, |_| true)?;
-    daemon.shutdown()?;
-    let daemon_cache = harness.wait_for_cache_file(|cache| cache["source"]["kind"] == "daemon")?;
-    let last_daemon_generated_at = daemon_cache["source"]["daemon_generated_at"]
-        .as_str()
-        .context("daemon cache was missing daemon_generated_at")?
-        .to_string();
-
-    sleep(Duration::from_secs(1));
-    harness.agentscan(["-f", "cache", "validate"])?;
-    harness.agentscan(["daemon", "status"])?;
-
-    let refreshed_cache =
-        harness.wait_for_cache_file(|cache| cache["source"]["kind"] == "snapshot")?;
-    assert_eq!(
-        refreshed_cache["source"]["daemon_generated_at"].as_str(),
-        Some(last_daemon_generated_at.as_str())
-    );
-    Ok(())
-}
-
-#[test]
-fn scan_refresh_preserves_existing_daemon_cache() -> Result<()> {
-    let harness = TestHarness::new()?;
-    let _pane_id = harness.start_session("scan-refresh-daemon", "sleep 300")?;
-    let mut daemon = harness.start_daemon()?;
-
-    harness.wait_for_cache(&mut daemon, |_| true)?;
-    daemon.shutdown()?;
-    let daemon_cache = harness.wait_for_cache_file(|cache| cache["source"]["kind"] == "daemon")?;
-    let last_daemon_generated_at = daemon_cache["source"]["daemon_generated_at"]
-        .as_str()
-        .context("daemon cache was missing daemon_generated_at")?
-        .to_string();
-
-    sleep(Duration::from_secs(1));
-    harness.agentscan(["scan", "-f", "--format", "text"])?;
-    harness.agentscan(["daemon", "status"])?;
-
-    let refreshed_cache =
-        harness.wait_for_cache_file(|cache| cache["source"]["kind"] == "daemon")?;
-    assert_eq!(
-        refreshed_cache["source"]["daemon_generated_at"].as_str(),
-        Some(last_daemon_generated_at.as_str())
-    );
-    Ok(())
-}
-
-#[test]
 fn metadata_helpers_survive_unrelated_daemon_updates() -> Result<()> {
     let harness = TestHarness::new()?;
     let metadata_pane_id = harness.start_session("metadata-survives", "sh")?;
@@ -841,38 +736,29 @@ fn metadata_helpers_survive_unrelated_daemon_updates() -> Result<()> {
             && pane["display"]["label"] == "Persistent Metadata"
             && pane["status"]["kind"] == "busy"
     })?;
+    let metadata_snapshot = harness.wait_for_daemon_snapshot(&mut daemon, |snapshot| {
+        pane_from_snapshot(snapshot, &metadata_pane_id).is_some_and(|pane| {
+            pane["provider"] == "codex"
+                && pane["display"]["label"] == "Persistent Metadata"
+                && pane["status"]["kind"] == "busy"
+        })
+    })?;
+    let metadata_generated_at = metadata_snapshot["generated_at"]
+        .as_str()
+        .context("metadata snapshot was missing generated_at")?
+        .to_string();
 
-    daemon.shutdown()?;
-    Ok(())
-}
-
-#[test]
-fn metadata_helpers_rebuild_cache_when_existing_cache_is_invalid() -> Result<()> {
-    let harness = TestHarness::new()?;
-    let pane_id = harness.start_session("metadata-invalid-cache", "sh")?;
-    fs::write(&harness.cache_path, b"{invalid json").context("failed to seed invalid cache")?;
-
-    harness.agentscan([
-        "tmux",
-        "set-metadata",
-        "--pane-id",
-        &pane_id,
-        "--provider",
-        "claude",
-        "--label",
-        "Recovered Cache",
-        "--state",
-        "idle",
-    ])?;
-    harness.wait_for_cache_file(|cache| {
-        let Some(pane) = pane_from_cache(cache, &pane_id) else {
-            return false;
-        };
-        pane["provider"] == "claude"
-            && pane["display"]["label"] == "Recovered Cache"
-            && pane["status"]["kind"] == "idle"
+    sleep(Duration::from_millis(1200));
+    harness.wait_for_daemon_snapshot(&mut daemon, |snapshot| {
+        snapshot["generated_at"].as_str() != Some(metadata_generated_at.as_str())
+            && pane_from_snapshot(snapshot, &metadata_pane_id).is_some_and(|pane| {
+                pane["provider"] == "codex"
+                    && pane["display"]["label"] == "Persistent Metadata"
+                    && pane["status"]["kind"] == "busy"
+            })
     })?;
 
+    daemon.shutdown()?;
     Ok(())
 }
 
@@ -890,9 +776,8 @@ fn focus_targets_explicit_client_tty() -> Result<()> {
 }
 
 #[test]
-fn one_shot_list_reads_daemon_socket_when_cache_is_poisoned() -> Result<()> {
+fn one_shot_list_reads_daemon_socket() -> Result<()> {
     let harness = TestHarness::new()?;
-    fs::write(&harness.cache_path, b"{invalid json").context("failed to poison cache")?;
     let snapshot: Value =
         serde_json::from_str(CACHE_SNAPSHOT_FIXTURE).context("fixture should be JSON")?;
     let fake_daemon = serve_fake_snapshot(&harness.agentscan_socket_path, snapshot);
@@ -913,9 +798,8 @@ fn one_shot_list_reads_daemon_socket_when_cache_is_poisoned() -> Result<()> {
 }
 
 #[test]
-fn one_shot_inspect_reads_daemon_socket_when_cache_is_poisoned() -> Result<()> {
+fn one_shot_inspect_reads_daemon_socket() -> Result<()> {
     let harness = TestHarness::new()?;
-    fs::write(&harness.cache_path, b"{invalid json").context("failed to poison cache")?;
     let snapshot: Value =
         serde_json::from_str(CACHE_SNAPSHOT_FIXTURE).context("fixture should be JSON")?;
     let fake_daemon = serve_fake_snapshot(&harness.agentscan_socket_path, snapshot);
@@ -930,9 +814,8 @@ fn one_shot_inspect_reads_daemon_socket_when_cache_is_poisoned() -> Result<()> {
 }
 
 #[test]
-fn one_shot_snapshot_reads_daemon_socket_when_cache_is_poisoned() -> Result<()> {
+fn one_shot_snapshot_reads_daemon_socket() -> Result<()> {
     let harness = TestHarness::new()?;
-    fs::write(&harness.cache_path, b"{invalid json").context("failed to poison cache")?;
     let snapshot: Value =
         serde_json::from_str(CACHE_SNAPSHOT_FIXTURE).context("fixture should be JSON")?;
     let fake_daemon = serve_fake_snapshot(&harness.agentscan_socket_path, snapshot);
@@ -962,7 +845,6 @@ fn one_shot_focus_validates_with_daemon_socket_before_focusing() -> Result<()> {
     let mut client = harness.attach_client("one-shot-focus")?;
     let stdout = harness.agentscan_output(["scan", "--all", "--format", "json"])?;
     let snapshot: Value = serde_json::from_str(&stdout).context("scan output should be JSON")?;
-    fs::write(&harness.cache_path, b"{invalid json").context("failed to poison cache")?;
     let fake_daemon = serve_fake_snapshot(&harness.agentscan_socket_path, snapshot);
 
     harness.agentscan(["focus", "--client-tty", &client.tty, &split_pane_id])?;
@@ -975,8 +857,6 @@ fn one_shot_focus_validates_with_daemon_socket_before_focusing() -> Result<()> {
 #[test]
 fn no_auto_start_fails_when_daemon_socket_is_missing() -> Result<()> {
     let harness = TestHarness::new()?;
-    fs::write(&harness.cache_path, CACHE_SNAPSHOT_FIXTURE)
-        .context("failed to seed cache fixture")?;
 
     let output = harness
         .agentscan_command()?
@@ -1000,8 +880,6 @@ fn no_auto_start_fails_when_daemon_socket_is_missing() -> Result<()> {
 #[test]
 fn env_no_auto_start_fails_when_daemon_socket_is_missing() -> Result<()> {
     let harness = TestHarness::new()?;
-    fs::write(&harness.cache_path, CACHE_SNAPSHOT_FIXTURE)
-        .context("failed to seed cache fixture")?;
 
     let output = harness
         .agentscan_command()?
@@ -1024,11 +902,9 @@ fn env_no_auto_start_fails_when_daemon_socket_is_missing() -> Result<()> {
 }
 
 #[test]
-fn one_shot_refresh_and_scan_refresh_do_not_touch_cache_or_daemon() -> Result<()> {
+fn one_shot_refresh_and_scan_refresh_bypass_daemon_socket() -> Result<()> {
     let harness = TestHarness::new()?;
-    let pane_id = harness.start_session("refresh-no-cache-write", "sleep 300")?;
-    fs::write(&harness.cache_path, CACHE_SNAPSHOT_FIXTURE)
-        .context("failed to seed cache fixture")?;
+    let pane_id = harness.start_session("refresh-bypass-daemon", "sleep 300")?;
     fs::write(&harness.agentscan_socket_path, b"not a socket")
         .context("failed to poison daemon socket path")?;
 
@@ -1039,25 +915,17 @@ fn one_shot_refresh_and_scan_refresh_do_not_touch_cache_or_daemon() -> Result<()
         ["inspect", &pane_id, "--refresh", "--format", "json"].as_slice(),
     ] {
         harness.agentscan(args)?;
-        let contents =
-            fs::read_to_string(&harness.cache_path).context("failed to reread cache fixture")?;
-        assert_eq!(
-            contents, CACHE_SNAPSHOT_FIXTURE,
-            "command should not rewrite cache: {args:?}"
-        );
     }
 
     Ok(())
 }
 
 #[test]
-fn focus_refresh_does_not_touch_cache_or_daemon() -> Result<()> {
+fn focus_refresh_bypasses_daemon_socket() -> Result<()> {
     let harness = TestHarness::new()?;
-    let _root_pane_id = harness.start_session("focus-refresh-no-cache-write", "sleep 300")?;
-    let split_pane_id = harness.split_window("focus-refresh-no-cache-write:0.0", "sleep 300")?;
-    let mut client = harness.attach_client("focus-refresh-no-cache-write")?;
-    fs::write(&harness.cache_path, CACHE_SNAPSHOT_FIXTURE)
-        .context("failed to seed cache fixture")?;
+    let _root_pane_id = harness.start_session("focus-refresh-bypass-daemon", "sleep 300")?;
+    let split_pane_id = harness.split_window("focus-refresh-bypass-daemon:0.0", "sleep 300")?;
+    let mut client = harness.attach_client("focus-refresh-bypass-daemon")?;
     fs::write(&harness.agentscan_socket_path, b"not a socket")
         .context("failed to poison daemon socket path")?;
 
@@ -1069,9 +937,6 @@ fn focus_refresh_does_not_touch_cache_or_daemon() -> Result<()> {
         "--refresh",
     ])?;
     harness.wait_for_client_pane(&mut client, &split_pane_id)?;
-    let contents =
-        fs::read_to_string(&harness.cache_path).context("failed to reread cache fixture")?;
-    assert_eq!(contents, CACHE_SNAPSHOT_FIXTURE);
 
     Ok(())
 }
@@ -1100,29 +965,6 @@ fn env_no_auto_start_does_not_disable_daemon_start_command() -> Result<()> {
     );
 
     harness.agentscan(["daemon", "stop"])?;
-    Ok(())
-}
-
-#[test]
-fn cache_commands_reject_root_no_auto_start() -> Result<()> {
-    let harness = TestHarness::new()?;
-    fs::write(&harness.cache_path, CACHE_SNAPSHOT_FIXTURE)
-        .context("failed to seed cache fixture")?;
-
-    let output = harness
-        .agentscan_command()?
-        .args(["--no-auto-start", "cache", "validate"])
-        .output()
-        .context("failed to run cache command with root no-auto-start")?;
-    assert!(
-        !output.status.success(),
-        "cache command should reject root no-auto-start"
-    );
-    let stderr = String::from_utf8(output.stderr).context("stderr should be UTF-8")?;
-    assert!(
-        stderr.contains("`--no-auto-start` is not supported"),
-        "expected root no-auto-start rejection, got:\n{stderr}"
-    );
     Ok(())
 }
 
@@ -1228,7 +1070,7 @@ fn tui_displays_message_when_selected_pane_no_longer_exists() -> Result<()> {
 }
 
 #[test]
-fn display_popup_closes_when_cached_pane_no_longer_exists() -> Result<()> {
+fn display_popup_closes_when_selected_pane_no_longer_exists() -> Result<()> {
     let harness = TestHarness::new()?;
     if !harness.supports_display_popup_key_injection()? {
         return Ok(());
@@ -1287,9 +1129,9 @@ fn display_popup_ctrl_b_passthrough_returns_to_tmux_prefix_table() -> Result<()>
 }
 
 #[test]
-fn tui_bootstraps_from_socket_when_cache_is_poisoned() -> Result<()> {
+fn tui_bootstraps_from_socket() -> Result<()> {
     let harness = TestHarness::new()?;
-    let pane_id = harness.start_session("tui-cache-poisoned", "sleep 300")?;
+    let pane_id = harness.start_session("tui-socket-bootstrap", "sleep 300")?;
     harness.agentscan([
         "tmux",
         "set-metadata",
@@ -1302,9 +1144,8 @@ fn tui_bootstraps_from_socket_when_cache_is_poisoned() -> Result<()> {
         "--state",
         "busy",
     ])?;
-    fs::write(&harness.cache_path, b"{invalid json").context("failed to poison cache")?;
 
-    let tui_pane_id = harness.start_agentscan_tui_pane("tui-cache-poisoned:0.0", &[])?;
+    let tui_pane_id = harness.start_agentscan_tui_pane("tui-socket-bootstrap:0.0", &[])?;
     harness.wait_for_pane_contents(&tui_pane_id, |contents| contents.contains("Socket Task"))?;
     let contents = harness.capture_pane(&tui_pane_id)?;
 
@@ -1314,7 +1155,7 @@ fn tui_bootstraps_from_socket_when_cache_is_poisoned() -> Result<()> {
     );
     assert!(
         !contents.contains("agentscan tui unavailable"),
-        "TUI should not read poisoned cache, got:\n{contents}"
+        "TUI should use socket bootstrap, got:\n{contents}"
     );
 
     harness.tmux(["send-keys", "-t", &tui_pane_id, "Escape"])?;
@@ -1594,14 +1435,14 @@ fn daemon_updates_socket_snapshot_when_panes_are_removed() -> Result<()> {
 #[test]
 fn daemon_survives_when_attached_session_is_removed_but_server_remains() -> Result<()> {
     let harness = TestHarness::new()?;
-    let attached_pane_id = harness.start_session("attached-session", "sleep 300")?;
     let surviving_pane_id = harness.start_session("surviving-session", "sleep 300")?;
+    let attached_pane_id = harness.start_session("zz-removed-session", "sleep 300")?;
     let mut daemon = harness.start_daemon()?;
 
     harness.wait_for_daemon_pane(&mut daemon, &attached_pane_id, |_| true)?;
     harness.wait_for_daemon_pane(&mut daemon, &surviving_pane_id, |_| true)?;
 
-    harness.tmux(["kill-session", "-t", "attached-session"])?;
+    harness.tmux(["kill-session", "-t", "zz-removed-session"])?;
     harness.wait_for_daemon_pane(&mut daemon, &surviving_pane_id, |_| true)?;
 
     daemon.shutdown()?;

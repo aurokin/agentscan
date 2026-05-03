@@ -1,20 +1,3 @@
-fn cache_path_for_test(
-    override_path: Option<&str>,
-    xdg_cache_home: Option<&str>,
-    home: Option<&str>,
-) -> Result<PathBuf, anyhow::Error> {
-    if let Some(path) = override_path {
-        return Ok(PathBuf::from(path));
-    }
-
-    if let Some(cache_home) = xdg_cache_home {
-        return Ok(PathBuf::from(cache_home).join(CACHE_RELATIVE_PATH));
-    }
-
-    let home = home.context("missing home")?;
-    Ok(Path::new(home).join(".cache").join(CACHE_RELATIVE_PATH))
-}
-
 fn proc_fallback_pane(pid: u32, command: &str, title: &str) -> PaneRecord {
     classify::pane_from_row(super::TmuxPaneRow {
         session_name: "ambiguous".to_string(),

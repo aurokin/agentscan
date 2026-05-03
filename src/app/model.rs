@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use time::OffsetDateTime;
 
 use super::Provider;
 
@@ -200,28 +199,11 @@ pub(crate) struct PaneDiagnostics {
 }
 
 #[derive(Debug)]
-pub(crate) struct CacheSummary {
-    pub(crate) generated_at: OffsetDateTime,
+pub(crate) struct SnapshotSummary {
     pub(crate) pane_count: usize,
     pub(crate) agent_pane_count: usize,
     pub(crate) provider_counts: Vec<(Provider, usize)>,
     pub(crate) status_counts: Vec<(StatusKind, usize)>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum DaemonCacheStatus {
-    Healthy,
-    Stale,
-    SnapshotOnly,
-    Unavailable,
-}
-
-#[derive(Debug)]
-pub(crate) struct CacheDiagnostics {
-    pub(crate) cache_age_seconds: u64,
-    pub(crate) daemon_age_seconds: Option<u64>,
-    pub(crate) daemon_cache_status: DaemonCacheStatus,
-    pub(crate) daemon_status_reason: String,
 }
 
 #[derive(Clone, Debug)]
@@ -334,17 +316,6 @@ impl ProcFallbackOutcome {
             Self::NoMatch => "no_match",
             Self::Error => "error",
             Self::Resolved => "resolved",
-        }
-    }
-}
-
-impl DaemonCacheStatus {
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Healthy => "healthy",
-            Self::Stale => "stale",
-            Self::SnapshotOnly => "snapshot_only",
-            Self::Unavailable => "unavailable",
         }
     }
 }

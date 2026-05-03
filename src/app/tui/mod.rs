@@ -149,7 +149,7 @@ fn handle_subscription_event(
             Ok(TuiLoopAction::Redraw)
         }
         daemon::DaemonSubscriptionEvent::Snapshot { mut snapshot } => {
-            cache::filter_snapshot(&mut snapshot, include_all);
+            snapshot::filter_snapshot(&mut snapshot, include_all);
             state.replace_panes(snapshot.panes);
             Ok(TuiLoopAction::Redraw)
         }

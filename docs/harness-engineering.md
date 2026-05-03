@@ -64,10 +64,10 @@ suite should fail before any destructive tmux fixture can run.
 
 ## Socket-First Daemon Harnesses
 
-Daemon integration tests should treat the daemon socket as the transport for
-daemon state. Tests that assert daemon readiness, live pane state, topology
-changes, one-shot daemon routing, or TUI subscription success should use the
-socket snapshot helpers instead of waiting for cache writes.
+Daemon integration tests treat the daemon socket as the transport for daemon
+state. Tests that assert daemon readiness, live pane state, topology changes,
+one-shot daemon routing, or TUI subscription success should use the socket
+snapshot helpers.
 
 Socket helpers must:
 
@@ -85,13 +85,10 @@ read/write timeouts, parse and assert the incoming request, serve typed-valid
 snapshot frames, and fail on unexpected connection patterns when the test owns a
 single-request fixture.
 
-Cache waits are allowed only for cache-specific behavior:
-
-- `cache validate` and `cache show` integration tests
-- metadata helper cache refresh and invalid-cache recovery tests
-- refresh semantics that intentionally preserve `source.daemon_generated_at`
-- poisoned or missing cache guard tests where expected data is supplied by a
-  daemon socket or direct tmux snapshot path
+The cache file transport is removed. Integration harnesses still sandbox
+`XDG_CACHE_HOME` and `HOME` to a temp directory and fail if the old
+`agentscan/cache-v1.json` path is created, so any accidental fallback write is
+caught without touching a user cache directory.
 
 ## Quality Baseline
 

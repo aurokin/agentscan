@@ -35,7 +35,6 @@ pub fn run() -> Result<()> {
             command_daemon(&args)
         }
         Some(Commands::Tmux(args)) => command_tmux(&args, &root_list_args),
-        Some(Commands::Cache(args)) => command_cache(&args, &root_list_args),
         None => command_list(&root_list_args),
     }
 }
@@ -191,7 +190,7 @@ fn emit_filtered_snapshot(
     include_all: bool,
     format: OutputFormat,
 ) -> Result<()> {
-    cache::filter_snapshot(&mut snapshot, include_all);
+    snapshot::filter_snapshot(&mut snapshot, include_all);
     output::emit_snapshot(&snapshot, format)
 }
 
@@ -261,34 +260,6 @@ fn command_daemon(args: &DaemonArgs) -> Result<()> {
     }
 }
 
-fn command_cache(args: &CacheArgs, root_list_args: &ListArgs) -> Result<()> {
-    match args.command {
-        CacheCommands::Path => {
-            reject_root_list_args(root_list_args, "cache path")?;
-            println!("{}", cache::cache_path()?.display());
-        }
-        CacheCommands::Validate(ref args) => {
-            reject_root_all(root_list_args, "cache validate")?;
-            reject_root_format(root_list_args, "cache validate")?;
-            reject_root_auto_start(root_list_args, "cache validate")?;
-            let path = cache::cache_path()?;
-            let snapshot =
-                cache::load_snapshot(args.refresh.refresh || root_list_args.refresh.refresh)?;
-            let summary = cache::validate_snapshot(&snapshot, args.max_age_seconds)?;
-            let diagnostics = cache::cache_diagnostics(&snapshot, args.max_age_seconds)?;
-            output::print_cache_validate_text(
-                &path,
-                &snapshot,
-                &summary,
-                &diagnostics,
-                args.max_age_seconds,
-            );
-        }
-    }
-
-    Ok(())
-}
-
 fn command_tmux(args: &TmuxArgs, root_list_args: &ListArgs) -> Result<()> {
     match &args.command {
         TmuxCommands::SetMetadata(args) => {
@@ -313,7 +284,6 @@ fn command_tmux_set_metadata(args: &TmuxSetMetadataArgs) -> Result<()> {
     for (option_name, value) in updates {
         tmux::set_tmux_pane_option(&pane_id, option_name, &value)?;
     }
-    cache::refresh_existing_cache_from_tmux()?;
 
     println!("updated pane metadata for {pane_id}");
     Ok(())
@@ -326,7 +296,6 @@ fn command_tmux_clear_metadata(args: &TmuxClearMetadataArgs) -> Result<()> {
     for option_name in fields {
         tmux::unset_tmux_pane_option(&pane_id, option_name)?;
     }
-    cache::refresh_existing_cache_from_tmux()?;
 
     println!("cleared pane metadata for {pane_id}");
     Ok(())

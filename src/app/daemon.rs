@@ -59,7 +59,7 @@ impl DaemonRuntimeIdentity {
             .map(|path| path.display().to_string());
         Ok(Self {
             pid: std::process::id(),
-            daemon_start_time: cache::now_rfc3339()?,
+            daemon_start_time: snapshot::now_rfc3339()?,
             executable,
             executable_canonical,
             socket_path: socket_path.display().to_string(),
@@ -802,7 +802,7 @@ fn subscribe_once_from_socket(socket_path: &Path) -> Result<SubscriptionConnect>
             };
             match second_frame {
                 ipc::DaemonFrame::Snapshot { snapshot } => {
-                    if let Err(error) = cache::validate_snapshot(&snapshot, None) {
+                    if let Err(error) = snapshot::validate_snapshot(&snapshot) {
                         return Ok(SubscriptionConnect::Incompatible(format!(
                             "daemon returned invalid bootstrap snapshot: {error:#}"
                         )));
@@ -889,7 +889,7 @@ fn read_subscription_frames(
 
         match ipc::read_daemon_frame(reader) {
             Ok(Some(ipc::DaemonFrame::Snapshot { snapshot })) => {
-                if let Err(error) = cache::validate_snapshot(&snapshot, None) {
+                if let Err(error) = snapshot::validate_snapshot(&snapshot) {
                     return SubscriptionReadResult::Reconnect(format!(
                         "invalid daemon snapshot: {error:#}"
                     ));
@@ -998,7 +998,7 @@ fn snapshot_via_socket_path_with_starter(
             }
         })? {
             SnapshotQuery::Snapshot(snapshot) => {
-                cache::validate_snapshot(&snapshot, None).map_err(|error| {
+                snapshot::validate_snapshot(&snapshot).map_err(|error| {
                     DaemonSnapshotError::Incompatible {
                         message: format!("daemon returned invalid snapshot: {error:#}"),
                     }
@@ -1687,14 +1687,6 @@ fn daemon_run_with_socket_path_and_startup(
         }
     };
 
-    if let Err(error) = startup.publish_initial_cache_snapshot(&pending_snapshot.snapshot) {
-        let message = startup_failure_message("initial snapshot publication", &error);
-        socket_state.mark_startup_failed(message.clone());
-        tmux_client.cleanup();
-        std::thread::sleep(STARTUP_FAILURE_OBSERVABILITY_WINDOW);
-        drop(server_handle);
-        return Err(error.context(message));
-    }
     let mut snapshot = pending_snapshot.snapshot.clone();
     socket_state.publish_prepared_snapshot(pending_snapshot);
     let mut closing_guard = DaemonClosingGuard::new(socket_state.clone());
@@ -1740,7 +1732,6 @@ fn daemon_run_with_socket_path_and_startup(
         if now >= next_reconcile_at {
             reconcile_full_snapshot(&mut snapshot)?;
             socket_state.publish_later_snapshot(snapshot.clone());
-            cache::write_snapshot_to_cache(&snapshot)?;
             next_reconcile_at = Instant::now() + RECONCILE_INTERVAL;
         }
 
@@ -1752,7 +1743,6 @@ fn daemon_run_with_socket_path_and_startup(
                 let should_exit = event == ControlEvent::Exit;
                 if apply_control_event(&mut snapshot, &line, &event)? {
                     socket_state.publish_later_snapshot(snapshot.clone());
-                    cache::write_snapshot_to_cache(&snapshot)?;
                 }
 
                 if should_exit {
@@ -1762,7 +1752,6 @@ fn daemon_run_with_socket_path_and_startup(
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 reconcile_full_snapshot(&mut snapshot)?;
                 socket_state.publish_later_snapshot(snapshot.clone());
-                cache::write_snapshot_to_cache(&snapshot)?;
                 next_reconcile_at = Instant::now() + RECONCILE_INTERVAL;
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -1783,7 +1772,6 @@ fn daemon_run_with_socket_path_and_startup(
 pub(crate) trait StartupActions {
     fn initial_snapshot(&self) -> Result<SnapshotEnvelope>;
     fn start_tmux_control_mode_client(&self) -> Result<StartedTmuxControlModeClient>;
-    fn publish_initial_cache_snapshot(&self, snapshot: &SnapshotEnvelope) -> Result<()>;
 }
 
 #[derive(Default)]
@@ -1791,15 +1779,11 @@ struct DaemonStartup;
 
 impl StartupActions for DaemonStartup {
     fn initial_snapshot(&self) -> Result<SnapshotEnvelope> {
-        cache::daemon_snapshot_from_tmux()
+        snapshot::daemon_snapshot_from_tmux()
     }
 
     fn start_tmux_control_mode_client(&self) -> Result<StartedTmuxControlModeClient> {
         start_tmux_control_mode_client().map(StartedTmuxControlModeClient::from_real)
-    }
-
-    fn publish_initial_cache_snapshot(&self, snapshot: &SnapshotEnvelope) -> Result<()> {
-        cache::write_snapshot_to_cache(snapshot)
     }
 }
 
@@ -1830,12 +1814,6 @@ impl StartedTmuxControlModeClient {
             child: None,
             stdout_reader: None,
             stdin: None,
-        }
-    }
-
-    fn cleanup(&mut self) {
-        if let Some(child) = &mut self.child {
-            cleanup_startup_child(child);
         }
     }
 }
@@ -2984,12 +2962,10 @@ fn apply_control_event(
     match event {
         ControlEvent::PaneChanged(pane_id) => {
             refresh_snapshot_pane(snapshot, pane_id)?;
-            merge_cached_panes(snapshot, Some(pane_id));
             Ok(true)
         }
         ControlEvent::TitleChanged { pane_id, title } => {
             refresh_snapshot_pane_with_title(snapshot, pane_id, Some(title.as_str()))?;
-            merge_cached_panes(snapshot, Some(pane_id));
             Ok(true)
         }
         ControlEvent::WindowChanged(window_id) => {
@@ -3204,8 +3180,8 @@ fn refresh_snapshot_pane_with_title(
         snapshot.panes.push(pane);
     }
 
-    cache::sort_snapshot_panes(snapshot);
-    cache::mark_snapshot_as_daemon(snapshot)
+    snapshot::sort_snapshot_panes(snapshot);
+    snapshot::mark_snapshot_as_daemon(snapshot)
 }
 
 fn refresh_snapshot_window(snapshot: &mut SnapshotEnvelope, window_id: &str) -> Result<()> {
@@ -3237,9 +3213,8 @@ fn refresh_snapshot_scope(
         }));
     }
 
-    merge_cached_panes(snapshot, None);
-    cache::sort_snapshot_panes(snapshot);
-    cache::mark_snapshot_as_daemon(snapshot)
+    snapshot::sort_snapshot_panes(snapshot);
+    snapshot::mark_snapshot_as_daemon(snapshot)
 }
 
 fn fallback_to_full_resnapshot(
@@ -3255,30 +3230,8 @@ fn fallback_to_full_resnapshot(
 }
 
 fn reconcile_full_snapshot(snapshot: &mut SnapshotEnvelope) -> Result<()> {
-    *snapshot = cache::daemon_snapshot_from_tmux()?;
-    merge_cached_panes(snapshot, None);
+    *snapshot = snapshot::daemon_snapshot_from_tmux()?;
     Ok(())
-}
-
-fn merge_cached_panes(snapshot: &mut SnapshotEnvelope, excluded_pane_id: Option<&str>) {
-    let Some(existing) = cache::read_existing_snapshot_if_valid() else {
-        return;
-    };
-
-    for pane in &mut snapshot.panes {
-        if excluded_pane_id.is_some_and(|pane_id| pane.pane_id == pane_id) {
-            continue;
-        }
-
-        if let Some(existing_pane) = existing
-            .panes
-            .iter()
-            .find(|cached| cached.pane_id == pane.pane_id)
-            && has_more_recent_helper_state(existing_pane, pane)
-        {
-            *pane = existing_pane.clone();
-        }
-    }
 }
 
 pub(crate) fn window_notification_target(line: &str) -> Option<&str> {
@@ -3307,14 +3260,6 @@ pub(crate) fn session_notification_target(line: &str) -> Option<&str> {
             .filter(|value| value.starts_with('$')),
         _ => None,
     }
-}
-
-fn has_more_recent_helper_state(existing: &PaneRecord, current: &PaneRecord) -> bool {
-    existing.agent_metadata.provider != current.agent_metadata.provider
-        || existing.agent_metadata.label != current.agent_metadata.label
-        || existing.agent_metadata.cwd != current.agent_metadata.cwd
-        || existing.agent_metadata.state != current.agent_metadata.state
-        || existing.agent_metadata.session_id != current.agent_metadata.session_id
 }
 
 pub(crate) fn notification_name(line: &str) -> Option<&str> {
