@@ -31,13 +31,13 @@ fn bench_cache_deserialize(c: &mut Criterion) {
     });
 }
 
-fn bench_popup_render_rows(c: &mut Criterion) {
+fn bench_tui_render_rows(c: &mut Criterion) {
     let panes =
         app_bench::parse_pane_rows(TMUX_SNAPSHOT_FIXTURE).expect("fixture snapshot should parse");
     let panes = app_bench::pane_records_from_rows(panes);
 
-    c.bench_function("popup_render_rows/fixture_snapshot", |b| {
-        b.iter(|| app_bench::popup_rendered_row_count(&panes))
+    c.bench_function("tui_render_rows/fixture_snapshot", |b| {
+        b.iter(|| app_bench::tui_rendered_row_count(&panes))
     });
 }
 
@@ -46,6 +46,6 @@ criterion_group!(
     bench_parse_pane_rows,
     bench_pane_from_row,
     bench_cache_deserialize,
-    bench_popup_render_rows
+    bench_tui_render_rows
 );
 criterion_main!(benches);

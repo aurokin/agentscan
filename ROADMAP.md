@@ -3,7 +3,7 @@
 ## Project Goal
 
 Replace the current shell-heavy tmux agent discovery stack with a fast Rust
-scanner and indexer that can power aliases, popups, and later other tools
+scanner and indexer that can power aliases, interactive pickers, and later other tools
 without rescanning tmux on every interaction.
 
 ## Product Boundary
@@ -134,9 +134,9 @@ Implications:
 
 ### TUI Contract
 
-The interactive pane picker is a TUI, not an automation surface. The target
-user-facing command name is `agentscan tui`; current `popup` naming is a
-migration artifact.
+The interactive pane picker is a TUI, not an automation surface. The
+user-facing command name is `agentscan tui`; `agentscan popup` is removed, not
+aliased.
 
 Implications:
 
@@ -153,7 +153,7 @@ Keep shell as the integration layer and Rust as the discovery and state layer.
 Implications:
 
 - shell may launch panes and bind keys
-- shell may keep aliases, provider wrappers, and TUI/popup entrypoints
+- shell may keep aliases, provider wrappers, and TUI entrypoints
 - shell should not classify panes or infer activity state
 - shell should not shape machine-readable pane output
 - wrapper behavior is integration context, not a reason to move launch logic into Rust
@@ -179,13 +179,13 @@ It is helpful for understanding:
 - which panes users currently expect to see
 - which providers and wrappers show up in practice
 - which display labels and status cues feel useful
-- which popup and navigation flows exist today
+- which interactive pane-picker and navigation flows exist today
 
 It is not a requirement to preserve:
 
 - the existing shell implementation strategy
 - repeated `capture-pane` or broad `ps` usage
-- popup-shaped TSV output
+- TUI-shaped TSV output
 - every legacy heuristic or regex
 
 `agentscan` should learn from that workflow, not clone it.
@@ -197,7 +197,7 @@ Delivered baseline:
 - snapshot scanner from `tmux list-panes`
 - provider inference from tmux metadata and titles
 - text and JSON output
-- interactive `agentscan popup`
+- interactive `agentscan tui`
 - versioned JSON cache snapshot
 - pane metadata model for explicit tmux user options
 - daemon-backed cache maintenance from tmux control mode
@@ -220,7 +220,7 @@ Adopted next architecture:
 - live state moves from cache-file IPC to a Unix-socket JSON-Lines protocol
 - the cache file and `agentscan cache` surface are removed after socket
   consumers are migrated
-- `agentscan popup` is renamed to `agentscan tui`
+- `agentscan tui` is the interactive command; `agentscan popup` is removed
 
 Definition of done for the current finish pass:
 

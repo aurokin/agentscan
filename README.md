@@ -2,7 +2,7 @@
 
 `agentscan` is a standalone replacement stack for tmux agent discovery.
 
-The current shell workflow in `~/.dotfiles` does too much work at popup time:
+The current shell workflow in `~/.dotfiles` does too much work at TUI launch time:
 
 - full tmux pane scans
 - shell-heavy parsing
@@ -28,7 +28,7 @@ plug-and-play detection.
 The shell scripts in `~/.dotfiles` are reference material, not the target design.
 They are useful for understanding current user-visible behavior and edge cases, but
 they do not define a requirement to preserve the same implementation strategy,
-flags, heuristics, popup flow, or output shape.
+flags, heuristics, interactive flow, or output shape.
 
 This repository is the central source for the product. If tmux helpers or shell
 integration are still needed while the product matures, they should live here
@@ -84,7 +84,7 @@ The core architecture is moving to a daemon-required, socket-backed model:
 - normal consumers auto-start the daemon unless explicitly opted out
 - consumers read full `SnapshotEnvelope` frames over a Unix socket
 - the cache file is removed as an IPC boundary
-- `agentscan popup` is renamed to `agentscan tui`
+- the interactive command is `agentscan tui`
 - `agentscan cache show` is replaced by `agentscan snapshot`
 - `agentscan scan` and refresh-capable command flags remain direct tmux
   recovery paths that do not start or require the daemon
@@ -116,9 +116,9 @@ It can:
 - list panes through the default `list` flow
 - inspect a pane by `pane_id`, including provider source, status source, classification reasons, and targeted `/proc` fallback decisions
 - focus a pane by `pane_id`, with attached-client fallback when no explicit tty is provided and tested multi-client selection of the most recent attached client
-- open an interactive `agentscan popup` UI directly from the Rust binary
-- page popup rows when more panes exist than can fit the current key budget or viewport
-- redraw the popup immediately on terminal resize and keep keys stable for rows that remain visible on the current page
+- open an interactive `agentscan tui` UI directly from the Rust binary
+- page TUI rows when more panes exist than can fit the current key budget or viewport
+- redraw the TUI immediately on terminal resize and keep keys stable for rows that remain visible on the current page
 - infer likely agent panes from tmux metadata
 - normalize noisy provider prefixes and wrapper/script suffixes out of display labels for title-driven panes
 - populate `display.activity_label` for meaningful title-driven panes and authoritative wrapper labels, including non-generic Codex wrapper titles
@@ -150,15 +150,15 @@ It can:
 Target automation contract:
 
 - `agentscan tui` is interactive-only and is not a supported machine-readable surface
-- during the command rename, the same rule applies to the legacy `agentscan popup`
+- `agentscan popup` has been removed rather than kept as a compatibility alias
 - local unsupported flags on the interactive command should remain normal parse errors,
   and root-level `--format` routed to it should fail with migration
-  guidance; do not add popup-specific compatibility shims to intercept or
+  guidance; do not add TUI-specific compatibility shims to intercept or
   emulate legacy formatting
 - `agentscan list --format json` is the supported machine-readable command for downstream consumers in normal automation flows
 - `agentscan list --all --format json` is the supported way to include non-agent panes in that machine-readable output
 - `agentscan snapshot --format json` exposes the raw snapshot envelope when a consumer explicitly needs envelope details rather than the normal `list` view
-- popup/TUI-shaped TSV or JSON output is not a supported long-term contract
+- TUI-shaped TSV or JSON output is not a supported long-term contract
 
 Target operational commands:
 
@@ -179,20 +179,19 @@ Target operational commands:
 
 `agentscan` without a subcommand runs the default daemon-backed `list` flow.
 
-For repo-local tmux popup testing without installing the binary on `PATH`, use
-`tmux display-popup -E "$PWD/target/debug/agentscan" tui` after building once
-the command rename lands. During the migration, the current branch still uses
-`popup`.
+For repo-local tmux `display-popup` testing without installing the binary on
+`PATH`, use `tmux display-popup -E "$PWD/target/debug/agentscan" tui` after
+building once.
 
 ## Migration Note
 
-Machine-readable consumers should not call `agentscan tui` or legacy
-`agentscan popup`.
+Machine-readable consumers should not call `agentscan tui`. The legacy
+`agentscan popup` command has been removed and is not a compatibility path.
 
 Use:
 
 - `agentscan list --format json` for the supported JSON automation surface
-- `agentscan list --all --format json` if the consumer previously depended on popup-style `--all`
+- `agentscan list --all --format json` if the consumer previously depended on interactive `--all`
 - `agentscan snapshot --format json` only when the consumer intentionally needs the raw snapshot envelope
 
 Keep `agentscan tui` in tmux key bindings and other human-facing launch paths.
@@ -212,7 +211,7 @@ the kinds of things users currently rely on:
 - pane discovery across tmux
 - stable pane targeting for navigation and focus
 - provider inference and title normalization
-- popup selection and pane targeting
+- interactive pane selection and targeting
 - rough busy/idle detection for some providers
 
 But those scripts should be treated as a source of examples and migration context,
@@ -229,7 +228,7 @@ The useful design inputs are mostly at the data-model level:
   `pane_metadata`, `pane_output`, or `not_checked`; `pane_output` means a
   provider-scoped current prompt/footer pattern supplied the status after
   stronger metadata/title sources were unavailable.
-- stable pane identity for downstream consumers such as popups or focus commands
+- stable pane identity for downstream consumers such as TUIs or focus commands
 
 ## Target CLI Families
 
@@ -245,6 +244,6 @@ The target CLI centers on:
 - `agentscan tmux` for tmux-facing integration helpers
 
 Shell remains the right place for aliases, launch wrappers, tmux binds, and
-TUI/popup entrypoints. `agentscan` owns pane discovery, provider classification,
+TUI entrypoints. `agentscan` owns pane discovery, provider classification,
 metadata consumption, daemon lifecycle policy, and the documented JSON surfaces
 those shell entrypoints can call.

@@ -12,13 +12,13 @@ use super::state::{
 use super::*;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct PopupTerminalSize {
+pub(crate) struct TuiTerminalSize {
     pub(crate) width: u16,
     pub(crate) height: u16,
 }
 
 #[derive(Debug, Eq, PartialEq)]
-pub(crate) struct PopupFrame {
+pub(crate) struct TuiFrame {
     pub(crate) lines: Vec<String>,
     pub(crate) visible_pane_ids: Vec<String>,
     pub(crate) page_start: usize,
@@ -26,8 +26,8 @@ pub(crate) struct PopupFrame {
     pub(crate) page_count: usize,
 }
 
-pub(crate) fn write_popup_frame<W: Write>(writer: &mut W, frame: &PopupFrame) -> Result<()> {
-    queue!(writer, MoveTo(0, 0), Clear(ClearType::All)).context("failed to clear popup frame")?;
+pub(crate) fn write_tui_frame<W: Write>(writer: &mut W, frame: &TuiFrame) -> Result<()> {
+    queue!(writer, MoveTo(0, 0), Clear(ClearType::All)).context("failed to clear tui frame")?;
     for (row, line) in frame.lines.iter().enumerate() {
         queue!(
             writer,
@@ -35,20 +35,20 @@ pub(crate) fn write_popup_frame<W: Write>(writer: &mut W, frame: &PopupFrame) ->
             crossterm::style::Print(line),
             Clear(ClearType::UntilNewLine)
         )
-        .context("failed to queue popup line")?;
+        .context("failed to queue tui line")?;
     }
     Ok(())
 }
 
-pub(crate) fn render_popup_frame_for_size(
-    state: &mut PopupState,
-    terminal_size: PopupTerminalSize,
-) -> PopupFrame {
+pub(crate) fn render_tui_frame_for_size(
+    state: &mut TuiState,
+    terminal_size: TuiTerminalSize,
+) -> TuiFrame {
     state.set_terminal_size(terminal_size);
 
     if let Some(error_message) = state.error_message.as_deref() {
         state.key_targets.clear();
-        return PopupFrame {
+        return TuiFrame {
             lines: fit_lines_to_terminal(&render_error_frame(error_message), terminal_size),
             visible_pane_ids: Vec::new(),
             page_start: 0,
@@ -60,7 +60,7 @@ pub(crate) fn render_popup_frame_for_size(
     if state.panes.is_empty() {
         state.key_targets.clear();
         state.page_start = 0;
-        return PopupFrame {
+        return TuiFrame {
             lines: fit_lines_to_terminal(
                 &[
                     "No panes available in cache.".to_string(),
@@ -78,7 +78,7 @@ pub(crate) fn render_popup_frame_for_size(
     let page_size = page_size_for_terminal(terminal_size);
     if page_size == 0 {
         state.key_targets.clear();
-        return PopupFrame {
+        return TuiFrame {
             lines: fit_lines_to_terminal(&render_undersized_frame(), terminal_size),
             visible_pane_ids: Vec::new(),
             page_start: state.page_start,
@@ -111,7 +111,7 @@ pub(crate) fn render_popup_frame_for_size(
         row_width,
     ));
 
-    PopupFrame {
+    TuiFrame {
         lines,
         visible_pane_ids,
         page_start: state.page_start,
@@ -155,7 +155,7 @@ fn render_pane_row(pane: &PaneRecord, selection: Option<char>, width: usize) -> 
         provider,
         pane.location.tag()
     );
-    let sanitized_label = sanitize_popup_label(pane.display.label.as_str());
+    let sanitized_label = sanitize_tui_label(pane.display.label.as_str());
     format_row_with_trailing_label(&prefix, sanitized_label.as_str(), width)
 }
 
@@ -204,25 +204,25 @@ fn render_footer_lines(
 
 fn render_undersized_frame() -> Vec<String> {
     vec![
-        "Popup too small for pane selection.".to_string(),
-        "Resize the popup, then choose a pane.".to_string(),
+        "TUI too small for pane selection.".to_string(),
+        "Resize the TUI, then choose a pane.".to_string(),
         "Press Esc or Ctrl-C to close.".to_string(),
     ]
 }
 
 pub(crate) fn render_error_frame(error_message: &str) -> Vec<String> {
     vec![
-        "agentscan popup unavailable".to_string(),
+        "agentscan tui unavailable".to_string(),
         String::new(),
         error_message.to_string(),
         String::new(),
-        "Run `agentscan popup --refresh` for a one-shot tmux snapshot.".to_string(),
+        "Run `agentscan tui --refresh` for a one-shot tmux snapshot.".to_string(),
         "Run `agentscan daemon run` for normal cached use.".to_string(),
         "Press Esc or Ctrl-C to close.".to_string(),
     ]
 }
 
-fn fit_lines_to_terminal(lines: &[String], terminal_size: PopupTerminalSize) -> Vec<String> {
+fn fit_lines_to_terminal(lines: &[String], terminal_size: TuiTerminalSize) -> Vec<String> {
     let width = usize::from(terminal_size.width);
     lines
         .iter()
@@ -245,7 +245,7 @@ fn format_row_with_trailing_label(prefix: &str, label: &str, width: usize) -> St
     format!("{prefix}{}", truncate_to_width(label, remaining_width))
 }
 
-fn sanitize_popup_label(label: &str) -> String {
+fn sanitize_tui_label(label: &str) -> String {
     let mut sanitized = String::with_capacity(label.len());
     let mut characters = label.chars().peekable();
     let mut last_was_space = false;
@@ -256,7 +256,7 @@ fn sanitize_popup_label(label: &str) -> String {
                 strip_terminal_escape_sequence(&mut characters);
             }
             '\n' | '\r' | '\t' => push_sanitized_space(&mut sanitized, &mut last_was_space),
-            character if is_popup_disallowed_control(character) => {}
+            character if is_tui_disallowed_control(character) => {}
             character => {
                 sanitized.push(character);
                 last_was_space = false;
@@ -314,7 +314,7 @@ fn push_sanitized_space(output: &mut String, last_was_space: &mut bool) {
     *last_was_space = true;
 }
 
-fn is_popup_disallowed_control(character: char) -> bool {
+fn is_tui_disallowed_control(character: char) -> bool {
     character.is_control()
 }
 

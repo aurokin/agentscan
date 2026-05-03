@@ -20,13 +20,13 @@ mod daemon;
 mod model;
 mod output;
 mod path;
-mod popup;
 mod proc;
 mod provider;
 mod scanner;
 #[cfg(test)]
 mod tests;
 mod tmux;
+mod tui;
 
 pub(crate) use cli::*;
 pub use commands::run;

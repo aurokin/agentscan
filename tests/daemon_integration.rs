@@ -287,10 +287,10 @@ fn focus_targets_explicit_client_tty() -> Result<()> {
 }
 
 #[test]
-fn popup_focuses_selected_pane_from_interactive_tmux_pane() -> Result<()> {
+fn tui_focuses_selected_pane_from_interactive_tmux_pane() -> Result<()> {
     let harness = TestHarness::new()?;
-    let root_pane_id = harness.start_session("popup-focus", "sleep 300")?;
-    let split_pane_id = harness.split_window("popup-focus:0.0", "sleep 300")?;
+    let root_pane_id = harness.start_session("tui-focus", "sleep 300")?;
+    let split_pane_id = harness.split_window("tui-focus:0.0", "sleep 300")?;
     harness.agentscan([
         "tmux",
         "set-metadata",
@@ -316,11 +316,11 @@ fn popup_focuses_selected_pane_from_interactive_tmux_pane() -> Result<()> {
         "busy",
     ])?;
     harness.agentscan(["-f", "cache", "show"])?;
-    let mut client = harness.attach_client("popup-focus")?;
+    let mut client = harness.attach_client("tui-focus")?;
 
-    let popup_pane_id = harness.start_agentscan_popup_pane("popup-focus:0.0", &[])?;
+    let tui_pane_id = harness.start_agentscan_tui_pane("tui-focus:0.0", &[])?;
     sleep(Duration::from_millis(200));
-    harness.tmux(["send-keys", "-t", &popup_pane_id, "2"])?;
+    harness.tmux(["send-keys", "-t", &tui_pane_id, "2"])?;
     harness.wait_for_client_pane(&mut client, &split_pane_id)?;
 
     Ok(())
@@ -332,25 +332,25 @@ fn display_popup_focuses_selected_pane_from_attached_client() -> Result<()> {
     if !harness.supports_display_popup_key_injection()? {
         return Ok(());
     }
-    let root_pane_id = harness.start_session("display-popup-focus", "sleep 300")?;
-    let split_pane_id = harness.split_window("display-popup-focus:0.0", "sleep 300")?;
-    harness.seed_popup_two_pane_cache(&root_pane_id, &split_pane_id)?;
-    let mut client = harness.attach_client("display-popup-focus")?;
+    let root_pane_id = harness.start_session("display-tui-focus", "sleep 300")?;
+    let split_pane_id = harness.split_window("display-tui-focus:0.0", "sleep 300")?;
+    harness.seed_tui_two_pane_cache(&root_pane_id, &split_pane_id)?;
+    let mut client = harness.attach_client("display-tui-focus")?;
 
-    let mut popup = harness.start_agentscan_display_popup(&client.tty, &[])?;
-    popup.wait_until_ready()?;
+    let mut display_popup = harness.start_agentscan_display_popup(&client.tty, &[])?;
+    display_popup.wait_until_ready()?;
     harness.send_keys_to_client(&client.tty, ["2"])?;
-    popup.wait_for_exit()?;
+    display_popup.wait_for_exit()?;
     harness.wait_for_client_pane(&mut client, &split_pane_id)?;
 
     Ok(())
 }
 
 #[test]
-fn popup_displays_message_when_cached_pane_no_longer_exists() -> Result<()> {
+fn tui_displays_message_when_cached_pane_no_longer_exists() -> Result<()> {
     let harness = TestHarness::new()?;
-    let root_pane_id = harness.start_session("popup-missing", "sleep 300")?;
-    let split_pane_id = harness.split_window("popup-missing:0.0", "sleep 300")?;
+    let root_pane_id = harness.start_session("tui-missing", "sleep 300")?;
+    let split_pane_id = harness.split_window("tui-missing:0.0", "sleep 300")?;
     harness.agentscan([
         "tmux",
         "set-metadata",
@@ -377,11 +377,11 @@ fn popup_displays_message_when_cached_pane_no_longer_exists() -> Result<()> {
     ])?;
     harness.agentscan(["-f", "cache", "show"])?;
     harness.tmux(["kill-pane", "-t", &split_pane_id])?;
-    let mut client = harness.attach_client("popup-missing")?;
+    let mut client = harness.attach_client("tui-missing")?;
 
-    let popup_pane_id = harness.start_agentscan_popup_pane("popup-missing:0.0", &[])?;
+    let tui_pane_id = harness.start_agentscan_tui_pane("tui-missing:0.0", &[])?;
     sleep(Duration::from_millis(200));
-    harness.tmux(["send-keys", "-t", &popup_pane_id, "2"])?;
+    harness.tmux(["send-keys", "-t", &tui_pane_id, "2"])?;
     harness.wait_for_client_pane(&mut client, &root_pane_id)?;
 
     Ok(())
@@ -393,34 +393,34 @@ fn display_popup_closes_when_cached_pane_no_longer_exists() -> Result<()> {
     if !harness.supports_display_popup_key_injection()? {
         return Ok(());
     }
-    let root_pane_id = harness.start_session("display-popup-missing", "sleep 300")?;
-    let split_pane_id = harness.split_window("display-popup-missing:0.0", "sleep 300")?;
-    harness.seed_popup_two_pane_cache(&root_pane_id, &split_pane_id)?;
+    let root_pane_id = harness.start_session("display-tui-missing", "sleep 300")?;
+    let split_pane_id = harness.split_window("display-tui-missing:0.0", "sleep 300")?;
+    harness.seed_tui_two_pane_cache(&root_pane_id, &split_pane_id)?;
     harness.tmux(["kill-pane", "-t", &split_pane_id])?;
-    let mut client = harness.attach_client("display-popup-missing")?;
+    let mut client = harness.attach_client("display-tui-missing")?;
 
-    let mut popup = harness.start_agentscan_display_popup(&client.tty, &[])?;
-    popup.wait_until_ready()?;
+    let mut display_popup = harness.start_agentscan_display_popup(&client.tty, &[])?;
+    display_popup.wait_until_ready()?;
     harness.send_keys_to_client(&client.tty, ["2"])?;
-    popup.wait_for_exit()?;
+    display_popup.wait_for_exit()?;
     harness.wait_for_client_pane(&mut client, &root_pane_id)?;
 
     Ok(())
 }
 
 #[test]
-fn popup_ctrl_b_passthrough_returns_to_tmux_prefix_table() -> Result<()> {
+fn tui_ctrl_b_passthrough_returns_to_tmux_prefix_table() -> Result<()> {
     let harness = TestHarness::new()?;
-    let _pane_id = harness.start_session("popup-prefix", "sleep 300")?;
-    let client = harness.attach_client("popup-prefix")?;
+    let _pane_id = harness.start_session("tui-prefix", "sleep 300")?;
+    let client = harness.attach_client("tui-prefix")?;
 
-    let popup_pane_id = harness.start_agentscan_popup_pane("popup-prefix:0.0", &[])?;
+    let tui_pane_id = harness.start_agentscan_tui_pane("tui-prefix:0.0", &[])?;
     sleep(Duration::from_millis(200));
-    harness.tmux(["send-keys", "-t", &popup_pane_id, "C-b"])?;
+    harness.tmux(["send-keys", "-t", &tui_pane_id, "C-b"])?;
     harness.wait_for_client_key_table(&client.tty, "prefix")?;
-    assert!(harness.pane_exists(&popup_pane_id)?);
-    harness.tmux(["send-keys", "-t", &popup_pane_id, "Escape"])?;
-    harness.wait_for_pane_closed(&popup_pane_id)?;
+    assert!(harness.pane_exists(&tui_pane_id)?);
+    harness.tmux(["send-keys", "-t", &tui_pane_id, "Escape"])?;
+    harness.wait_for_pane_closed(&tui_pane_id)?;
 
     Ok(())
 }
@@ -431,44 +431,44 @@ fn display_popup_ctrl_b_passthrough_returns_to_tmux_prefix_table() -> Result<()>
     if !harness.supports_display_popup_key_injection()? {
         return Ok(());
     }
-    let _pane_id = harness.start_session("display-popup-prefix", "sleep 300")?;
-    let client = harness.attach_client("display-popup-prefix")?;
+    let _pane_id = harness.start_session("display-tui-prefix", "sleep 300")?;
+    let client = harness.attach_client("display-tui-prefix")?;
 
-    let mut popup = harness.start_agentscan_display_popup(&client.tty, &[])?;
-    popup.wait_until_ready()?;
+    let mut display_popup = harness.start_agentscan_display_popup(&client.tty, &[])?;
+    display_popup.wait_until_ready()?;
     harness.send_keys_to_client(&client.tty, ["C-b"])?;
     harness.wait_for_client_key_table(&client.tty, "prefix")?;
     harness.send_keys_to_client(&client.tty, ["Escape"])?;
-    popup.wait_for_exit()?;
+    display_popup.wait_for_exit()?;
 
     Ok(())
 }
 
 #[test]
-fn popup_renders_cache_error_frame_when_cache_is_missing() -> Result<()> {
+fn tui_renders_cache_error_frame_when_cache_is_missing() -> Result<()> {
     let harness = TestHarness::new()?;
-    let _pane_id = harness.start_session("popup-cache-missing", "sleep 300")?;
+    let _pane_id = harness.start_session("tui-cache-missing", "sleep 300")?;
 
-    let popup_pane_id = harness.start_agentscan_popup_pane("popup-cache-missing:0.0", &[])?;
+    let tui_pane_id = harness.start_agentscan_tui_pane("tui-cache-missing:0.0", &[])?;
     sleep(Duration::from_millis(200));
-    let contents = harness.capture_pane(&popup_pane_id)?;
+    let contents = harness.capture_pane(&tui_pane_id)?;
 
     assert!(
-        contents.contains("agentscan popup unavailable"),
-        "expected popup error frame, got:\n{contents}"
+        contents.contains("agentscan tui unavailable"),
+        "expected TUI error frame, got:\n{contents}"
     );
     assert!(
-        contents.contains("popup --refresh"),
-        "expected refresh guidance in popup error frame, got:\n{contents}"
+        contents.contains("tui --refresh"),
+        "expected refresh guidance in TUI error frame, got:\n{contents}"
     );
 
     Ok(())
 }
 
 #[test]
-fn popup_rerenders_when_cache_changes() -> Result<()> {
+fn tui_rerenders_when_cache_changes() -> Result<()> {
     let harness = TestHarness::new()?;
-    let pane_id = harness.start_session("popup-rerender", "sleep 300")?;
+    let pane_id = harness.start_session("tui-rerender", "sleep 300")?;
     harness.agentscan([
         "tmux",
         "set-metadata",
@@ -483,8 +483,8 @@ fn popup_rerenders_when_cache_changes() -> Result<()> {
     ])?;
     harness.agentscan(["-f", "cache", "show"])?;
 
-    let popup_pane_id = harness.start_agentscan_popup_pane("popup-rerender:0.0", &[])?;
-    harness.wait_for_pane_contents(&popup_pane_id, |contents| contents.contains("Initial Task"))?;
+    let tui_pane_id = harness.start_agentscan_tui_pane("tui-rerender:0.0", &[])?;
+    harness.wait_for_pane_contents(&tui_pane_id, |contents| contents.contains("Initial Task"))?;
 
     harness.agentscan([
         "tmux",
@@ -498,52 +498,52 @@ fn popup_rerenders_when_cache_changes() -> Result<()> {
         "--state",
         "busy",
     ])?;
-    harness.wait_for_pane_contents(&popup_pane_id, |contents| contents.contains("Updated Task"))?;
+    harness.wait_for_pane_contents(&tui_pane_id, |contents| contents.contains("Updated Task"))?;
 
-    harness.tmux(["send-keys", "-t", &popup_pane_id, "Escape"])?;
-    harness.wait_for_pane_closed(&popup_pane_id)?;
-
-    Ok(())
-}
-
-#[test]
-fn popup_ignores_non_selection_keys_until_escape() -> Result<()> {
-    let harness = TestHarness::new()?;
-    let _pane_id = harness.start_session("popup-ignore", "sleep 300")?;
-
-    let popup_pane_id = harness.start_agentscan_popup_pane("popup-ignore:0.0", &[])?;
-    sleep(Duration::from_millis(200));
-    harness.tmux(["send-keys", "-t", &popup_pane_id, "A"])?;
-    sleep(Duration::from_millis(200));
-    assert!(harness.pane_exists(&popup_pane_id)?);
-
-    harness.tmux(["send-keys", "-t", &popup_pane_id, "Escape"])?;
-    harness.wait_for_pane_closed(&popup_pane_id)?;
+    harness.tmux(["send-keys", "-t", &tui_pane_id, "Escape"])?;
+    harness.wait_for_pane_closed(&tui_pane_id)?;
 
     Ok(())
 }
 
 #[test]
-fn popup_ctrl_c_closes() -> Result<()> {
+fn tui_ignores_non_selection_keys_until_escape() -> Result<()> {
     let harness = TestHarness::new()?;
-    let _pane_id = harness.start_session("popup-ctrl-c", "sleep 300")?;
+    let _pane_id = harness.start_session("tui-ignore", "sleep 300")?;
 
-    let popup_pane_id = harness.start_agentscan_popup_pane("popup-ctrl-c:0.0", &[])?;
+    let tui_pane_id = harness.start_agentscan_tui_pane("tui-ignore:0.0", &[])?;
     sleep(Duration::from_millis(200));
-    harness.tmux(["send-keys", "-t", &popup_pane_id, "C-c"])?;
-    harness.wait_for_pane_closed(&popup_pane_id)?;
+    harness.tmux(["send-keys", "-t", &tui_pane_id, "A"])?;
+    sleep(Duration::from_millis(200));
+    assert!(harness.pane_exists(&tui_pane_id)?);
+
+    harness.tmux(["send-keys", "-t", &tui_pane_id, "Escape"])?;
+    harness.wait_for_pane_closed(&tui_pane_id)?;
 
     Ok(())
 }
 
 #[test]
-fn popup_pages_to_overflow_rows() -> Result<()> {
+fn tui_ctrl_c_closes() -> Result<()> {
     let harness = TestHarness::new()?;
-    let root_pane_id = harness.start_session("popup-paging", "sleep 300")?;
+    let _pane_id = harness.start_session("tui-ctrl-c", "sleep 300")?;
+
+    let tui_pane_id = harness.start_agentscan_tui_pane("tui-ctrl-c:0.0", &[])?;
+    sleep(Duration::from_millis(200));
+    harness.tmux(["send-keys", "-t", &tui_pane_id, "C-c"])?;
+    harness.wait_for_pane_closed(&tui_pane_id)?;
+
+    Ok(())
+}
+
+#[test]
+fn tui_pages_to_overflow_rows() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let root_pane_id = harness.start_session("tui-paging", "sleep 300")?;
     let mut pane_ids = vec![root_pane_id.clone()];
 
     for _ in 1..18 {
-        pane_ids.push(harness.new_window("popup-paging", "sleep 300")?);
+        pane_ids.push(harness.new_window("tui-paging", "sleep 300")?);
     }
 
     for (index, pane_id) in pane_ids.iter().enumerate() {
@@ -562,16 +562,16 @@ fn popup_pages_to_overflow_rows() -> Result<()> {
     }
     harness.agentscan(["-f", "cache", "show"])?;
 
-    let _client = harness.attach_client("popup-paging")?;
-    let popup_pane_id = harness.start_agentscan_popup_pane("popup-paging:0.0", &[])?;
+    let _client = harness.attach_client("tui-paging")?;
+    let tui_pane_id = harness.start_agentscan_tui_pane("tui-paging:0.0", &[])?;
 
-    harness.wait_for_pane_contents(&popup_pane_id, |contents| contents.contains("Page 1/2"))?;
-    harness.tmux(["send-keys", "-t", &popup_pane_id, "Right"])?;
-    harness.wait_for_pane_contents(&popup_pane_id, |contents| {
+    harness.wait_for_pane_contents(&tui_pane_id, |contents| contents.contains("Page 1/2"))?;
+    harness.tmux(["send-keys", "-t", &tui_pane_id, "Right"])?;
+    harness.wait_for_pane_contents(&tui_pane_id, |contents| {
         contents.contains("Page 2/2") && contents.contains("Task 17")
     })?;
-    harness.tmux(["send-keys", "-t", &popup_pane_id, "Escape"])?;
-    harness.wait_for_pane_closed(&popup_pane_id)?;
+    harness.tmux(["send-keys", "-t", &tui_pane_id, "Escape"])?;
+    harness.wait_for_pane_closed(&tui_pane_id)?;
 
     Ok(())
 }
@@ -582,11 +582,11 @@ fn display_popup_pages_to_overflow_rows_and_focuses_selection() -> Result<()> {
     if !harness.supports_display_popup_key_injection()? {
         return Ok(());
     }
-    let root_pane_id = harness.start_session("display-popup-paging", "sleep 300")?;
+    let root_pane_id = harness.start_session("display-tui-paging", "sleep 300")?;
     let mut pane_ids = vec![root_pane_id];
 
     for _ in 1..18 {
-        pane_ids.push(harness.new_window("display-popup-paging", "sleep 300")?);
+        pane_ids.push(harness.new_window("display-tui-paging", "sleep 300")?);
     }
 
     for (index, pane_id) in pane_ids.iter().enumerate() {
@@ -605,14 +605,14 @@ fn display_popup_pages_to_overflow_rows_and_focuses_selection() -> Result<()> {
     }
     harness.agentscan(["-f", "cache", "show"])?;
     let target_pane_id = pane_ids[16].clone();
-    let mut client = harness.attach_client("display-popup-paging")?;
+    let mut client = harness.attach_client("display-tui-paging")?;
 
-    let mut popup = harness.start_agentscan_display_popup(&client.tty, &[])?;
-    popup.wait_until_ready()?;
+    let mut display_popup = harness.start_agentscan_display_popup(&client.tty, &[])?;
+    display_popup.wait_until_ready()?;
     harness.send_keys_to_client(&client.tty, ["n"])?;
     sleep(Duration::from_millis(200));
     harness.send_keys_to_client(&client.tty, ["1"])?;
-    popup.wait_for_exit()?;
+    display_popup.wait_for_exit()?;
     harness.wait_for_client_pane(&mut client, &target_pane_id)?;
 
     Ok(())

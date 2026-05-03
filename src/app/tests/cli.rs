@@ -55,14 +55,14 @@ fn root_list_args_merge_into_other_refresh_capable_commands() {
         other => panic!("expected focus command, got {other:?}"),
     }
 
-    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "--all", "popup", "-f"]);
+    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "--all", "tui", "-f"]);
     match cli.command {
-        Some(super::Commands::Popup(mut args)) => {
-            super::commands::merge_popup_args(&mut args, &cli.list_args).unwrap();
+        Some(super::Commands::Tui(mut args)) => {
+            super::commands::merge_tui_args(&mut args, &cli.list_args).unwrap();
             assert!(args.refresh.refresh);
             assert!(args.all);
         }
-        other => panic!("expected popup command, got {other:?}"),
+        other => panic!("expected tui command, got {other:?}"),
     }
 
     let cli =
@@ -89,30 +89,37 @@ fn unsupported_root_list_args_are_rejected_for_other_commands() {
     assert_eq!(cli.list_args.format, OutputFormat::Json);
     assert!(super::commands::reject_root_format(&cli.list_args, "cache path").is_err());
 
-    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "--format", "json", "popup"]);
+    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "--format", "json", "tui"]);
     assert_eq!(cli.list_args.format, OutputFormat::Json);
     match cli.command {
-        Some(super::Commands::Popup(mut args)) => {
-            let error = super::commands::merge_popup_args(&mut args, &cli.list_args).unwrap_err();
+        Some(super::Commands::Tui(mut args)) => {
+            let error = super::commands::merge_tui_args(&mut args, &cli.list_args).unwrap_err();
             assert!(
                 error
                     .to_string()
-                    .contains("`agentscan popup` is interactive-only"),
-                "expected popup guidance, got {error:#}"
+                    .contains("`agentscan tui` is interactive-only"),
+                "expected tui guidance, got {error:#}"
             );
             assert!(
                 error.to_string().contains("`agentscan list --format json`"),
                 "expected list-json migration guidance, got {error:#}"
             );
         }
-        other => panic!("expected popup command, got {other:?}"),
+        other => panic!("expected tui command, got {other:?}"),
     }
 
-    let error = <Cli as clap::Parser>::try_parse_from(["agentscan", "popup", "--format", "json"])
-        .expect_err("popup should reject local --format during clap parsing");
+    let error = <Cli as clap::Parser>::try_parse_from(["agentscan", "tui", "--format", "json"])
+        .expect_err("tui should reject local --format during clap parsing");
     assert!(
         error.to_string().contains("unexpected argument '--format'"),
-        "expected clap parse error for popup-local --format, got {error:#}"
+        "expected clap parse error for tui-local --format, got {error:#}"
+    );
+
+    let error = <Cli as clap::Parser>::try_parse_from(["agentscan", "popup"])
+        .expect_err("popup should not remain as a compatibility alias");
+    assert!(
+        error.to_string().contains("unrecognized subcommand 'popup'"),
+        "expected clap parse error for removed popup command, got {error:#}"
     );
 
     let cli = <Cli as clap::Parser>::parse_from(["agentscan", "-f", "tmux", "set-metadata"]);

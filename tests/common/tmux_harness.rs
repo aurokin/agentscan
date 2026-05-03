@@ -86,7 +86,7 @@ impl TestHarness {
         Ok(output.trim().to_string())
     }
 
-    fn seed_popup_two_pane_cache(&self, root_pane_id: &str, split_pane_id: &str) -> Result<()> {
+    fn seed_tui_two_pane_cache(&self, root_pane_id: &str, split_pane_id: &str) -> Result<()> {
         self.agentscan([
             "tmux",
             "set-metadata",
@@ -278,9 +278,9 @@ impl TestHarness {
             .map(|version| version.to_string()))
     }
 
-    fn start_agentscan_popup_pane(&self, target: &str, extra_args: &[&str]) -> Result<String> {
-        let popup_command = self.agentscan_popup_command(extra_args)?;
-        self.split_window(target, &popup_command)
+    fn start_agentscan_tui_pane(&self, target: &str, extra_args: &[&str]) -> Result<String> {
+        let tui_command = self.agentscan_tui_command(extra_args)?;
+        self.split_window(target, &tui_command)
     }
 
     fn start_agentscan_display_popup(
@@ -295,7 +295,7 @@ impl TestHarness {
         let ready_path = self._tempdir.path().join(format!("{token}.ready"));
         let done_path = self._tempdir.path().join(format!("{token}.done"));
         let stderr_path = self._tempdir.path().join(format!("{token}.stderr.log"));
-        let popup_command =
+        let tui_command =
             self.agentscan_display_popup_command(extra_args, &ready_path, &done_path)?;
         let stderr = fs::File::create(&stderr_path)
             .with_context(|| format!("failed to create {}", stderr_path.display()))?;
@@ -311,7 +311,7 @@ impl TestHarness {
                 "90%",
                 "-h",
                 "24",
-                &popup_command,
+                &tui_command,
             ])
             .stdout(Stdio::null())
             .stderr(Stdio::from(stderr))
@@ -326,9 +326,9 @@ impl TestHarness {
         })
     }
 
-    fn agentscan_popup_command(&self, extra_args: &[&str]) -> Result<String> {
+    fn agentscan_tui_command(&self, extra_args: &[&str]) -> Result<String> {
         let mut command = format!(
-            "TMUX_TMPDIR={} AGENTSCAN_CACHE_PATH={} {} popup",
+            "TMUX_TMPDIR={} AGENTSCAN_CACHE_PATH={} {} tui",
             shell_escape_path(&self.tmux_tmpdir),
             shell_escape_path(&self.cache_path),
             shell_escape_path(&agentscan_bin()?)
@@ -347,7 +347,7 @@ impl TestHarness {
         done_path: &Path,
     ) -> Result<String> {
         let mut command = format!(
-            "TMUX_TMPDIR={} AGENTSCAN_CACHE_PATH={} AGENTSCAN_POPUP_READY_PATH={} AGENTSCAN_POPUP_DONE_PATH={} {} popup",
+            "TMUX_TMPDIR={} AGENTSCAN_CACHE_PATH={} AGENTSCAN_TUI_READY_PATH={} AGENTSCAN_TUI_DONE_PATH={} {} tui",
             shell_escape_path(&self.tmux_tmpdir),
             shell_escape_path(&self.cache_path),
             shell_escape_path(ready_path),
@@ -494,7 +494,7 @@ impl TestHarness {
             }
 
             if Instant::now() >= deadline {
-                bail!("timed out waiting for popup pane {pane_id} to close");
+                bail!("timed out waiting for TUI pane {pane_id} to close");
             }
 
             sleep(POLL_INTERVAL);
@@ -513,7 +513,7 @@ impl TestHarness {
             }
 
             if Instant::now() >= deadline {
-                bail!("timed out waiting for popup pane {pane_id} contents to update");
+                bail!("timed out waiting for TUI pane {pane_id} contents to update");
             }
 
             sleep(POLL_INTERVAL);
@@ -745,7 +745,7 @@ impl DisplayPopupHandle {
 
             if let Some(status) = display_popup_status {
                 bail!(
-                    "tmux display-popup exited with status {status} before popup wrote done marker\nstderr:\n{}",
+                    "tmux display-popup exited with status {status} before TUI wrote done marker\nstderr:\n{}",
                     read_log(&self.stderr_path)
                 );
             }
@@ -770,7 +770,7 @@ impl DisplayPopupHandle {
             .try_wait()
             .context("failed to poll display-popup command")?
         {
-            bail!("display-popup command exited before popup was ready with status {status}");
+            bail!("display-popup command exited before TUI was ready with status {status}");
         }
         Ok(())
     }

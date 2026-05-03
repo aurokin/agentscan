@@ -2,7 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::*;
 
-pub(super) enum PopupLoopAction {
+pub(super) enum TuiLoopAction {
     Continue,
     Redraw,
     Close,
@@ -10,41 +10,41 @@ pub(super) enum PopupLoopAction {
 
 pub(super) fn handle_key_event(
     key_event: &KeyEvent,
-    state: &mut PopupState,
-) -> Result<PopupLoopAction> {
-    if is_popup_close_key(key_event) {
-        return Ok(PopupLoopAction::Close);
+    state: &mut TuiState,
+) -> Result<TuiLoopAction> {
+    if is_tui_close_key(key_event) {
+        return Ok(TuiLoopAction::Close);
     }
 
     if key_event.modifiers.contains(KeyModifiers::CONTROL)
         && matches!(key_event.code, KeyCode::Char('b') | KeyCode::Char('B'))
     {
         tmux::switch_tmux_client_to_prefix(None)?;
-        return Ok(PopupLoopAction::Continue);
+        return Ok(TuiLoopAction::Continue);
     }
 
-    if is_popup_previous_page_key(key_event) {
+    if is_tui_previous_page_key(key_event) {
         return Ok(if state.previous_page() {
-            PopupLoopAction::Redraw
+            TuiLoopAction::Redraw
         } else {
-            PopupLoopAction::Continue
+            TuiLoopAction::Continue
         });
     }
 
-    if is_popup_next_page_key(key_event) {
+    if is_tui_next_page_key(key_event) {
         return Ok(if state.next_page() {
-            PopupLoopAction::Redraw
+            TuiLoopAction::Redraw
         } else {
-            PopupLoopAction::Continue
+            TuiLoopAction::Continue
         });
     }
 
-    let Some(selection) = popup_selection_from_key_event(key_event) else {
-        return Ok(PopupLoopAction::Continue);
+    let Some(selection) = tui_selection_from_key_event(key_event) else {
+        return Ok(TuiLoopAction::Continue);
     };
 
     let Some(target_pane_id) = state.key_targets.get(&selection) else {
-        return Ok(PopupLoopAction::Continue);
+        return Ok(TuiLoopAction::Continue);
     };
 
     let focus_target = tmux::resolve_focus_target(target_pane_id, None)?;
@@ -65,26 +65,26 @@ pub(super) fn handle_key_event(
         )?;
     }
 
-    Ok(PopupLoopAction::Close)
+    Ok(TuiLoopAction::Close)
 }
 
-fn is_popup_close_key(key_event: &KeyEvent) -> bool {
+fn is_tui_close_key(key_event: &KeyEvent) -> bool {
     matches!(key_event.code, KeyCode::Esc)
         || (key_event.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key_event.code, KeyCode::Char('c') | KeyCode::Char('C')))
 }
 
-fn is_popup_previous_page_key(key_event: &KeyEvent) -> bool {
+fn is_tui_previous_page_key(key_event: &KeyEvent) -> bool {
     matches!(key_event.code, KeyCode::Left | KeyCode::PageUp)
         || matches!(key_event.code, KeyCode::Char('p' | 'P'))
 }
 
-fn is_popup_next_page_key(key_event: &KeyEvent) -> bool {
+fn is_tui_next_page_key(key_event: &KeyEvent) -> bool {
     matches!(key_event.code, KeyCode::Right | KeyCode::PageDown)
         || matches!(key_event.code, KeyCode::Char('n' | 'N'))
 }
 
-fn popup_selection_from_key_event(key_event: &KeyEvent) -> Option<char> {
+fn tui_selection_from_key_event(key_event: &KeyEvent) -> Option<char> {
     match key_event.code {
         KeyCode::Char(character) => Some(character.to_ascii_uppercase()),
         _ => None,

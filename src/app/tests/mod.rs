@@ -33,5 +33,5 @@ use super::{
 include!("support.rs");
 include!("classification.rs");
 include!("tmux_cache.rs");
-include!("popup.rs");
+include!("tui.rs");
 include!("cli.rs");

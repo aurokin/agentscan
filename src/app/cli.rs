@@ -18,8 +18,8 @@ pub(crate) enum Commands {
     Scan(ListArgs),
     /// List panes using the best available state source.
     List(ListArgs),
-    /// Open the interactive tmux popup UI. `popup` is interactive-only; use `list --format json` for automation.
-    Popup(PopupArgs),
+    /// Open the interactive TUI. `tui` is interactive-only; use `list --format json` for automation.
+    Tui(TuiArgs),
     /// Inspect one pane by pane id.
     Inspect(InspectArgs),
     /// Focus a pane by pane id.
@@ -73,7 +73,7 @@ pub(crate) struct FocusArgs {
 }
 
 #[derive(Args, Debug)]
-pub(crate) struct PopupArgs {
+pub(crate) struct TuiArgs {
     #[command(flatten)]
     pub(crate) refresh: RefreshArgs,
 

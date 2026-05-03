@@ -27,7 +27,7 @@ cases like `%600` are defined in `docs/integration.md`.
 - Command and title classification should stay conservative.
 - `/proc` fallback candidates must run only after tmux metadata, command, and
   title evidence fail.
-- Broad `ps` scans, repeated `capture-pane` loops, and popup-time scraping stay
+- Broad `ps` scans, repeated `capture-pane` loops, and interactive-launch-time scraping stay
   out of bounds.
 - Cases that cannot be resolved with specific evidence should remain
   `unknown`.

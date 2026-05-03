@@ -15,10 +15,10 @@ pub fn pane_records_from_rows(rows: BenchPaneRows) -> BenchPaneRecords {
     BenchPaneRecords(rows.0.into_iter().map(classify::pane_from_row).collect())
 }
 
-pub fn popup_rendered_row_count(records: &BenchPaneRecords) -> usize {
+pub fn tui_rendered_row_count(records: &BenchPaneRecords) -> usize {
     let mut key_targets = BTreeMap::new();
-    popup::synchronize_key_targets(&mut key_targets, &records.0);
-    popup::render_rows(&records.0, &key_targets).len()
+    tui::synchronize_key_targets(&mut key_targets, &records.0);
+    tui::render_rows(&records.0, &key_targets).len()
 }
 
 pub fn deserialize_snapshot_pane_count(input: &str) -> Result<usize> {

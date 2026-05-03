@@ -1,4 +1,4 @@
-fn popup_test_pane(pane_index: u32) -> PaneRecord {
+fn tui_test_pane(pane_index: u32) -> PaneRecord {
     classify::pane_from_row(super::TmuxPaneRow {
         session_name: "alpha".to_string(),
         window_index: 1,
@@ -25,7 +25,7 @@ fn popup_test_pane(pane_index: u32) -> PaneRecord {
 }
 
 #[test]
-fn popup_render_rows_include_location_status_and_key_labels() {
+fn tui_render_rows_include_location_status_and_key_labels() {
     let pane = classify::pane_from_row(super::TmuxPaneRow {
         session_name: "notes".to_string(),
         window_index: 4,
@@ -47,9 +47,9 @@ fn popup_render_rows_include_location_status_and_key_labels() {
     });
 
     let mut key_targets = std::collections::BTreeMap::new();
-    super::popup::synchronize_key_targets(&mut key_targets, std::slice::from_ref(&pane));
+    super::tui::synchronize_key_targets(&mut key_targets, std::slice::from_ref(&pane));
 
-    let lines = super::popup::render_rows(&[pane], &key_targets);
+    let lines = super::tui::render_rows(&[pane], &key_targets);
     assert_eq!(lines, vec!["[1] 🟡 \u{e76f} notes:4.1 - Working"]);
 }
 
@@ -87,7 +87,7 @@ fn provider_display_marker_uses_compact_markers_for_codex_and_claude() {
 }
 
 #[test]
-fn popup_render_rows_respect_terminal_cell_width_with_wide_status_emoji() {
+fn tui_render_rows_respect_terminal_cell_width_with_wide_status_emoji() {
     let pane = classify::pane_from_row(super::TmuxPaneRow {
         session_name: "notes".to_string(),
         window_index: 4,
@@ -109,10 +109,10 @@ fn popup_render_rows_respect_terminal_cell_width_with_wide_status_emoji() {
     });
 
     let mut key_targets = std::collections::BTreeMap::new();
-    super::popup::synchronize_key_targets(&mut key_targets, std::slice::from_ref(&pane));
+    super::tui::synchronize_key_targets(&mut key_targets, std::slice::from_ref(&pane));
 
     let width = 28;
-    let lines = super::popup::render_rows_for_width(&[pane], &key_targets, width);
+    let lines = super::tui::render_rows_for_width(&[pane], &key_targets, width);
 
     assert_eq!(lines.len(), 1);
     assert!(lines[0].ends_with('…'));
@@ -120,7 +120,7 @@ fn popup_render_rows_respect_terminal_cell_width_with_wide_status_emoji() {
 }
 
 #[test]
-fn popup_render_rows_sanitize_control_characters_and_escape_sequences() {
+fn tui_render_rows_sanitize_control_characters_and_escape_sequences() {
     let pane = classify::pane_from_row(super::TmuxPaneRow {
         session_name: "notes".to_string(),
         window_index: 4,
@@ -142,9 +142,9 @@ fn popup_render_rows_sanitize_control_characters_and_escape_sequences() {
     });
 
     let mut key_targets = std::collections::BTreeMap::new();
-    super::popup::synchronize_key_targets(&mut key_targets, std::slice::from_ref(&pane));
+    super::tui::synchronize_key_targets(&mut key_targets, std::slice::from_ref(&pane));
 
-    let lines = super::popup::render_rows(&[pane], &key_targets);
+    let lines = super::tui::render_rows(&[pane], &key_targets);
     assert_eq!(
         lines,
         vec!["[1] 🟡 \u{e76f} notes:4.1 - Task next step now"]
@@ -152,7 +152,7 @@ fn popup_render_rows_sanitize_control_characters_and_escape_sequences() {
 }
 
 #[test]
-fn popup_key_assignments_stay_stable_across_rerenders() {
+fn tui_key_assignments_stay_stable_across_rerenders() {
     let pane_one = classify::pane_from_row(super::TmuxPaneRow {
         session_name: "alpha".to_string(),
         window_index: 1,
@@ -212,7 +212,7 @@ fn popup_key_assignments_stay_stable_across_rerenders() {
     });
 
     let mut key_targets = std::collections::BTreeMap::new();
-    super::popup::synchronize_key_targets(
+    super::tui::synchronize_key_targets(
         &mut key_targets,
         &[pane_one.clone(), pane_two.clone(), pane_three.clone()],
     );
@@ -220,52 +220,52 @@ fn popup_key_assignments_stay_stable_across_rerenders() {
     assert_eq!(key_targets.get(&'2').map(String::as_str), Some("%2"));
     assert_eq!(key_targets.get(&'3').map(String::as_str), Some("%3"));
 
-    super::popup::synchronize_key_targets(
+    super::tui::synchronize_key_targets(
         &mut key_targets,
         &[pane_one.clone(), pane_three.clone()],
     );
     assert_eq!(key_targets.get(&'1').map(String::as_str), Some("%1"));
     assert_eq!(key_targets.get(&'3').map(String::as_str), Some("%3"));
 
-    super::popup::synchronize_key_targets(&mut key_targets, &[pane_three, pane_two]);
+    super::tui::synchronize_key_targets(&mut key_targets, &[pane_three, pane_two]);
     assert_eq!(key_targets.get(&'3').map(String::as_str), Some("%3"));
     assert_eq!(key_targets.get(&'1').map(String::as_str), Some("%2"));
 }
 
 #[test]
-fn popup_error_frame_includes_recovery_guidance() {
-    let lines = super::popup::render_error_frame("failed to read cache");
-    assert_eq!(lines[0], "agentscan popup unavailable");
-    assert!(lines.iter().any(|line| line.contains("popup --refresh")));
+fn tui_error_frame_includes_recovery_guidance() {
+    let lines = super::tui::render_error_frame("failed to read cache");
+    assert_eq!(lines[0], "agentscan tui unavailable");
+    assert!(lines.iter().any(|line| line.contains("tui --refresh")));
     assert!(lines.iter().any(|line| line.contains("Esc or Ctrl-C")));
     assert!(lines.iter().any(|line| line.contains("daemon run")));
 }
 
 #[test]
-fn popup_session_order_appends_new_panes_without_reshuffling_existing_rows() {
-    let current_order = vec![popup_test_pane(1), popup_test_pane(2), popup_test_pane(3)];
+fn tui_session_order_appends_new_panes_without_reshuffling_existing_rows() {
+    let current_order = vec![tui_test_pane(1), tui_test_pane(2), tui_test_pane(3)];
     let updated = vec![
-        popup_test_pane(3),
-        popup_test_pane(2),
-        popup_test_pane(4),
-        popup_test_pane(1),
+        tui_test_pane(3),
+        tui_test_pane(2),
+        tui_test_pane(4),
+        tui_test_pane(1),
     ];
 
-    let merged = super::popup::merge_popup_session_panes(&current_order, updated);
+    let merged = super::tui::merge_tui_session_panes(&current_order, updated);
     let merged_ids: Vec<_> = merged.iter().map(|pane| pane.pane_id.as_str()).collect();
 
     assert_eq!(merged_ids, vec!["%1", "%2", "%3", "%4"]);
 }
 
 #[test]
-fn popup_frame_paginates_and_limits_selection_to_visible_rows() {
-    let panes = (1..=18).map(popup_test_pane).collect::<Vec<_>>();
-    let mut state = super::popup::PopupState::default();
+fn tui_frame_paginates_and_limits_selection_to_visible_rows() {
+    let panes = (1..=18).map(tui_test_pane).collect::<Vec<_>>();
+    let mut state = super::tui::TuiState::default();
     state.replace_panes(panes);
 
-    let frame = super::popup::render_popup_frame_for_size(
+    let frame = super::tui::render_tui_frame_for_size(
         &mut state,
-        super::popup::PopupTerminalSize {
+        super::tui::TuiTerminalSize {
             width: 120,
             height: 24,
         },
@@ -282,26 +282,26 @@ fn popup_frame_paginates_and_limits_selection_to_visible_rows() {
 }
 
 #[test]
-fn popup_frame_clamps_to_last_non_empty_page_after_cache_removal() {
-    let panes = (1..=18).map(popup_test_pane).collect::<Vec<_>>();
-    let mut state = super::popup::PopupState::default();
+fn tui_frame_clamps_to_last_non_empty_page_after_cache_removal() {
+    let panes = (1..=18).map(tui_test_pane).collect::<Vec<_>>();
+    let mut state = super::tui::TuiState::default();
     state.replace_panes(panes);
 
-    let full_height = super::popup::PopupTerminalSize {
+    let full_height = super::tui::TuiTerminalSize {
         width: 120,
         height: 24,
     };
-    let first_frame = super::popup::render_popup_frame_for_size(&mut state, full_height);
+    let first_frame = super::tui::render_tui_frame_for_size(&mut state, full_height);
     assert_eq!(first_frame.page_size, 16);
     assert!(state.next_page());
 
-    let second_page_frame = super::popup::render_popup_frame_for_size(&mut state, full_height);
+    let second_page_frame = super::tui::render_tui_frame_for_size(&mut state, full_height);
     assert_eq!(second_page_frame.page_start, 16);
     assert_eq!(second_page_frame.visible_pane_ids, vec!["%17", "%18"]);
 
-    state.replace_panes((1..=10).map(popup_test_pane).collect());
+    state.replace_panes((1..=10).map(tui_test_pane).collect());
 
-    let clamped_frame = super::popup::render_popup_frame_for_size(&mut state, full_height);
+    let clamped_frame = super::tui::render_tui_frame_for_size(&mut state, full_height);
     assert_eq!(clamped_frame.page_start, 0);
     assert_eq!(clamped_frame.page_count, 1);
     assert_eq!(clamped_frame.visible_pane_ids[0], "%1");
@@ -314,25 +314,25 @@ fn popup_frame_clamps_to_last_non_empty_page_after_cache_removal() {
 }
 
 #[test]
-fn popup_refresh_keeps_first_surviving_visible_pane_in_view() {
-    let panes = (1..=18).map(popup_test_pane).collect::<Vec<_>>();
-    let mut state = super::popup::PopupState::default();
+fn tui_refresh_keeps_first_surviving_visible_pane_in_view() {
+    let panes = (1..=18).map(tui_test_pane).collect::<Vec<_>>();
+    let mut state = super::tui::TuiState::default();
     state.replace_panes(panes);
 
-    let full_height = super::popup::PopupTerminalSize {
+    let full_height = super::tui::TuiTerminalSize {
         width: 120,
         height: 24,
     };
-    let first_frame = super::popup::render_popup_frame_for_size(&mut state, full_height);
+    let first_frame = super::tui::render_tui_frame_for_size(&mut state, full_height);
     assert_eq!(first_frame.page_size, 16);
     assert!(state.next_page());
 
-    let second_page_frame = super::popup::render_popup_frame_for_size(&mut state, full_height);
+    let second_page_frame = super::tui::render_tui_frame_for_size(&mut state, full_height);
     assert_eq!(second_page_frame.visible_pane_ids, vec!["%17", "%18"]);
 
-    state.replace_panes((2..=18).map(popup_test_pane).collect());
+    state.replace_panes((2..=18).map(tui_test_pane).collect());
 
-    let anchored_frame = super::popup::render_popup_frame_for_size(&mut state, full_height);
+    let anchored_frame = super::tui::render_tui_frame_for_size(&mut state, full_height);
     assert_eq!(anchored_frame.page_start, 15);
     assert_eq!(anchored_frame.visible_pane_ids, vec!["%17", "%18"]);
     assert!(
@@ -344,46 +344,46 @@ fn popup_refresh_keeps_first_surviving_visible_pane_in_view() {
 }
 
 #[test]
-fn popup_refresh_reanchors_against_merged_pane_order() {
-    let panes = (1..=18).map(popup_test_pane).collect::<Vec<_>>();
-    let mut state = super::popup::PopupState::default();
+fn tui_refresh_reanchors_against_merged_pane_order() {
+    let panes = (1..=18).map(tui_test_pane).collect::<Vec<_>>();
+    let mut state = super::tui::TuiState::default();
     state.replace_panes(panes);
 
-    let full_height = super::popup::PopupTerminalSize {
+    let full_height = super::tui::TuiTerminalSize {
         width: 120,
         height: 24,
     };
-    let first_frame = super::popup::render_popup_frame_for_size(&mut state, full_height);
+    let first_frame = super::tui::render_tui_frame_for_size(&mut state, full_height);
     assert_eq!(first_frame.page_size, 16);
     assert!(state.next_page());
 
-    let second_page_frame = super::popup::render_popup_frame_for_size(&mut state, full_height);
+    let second_page_frame = super::tui::render_tui_frame_for_size(&mut state, full_height);
     assert_eq!(second_page_frame.page_start, 16);
     assert_eq!(second_page_frame.visible_pane_ids, vec!["%17", "%18"]);
 
     state.replace_panes(vec![
-        popup_test_pane(1),
-        popup_test_pane(2),
-        popup_test_pane(3),
-        popup_test_pane(19),
-        popup_test_pane(4),
-        popup_test_pane(5),
-        popup_test_pane(6),
-        popup_test_pane(7),
-        popup_test_pane(8),
-        popup_test_pane(9),
-        popup_test_pane(10),
-        popup_test_pane(11),
-        popup_test_pane(12),
-        popup_test_pane(13),
-        popup_test_pane(14),
-        popup_test_pane(15),
-        popup_test_pane(16),
-        popup_test_pane(17),
-        popup_test_pane(18),
+        tui_test_pane(1),
+        tui_test_pane(2),
+        tui_test_pane(3),
+        tui_test_pane(19),
+        tui_test_pane(4),
+        tui_test_pane(5),
+        tui_test_pane(6),
+        tui_test_pane(7),
+        tui_test_pane(8),
+        tui_test_pane(9),
+        tui_test_pane(10),
+        tui_test_pane(11),
+        tui_test_pane(12),
+        tui_test_pane(13),
+        tui_test_pane(14),
+        tui_test_pane(15),
+        tui_test_pane(16),
+        tui_test_pane(17),
+        tui_test_pane(18),
     ]);
 
-    let anchored_frame = super::popup::render_popup_frame_for_size(&mut state, full_height);
+    let anchored_frame = super::tui::render_tui_frame_for_size(&mut state, full_height);
     assert_eq!(anchored_frame.page_start, 16);
     assert_eq!(anchored_frame.visible_pane_ids, vec!["%17", "%18", "%19"]);
     assert!(
@@ -395,14 +395,14 @@ fn popup_refresh_reanchors_against_merged_pane_order() {
 }
 
 #[test]
-fn popup_resize_keeps_visible_keys_stable_for_rows_that_remain_visible() {
-    let panes = (1..=8).map(popup_test_pane).collect::<Vec<_>>();
-    let mut state = super::popup::PopupState::default();
+fn tui_resize_keeps_visible_keys_stable_for_rows_that_remain_visible() {
+    let panes = (1..=8).map(tui_test_pane).collect::<Vec<_>>();
+    let mut state = super::tui::TuiState::default();
     state.replace_panes(panes);
 
-    let tall_frame = super::popup::render_popup_frame_for_size(
+    let tall_frame = super::tui::render_tui_frame_for_size(
         &mut state,
-        super::popup::PopupTerminalSize {
+        super::tui::TuiTerminalSize {
             width: 120,
             height: 6,
         },
@@ -413,9 +413,9 @@ fn popup_resize_keeps_visible_keys_stable_for_rows_that_remain_visible() {
     assert!(tall_frame.lines[2].starts_with("[3]"));
     assert!(tall_frame.lines[3].starts_with("[4]"));
 
-    let short_frame = super::popup::render_popup_frame_for_size(
+    let short_frame = super::tui::render_tui_frame_for_size(
         &mut state,
-        super::popup::PopupTerminalSize {
+        super::tui::TuiTerminalSize {
             width: 120,
             height: 5,
         },
@@ -433,13 +433,13 @@ fn popup_resize_keeps_visible_keys_stable_for_rows_that_remain_visible() {
 }
 
 #[test]
-fn popup_small_viewport_renders_undersized_frame() {
-    let mut state = super::popup::PopupState::default();
-    state.replace_panes(vec![popup_test_pane(1)]);
+fn tui_small_viewport_renders_undersized_frame() {
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes(vec![tui_test_pane(1)]);
 
-    let frame = super::popup::render_popup_frame_for_size(
+    let frame = super::tui::render_tui_frame_for_size(
         &mut state,
-        super::popup::PopupTerminalSize {
+        super::tui::TuiTerminalSize {
             width: 40,
             height: 2,
         },
@@ -450,19 +450,19 @@ fn popup_small_viewport_renders_undersized_frame() {
         frame
             .lines
             .iter()
-            .any(|line| line.contains("Popup too small"))
+            .any(|line| line.contains("TUI too small"))
     );
 }
 
 #[test]
-fn popup_frame_lines_stay_within_terminal_width() {
-    let panes = vec![popup_test_pane(1), popup_test_pane(2), popup_test_pane(3)];
-    let mut state = super::popup::PopupState::default();
+fn tui_frame_lines_stay_within_terminal_width() {
+    let panes = vec![tui_test_pane(1), tui_test_pane(2), tui_test_pane(3)];
+    let mut state = super::tui::TuiState::default();
     state.replace_panes(panes);
 
-    let frame = super::popup::render_popup_frame_for_size(
+    let frame = super::tui::render_tui_frame_for_size(
         &mut state,
-        super::popup::PopupTerminalSize {
+        super::tui::TuiTerminalSize {
             width: 24,
             height: 5,
         },
@@ -478,14 +478,14 @@ fn popup_frame_lines_stay_within_terminal_width() {
 }
 
 #[test]
-fn popup_frame_writer_avoids_newlines_for_full_height_frames() {
-    let panes = (1..=16).map(popup_test_pane).collect::<Vec<_>>();
-    let mut state = super::popup::PopupState::default();
+fn tui_frame_writer_avoids_newlines_for_full_height_frames() {
+    let panes = (1..=16).map(tui_test_pane).collect::<Vec<_>>();
+    let mut state = super::tui::TuiState::default();
     state.replace_panes(panes);
 
-    let frame = super::popup::render_popup_frame_for_size(
+    let frame = super::tui::render_tui_frame_for_size(
         &mut state,
-        super::popup::PopupTerminalSize {
+        super::tui::TuiTerminalSize {
             width: 120,
             height: 18,
         },
@@ -493,7 +493,7 @@ fn popup_frame_writer_avoids_newlines_for_full_height_frames() {
     assert_eq!(frame.lines.len(), 18);
 
     let mut rendered = Vec::new();
-    super::popup::write_popup_frame(&mut rendered, &frame).expect("frame should serialize");
+    super::tui::write_tui_frame(&mut rendered, &frame).expect("frame should serialize");
     let rendered = String::from_utf8(rendered).expect("frame output should be utf-8");
 
     assert!(rendered.contains("Task 01"));
@@ -501,7 +501,7 @@ fn popup_frame_writer_avoids_newlines_for_full_height_frames() {
 }
 
 #[test]
-fn popup_frame_writer_sanitizes_tmux_controlled_labels() {
+fn tui_frame_writer_sanitizes_tmux_controlled_labels() {
     let pane = classify::pane_from_row(super::TmuxPaneRow {
         session_name: "notes".to_string(),
         window_index: 4,
@@ -521,12 +521,12 @@ fn popup_frame_writer_sanitizes_tmux_controlled_labels() {
         agent_state: None,
         agent_session_id: None,
     });
-    let mut state = super::popup::PopupState::default();
+    let mut state = super::tui::TuiState::default();
     state.replace_panes(vec![pane]);
 
-    let frame = super::popup::render_popup_frame_for_size(
+    let frame = super::tui::render_tui_frame_for_size(
         &mut state,
-        super::popup::PopupTerminalSize {
+        super::tui::TuiTerminalSize {
             width: 120,
             height: 3,
         },
@@ -535,7 +535,7 @@ fn popup_frame_writer_sanitizes_tmux_controlled_labels() {
     assert!(!frame.lines[0].contains(['\n', '\r', '\t', '\u{1b}']));
 
     let mut rendered = Vec::new();
-    super::popup::write_popup_frame(&mut rendered, &frame).expect("frame should serialize");
+    super::tui::write_tui_frame(&mut rendered, &frame).expect("frame should serialize");
     let rendered = String::from_utf8(rendered).expect("frame output should be utf-8");
 
     assert!(rendered.contains("Task next step"));

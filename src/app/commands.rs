@@ -13,9 +13,9 @@ pub fn run() -> Result<()> {
             merge_list_args(&mut args, &root_list_args);
             command_list(&args)
         }
-        Some(Commands::Popup(mut args)) => {
-            merge_popup_args(&mut args, &root_list_args)?;
-            command_popup(&args)
+        Some(Commands::Tui(mut args)) => {
+            merge_tui_args(&mut args, &root_list_args)?;
+            command_tui(&args)
         }
         Some(Commands::Inspect(mut args)) => {
             merge_inspect_args(&mut args, &root_list_args)?;
@@ -61,8 +61,8 @@ pub(super) fn merge_focus_args(args: &mut FocusArgs, root_list_args: &ListArgs) 
     Ok(())
 }
 
-pub(super) fn merge_popup_args(args: &mut PopupArgs, root_list_args: &ListArgs) -> Result<()> {
-    reject_popup_format(root_list_args)?;
+pub(super) fn merge_tui_args(args: &mut TuiArgs, root_list_args: &ListArgs) -> Result<()> {
+    reject_tui_format(root_list_args)?;
     args.refresh.refresh |= root_list_args.refresh.refresh;
     args.all |= root_list_args.all;
 
@@ -99,10 +99,10 @@ pub(super) fn reject_root_format(root_list_args: &ListArgs, command_name: &str) 
     Ok(())
 }
 
-pub(super) fn reject_popup_format(root_list_args: &ListArgs) -> Result<()> {
+pub(super) fn reject_tui_format(root_list_args: &ListArgs) -> Result<()> {
     if root_list_args.format != OutputFormat::Text {
         bail!(
-            "`agentscan popup` is interactive-only and does not support `--format`; use `agentscan list --format json` for supported machine-readable output or `agentscan cache show --format json` for the raw cached snapshot"
+            "`agentscan tui` is interactive-only and does not support `--format`; use `agentscan list --format json` for supported machine-readable output or `agentscan cache show --format json` for the raw cached snapshot"
         );
     }
 
@@ -145,8 +145,8 @@ fn emit_filtered_snapshot(
     output::emit_snapshot(&snapshot, format)
 }
 
-fn command_popup(args: &PopupArgs) -> Result<()> {
-    popup::run(args)
+fn command_tui(args: &TuiArgs) -> Result<()> {
+    tui::run(args)
 }
 
 fn command_inspect(args: &InspectArgs) -> Result<()> {

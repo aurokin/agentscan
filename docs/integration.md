@@ -14,10 +14,10 @@ Machine-readable consumers should use:
 
 `agentscan tui` is interactive-only. It must not become a TUI-shaped JSON or TSV
 surface, and unsupported formatting requests must not become compatibility
-shims. During the command rename, the same rule applies to the legacy
-`agentscan popup` name. Root-level `--format` routed to the interactive command
-should continue to fail with migration guidance rather than rendering
-machine-readable UI output.
+shims. The legacy `agentscan popup` command is removed rather than kept as an
+alias. Root-level `--format` routed to the interactive command should continue
+to fail with migration guidance rather than rendering machine-readable UI
+output.
 
 Migration targets:
 
@@ -184,7 +184,7 @@ Shell remains responsible for:
 
 - aliases and ergonomics in user dotfiles
 - provider launch wrappers
-- tmux key bindings and TUI/popup entrypoints
+- tmux key bindings and TUI entrypoints
 - choosing when to invoke `agentscan list`, `agentscan focus`, or `agentscan tui` in a user workflow
 
 Shell should not remain responsible for:
@@ -206,7 +206,7 @@ Host-specific dotfiles can migrate incrementally. During migration, shell code
 should switch parsing consumers to `agentscan list --format json` or `agentscan
 snapshot --format json` and keep `tui` limited to interactive tmux flows.
 
-The repo-local tmux popup invocation for local testing is:
+The repo-local tmux `display-popup` invocation for local testing is:
 
 ```sh
 tmux display-popup -E "$PWD/target/debug/agentscan" tui

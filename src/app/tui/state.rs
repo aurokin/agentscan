@@ -2,25 +2,25 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use super::*;
 
-pub(super) const POPUP_SELECTION_KEYS: [char; 16] = [
+pub(super) const TUI_SELECTION_KEYS: [char; 16] = [
     '1', '2', '3', '4', '5', 'Q', 'E', 'R', 'F', 'G', 'T', 'Z', 'X', 'C', 'V', 'B',
 ];
 
 const FOOTER_LINE_COUNT: usize = 2;
-const MIN_SELECTABLE_POPUP_HEIGHT: usize = FOOTER_LINE_COUNT + 1;
+const MIN_SELECTABLE_TUI_HEIGHT: usize = FOOTER_LINE_COUNT + 1;
 
 #[derive(Debug, Default)]
-pub(crate) struct PopupState {
+pub(crate) struct TuiState {
     pub(super) key_targets: BTreeMap<char, String>,
     pub(super) panes: Vec<PaneRecord>,
     pub(super) error_message: Option<String>,
     pub(super) page_start: usize,
-    last_terminal_size: Option<PopupTerminalSize>,
+    last_terminal_size: Option<TuiTerminalSize>,
 }
 
-impl PopupState {
+impl TuiState {
     pub(crate) fn replace_panes(&mut self, panes: Vec<PaneRecord>) {
-        let merged_panes = merge_popup_session_panes(&self.panes, panes);
+        let merged_panes = merge_tui_session_panes(&self.panes, panes);
         let page_start = reanchor_page_start(
             &self.panes,
             &merged_panes,
@@ -39,7 +39,7 @@ impl PopupState {
         self.error_message = Some(message);
     }
 
-    pub(super) fn set_terminal_size(&mut self, terminal_size: PopupTerminalSize) {
+    pub(super) fn set_terminal_size(&mut self, terminal_size: TuiTerminalSize) {
         self.last_terminal_size = Some(terminal_size);
     }
 
@@ -110,7 +110,7 @@ fn reanchor_page_start(
     previous_page_start.min(last_non_empty_page_start(updated_panes.len(), page_size))
 }
 
-pub(crate) fn merge_popup_session_panes(
+pub(crate) fn merge_tui_session_panes(
     current_order: &[PaneRecord],
     updated_panes: Vec<PaneRecord>,
 ) -> Vec<PaneRecord> {
@@ -144,7 +144,7 @@ pub(crate) fn synchronize_key_targets(
     key_targets.retain(|_, pane_id| present_pane_ids.contains(pane_id.as_str()));
 
     let mut assigned_pane_ids: HashSet<String> = key_targets.values().cloned().collect();
-    let free_keys: Vec<char> = POPUP_SELECTION_KEYS
+    let free_keys: Vec<char> = TUI_SELECTION_KEYS
         .iter()
         .copied()
         .filter(|key| !key_targets.contains_key(key))
@@ -163,15 +163,15 @@ pub(crate) fn synchronize_key_targets(
     }
 }
 
-pub(super) fn page_size_for_terminal(terminal_size: PopupTerminalSize) -> usize {
+pub(super) fn page_size_for_terminal(terminal_size: TuiTerminalSize) -> usize {
     let available_height = usize::from(terminal_size.height);
-    if available_height < MIN_SELECTABLE_POPUP_HEIGHT {
+    if available_height < MIN_SELECTABLE_TUI_HEIGHT {
         return 0;
     }
 
     available_height
         .saturating_sub(FOOTER_LINE_COUNT)
-        .min(POPUP_SELECTION_KEYS.len())
+        .min(TUI_SELECTION_KEYS.len())
 }
 
 pub(super) fn page_count(total_panes: usize, page_size: usize) -> usize {

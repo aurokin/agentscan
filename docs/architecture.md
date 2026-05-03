@@ -34,7 +34,7 @@ Detection follows a strict precedence ladder:
    provider identity has already been established
 
 The steady-state path must stay tmux-first. Broad `ps` scans, repeated
-`capture-pane` loops, and popup-time scraping are out of bounds.
+`capture-pane` loops, and interactive-launch-time scraping are out of bounds.
 
 Pane output is not a provider-identity source. It is a last status fallback for
 providers with observed stable current prompt/footer shapes. Consumers can see
