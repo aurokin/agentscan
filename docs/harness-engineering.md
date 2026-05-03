@@ -43,6 +43,25 @@ The repo already uses multiple harnesses to validate behavior:
 These harnesses should be documented in terms of the contract they protect, not
 as checklists for an active milestone.
 
+## Tmux Server Isolation
+
+Live tmux integration tests must run against their own isolated tmux server, not
+the user's default server. Direct harness tmux commands should target the
+temporary server with `tmux -S <socket>`, remove inherited `TMUX`, and keep
+`TMUX_TMPDIR` inside the harness temp directory.
+
+`agentscan` subprocesses launched by the harness must also receive
+`AGENTSCAN_TMUX_SOCKET=<socket>`. When this variable is set, `agentscan` runs its
+own tmux subprocesses through `tmux -S <socket>` and removes inherited `TMUX`
+from those child commands. This protects destructive fixture operations such as
+`kill-server`, `kill-session`, and `kill-window` from drifting onto the default
+tmux server.
+
+The integration suite should keep a guard test that poisons the default
+`TMUX_TMPDIR` and asserts `agentscan scan --all --format json` still reads from
+the harness server. If that test starts reading the poisoned/default server, the
+suite should fail before any destructive tmux fixture can run.
+
 ## Quality Baseline
 
 The current baseline remains:

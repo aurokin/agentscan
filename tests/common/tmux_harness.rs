@@ -9,6 +9,8 @@ struct TestHarness {
     display_popup_launch_count: AtomicUsize,
 }
 
+const AGENTSCAN_TMUX_SOCKET_ENV_VAR: &str = "AGENTSCAN_TMUX_SOCKET";
+
 impl TestHarness {
     fn new() -> Result<Self> {
         let tempdir = tempfile::tempdir().context("failed to create tempdir")?;
@@ -128,6 +130,7 @@ impl TestHarness {
             .args(["daemon", "run"])
             .env_remove("TMUX")
             .env("TMUX_TMPDIR", &self.tmux_tmpdir)
+            .env(AGENTSCAN_TMUX_SOCKET_ENV_VAR, &self.tmux_socket_path)
             .env("AGENTSCAN_CACHE_PATH", &self.cache_path)
             .env("AGENTSCAN_SOCKET_PATH", &self.agentscan_socket_path)
             .stdout(Stdio::from(stdout))
@@ -198,11 +201,7 @@ impl TestHarness {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let mut command = Command::new(agentscan_bin()?);
-        command.env_remove("TMUX");
-        command.env("TMUX_TMPDIR", &self.tmux_tmpdir);
-        command.env("AGENTSCAN_CACHE_PATH", &self.cache_path);
-        command.env("AGENTSCAN_SOCKET_PATH", &self.agentscan_socket_path);
+        let mut command = self.agentscan_command()?;
         for arg in args {
             command.arg(arg.as_ref());
         }
@@ -216,6 +215,38 @@ impl TestHarness {
         }
 
         Ok(())
+    }
+
+    fn agentscan_output_with_tmux_tmpdir<I, S>(&self, args: I, tmux_tmpdir: &Path) -> Result<String>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut command = self.agentscan_command()?;
+        command.env("TMUX_TMPDIR", tmux_tmpdir);
+        for arg in args {
+            command.arg(arg.as_ref());
+        }
+
+        let output = command
+            .output()
+            .context("failed to execute agentscan command")?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("agentscan command failed: {}", stderr.trim());
+        }
+
+        String::from_utf8(output.stdout).context("agentscan output was not valid UTF-8")
+    }
+
+    fn agentscan_command(&self) -> Result<Command> {
+        let mut command = Command::new(agentscan_bin()?);
+        command.env_remove("TMUX");
+        command.env("TMUX_TMPDIR", &self.tmux_tmpdir);
+        command.env(AGENTSCAN_TMUX_SOCKET_ENV_VAR, &self.tmux_socket_path);
+        command.env("AGENTSCAN_CACHE_PATH", &self.cache_path);
+        command.env("AGENTSCAN_SOCKET_PATH", &self.agentscan_socket_path);
+        Ok(command)
     }
 
     fn tmux<I, S>(&self, args: I) -> Result<()>
@@ -334,8 +365,9 @@ impl TestHarness {
 
     fn agentscan_tui_command(&self, extra_args: &[&str]) -> Result<String> {
         let mut command = format!(
-            "TMUX_TMPDIR={} AGENTSCAN_CACHE_PATH={} AGENTSCAN_SOCKET_PATH={} {} tui",
+            "TMUX_TMPDIR={} AGENTSCAN_TMUX_SOCKET={} AGENTSCAN_CACHE_PATH={} AGENTSCAN_SOCKET_PATH={} {} tui",
             shell_escape_path(&self.tmux_tmpdir),
+            shell_escape_path(&self.tmux_socket_path),
             shell_escape_path(&self.cache_path),
             shell_escape_path(&self.agentscan_socket_path),
             shell_escape_path(&agentscan_bin()?)
@@ -354,8 +386,9 @@ impl TestHarness {
         done_path: &Path,
     ) -> Result<String> {
         let mut command = format!(
-            "TMUX_TMPDIR={} AGENTSCAN_CACHE_PATH={} AGENTSCAN_SOCKET_PATH={} AGENTSCAN_TUI_READY_PATH={} AGENTSCAN_TUI_DONE_PATH={} {} tui",
+            "TMUX_TMPDIR={} AGENTSCAN_TMUX_SOCKET={} AGENTSCAN_CACHE_PATH={} AGENTSCAN_SOCKET_PATH={} AGENTSCAN_TUI_READY_PATH={} AGENTSCAN_TUI_DONE_PATH={} {} tui",
             shell_escape_path(&self.tmux_tmpdir),
+            shell_escape_path(&self.tmux_socket_path),
             shell_escape_path(&self.cache_path),
             shell_escape_path(&self.agentscan_socket_path),
             shell_escape_path(ready_path),

@@ -38,6 +38,7 @@ pub(crate) use provider::*;
 const PANE_DELIM: &str = "\u{001f}";
 const TMUX_FORMAT_DELIM: &str = r"\037";
 const CACHE_ENV_VAR: &str = "AGENTSCAN_CACHE_PATH";
+const TMUX_SOCKET_ENV_VAR: &str = "AGENTSCAN_TMUX_SOCKET";
 const CACHE_RELATIVE_PATH: &str = "agentscan/cache-v1.json";
 const CACHE_SCHEMA_VERSION: u32 = 4;
 static CACHE_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);

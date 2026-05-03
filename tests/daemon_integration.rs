@@ -16,6 +16,30 @@ const DAEMON_TIMEOUT: Duration = Duration::from_secs(40);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 #[test]
+fn agentscan_uses_explicit_test_tmux_socket_when_default_tmux_tmpdir_is_poisoned() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let pane_id = harness.start_session("socket-isolation-guard", "sleep 300")?;
+    let poisoned_default = tempfile::tempdir().context("failed to create poisoned tmux tmpdir")?;
+
+    let stdout = harness.agentscan_output_with_tmux_tmpdir(
+        ["scan", "--all", "--format", "json"],
+        poisoned_default.path(),
+    )?;
+    let snapshot: Value = serde_json::from_str(&stdout).context("scan output was not JSON")?;
+
+    assert!(
+        snapshot["panes"]
+            .as_array()
+            .context("snapshot panes were not an array")?
+            .iter()
+            .any(|pane| pane["pane_id"] == pane_id),
+        "agentscan did not read from the harness tmux socket; scan output was:\n{stdout}"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn daemon_serves_snapshot_over_owned_socket_path() -> Result<()> {
     let harness = TestHarness::new()?;
     let pane_id = harness.start_session("socket-snapshot", "sleep 300")?;

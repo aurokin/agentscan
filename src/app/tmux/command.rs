@@ -1,8 +1,19 @@
 use super::*;
 
 pub(crate) fn tmux_command() -> Command {
+    tmux_command_from_env(|name| env::var_os(name), |name| env::var(name).ok())
+}
+
+fn tmux_command_from_env(
+    read_os: impl Fn(&str) -> Option<std::ffi::OsString>,
+    read_string: impl Fn(&str) -> Option<String>,
+) -> Command {
     let mut command = Command::new("tmux");
-    if !env_has_utf8_locale(|name| env::var(name).ok()) {
+    if let Some(socket_path) = read_os(TMUX_SOCKET_ENV_VAR).filter(|path| !path.is_empty()) {
+        command.arg("-S").arg(socket_path);
+        command.env_remove("TMUX");
+    }
+    if !env_has_utf8_locale(read_string) {
         command.env("LANG", "en_US.UTF-8");
     }
     command
@@ -129,7 +140,9 @@ pub(crate) fn default_session_target() -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::env_has_utf8_locale;
+    use super::{env_has_utf8_locale, tmux_command_from_env};
+    use crate::app::TMUX_SOCKET_ENV_VAR;
+    use std::ffi::OsString;
 
     fn read_from<'a>(entries: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
         move |name| {
@@ -137,6 +150,17 @@ mod tests {
                 .iter()
                 .find(|(key, _)| *key == name)
                 .map(|(_, value)| (*value).to_string())
+        }
+    }
+
+    fn read_os_from<'a>(
+        entries: &'a [(&'a str, &'a str)],
+    ) -> impl Fn(&str) -> Option<OsString> + 'a {
+        move |name| {
+            entries
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| OsString::from(value))
         }
     }
 
@@ -208,5 +232,35 @@ mod tests {
     #[test]
     fn empty_value_is_ignored() {
         assert!(!env_has_utf8_locale(read_from(&[("LANG", "")])));
+    }
+
+    #[test]
+    fn explicit_agentscan_tmux_socket_adds_socket_arg_and_removes_tmux_env() {
+        let command = tmux_command_from_env(
+            read_os_from(&[(TMUX_SOCKET_ENV_VAR, "/tmp/agentscan-tmux.sock")]),
+            read_from(&[("LANG", "en_US.UTF-8")]),
+        );
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(args, vec!["-S", "/tmp/agentscan-tmux.sock"]);
+        assert!(
+            command
+                .get_envs()
+                .any(|(name, value)| name == "TMUX" && value.is_none()),
+            "explicit tmux socket should remove inherited TMUX for child commands"
+        );
+    }
+
+    #[test]
+    fn empty_agentscan_tmux_socket_is_ignored() {
+        let command = tmux_command_from_env(
+            read_os_from(&[(TMUX_SOCKET_ENV_VAR, "")]),
+            read_from(&[("LANG", "en_US.UTF-8")]),
+        );
+
+        assert_eq!(command.get_args().count(), 0);
     }
 }

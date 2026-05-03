@@ -1,5 +1,6 @@
 use super::*;
 use std::io::Read;
+use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -8,6 +9,7 @@ use std::time::Instant;
 
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(1);
 const STARTUP_FAILURE_OBSERVABILITY_WINDOW: Duration = Duration::from_millis(200);
+const CONTROL_MODE_STARTUP_TIMEOUT: Duration = Duration::from_secs(2);
 const CLIENT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
 const CLIENT_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -64,6 +66,7 @@ fn daemon_run_with_socket_path_and_startup(
     }
     let mut snapshot = pending_snapshot.snapshot.clone();
     socket_state.publish_prepared_snapshot(pending_snapshot);
+    let mut closing_guard = DaemonClosingGuard::new(socket_state.clone());
     let stdout_reader = tmux_client
         .stdout_reader
         .take()
@@ -72,7 +75,10 @@ fn daemon_run_with_socket_path_and_startup(
         .child
         .take()
         .context("tmux control-mode client did not provide child process")?;
-    let _stdin = tmux_client.stdin.take();
+    let mut running_tmux_client = RunningTmuxControlModeClient {
+        child: &mut child,
+        _stdin: tmux_client.stdin.take(),
+    };
 
     let (line_tx, line_rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -116,7 +122,6 @@ fn daemon_run_with_socket_path_and_startup(
                 }
 
                 if should_exit {
-                    socket_state.mark_closing();
                     break;
                 }
             }
@@ -130,14 +135,9 @@ fn daemon_run_with_socket_path_and_startup(
         }
     }
 
-    socket_state.mark_closing();
+    closing_guard.mark_closing();
 
-    let status = child
-        .wait()
-        .context("failed while waiting for tmux control-mode client to exit")?;
-    if !status.success() {
-        bail!("tmux control-mode client exited with status {status}");
-    }
+    running_tmux_client.wait_for_exit()?;
 
     Ok(())
 }
@@ -202,6 +202,57 @@ impl StartedTmuxControlModeClient {
     }
 }
 
+struct RunningTmuxControlModeClient<'a> {
+    child: &'a mut std::process::Child,
+    _stdin: Option<std::process::ChildStdin>,
+}
+
+impl RunningTmuxControlModeClient<'_> {
+    fn wait_for_exit(&mut self) -> Result<()> {
+        let status = self
+            .child
+            .wait()
+            .context("failed while waiting for tmux control-mode client to exit")?;
+        if !status.success() {
+            bail!("tmux control-mode client exited with status {status}");
+        }
+        Ok(())
+    }
+}
+
+impl Drop for RunningTmuxControlModeClient<'_> {
+    fn drop(&mut self) {
+        cleanup_startup_child(self.child);
+    }
+}
+
+struct DaemonClosingGuard {
+    state: DaemonSocketState,
+    marked: bool,
+}
+
+impl DaemonClosingGuard {
+    fn new(state: DaemonSocketState) -> Self {
+        Self {
+            state,
+            marked: false,
+        }
+    }
+
+    fn mark_closing(&mut self) {
+        if !self.marked {
+            self.state.mark_closing();
+            self.marked = true;
+        }
+    }
+}
+
+impl Drop for DaemonClosingGuard {
+    fn drop(&mut self) {
+        self.mark_closing();
+    }
+}
+
 fn startup_failure_message(context: &str, error: &anyhow::Error) -> String {
     format!(
         "{context} failed before daemon socket readiness; no usable socket snapshot was published: {error:#}"
@@ -258,14 +309,58 @@ fn configure_started_tmux_control_mode_client(
 }
 
 fn wait_for_subscription_setup(reader: &mut BufReader<std::process::ChildStdout>) -> Result<()> {
+    let deadline = Instant::now() + CONTROL_MODE_STARTUP_TIMEOUT;
     loop {
-        let line = read_control_mode_line(reader)?
+        let line = read_control_mode_line_before_deadline(reader, deadline)?
             .context("tmux control-mode client exited before confirming subscription setup")?;
         if line.starts_with("%error") {
             bail!("tmux rejected daemon subscription setup: {line}");
         }
         if line.starts_with("%end") {
             return Ok(());
+        }
+    }
+}
+
+fn read_control_mode_line_before_deadline(
+    reader: &mut BufReader<std::process::ChildStdout>,
+    deadline: Instant,
+) -> Result<Option<String>> {
+    wait_for_control_mode_readable(reader, deadline)?;
+    read_control_mode_line(reader)
+}
+
+fn wait_for_control_mode_readable(
+    reader: &BufReader<std::process::ChildStdout>,
+    deadline: Instant,
+) -> Result<()> {
+    if !reader.buffer().is_empty() {
+        return Ok(());
+    }
+
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            bail!("timed out waiting for tmux control-mode subscription setup");
+        }
+        let timeout = deadline.saturating_duration_since(now);
+        let timeout_ms = timeout.as_millis().min(i32::MAX as u128) as i32;
+        let mut pollfd = libc::pollfd {
+            fd: reader.get_ref().as_raw_fd(),
+            events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
+            revents: 0,
+        };
+        let result = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
+        if result > 0 {
+            return Ok(());
+        }
+        if result == 0 {
+            bail!("timed out waiting for tmux control-mode subscription setup");
+        }
+
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error).context("failed to wait for tmux control-mode output");
         }
     }
 }
