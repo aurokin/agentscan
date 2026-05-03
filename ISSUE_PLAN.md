@@ -1,206 +1,184 @@
-# AUR-174 Issue Plan: Add Daemon Lifecycle Commands
+# AUR-175 Issue Plan: Add Auto-Start and Daemon Opt-Out Flow
 
 ## Scope
 
-Implement first-class daemon lifecycle commands around the socket server from `AUR-172` and subscriber server from `AUR-173`.
+Add the shared daemon auto-start foundation that later socket-backed one-shot consumers will use. The helper should connect to the daemon socket, optionally invoke the same internal start path as `agentscan daemon start`, retry transient readiness states, and preserve precise startup or socket failure outcomes.
 
 This issue adds:
 
-- `agentscan daemon run` as the unchanged foreground daemon entrypoint, now with lifecycle identity and signal-aware shutdown
-- `agentscan daemon start` as a detached process launcher that reuses the same run path
-- socket-backed `agentscan daemon status` that never auto-starts and no longer judges daemon health from cache freshness
-- `agentscan daemon stop` and `agentscan daemon restart`
-- socket-derived sidecar paths for lock, identity, and log files
-- startup readiness checks based on a compatible hello plus first snapshot or terminal startup failure
-- guarded stop behavior using live socket identity plus PID validation
-- stale socket cleanup for owned stale Unix sockets only
-- focused integration tests for lifecycle commands and failure states
+- one shared connect/start/retry helper for daemon socket consumers
+- internal start plumbing reused by both `daemon start` and auto-start
+- explicit auto-start opt-out parsing for the one-shot commands that become daemon-backed in `AUR-176`
+- `AGENTSCAN_NO_AUTO_START=1` global opt-out handling
+- focused tests for success, already-running daemon, concurrent auto-start, opt-out, not-ready retry, startup failure, incompatible daemon guidance, shutdown handling, and failure message preservation
 
 ## Non-Goals
 
-- Do not add command auto-start for `list`, `inspect`, `focus`, `snapshot`, or TUI; that is `AUR-175` and later issues.
-- Do not migrate one-shot commands from cache to daemon snapshots; that is `AUR-176`.
-- Do not move the TUI to subscriptions; that is `AUR-177`.
-- Do not remove cache writes or cache commands.
-- Do not add `daemon stop --force`; forced termination is deferred unless live identity and process validation are strong enough in this slice.
-- Do not add log rotation beyond startup truncation.
-- Do not add peer-credential checks or Windows support.
-- Do not preserve the old cache-freshness `daemon status` semantics as a supported lifecycle contract.
+- Do not migrate bare `agentscan`, `list`, `inspect`, `focus`, or `snapshot` to socket snapshots; that is `AUR-176`.
+- Do not move the TUI from cache polling to subscription or add `tui --no-auto-start`; that is `AUR-177`.
+- Do not remove cache transport, cache commands, or `AGENTSCAN_CACHE_PATH`.
+- Do not make `scan` daemon-backed or auto-starting.
+- Do not auto-start after an intentional closing/shutdown response in the same invocation.
+- Do not add a second daemonization path for auto-start.
+- Do not add the `snapshot` command yet; `AUR-176` adds it and should reuse the helper and opt-out args defined here.
+- Do not finalize user docs beyond narrow help text or comments needed to keep CLI behavior understandable; durable docs remain `AUR-180`.
 
 ## Implementation Outline
 
-1. Extend CLI parsing and routing.
-   - Add `DaemonCommands::{Start, Stop, Restart}`.
-   - Keep `DaemonCommands::Run`.
-   - Replace current cache-backed `daemon status` behavior with socket lifecycle status.
-   - Keep `DaemonStatusArgs::max_age_seconds` only if needed for a transitional parse-compatible warning; prefer removing it from meaningful lifecycle status output because freshness is no longer cache-based.
+1. Add auto-start options to the CLI data model.
+   - Add an `AutoStartArgs` struct with `--no-auto-start`.
+   - Split `ScanArgs` from `ListArgs` before adding the flag, because `scan` currently reuses `ListArgs` but must remain daemon-free.
+   - Flatten `AutoStartArgs` into root/default `ListArgs`, explicit `list`, `inspect`, and `focus`.
+   - Do not add it to `scan`, `tui`, `daemon`, `tmux`, or `cache` in this issue.
+   - Merge root `--no-auto-start` into explicit list-like commands the same way root refresh/all/format are merged.
+   - Reject misplaced root auto-start flags for command families that are not daemon-backed, matching the existing root-arg rejection style.
+   - Add tests that `agentscan scan --no-auto-start` and `agentscan --no-auto-start scan` are rejected.
+   - Leave a small reusable args/policy shape that `AUR-176` can attach to `snapshot --no-auto-start`.
 
-2. Define lifecycle sidecar paths from the resolved socket path.
-   - Derive:
-     - lock path: `<socket>.lock`
-     - identity path: `<socket>.identity.json`
-     - log path: `<socket>.log`
-   - Store sidecars next to the socket so `AGENTSCAN_SOCKET_PATH` test isolation naturally scopes all lifecycle files.
-   - Before unlinking any existing socket path, confirm it is a Unix socket with `symlink_metadata().file_type().is_socket()`. Refuse regular files, directories, symlinks, and other non-socket paths with clear errors.
-   - Stale socket cleanup is allowed only when connect fails with `ConnectionRefused`/equivalent and the path is a Unix socket.
+2. Define auto-start policy.
+   - Add a small internal policy type, proposed shape:
+     - `AutoStartPolicy { disabled: bool }`
+     - disabled when the command flag is set
+     - disabled when `AGENTSCAN_NO_AUTO_START=1`
+   - Treat env values conservatively: only literal `1` disables auto-start for now. Empty, absent, or other values do not.
+   - Make the final helper accept an explicit policy so most tests do not depend on ambient process env.
+   - `AGENTSCAN_NO_AUTO_START=1 agentscan daemon start` must still start the daemon; the env var only affects daemon-backed consumers/helpers.
 
-3. Add daemon identity.
-   - Define a JSON identity record with at least:
-     - pid
-     - daemon_start_time, using current timestamp at process start
-     - process start/birth-time diagnostics when available from the OS
-     - executable path
-     - executable canonical path if available
-     - socket path
-     - wire protocol version
-     - snapshot schema version
-   - Write identity after acquiring the lock and before publishing readiness.
-   - Remove identity on clean foreground exit only when it still belongs to this daemon.
-   - Sidecar identity is diagnostic and a fallback input, not sufficient by itself for signaling.
-   - Add a daemon-served lifecycle/status frame that returns the live identity from the process that owns the reachable socket. `stop` must bind the PID it signals to this live socket identity, not only to a sidecar.
+3. Refactor `daemon start` into reusable internals.
+   - Keep `daemon_start()` as the user-facing command wrapper.
+   - Move the current start implementation into an internal function that accepts:
+     - resolved socket path or lifecycle paths
+     - output mode: user-facing status printing vs quiet auto-start
+   - Preserve the AUR-174 behavior:
+     - start lock serialization
+     - compatible existing daemon reuse
+     - initializing readiness wait
+     - stale Unix socket cleanup
+     - non-socket refusal
+     - per-socket log file
+     - child handle cleanup on failed readiness
+     - precise startup failure messages
+   - Auto-start must call this internal start path, not spawn its own daemon process.
+   - Quiet auto-start must not write to stdout or stderr on success, so future JSON/text consumers are not polluted before they print their own output.
 
-4. Add single-instance lock.
-   - Use a sidecar lock file opened with create/read/write and an exclusive non-blocking `flock`/`try_lock` equivalent.
-   - `daemon run` fails clearly if another process holds the lock for the same socket path.
-   - Keep the lock file itself as a persistent sidecar; lock ownership is the active-instance authority.
-   - Tests must isolate sockets in tempdirs and verify a second daemon cannot own the same socket.
+4. Add a daemon socket snapshot client helper.
+   - Add an internal one-shot snapshot client that sends `ClientMode::Snapshot`.
+   - On compatible ready daemon, return the `SnapshotEnvelope`.
+   - On `Unavailable { reason: DaemonNotReady }`, retry until the readiness deadline.
+   - On `Unavailable { reason: StartupFailed }`, fail terminally with the daemon message.
+   - On `Unavailable { reason: ServerClosing }`, fail terminally and do not auto-start a replacement in the same invocation.
+   - On `Shutdown { reason: ServerBusy }`, retry briefly as pressure.
+   - On protocol/schema mismatch or unexpected frames, return incompatible-daemon guidance.
+   - Return structured outcomes/errors rather than relying on string matching. Proposed public-in-crate shape:
+     - `DaemonSnapshotError::NotRunning { reason }`
+     - `DaemonSnapshotError::AutoStartDisabled { reason }`
+     - `DaemonSnapshotError::Incompatible { message }`
+     - `DaemonSnapshotError::StartupFailed { message, log_path }`
+     - `DaemonSnapshotError::ChildExited { status, log_path }`
+     - `DaemonSnapshotError::ReadinessTimeout { log_path }`
+     - `DaemonSnapshotError::ServerBusy { message }`
+     - `DaemonSnapshotError::ServerClosing { message }`
+     - `DaemonSnapshotError::UnexpectedFrame { message }`
+   - Preserve clear distinctions in errors: disabled auto-start with no daemon, incompatible daemon, startup failed, child exited before readiness, timeout, server busy, and intentional shutdown.
+   - Add command-facing rendering helpers only where needed; AUR-176 can add command-specific guidance when it wires consumers.
 
-5. Add readiness/status socket helpers.
-   - Add a lifecycle client helper that connects to the resolved socket path without auto-start.
-   - Extend IPC with a lifecycle/status client mode or request frame. The daemon response includes `hello_ack` plus a status frame carrying live identity, startup state, socket path, protocol/schema, subscriber count, latest snapshot timestamp/pane count when ready, and shutdown state.
-   - Implement lifecycle/status IPC before `start`, `stop`, and `restart`; safe stop depends on this live identity.
-   - Prefer a new client mode under the existing wire protocol only if unknown modes produce clear incompatibility. If older daemons close or reject unclearly, bump the wire protocol for the lifecycle-capable daemon and treat no lifecycle response as restart-needed incompatibility.
-   - Keep snapshot-mode readiness as a fallback for start readiness only if the status frame is not needed for the assertion; stop must use the live identity/status frame.
-   - Compatible ready daemon: returns `hello_ack` plus `snapshot`.
-   - Compatible initializing daemon: returns `hello_ack` plus `daemon_not_ready`.
-   - Compatible startup-failed/closing daemon: returns `hello_ack` plus terminal unavailable reason.
-   - Incompatible daemon: returns `shutdown` protocol/schema mismatch; status should fail with restart guidance.
-   - `server_busy` shutdown is pressure, not incompatibility. Lifecycle clients retry briefly, proposed timeout 2 seconds with 50ms cadence, then report busy if saturation persists.
-   - Not running: missing socket or refused stale socket reports not running and exits 0 for `status`.
+5. Add shared connect/start/retry helper.
+   - Proposed shape:
+     - `daemon::snapshot_via_socket(policy: AutoStartPolicy) -> Result<SnapshotEnvelope>`
+     - or `daemon::connect_snapshot_with_auto_start(policy)`.
+   - Flow:
+     - try snapshot socket read
+     - if missing/refused and auto-start is disabled, fail with opt-out guidance
+     - if missing/refused and auto-start is enabled, call the shared start helper
+     - after start succeeds, retry snapshot read
+     - if another starter wins the race, reuse the ready daemon
+   - Attempt daemon start at most once per helper invocation.
+   - Reuse AUR-174 readiness timeout and 50ms poll cadence for not-ready/server-busy retry loops.
+   - After a successful start, retry missing/refused/busy/not-ready only until the same readiness deadline; then return the structured timeout/busy/not-running result.
+   - Terminal responses (`startup_failed`, `server_closing`, incompatible protocol/schema, unexpected lifecycle frames) stop the loop immediately.
+   - The helper should be callable by AUR-176 without leaking lifecycle-specific types across command code.
 
-6. Implement `daemon start`.
-   - Resolve socket and sidecars.
-   - If a compatible ready daemon is already running, print status and return success.
-   - If a stale owned Unix socket exists, remove it before launch.
-   - Refuse non-socket path collisions.
-   - Truncate the log file at startup when it is oversized; proposed threshold: 1 MiB. Otherwise append to preserve recent lifecycle diagnostics.
-   - Spawn the current executable with `daemon run`, detached from the caller, with stdout and stderr both redirected to the per-socket log file.
-   - Redirect stdin from `/dev/null`.
-   - Detach into a new session/process group with `setsid` or equivalent Unix pre-exec behavior so the daemon survives terminal close and caller interruption.
-   - Preserve the caller environment, including `AGENTSCAN_SOCKET_PATH`, `AGENTSCAN_TMUX_SOCKET`, `TMUX_TMPDIR`, and temporary cache path in tests.
-   - Wait for readiness until timeout; proposed readiness timeout: 5 seconds, polling every 50ms.
-   - Success requires compatible hello plus first `snapshot`.
-   - Terminal startup failure reports the socket frame when observed and includes the log path.
-   - If the detached child exits before readiness, report its exit and log path.
-   - Keep the child handle while waiting for readiness so child exit/log inspection is the authoritative fallback when the startup-failed socket window is missed.
+6. Keep current command behavior until AUR-176.
+   - `command_list`, `command_inspect`, and `command_focus` should continue to use cache/direct refresh behavior in this issue unless a narrow test-only seam is needed.
+   - Parsing `--no-auto-start` before the migration is acceptable only for the AUR-176 one-shot command set; it should not change cache-backed command output yet.
+   - Keep help text scoped to daemon-backed operation: "Disable daemon auto-start when this command uses daemon-backed state."
+   - Add unchanged-behavior tests proving accepted no-op flags and `AGENTSCAN_NO_AUTO_START=1` do not connect to the socket, do not start the daemon, and preserve current cache-backed errors/output before AUR-176.
 
-7. Implement `daemon status`.
-   - Never auto-start.
-   - Exit 0 for not running and print a concise text status including socket path, state, and reason.
-   - For ready daemon, print socket path, state, protocol/schema, snapshot timestamp, pane count, live identity pid/start time/executable, log path, and subscriber count.
-   - For initializing/startup_failed/closing, print the unavailable reason and message.
-   - For incompatible reachable daemon, exit non-zero with restart guidance.
-   - Keep JSON output out of scope unless the existing CLI already supports it for status; durable JSON status fields can be finalized with docs in `AUR-180`.
-
-8. Implement `daemon stop`.
-   - If not running, print not-running status and exit 0.
-   - If reachable but incompatible, fail with restart/manual cleanup guidance.
-   - Require a fresh compatible lifecycle/status handshake that returns live identity before sending any signal.
-   - Validate PID before signaling:
-     - live identity PID exists
-     - PID is currently live
-     - executable diagnostics are compatible when available
-     - process start/birth-time matches the live identity when the OS can provide it
-     - sidecar identity, if present, agrees with the live socket identity; malformed/mismatched sidecar identity is a warning and cleanup target, not signal authority
-   - Send SIGTERM first.
-   - Wait up to a short timeout; proposed graceful stop timeout: 3 seconds.
-   - Prefer no SIGKILL fallback in this issue unless all live identity and process start-time validation checks pass. If validation is partial, fail after SIGTERM timeout with manual guidance rather than escalating.
-   - After process exit, remove owned socket only if it is a Unix socket and remove identity only if it still matches.
-   - Re-running `daemon stop` is idempotent and exits 0.
-
-9. Implement `daemon restart`.
-   - Run `stop`, then `start`.
-   - If stop observes not-running, proceed to `start`.
-   - Preserve errors from incompatible reachable daemon or unsafe path collisions.
-
-10. Add daemon shutdown handling.
-   - Install SIGTERM/SIGINT handling for `daemon run` using a minimal signal flag.
-   - Ensure shutdown marks socket state closing, closes subscriber mailboxes, exits the control loop, explicitly cleans up the tmux control-mode child before any wait path, and avoids hanging on the control-mode client after SIGTERM.
-   - Make socket server cleanup ownership-aware: capture bound socket filesystem identity after bind and unlink on drop only if the current path is still the same Unix socket. Avoid deleting non-socket path collisions or replacement sockets.
+7. Add tests.
+   - CLI parse/merge tests:
+     - root `--no-auto-start` applies to bare/default list and explicit `list`
+     - explicit `list --no-auto-start`, `inspect --no-auto-start`, and `focus --no-auto-start` parse
+     - `tui --no-auto-start`, `scan --no-auto-start`, `--no-auto-start scan`, `--no-auto-start daemon status`, `--no-auto-start tmux ...`, and `--no-auto-start cache ...` are rejected
+     - `AGENTSCAN_NO_AUTO_START=1 agentscan daemon start` still starts the daemon
+   - Pre-migration command behavior tests:
+     - `list --no-auto-start` still reads the cache and does not connect/start when a cache fixture is present
+     - `inspect --no-auto-start` still reads the cache and does not connect/start
+     - `focus --no-auto-start --refresh` preserves current refresh/focus behavior
+     - `AGENTSCAN_NO_AUTO_START=1` preserves current cache-backed list/inspect/focus behavior before AUR-176
+   - Unit/synthetic socket tests:
+     - snapshot helper returns a ready snapshot from an already-running daemon
+     - helper retries `daemon_not_ready` and then succeeds
+     - helper treats `startup_failed` as terminal
+     - helper treats `server_closing` as terminal and does not invoke start
+     - helper reports incompatible daemon guidance
+     - helper reports disabled auto-start when no daemon is reachable
+     - helper exposes distinct structured error variants for incompatible daemon, startup failed, child exit, timeout, server busy, server closing, and disabled auto-start
+     - quiet auto-start writes no stdout/stderr on success
+   - Integration tests:
+     - auto-start starts the daemon through the shared start path and then reads a snapshot
+     - already-running daemon is reused
+     - concurrent auto-start calls serialize and use one daemon
+     - `AGENTSCAN_NO_AUTO_START=1` disables auto-start
+     - `--no-auto-start` policy disables auto-start
+     - startup failure from missing harness tmux server reports the real log/startup failure, not a generic socket timeout
+     - concurrent helper calls assert one daemon identity, not just two successful exits
 
 ## Edge Cases
 
-- `daemon status` with no socket: exit 0, state `not_running`.
-- `daemon status` with stale Unix socket: exit 0, state `not_running`, note stale socket.
-- `daemon status` with regular file at socket path: exit non-zero with non-socket collision guidance.
-- `daemon start` with existing compatible ready daemon: no duplicate daemon, exit 0.
-- `daemon start` with stale Unix socket: remove stale socket and launch.
-- `daemon start` with regular file/symlink/directory at socket path: refuse and do not unlink.
-- `daemon start` when tmux startup fails: fail with log path and startup failure reason.
-- `daemon start` when startup failure socket window is missed: fail from child-exit/log inspection and still name the log path.
-- `daemon stop` with no socket/stale socket: exit 0.
-- `daemon stop` with incompatible daemon: fail without signaling.
-- `daemon stop` under persistent `server_busy`: retry briefly, then fail busy without signaling.
-- `daemon stop` with malformed/missing live identity: fail without signaling.
-- `daemon stop` with sidecar identity mismatch but valid live socket identity: signal only the live identity PID; report sidecar mismatch and clean stale sidecar only after successful stop.
-- `daemon stop` with process start-time mismatch or executable mismatch: fail without signaling.
-- `daemon restart` does not mask stop safety failures.
-- Log sidecar grows past threshold: next detached start truncates before redirecting.
-- Socket path replacement during daemon shutdown: daemon does not unlink the replacement.
+- Missing socket with auto-start enabled starts once and retries the socket read.
+- Missing socket with `--no-auto-start` fails clearly through a structured disabled-auto-start error; AUR-176 will render command-specific guidance such as `agentscan daemon start`, `--refresh`, or `agentscan scan`.
+- Missing socket with `AGENTSCAN_NO_AUTO_START=1` behaves like the flag.
+- Refused stale Unix socket can be cleaned by the shared start helper when auto-start is allowed.
+- Regular file, symlink, or directory at the socket path remains a hard collision error and is not unlinked.
+- Existing initializing daemon is waited on rather than replaced.
+- Existing startup-failed daemon is terminal for the invocation.
+- Existing closing daemon is terminal for the invocation and does not auto-start a replacement.
+- Server busy is retryable pressure, not incompatibility.
+- Protocol/schema mismatch is incompatible and should not be auto-started over.
+- Concurrent auto-start calls must not spawn or report multiple successful daemon identities.
+- Auto-start failures should preserve child exit/log details from the shared lifecycle start path.
+- Root `--no-auto-start` before non-daemon command families is rejected.
+- `scan` remains direct-tmux and does not accept `--no-auto-start`.
+- Before AUR-176, accepted no-op flags on list/inspect/focus preserve current cache-backed behavior.
 
 ## Test Plan
 
 Focused tests:
 
-- `cargo test daemon_socket`
-- `cargo test --test daemon_integration daemon_lifecycle_start_status_stop`
-- `cargo test --test daemon_integration daemon_lifecycle_restart`
-- `cargo test --test daemon_integration daemon_lifecycle_start_reuses_running_daemon`
-- `cargo test --test daemon_integration daemon_lifecycle_status_reports_not_running`
-- `cargo test --test daemon_integration daemon_lifecycle_stop_is_idempotent`
-- `cargo test --test daemon_integration daemon_lifecycle_refuses_non_socket_collision`
-- `cargo test --test daemon_integration daemon_lifecycle_cleans_stale_socket`
-- `cargo test --test daemon_integration daemon_lifecycle_startup_failure_names_log_path`
-- `cargo test --test daemon_integration daemon_lifecycle_startup_failure_uses_child_exit_when_socket_window_is_missed`
-- `cargo test --test daemon_integration daemon_lifecycle_concurrent_start_uses_single_lock_owner`
-- `cargo test --test daemon_integration daemon_lifecycle_stop_retries_server_busy_without_incompatibility`
-- `cargo test --test daemon_integration daemon_lifecycle_shutdown_does_not_hang_tmux_control_client`
+- `cargo test auto_start`
+- `cargo test --test daemon_integration daemon_auto_start`
+- `cargo test --test daemon_integration daemon_lifecycle_concurrent_start_uses_single_daemon`
+- `cargo test --test daemon_integration daemon_lifecycle_start_failure_reports_log_and_cleans_socket`
 
-Additional unit or synthetic tests:
-
-- sidecar path derivation from socket path
-- identity JSON roundtrip and same-identity matching
-- lifecycle/status IPC frame roundtrip with live identity
-- log truncation threshold behavior
-- safe Unix-socket unlink guard refuses non-sockets
-- owned socket unlink guard refuses replacement path
-- incompatible daemon status handling with synthetic socket server returning protocol/schema shutdown
-- server-busy lifecycle retry handling with synthetic socket server
-- stop safety decision table: no live identity, dead PID, executable mismatch, process start-time mismatch, compatible live identity, sidecar mismatch
-
-Regression checks after implementation:
+Regression gates:
 
 - `cargo fmt --all --check`
 - `cargo clippy --all-targets --all-features -- -D warnings`
-- `cargo test`
-
-Run the complexity gate because lifecycle orchestration adds branching:
-
 - `cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_arguments`
+- `cargo test`
 
 ## Documentation Impact
 
-No full docs rewrite in this issue. Update narrow command help or status text tests as needed. Durable lifecycle docs, release notes, and cache-status removal explanations remain part of `AUR-180`.
+No full documentation rewrite in this issue. Update CLI help text and any narrow test expectations introduced by `--no-auto-start`. The durable daemon auto-start docs, migration notes, and release notes belong to `AUR-180`.
 
 ## Plan Review Notes
 
-Fresh plan review required these changes before implementation:
+Plan review required these changes before implementation:
 
-- Stop must not use sidecar identity alone. Add a live daemon lifecycle/status frame carrying identity from the reachable daemon, and bind any signaled PID to that live socket identity.
-- Implement lifecycle/status IPC before lifecycle commands; decide mode vs protocol bump so older daemons become clear restart-needed incompatibility.
-- Detached `daemon start` must redirect stdin from `/dev/null` and create a new session/process group.
-- Signal-aware shutdown must explicitly clean up the tmux control-mode child before waiting, otherwise SIGTERM can hang and force SIGKILL.
-- Socket unlink cleanup must be ownership-aware and must not delete replacement paths or non-sockets.
-- Detached start must keep the child handle during readiness polling and use child exit/log inspection as the authoritative fallback when the short startup-failed socket observability window is missed.
-- Lifecycle clients must treat `server_busy` as pressure with retry behavior, not as daemon incompatibility.
-- Identity mismatch language must be strict: malformed/missing live identity or process validation mismatch means no signal.
+- Split `ScanArgs` from `ListArgs` or otherwise prevent `--no-auto-start` from leaking into `scan`.
+- Do not add `tui --no-auto-start` in AUR-175; TUI daemon subscription and opt-out behavior belongs to `AUR-177`.
+- Add unchanged-behavior tests for accepted pre-migration no-op flags on `list`, `inspect`, and `focus`.
+- Specify quiet auto-start mode and test that it does not pollute future consumer stdout/stderr.
+- Use structured helper errors so AUR-176 can preserve incompatible daemon, startup failed, child exited, timeout, shutdown, server busy, and opt-out distinctions.
+- Specify retry bounds: one start attempt per invocation, AUR-174 readiness deadline, 50ms cadence, and immediate stop on terminal frames.
+- Leave a reusable path for future `snapshot --no-auto-start` without adding the command in this issue.
