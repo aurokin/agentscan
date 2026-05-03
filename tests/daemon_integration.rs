@@ -1,5 +1,7 @@
 use std::fs;
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -12,6 +14,65 @@ use tempfile::TempDir;
 
 const DAEMON_TIMEOUT: Duration = Duration::from_secs(40);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+#[test]
+fn daemon_serves_snapshot_over_owned_socket_path() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let pane_id = harness.start_session("socket-snapshot", "sleep 300")?;
+    let mut daemon = harness.start_daemon()?;
+    let cache = harness.wait_for_cache(&mut daemon, |cache| {
+        pane_from_cache(cache, &pane_id).is_some()
+    })?;
+    let schema_version = cache["schema_version"]
+        .as_u64()
+        .context("daemon cache was missing schema_version")?;
+
+    let mut stream = connect_agentscan_socket(&harness.agentscan_socket_path)?;
+    writeln!(
+        stream,
+        "{}",
+        serde_json::json!({
+            "type": "hello",
+            "protocol_version": 1,
+            "snapshot_schema_version": schema_version,
+            "mode": "snapshot",
+        })
+    )
+    .context("failed to write daemon socket hello")?;
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .context("failed to close daemon socket write side")?;
+
+    let mut reader = BufReader::new(stream);
+    let ack = read_daemon_socket_json_line(&mut reader)?;
+    assert_eq!(ack["type"], "hello_ack");
+    assert_eq!(ack["protocol_version"], 1);
+    assert_eq!(ack["snapshot_schema_version"], schema_version);
+
+    let snapshot_frame = read_daemon_socket_json_line(&mut reader)?;
+    assert_eq!(snapshot_frame["type"], "snapshot");
+    assert_eq!(snapshot_frame["snapshot"]["source"]["kind"], "daemon");
+    assert!(
+        snapshot_frame["snapshot"]["panes"]
+            .as_array()
+            .context("snapshot frame panes were not an array")?
+            .iter()
+            .any(|pane| pane["pane_id"] == pane_id),
+        "daemon socket snapshot did not include pane {pane_id}: {snapshot_frame}"
+    );
+
+    let mut eof = String::new();
+    assert_eq!(
+        reader
+            .read_line(&mut eof)
+            .context("failed to read daemon socket EOF")?,
+        0,
+        "snapshot client should receive EOF after one snapshot frame"
+    );
+
+    daemon.shutdown()?;
+    Ok(())
+}
 
 #[test]
 fn daemon_updates_cache_when_titles_change() -> Result<()> {
@@ -797,6 +858,45 @@ fn daemon_exits_when_tmux_server_disappears() -> Result<()> {
     daemon.wait_for_exit(DAEMON_TIMEOUT)?;
 
     Ok(())
+}
+
+fn connect_agentscan_socket(socket_path: &Path) -> Result<UnixStream> {
+    let deadline = Instant::now() + DAEMON_TIMEOUT;
+    loop {
+        match UnixStream::connect(socket_path) {
+            Ok(stream) => return Ok(stream),
+            Err(error) if Instant::now() < deadline => {
+                if !matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                ) {
+                    return Err(error).with_context(|| {
+                        format!("failed to connect to {}", socket_path.display())
+                    });
+                }
+                sleep(POLL_INTERVAL);
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "timed out waiting for daemon socket at {}",
+                        socket_path.display()
+                    )
+                });
+            }
+        }
+    }
+}
+
+fn read_daemon_socket_json_line(reader: &mut impl BufRead) -> Result<Value> {
+    let mut line = String::new();
+    reader
+        .read_line(&mut line)
+        .context("failed to read daemon socket frame")?;
+    if line.is_empty() {
+        bail!("daemon socket closed before sending expected frame");
+    }
+    serde_json::from_str(&line).context("daemon socket frame was not valid JSON")
 }
 
 include!("common/tmux_harness.rs");
