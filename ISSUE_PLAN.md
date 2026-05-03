@@ -1,80 +1,121 @@
-# AUR-172 Issue Plan: Serve One-Shot Snapshots Over The Daemon Socket
+# AUR-173 Issue Plan: Add Daemon Subscription Fan-Out With Bounded Subscriber Cleanup
 
 ## Scope
 
-Implement daemon snapshot-mode serving over the Unix socket foundation from `AUR-171`.
+Implement long-lived daemon socket `subscribe` clients on top of the snapshot socket server from `AUR-172`.
 
 This issue adds:
 
-- daemon-to-client frames for `snapshot` and unavailable/terminal daemon states
-- a foreground `daemon run` socket server bound to `ipc::resolve_socket_path()`
-- shared daemon socket state for the latest good `SnapshotEnvelope`
-- snapshot-mode client handling: hello, `hello_ack`, one snapshot or precise unavailable/shutdown frame, then EOF
-- bounded client hello reads and bounded daemon frame writes using the existing frame limits
-- startup readiness state: initializing, ready, startup failed, and closing
-- tests with synthetic socket clients for ready snapshot, not-ready startup, startup failure, closing-state precedence, and frame-size behavior
+- subscribe-mode registration after a compatible hello, current snapshot availability, and subscriber capacity check
+- `hello_ack` plus bootstrap snapshot for accepted subscribers
+- latest-wins fan-out for later `SnapshotEnvelope` updates
+- bounded pending handshakes and bounded registered subscribers
+- paired EOF/protocol monitoring so disconnected subscribers are retired without waiting for another tmux event
+- post-handshake client-write handling as a protocol violation that retires the subscriber
+- focused synthetic socket tests for bootstrap, updates, latest-wins mailbox behavior, capacity limits, EOF cleanup, and protocol-violation cleanup
 
 ## Non-Goals
 
-- Do not migrate `list`, bare `agentscan`, `inspect`, `focus`, `snapshot`, or TUI clients yet.
-- Do not add subscribe-mode clients or fan-out yet; `subscribe` may remain rejected or unavailable until `AUR-173`.
-- Do not add detached `daemon start`, lifecycle lock/log sidecars, stale socket cleanup, or safe stop; those are `AUR-174`.
-- Do not remove cache writes or cache command surfaces; this issue may keep cache writes as migration compatibility while adding socket publication.
-- Do not add auto-start or `--no-auto-start`; those are `AUR-175`.
+- Do not migrate the TUI to subscriptions yet; that is `AUR-177`.
+- Do not migrate one-shot commands to socket snapshots; that is `AUR-176`.
+- Do not add detached lifecycle commands, lock/log sidecars, daemon status subscriber fields, or stop/restart ownership; those remain `AUR-174`.
+- Do not remove cache writes or cache command surfaces.
+- Do not add delta frames or per-pane update frames; every update remains a full `SnapshotEnvelope`.
+- Do not add platform-specific socket peer credential checks.
 
 ## Implementation Outline
 
-1. Extend `src/app/ipc/mod.rs`.
-   - Add `DaemonFrame::Snapshot { snapshot: SnapshotEnvelope }`.
-   - Add a distinct unavailable frame for valid clients after `hello_ack`: `daemon_not_ready` is retryable, while `startup_failed`, `server_closing`, and `subscribe_unavailable` are terminal for that connection.
-   - Keep `Shutdown` for protocol/schema mismatches and other intentional no-ack shutdowns.
-   - Keep protocol/schema mismatch behavior explicit and client-first.
-   - Keep daemon frame byte limits enforced before writing snapshots.
+1. Extend IPC reasons narrowly.
+   - Add shutdown/unavailable variants for server pressure and subscriber refusal, likely:
+     - `ShutdownReason::ServerBusy` for pre-hello pending-handshake refusal.
+     - `UnavailableReason::SubscriberLimitReached` for valid subscribe clients when subscriber capacity is full.
+   - Keep protocol/schema mismatch behavior unchanged: no `hello_ack`, explicit shutdown.
+   - Keep `SubscribeUnavailable` only for transitional or unsupported states if still useful; accepted subscribe mode should no longer use it.
 
-2. Add daemon socket state and server helpers, likely in `src/app/daemon.rs` unless the code shape clearly warrants a small submodule.
-   - Store latest good snapshot in shared state.
-   - Store pre-encoded latest-good snapshot frame bytes beside the snapshot so frame-size checks and last-good behavior are precise.
-   - Track startup status separately from snapshot presence so missing initial snapshot can return `daemon_not_ready` only while initialization is still in progress.
-   - Check closing state before not-ready.
-   - Mark startup failed when initial tmux snapshot, attach, subscription setup, or initial publication fails.
-   - Keep lock guards short: read or clone pre-encoded bytes while locked, then drop the lock before socket writes.
+2. Add bounded daemon socket state and accept handoff.
+   - Add constants near existing daemon socket limits:
+     - `MAX_PENDING_HANDSHAKES`: small bounded count, default `8`.
+     - `MAX_SUBSCRIBERS`: moderate bounded count, default `64`.
+     - `SUBSCRIBER_WRITE_TIMEOUT`: short timeout, default `250ms`, separate from one-shot writes.
+   - Track `pending_handshakes`, `subscribers`, and `next_subscriber_id` inside `DaemonSocketStateInner`.
+   - Reserve a pending-handshake slot before spawning the per-connection handler thread. If the cap is already reached, handle the connection inline by sending an opportunistic current-wire `server_busy` shutdown and closing it.
+   - The inline `server_busy` refusal path must set a short write timeout, attempt one best-effort shutdown frame write, and close regardless of write success so the accept loop is not stalled by non-reading clients.
+   - Pass a pending-handshake guard into the handler. It decrements when hello handling finishes, including EOF, malformed hello, protocol/schema mismatch, and successful transition into snapshot or subscribe handling.
+   - This issue bounds daemon-owned handler work at the accepted-connection handoff. It does not attempt to tune the kernel listen backlog.
+   - Keep lock scope short: mutate counters and clone shared frame handles while locked, then perform socket writes outside the lock.
 
-3. Wire foreground `daemon_run`.
-   - Resolve and bind the socket before startup work so clients can observe initializing and terminal startup state.
-   - Use per-tempdir `AGENTSCAN_SOCKET_PATH` in tests and assert the daemon/server uses the requested path.
-   - Start an accept loop that handles each snapshot-mode client without blocking the tmux control-mode update loop.
-   - Publish the initial snapshot once it exists, then publish later daemon updates only if frame encoding fits `DAEMON_FRAME_MAX_BYTES`.
-   - Oversized initial snapshots should fail startup before socket readiness with diagnostic guidance that names the encoded size, frame limit, startup context, and that no usable socket snapshot was published. Oversized later snapshots should preserve the last good socket snapshot and log the skipped update with the encoded size, frame limit, later-update context, and last-good preservation.
-   - Treat initial cache write failure as an initial publication failure during the migration window: do not publish socket readiness until the temporary cache-compatible write has succeeded. This keeps existing cache-backed commands coherent until their later socket migration issues remove the cache dependency.
-   - If startup fails after the socket is listening, transition shared state to `startup_failed` before returning the foreground daemon error. Use an injectable startup/server harness in tests rather than relying only on fixed sleep timing.
-   - Continue cache writes for now so existing command behavior and tests remain intact until later issues, but do not write the initial daemon-marked cache until initial snapshot publication and tmux subscription setup have succeeded.
+3. Add latest-wins subscriber mailboxes.
+   - Use a small `Arc<Mutex<SubscriberMailboxState>>` plus `Condvar` per subscriber rather than unbounded channels.
+   - Store encoded snapshot frames as immutable shared bytes, `Arc<[u8]>`, so fan-out clones pointers rather than up to 4 MiB per subscriber.
+   - Mailbox state stores at most one pending encoded snapshot frame handle.
+   - Publishing replaces the pending frame with the newest frame and notifies the writer.
+   - The subscriber writer takes and clears the pending frame before writing so slow socket writes do not hold the mailbox lock.
+   - Retiring a subscriber marks the mailbox closed and notifies the writer.
+   - Add direct mailbox tests for latest-wins replacement and closed-mailbox behavior, separate from socket I/O tests.
 
-4. Add synthetic test harnesses.
-   - Prefer Unix socket pairs or temporary `UnixListener` paths with synthetic clients.
-   - Test protocol behavior without real tmux subprocesses where possible.
-   - Keep real tmux integration changes minimal for this issue.
+4. Register subscribe clients only when ready.
+   - After a valid subscribe hello, call `try_register_subscriber()`.
+   - Registration succeeds only when startup state is `Ready`, a current encoded snapshot frame exists, and subscriber capacity is available.
+   - Subscriber insertion and bootstrap-frame selection are atomic under the daemon state lock. The subscriber must either receive the exact latest frame chosen at insertion time, or later publications must see its mailbox and enqueue the newer frame.
+   - If the daemon is initializing, startup-failed, or closing, return the same unavailable semantics as snapshot clients.
+   - If subscriber capacity is full, return `hello_ack`, `subscriber_limit_reached`, and EOF.
+   - On success, return a `SubscriberRegistration` with subscriber id, bootstrap snapshot bytes, and mailbox.
+
+5. Serve subscriber connections.
+   - Accepted subscribers receive `hello_ack`, the bootstrap snapshot, then future snapshot frames from their mailbox.
+   - Split the connection into a short-timeout writer and a reader/protocol monitor.
+   - Use one idempotent `retire_subscriber(id)` path for writer failure, monitor EOF, protocol violation, daemon closing, and normal test cleanup. It removes the subscriber exactly once, closes its mailbox exactly once, and returns whether it actually retired an active subscriber.
+   - The writer retires the subscriber on write/flush failure or mailbox close.
+   - The monitor retires the subscriber on EOF or any post-handshake bytes. Any client write after the hello is a protocol violation; no additional client command surface or protocol-violation response frame is introduced.
+   - Avoid joining a blocked writer from the monitor path; writer timeouts and mailbox closure are enough to retire it.
+   - Add a tiny writer abstraction if needed to deterministically test write failure/timeout retirement without relying on filling a Unix socket buffer.
+
+6. Fan out on snapshot publication.
+   - `publish_prepared_snapshot` and successful `publish_later_snapshot` update the latest-good snapshot and collect subscriber mailboxes while holding the state lock.
+   - After releasing the state lock, enqueue the encoded frame into each subscriber mailbox.
+   - Oversized later snapshots retain existing `AUR-172` behavior: preserve last good socket snapshot and do not fan out the oversized frame.
+   - Subscribers should remain connected after an oversized skipped update and receive the next good update.
+   - Snapshot publishing must not block on socket writes or slow subscribers.
+
+7. Keep one-shot behavior intact.
+   - Snapshot-mode clients still receive `hello_ack` plus exactly one snapshot/unavailable frame and EOF.
+   - Snapshot-mode clients never affect subscriber count.
+   - Protocol/schema mismatch behavior remains explicit and no-ack.
 
 ## Edge Cases
 
-- Valid snapshot-mode hello receives `hello_ack`, one `snapshot`, then EOF.
-- Protocol/schema mismatch receives a shutdown frame without `hello_ack`.
-- Unknown or malformed client frames fail without registering state.
-- Subscribe-mode clients receive `hello_ack`, `subscribe_unavailable`, and EOF; they are not registered as subscribers in this issue.
-- Closing state wins over `daemon_not_ready`.
-- Startup failure is terminal for the daemon process state and should not be reported as transient not-ready.
-- Oversized initial snapshot fails startup rather than publishing an unusable daemon.
-- Oversized later snapshot keeps the previous good socket snapshot available to clients and emits diagnostic logging that includes encoded byte size, frame limit, initial/later context, and last-good preservation.
-- Cache/socket divergence after an oversized later update is acceptable only during the cache-backed migration window; socket clients must still receive the previous good socket snapshot.
-- Initial cache write failure is treated as an initial publication failure until one-shot clients migrate away from the cache in later issues.
+- Subscribe before initial snapshot returns `hello_ack`, `daemon_not_ready`, and EOF; no subscriber is registered.
+- Subscribe after startup failure returns `hello_ack`, `startup_failed`, and EOF.
+- Subscribe while closing returns `hello_ack`, `server_closing`, and EOF.
+- Subscribe at capacity returns `hello_ack`, `subscriber_limit_reached`, and EOF.
+- Pending-handshake capacity reached before hello returns an opportunistic no-ack `server_busy` shutdown frame using the current daemon wire format even though compatibility has not been negotiated, then closes.
+- Client EOF before hello decrements pending count and does not register a subscriber.
+- Client EOF after subscribe registration retires the subscriber even if tmux is quiet.
+- Any post-handshake client bytes retire the subscriber as a protocol violation.
+- Slow subscriber writers keep at most one pending update; newer updates replace older pending updates.
+- Writer failure or timeout retires the subscriber and closes its mailbox.
+- Daemon closing marks state closing, idempotently retires all subscribers, and closes subscriber mailboxes so writers can exit.
+- New subscribers after closing receive `server_closing` and do not register.
 
 ## Test Plan
 
 Focused tests:
 
-- `cargo test ipc`
-- new daemon socket unit tests for ready snapshot, startup not-ready, direct startup failed response, closing-state precedence, subscribe unavailable/non-registration, and frame-size behavior
-- startup harness tests for initial snapshot failure, tmux attach failure, subscription setup failure, and initial cache publication failure transitioning to observable `startup_failed`
-- one real Unix socket/path test using an isolated `AGENTSCAN_SOCKET_PATH` to verify bind path, EOF, and environment isolation
+- `cargo test daemon_socket`
+- Subscribe bootstrap: valid subscribe client receives `hello_ack`, current snapshot, and remains connected for updates.
+- Subscribe live update: `publish_later_snapshot` sends a later snapshot to an existing subscriber.
+- Latest-wins mailbox: multiple enqueues before writer drain leave only the newest frame.
+- Subscriber limit: accepted subscribers up to capacity, then the next subscribe receives `subscriber_limit_reached` and does not increment count.
+- Subscriber capacity recovery: EOF, protocol violation, writer failure, and daemon closing each free capacity exactly once.
+- Registration/publication ordering: deterministic state-level test proves subscriber insertion and bootstrap selection cannot miss a concurrent publish; after register plus immediate publish, the subscriber has either bootstrap N or pending N+1, never neither.
+- Pending-handshake limit: held pre-hello connections exhaust the pending cap before handler spawn, and the next connection receives a clear opportunistic `server_busy` shutdown.
+- EOF cleanup: dropping a subscribed client retires it without another snapshot publication.
+- Protocol violation cleanup: writing any post-handshake bytes retires the subscriber and permits a replacement subscriber.
+- Oversized skipped update: an oversized later snapshot is not delivered, the subscriber stays connected, and the next good snapshot is delivered.
+- Closing: existing subscriber mailboxes close, and new subscribers get `server_closing`.
+- Closing idempotency: duplicate retire paths during closing do not double-decrement capacity; the important assertion is closed mailboxes/writer exit plus stable subscriber count, not accepting new subscribers after closing.
+- Snapshot-mode regression: snapshot clients still receive one snapshot/unavailable frame and do not increment subscriber count.
+- Live daemon integration: connect a subscribe client to a foreground daemon socket, trigger a tmux title/metadata update, and assert the subscriber receives the new snapshot through the real daemon loop.
 
 Regression checks after implementation:
 
@@ -82,24 +123,22 @@ Regression checks after implementation:
 - `cargo clippy --all-targets --all-features -- -D warnings`
 - `cargo test`
 
-Run the complexity clippy gate if daemon orchestration grows enough to risk it:
+Run the complexity gate because this issue adds daemon concurrency paths:
 
 - `cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_arguments`
 
 ## Documentation Impact
 
-No full user-doc rewrite in this issue. Add or adjust only narrow comments/docs if a new internal frame/state contract would otherwise be unclear. Durable docs and release notes remain `AUR-180`.
+No user-facing docs rewrite in this issue. Add or adjust narrow internal comments only if the mailbox, pending-handshake guard, or subscriber cleanup contract would otherwise be unclear. Durable socket lifecycle and TUI subscription docs remain part of `AUR-180`.
 
 ## Plan Review Notes
 
-The milestone plan review flagged two constraints for this issue:
+Fresh plan review required these changes before implementation:
 
-- Define the daemon-to-client frame contract before relying on socket serving.
-- Keep lifecycle ownership out of this issue unless absolutely required; singleton lock/log identity, stale socket cleanup, detached start, status, and stop remain `AUR-174`.
-
-Fresh plan review before implementation flagged these additions:
-
-- Startup failure coverage must prove the named initial snapshot, tmux attach, subscription setup, and initial publication paths, not only direct state mutation.
-- Initial oversize diagnostics need explicit size/limit/startup-context guidance.
-- Temporary cache compatibility must be coherent: cache write failure blocks socket readiness for this slice.
-- Startup-failed observability should be tested through injectable startup/server seams rather than fixed sleeps alone.
+- Reserve pending-handshake capacity before spawning handler threads, not inside already-spawned handlers.
+- Make subscriber retirement single-shot and idempotent through one state API, with tests proving capacity recovery.
+- Add a long-lived subscribe client test harness instead of reusing snapshot helpers that close the write side after hello.
+- Define pre-hello `server_busy` as an opportunistic current-wire shutdown before compatibility is known.
+- Make subscriber insertion and bootstrap-frame selection atomic with publication to avoid lost updates.
+- Use shared immutable frame bytes (`Arc<[u8]>`) instead of cloning full frames per subscriber.
+- Add deterministic mailbox/writer tests plus one live daemon integration test for real fan-out.
