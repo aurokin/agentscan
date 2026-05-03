@@ -699,7 +699,7 @@ fn metadata_helpers_refresh_existing_snapshot_cache_without_daemon() -> Result<(
     let pane_id = harness.start_session("metadata-cache", "sh")?;
     harness.send_title_escape(&pane_id, "metadata-cache")?;
 
-    harness.agentscan(["-f", "cache", "show"])?;
+    harness.agentscan(["-f", "cache", "validate"])?;
     harness.wait_for_cache_file(|cache| pane_from_cache(cache, &pane_id).is_some())?;
 
     harness.agentscan([
@@ -749,7 +749,7 @@ fn metadata_helpers_refresh_existing_snapshot_cache_without_daemon() -> Result<(
 }
 
 #[test]
-fn forced_refresh_preserves_last_daemon_refresh_semantics() -> Result<()> {
+fn cache_validate_refresh_preserves_last_daemon_refresh_semantics() -> Result<()> {
     let harness = TestHarness::new()?;
     let _pane_id = harness.start_session("refresh-daemon", "sleep 300")?;
     let mut daemon = harness.start_daemon()?;
@@ -763,7 +763,7 @@ fn forced_refresh_preserves_last_daemon_refresh_semantics() -> Result<()> {
         .to_string();
 
     sleep(Duration::from_secs(1));
-    harness.agentscan(["-f", "cache", "show"])?;
+    harness.agentscan(["-f", "cache", "validate"])?;
     harness.agentscan(["daemon", "status"])?;
 
     let refreshed_cache =
@@ -776,7 +776,7 @@ fn forced_refresh_preserves_last_daemon_refresh_semantics() -> Result<()> {
 }
 
 #[test]
-fn scan_refresh_preserves_last_daemon_refresh_semantics() -> Result<()> {
+fn scan_refresh_preserves_existing_daemon_cache() -> Result<()> {
     let harness = TestHarness::new()?;
     let _pane_id = harness.start_session("scan-refresh-daemon", "sleep 300")?;
     let mut daemon = harness.start_daemon()?;
@@ -794,7 +794,7 @@ fn scan_refresh_preserves_last_daemon_refresh_semantics() -> Result<()> {
     harness.agentscan(["daemon", "status"])?;
 
     let refreshed_cache =
-        harness.wait_for_cache_file(|cache| cache["source"]["kind"] == "snapshot")?;
+        harness.wait_for_cache_file(|cache| cache["source"]["kind"] == "daemon")?;
     assert_eq!(
         refreshed_cache["source"]["daemon_generated_at"].as_str(),
         Some(last_daemon_generated_at.as_str())
@@ -891,14 +891,14 @@ fn focus_targets_explicit_client_tty() -> Result<()> {
 }
 
 #[test]
-fn list_no_auto_start_preserves_cache_backed_behavior_before_socket_migration() -> Result<()> {
+fn one_shot_list_reads_daemon_socket_when_cache_is_poisoned() -> Result<()> {
     let harness = TestHarness::new()?;
-    fs::write(&harness.cache_path, CACHE_SNAPSHOT_FIXTURE)
-        .context("failed to seed cache fixture")?;
-    fs::write(&harness.agentscan_socket_path, b"not a socket")
-        .context("failed to poison daemon socket path")?;
+    fs::write(&harness.cache_path, b"{invalid json").context("failed to poison cache")?;
+    let snapshot: Value =
+        serde_json::from_str(CACHE_SNAPSHOT_FIXTURE).context("fixture should be JSON")?;
+    let fake_daemon = serve_fake_snapshot(&harness.agentscan_socket_path, snapshot);
 
-    let stdout = harness.agentscan_output(["list", "--no-auto-start", "--format", "json"])?;
+    let stdout = harness.agentscan_output(["list", "--format", "json"])?;
     let snapshot: Value = serde_json::from_str(&stdout).context("list output should be JSON")?;
 
     assert!(
@@ -907,58 +907,102 @@ fn list_no_auto_start_preserves_cache_backed_behavior_before_socket_migration() 
             .context("snapshot panes should be an array")?
             .iter()
             .any(|pane| pane["pane_id"] == "%67" && pane["provider"] == "codex"),
-        "list should read the existing cache fixture, got:\n{stdout}"
+        "list should read the daemon socket snapshot, got:\n{stdout}"
+    );
+    fake_daemon.join().expect("fake daemon should join");
+    Ok(())
+}
+
+#[test]
+fn one_shot_inspect_reads_daemon_socket_when_cache_is_poisoned() -> Result<()> {
+    let harness = TestHarness::new()?;
+    fs::write(&harness.cache_path, b"{invalid json").context("failed to poison cache")?;
+    let snapshot: Value =
+        serde_json::from_str(CACHE_SNAPSHOT_FIXTURE).context("fixture should be JSON")?;
+    let fake_daemon = serve_fake_snapshot(&harness.agentscan_socket_path, snapshot);
+
+    let stdout = harness.agentscan_output(["inspect", "%67", "--format", "json"])?;
+    let pane: Value = serde_json::from_str(&stdout).context("inspect output should be JSON")?;
+
+    assert_eq!(pane["pane_id"], "%67");
+    assert_eq!(pane["provider"], "codex");
+    fake_daemon.join().expect("fake daemon should join");
+    Ok(())
+}
+
+#[test]
+fn one_shot_snapshot_reads_daemon_socket_when_cache_is_poisoned() -> Result<()> {
+    let harness = TestHarness::new()?;
+    fs::write(&harness.cache_path, b"{invalid json").context("failed to poison cache")?;
+    let snapshot: Value =
+        serde_json::from_str(CACHE_SNAPSHOT_FIXTURE).context("fixture should be JSON")?;
+    let fake_daemon = serve_fake_snapshot(&harness.agentscan_socket_path, snapshot);
+
+    let stdout = harness.agentscan_output(["snapshot", "--format", "json"])?;
+    let snapshot: Value =
+        serde_json::from_str(&stdout).context("snapshot output should be JSON")?;
+
+    assert_eq!(snapshot["source"]["kind"], "daemon");
+    assert!(
+        snapshot["panes"]
+            .as_array()
+            .context("snapshot panes should be an array")?
+            .iter()
+            .any(|pane| pane["pane_id"] == "%67" && pane["provider"] == "codex"),
+        "snapshot should read the daemon socket snapshot, got:\n{stdout}"
+    );
+    fake_daemon.join().expect("fake daemon should join");
+    Ok(())
+}
+
+#[test]
+fn one_shot_focus_validates_with_daemon_socket_before_focusing() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let _root_pane_id = harness.start_session("one-shot-focus", "sleep 300")?;
+    let split_pane_id = harness.split_window("one-shot-focus:0.0", "sleep 300")?;
+    let mut client = harness.attach_client("one-shot-focus")?;
+    let stdout = harness.agentscan_output(["scan", "--all", "--format", "json"])?;
+    let snapshot: Value = serde_json::from_str(&stdout).context("scan output should be JSON")?;
+    fs::write(&harness.cache_path, b"{invalid json").context("failed to poison cache")?;
+    let fake_daemon = serve_fake_snapshot(&harness.agentscan_socket_path, snapshot);
+
+    harness.agentscan(["focus", "--client-tty", &client.tty, &split_pane_id])?;
+    harness.wait_for_client_pane(&mut client, &split_pane_id)?;
+
+    fake_daemon.join().expect("fake daemon should join");
+    Ok(())
+}
+
+#[test]
+fn no_auto_start_fails_when_daemon_socket_is_missing() -> Result<()> {
+    let harness = TestHarness::new()?;
+    fs::write(&harness.cache_path, CACHE_SNAPSHOT_FIXTURE)
+        .context("failed to seed cache fixture")?;
+
+    let output = harness
+        .agentscan_command()?
+        .args(["list", "--no-auto-start", "--format", "json"])
+        .output()
+        .context("failed to run list with no-auto-start")?;
+    assert!(
+        !output.status.success(),
+        "list should fail without daemon when auto-start is disabled; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8(output.stderr).context("stderr should be UTF-8")?;
+    assert!(
+        stderr.contains("daemon auto-start is disabled"),
+        "expected auto-start disabled error, got:\n{stderr}"
     );
     Ok(())
 }
 
 #[test]
-fn inspect_no_auto_start_preserves_cache_backed_behavior_before_socket_migration() -> Result<()> {
+fn env_no_auto_start_fails_when_daemon_socket_is_missing() -> Result<()> {
     let harness = TestHarness::new()?;
     fs::write(&harness.cache_path, CACHE_SNAPSHOT_FIXTURE)
         .context("failed to seed cache fixture")?;
-    fs::write(&harness.agentscan_socket_path, b"not a socket")
-        .context("failed to poison daemon socket path")?;
-
-    let stdout =
-        harness.agentscan_output(["inspect", "%67", "--no-auto-start", "--format", "json"])?;
-    let pane: Value = serde_json::from_str(&stdout).context("inspect output should be JSON")?;
-
-    assert_eq!(pane["pane_id"], "%67");
-    assert_eq!(pane["provider"], "codex");
-    Ok(())
-}
-
-#[test]
-fn focus_no_auto_start_refresh_preserves_direct_tmux_behavior_before_socket_migration() -> Result<()>
-{
-    let harness = TestHarness::new()?;
-    let _root_pane_id = harness.start_session("focus-no-auto-start", "sleep 300")?;
-    let split_pane_id = harness.split_window("focus-no-auto-start:0.0", "sleep 300")?;
-    let mut client = harness.attach_client("focus-no-auto-start")?;
-    fs::write(&harness.agentscan_socket_path, b"not a socket")
-        .context("failed to poison daemon socket path")?;
-
-    harness.agentscan([
-        "focus",
-        "--client-tty",
-        &client.tty,
-        &split_pane_id,
-        "--no-auto-start",
-        "--refresh",
-    ])?;
-    harness.wait_for_client_pane(&mut client, &split_pane_id)?;
-
-    Ok(())
-}
-
-#[test]
-fn env_no_auto_start_preserves_cache_backed_behavior_before_socket_migration() -> Result<()> {
-    let harness = TestHarness::new()?;
-    fs::write(&harness.cache_path, CACHE_SNAPSHOT_FIXTURE)
-        .context("failed to seed cache fixture")?;
-    fs::write(&harness.agentscan_socket_path, b"not a socket")
-        .context("failed to poison daemon socket path")?;
 
     let output = harness
         .agentscan_command()?
@@ -967,21 +1011,69 @@ fn env_no_auto_start_preserves_cache_backed_behavior_before_socket_migration() -
         .output()
         .context("failed to run list with env opt-out")?;
     assert!(
-        output.status.success(),
-        "list should succeed from cache; stdout:\n{}\nstderr:\n{}",
+        !output.status.success(),
+        "list should fail without daemon when env disables auto-start; stdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    let stdout = String::from_utf8(output.stdout).context("list output should be UTF-8")?;
-    let snapshot: Value = serde_json::from_str(&stdout).context("list output should be JSON")?;
+    let stderr = String::from_utf8(output.stderr).context("stderr should be UTF-8")?;
     assert!(
-        snapshot["panes"]
-            .as_array()
-            .context("snapshot panes should be an array")?
-            .iter()
-            .any(|pane| pane["pane_id"] == "%67" && pane["provider"] == "codex"),
-        "list should read the existing cache fixture, got:\n{stdout}"
+        stderr.contains("daemon auto-start is disabled"),
+        "expected auto-start disabled error, got:\n{stderr}"
     );
+    Ok(())
+}
+
+#[test]
+fn one_shot_refresh_and_scan_refresh_do_not_touch_cache_or_daemon() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let pane_id = harness.start_session("refresh-no-cache-write", "sleep 300")?;
+    fs::write(&harness.cache_path, CACHE_SNAPSHOT_FIXTURE)
+        .context("failed to seed cache fixture")?;
+    fs::write(&harness.agentscan_socket_path, b"not a socket")
+        .context("failed to poison daemon socket path")?;
+
+    for args in [
+        ["list", "--refresh", "--format", "json"].as_slice(),
+        ["snapshot", "--refresh", "--format", "json"].as_slice(),
+        ["scan", "--refresh", "--format", "json"].as_slice(),
+        ["inspect", &pane_id, "--refresh", "--format", "json"].as_slice(),
+    ] {
+        harness.agentscan(args)?;
+        let contents =
+            fs::read_to_string(&harness.cache_path).context("failed to reread cache fixture")?;
+        assert_eq!(
+            contents, CACHE_SNAPSHOT_FIXTURE,
+            "command should not rewrite cache: {args:?}"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn focus_refresh_does_not_touch_cache_or_daemon() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let _root_pane_id = harness.start_session("focus-refresh-no-cache-write", "sleep 300")?;
+    let split_pane_id = harness.split_window("focus-refresh-no-cache-write:0.0", "sleep 300")?;
+    let mut client = harness.attach_client("focus-refresh-no-cache-write")?;
+    fs::write(&harness.cache_path, CACHE_SNAPSHOT_FIXTURE)
+        .context("failed to seed cache fixture")?;
+    fs::write(&harness.agentscan_socket_path, b"not a socket")
+        .context("failed to poison daemon socket path")?;
+
+    harness.agentscan([
+        "focus",
+        "--client-tty",
+        &client.tty,
+        &split_pane_id,
+        "--refresh",
+    ])?;
+    harness.wait_for_client_pane(&mut client, &split_pane_id)?;
+    let contents =
+        fs::read_to_string(&harness.cache_path).context("failed to reread cache fixture")?;
+    assert_eq!(contents, CACHE_SNAPSHOT_FIXTURE);
+
     Ok(())
 }
 
@@ -1013,30 +1105,25 @@ fn env_no_auto_start_does_not_disable_daemon_start_command() -> Result<()> {
 }
 
 #[test]
-fn cache_commands_reject_root_no_auto_start_before_socket_migration() -> Result<()> {
+fn cache_commands_reject_root_no_auto_start() -> Result<()> {
     let harness = TestHarness::new()?;
     fs::write(&harness.cache_path, CACHE_SNAPSHOT_FIXTURE)
         .context("failed to seed cache fixture")?;
 
-    for args in [
-        ["--no-auto-start", "cache", "show"].as_slice(),
-        ["--no-auto-start", "cache", "validate"].as_slice(),
-    ] {
-        let output = harness
-            .agentscan_command()?
-            .args(args)
-            .output()
-            .context("failed to run cache command with root no-auto-start")?;
-        assert!(
-            !output.status.success(),
-            "cache command should reject root no-auto-start; args: {args:?}"
-        );
-        let stderr = String::from_utf8(output.stderr).context("stderr should be UTF-8")?;
-        assert!(
-            stderr.contains("`--no-auto-start` is not supported"),
-            "expected root no-auto-start rejection, got:\n{stderr}"
-        );
-    }
+    let output = harness
+        .agentscan_command()?
+        .args(["--no-auto-start", "cache", "validate"])
+        .output()
+        .context("failed to run cache command with root no-auto-start")?;
+    assert!(
+        !output.status.success(),
+        "cache command should reject root no-auto-start"
+    );
+    let stderr = String::from_utf8(output.stderr).context("stderr should be UTF-8")?;
+    assert!(
+        stderr.contains("`--no-auto-start` is not supported"),
+        "expected root no-auto-start rejection, got:\n{stderr}"
+    );
     Ok(())
 }
 
@@ -1069,7 +1156,7 @@ fn tui_focuses_selected_pane_from_interactive_tmux_pane() -> Result<()> {
         "--state",
         "busy",
     ])?;
-    harness.agentscan(["-f", "cache", "show"])?;
+    harness.agentscan(["-f", "cache", "validate"])?;
     let mut client = harness.attach_client("tui-focus")?;
 
     let tui_pane_id = harness.start_agentscan_tui_pane("tui-focus:0.0", &[])?;
@@ -1129,7 +1216,7 @@ fn tui_displays_message_when_cached_pane_no_longer_exists() -> Result<()> {
         "--state",
         "busy",
     ])?;
-    harness.agentscan(["-f", "cache", "show"])?;
+    harness.agentscan(["-f", "cache", "validate"])?;
     harness.tmux(["kill-pane", "-t", &split_pane_id])?;
     let mut client = harness.attach_client("tui-missing")?;
 
@@ -1235,7 +1322,7 @@ fn tui_rerenders_when_cache_changes() -> Result<()> {
         "--state",
         "busy",
     ])?;
-    harness.agentscan(["-f", "cache", "show"])?;
+    harness.agentscan(["-f", "cache", "validate"])?;
 
     let tui_pane_id = harness.start_agentscan_tui_pane("tui-rerender:0.0", &[])?;
     harness.wait_for_pane_contents(&tui_pane_id, |contents| contents.contains("Initial Task"))?;
@@ -1314,7 +1401,7 @@ fn tui_pages_to_overflow_rows() -> Result<()> {
             "busy",
         ])?;
     }
-    harness.agentscan(["-f", "cache", "show"])?;
+    harness.agentscan(["-f", "cache", "validate"])?;
 
     let _client = harness.attach_client("tui-paging")?;
     let tui_pane_id = harness.start_agentscan_tui_pane("tui-paging:0.0", &[])?;
@@ -1357,7 +1444,7 @@ fn display_popup_pages_to_overflow_rows_and_focuses_selection() -> Result<()> {
             "busy",
         ])?;
     }
-    harness.agentscan(["-f", "cache", "show"])?;
+    harness.agentscan(["-f", "cache", "validate"])?;
     let target_pane_id = pane_ids[16].clone();
     let mut client = harness.attach_client("display-tui-paging")?;
 
@@ -1590,6 +1677,37 @@ fn read_daemon_socket_json_line(reader: &mut impl BufRead) -> Result<Value> {
         bail!("daemon socket closed before sending expected frame");
     }
     serde_json::from_str(&line).context("daemon socket frame was not valid JSON")
+}
+
+fn serve_fake_snapshot(socket_path: &Path, snapshot: Value) -> std::thread::JoinHandle<()> {
+    let listener = UnixListener::bind(socket_path).expect("fake snapshot daemon should bind");
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("snapshot client should connect");
+        let mut hello = String::new();
+        BufReader::new(
+            stream
+                .try_clone()
+                .expect("fake snapshot stream should clone"),
+        )
+        .read_line(&mut hello)
+        .expect("snapshot hello should read");
+        assert!(
+            hello.contains(r#""mode":"snapshot""#),
+            "expected snapshot hello, got: {hello}"
+        );
+        let ack = serde_json::json!({
+            "type": "hello_ack",
+            "protocol_version": 1,
+            "snapshot_schema_version": 4
+        });
+        let frame = serde_json::json!({
+            "type": "snapshot",
+            "snapshot": snapshot
+        });
+        writeln!(stream, "{ack}").expect("fake snapshot ack should write");
+        writeln!(stream, "{frame}").expect("fake snapshot frame should write");
+        stream.flush().expect("fake snapshot frame should flush");
+    })
 }
 
 fn write_fake_lifecycle_status(

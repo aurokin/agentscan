@@ -14,6 +14,10 @@ pub fn run() -> Result<()> {
             merge_list_args(&mut args, &root_list_args);
             command_list(&args)
         }
+        Some(Commands::Snapshot(mut args)) => {
+            merge_snapshot_args(&mut args, &root_list_args)?;
+            command_snapshot(&args)
+        }
         Some(Commands::Tui(mut args)) => {
             merge_tui_args(&mut args, &root_list_args)?;
             command_tui(&args)
@@ -51,6 +55,20 @@ pub(super) fn merge_scan_args(args: &mut ScanArgs, root_list_args: &ListArgs) {
     if args.format == OutputFormat::Text {
         args.format = root_list_args.format;
     }
+}
+
+pub(super) fn merge_snapshot_args(
+    args: &mut SnapshotArgs,
+    root_list_args: &ListArgs,
+) -> Result<()> {
+    reject_root_all(root_list_args, "snapshot")?;
+    args.refresh.refresh |= root_list_args.refresh.refresh;
+    args.auto_start.no_auto_start |= root_list_args.auto_start.no_auto_start;
+    if args.format == OutputFormat::Text {
+        args.format = root_list_args.format;
+    }
+
+    Ok(())
 }
 
 pub(super) fn merge_inspect_args(args: &mut InspectArgs, root_list_args: &ListArgs) -> Result<()> {
@@ -125,7 +143,7 @@ pub(super) fn reject_root_auto_start(root_list_args: &ListArgs, command_name: &s
 pub(super) fn reject_tui_format(root_list_args: &ListArgs) -> Result<()> {
     if root_list_args.format != OutputFormat::Text {
         bail!(
-            "`agentscan tui` is interactive-only and does not support `--format`; use `agentscan list --format json` for supported machine-readable output or `agentscan cache show --format json` for the raw cached snapshot"
+            "`agentscan tui` is interactive-only and does not support `--format`; use `agentscan list --format json` for supported machine-readable output or `agentscan snapshot --format json` for the raw snapshot envelope"
         );
     }
 
@@ -141,23 +159,30 @@ fn reject_root_list_args(root_list_args: &ListArgs, command_name: &str) -> Resul
 
 fn command_scan(args: &ScanArgs) -> Result<()> {
     emit_filtered_snapshot(
-        snapshot_for_scan(args.refresh.refresh)?,
+        snapshot_from_direct_tmux_for_recovery()?,
         args.all,
         args.format,
     )
 }
 
-fn snapshot_for_scan(refresh: bool) -> Result<SnapshotEnvelope> {
-    if refresh {
-        cache::refresh_cache_from_tmux()
-    } else {
-        scanner::snapshot_from_tmux()
+fn snapshot_from_direct_tmux_for_recovery() -> Result<SnapshotEnvelope> {
+    scanner::snapshot_from_tmux()
+}
+
+fn snapshot_for_consumer(
+    refresh: RefreshArgs,
+    auto_start: AutoStartArgs,
+) -> Result<SnapshotEnvelope> {
+    if refresh.refresh {
+        return snapshot_from_direct_tmux_for_recovery();
     }
+
+    daemon::snapshot_via_socket(daemon::AutoStartPolicy::from_args(auto_start))
+        .map_err(daemon::DaemonSnapshotError::into_anyhow)
 }
 
 fn command_list(args: &ListArgs) -> Result<()> {
-    let _auto_start_policy = daemon::AutoStartPolicy::from_args(args.auto_start);
-    let snapshot = cache::load_snapshot(args.refresh.refresh)?;
+    let snapshot = snapshot_for_consumer(args.refresh, args.auto_start)?;
     emit_filtered_snapshot(snapshot, args.all, args.format)
 }
 
@@ -174,13 +199,21 @@ fn command_tui(args: &TuiArgs) -> Result<()> {
     tui::run(args)
 }
 
+fn command_snapshot(args: &SnapshotArgs) -> Result<()> {
+    let snapshot = snapshot_for_consumer(args.refresh, args.auto_start)?;
+    match args.format {
+        OutputFormat::Text => output::print_snapshot_summary_text(&snapshot)?,
+        OutputFormat::Json => output::print_json(&snapshot)?,
+    }
+    Ok(())
+}
+
 fn command_inspect(args: &InspectArgs) -> Result<()> {
-    let _auto_start_policy = daemon::AutoStartPolicy::from_args(args.auto_start);
-    let snapshot = cache::load_snapshot(args.refresh.refresh)?;
+    let snapshot = snapshot_for_consumer(args.refresh, args.auto_start)?;
     let snapshot_name = if args.refresh.refresh {
         "fresh tmux snapshot"
     } else {
-        "cached snapshot"
+        "daemon snapshot"
     };
     let pane = snapshot
         .panes
@@ -197,16 +230,18 @@ fn command_inspect(args: &InspectArgs) -> Result<()> {
 }
 
 fn command_focus(args: &FocusArgs) -> Result<()> {
-    let _auto_start_policy = daemon::AutoStartPolicy::from_args(args.auto_start);
-    if args.refresh.refresh {
-        let snapshot = cache::refresh_cache_from_tmux()?;
-        let pane_exists = snapshot
-            .panes
-            .iter()
-            .any(|pane| pane.pane_id == args.pane_id);
-        if !pane_exists {
-            bail!("pane {} not found in fresh tmux snapshot", args.pane_id);
-        }
+    let snapshot = snapshot_for_consumer(args.refresh, args.auto_start)?;
+    let pane_exists = snapshot
+        .panes
+        .iter()
+        .any(|pane| pane.pane_id == args.pane_id);
+    if !pane_exists {
+        let snapshot_name = if args.refresh.refresh {
+            "fresh tmux snapshot"
+        } else {
+            "daemon snapshot"
+        };
+        bail!("pane {} not found in {snapshot_name}", args.pane_id);
     }
     match tmux::focus_tmux_pane(&args.pane_id, args.client_tty.as_deref())? {
         tmux::FocusTmuxPaneResult::Focused => Ok(()),
@@ -232,16 +267,6 @@ fn command_cache(args: &CacheArgs, root_list_args: &ListArgs) -> Result<()> {
             reject_root_list_args(root_list_args, "cache path")?;
             println!("{}", cache::cache_path()?.display());
         }
-        CacheCommands::Show(ref args) => {
-            reject_root_all(root_list_args, "cache show")?;
-            reject_root_auto_start(root_list_args, "cache show")?;
-            let snapshot =
-                cache::load_snapshot(args.refresh.refresh || root_list_args.refresh.refresh)?;
-            match merged_output_format(args.format, root_list_args.format) {
-                OutputFormat::Text => output::print_cache_summary_text(&snapshot)?,
-                OutputFormat::Json => output::print_json(&snapshot)?,
-            }
-        }
         CacheCommands::Validate(ref args) => {
             reject_root_all(root_list_args, "cache validate")?;
             reject_root_format(root_list_args, "cache validate")?;
@@ -262,14 +287,6 @@ fn command_cache(args: &CacheArgs, root_list_args: &ListArgs) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn merged_output_format(command_format: OutputFormat, root_format: OutputFormat) -> OutputFormat {
-    if command_format == OutputFormat::Text {
-        root_format
-    } else {
-        command_format
-    }
 }
 
 fn command_tmux(args: &TmuxArgs, root_list_args: &ListArgs) -> Result<()> {

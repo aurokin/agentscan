@@ -69,17 +69,22 @@ fn root_list_args_merge_into_other_refresh_capable_commands() {
         other => panic!("expected tui command, got {other:?}"),
     }
 
-    let cli =
-        <Cli as clap::Parser>::parse_from(["agentscan", "--format", "json", "cache", "show", "-f"]);
+    let cli = <Cli as clap::Parser>::parse_from([
+        "agentscan",
+        "--format",
+        "json",
+        "--no-auto-start",
+        "snapshot",
+        "-f",
+    ]);
     match cli.command {
-        Some(super::Commands::Cache(args)) => match args.command {
-            super::CacheCommands::Show(show_args) => {
-                assert!(show_args.refresh.refresh);
-                assert_eq!(cli.list_args.format, OutputFormat::Json);
-            }
-            other => panic!("expected cache show command, got {other:?}"),
-        },
-        other => panic!("expected cache command, got {other:?}"),
+        Some(super::Commands::Snapshot(mut args)) => {
+            super::commands::merge_snapshot_args(&mut args, &cli.list_args).unwrap();
+            assert!(args.refresh.refresh);
+            assert!(args.auto_start.no_auto_start);
+            assert_eq!(args.format, OutputFormat::Json);
+        }
+        other => panic!("expected snapshot command, got {other:?}"),
     }
 }
 
@@ -168,6 +173,14 @@ fn auto_start_opt_out_parses_only_for_future_daemon_backed_consumers() {
             assert!(args.auto_start.no_auto_start);
         }
         other => panic!("expected focus command, got {other:?}"),
+    }
+
+    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "snapshot", "--no-auto-start"]);
+    match cli.command {
+        Some(super::Commands::Snapshot(args)) => {
+            assert!(args.auto_start.no_auto_start);
+        }
+        other => panic!("expected snapshot command, got {other:?}"),
     }
 }
 

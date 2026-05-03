@@ -89,15 +89,15 @@ The core architecture is moving to a daemon-required, socket-backed model:
 - `agentscan scan` and refresh-capable command flags remain direct tmux
   recovery paths that do not start or require the daemon
 
-Active migration sequencing lives in Linear. Until that migration lands, some
-current commands still use the older cache-backed names and behavior.
+Active migration sequencing lives in Linear. The remaining cache-backed surface
+is intentionally narrow while TUI subscription and cache cleanup finish.
 
 ## Current Shipped Scope
 
-The current branch, before the socket migration lands, centers on:
+The current branch centers on:
 
 - direct tmux snapshots from `tmux list-panes -a -F ...`
-- a control-mode daemon that maintains a local JSON cache
+- a control-mode daemon that serves socket snapshots and maintains a temporary local JSON cache
 - repo-local tmux helpers that stay thin and call the CLI
 - a runtime split by concern under `src/app/` rather than a single monolithic application file
 
@@ -105,14 +105,14 @@ It can:
 
 - run the existing explicit daemon baseline with tmux control mode
 - fail fast when the daemon loses tmux, leaving restart policy to an external supervisor
-- preserve raw tmux `session_id` and `window_id` values in the canonical pane model for current cache consumers and local daemon updates
+- preserve raw tmux `session_id` and `window_id` values in the canonical pane model for socket consumers and local daemon updates
 - refresh individual panes on daemon title and metadata updates, refresh affected windows or sessions when tmux emits stable ids for those scopes, and keep a periodic full reconcile as a safety net
 - preserve helper-published metadata across unrelated daemon writes
 - report daemon-backed cache health
 - persist and read a local JSON cache
-- show and validate the local JSON cache
+- validate the local JSON cache while it remains a migration artifact
 - distinguish `healthy`, `stale`, and `snapshot_only` daemon-cache states, with daemon refresh provenance in text cache diagnostics
-- force a fresh tmux snapshot and cache rewrite for current refresh-capable commands with `-f` / `--refresh`
+- bypass daemon-backed state with a fresh direct tmux snapshot for refresh-capable one-shot commands using `-f` / `--refresh`
 - list panes through the default `list` flow
 - inspect a pane by `pane_id`, including provider source, status source, classification reasons, and targeted `/proc` fallback decisions
 - focus a pane by `pane_id`, with attached-client fallback when no explicit tty is provided and tested multi-client selection of the most recent attached client
@@ -143,9 +143,9 @@ It can:
   `OPENCODE` process evidence while keeping default opencode status unknown
   unless explicit metadata publishes state
 - publish, clear, and consume explicit wrapper metadata via pane-local `@agent.*` tmux options
-- refresh the existing cache immediately after repo-local metadata helper writes so wrapper-driven metadata changes stay visible during the cache-backed migration phase
+- refresh the existing cache immediately after repo-local metadata helper writes so wrapper-driven metadata changes stay visible during the remaining cache-backed TUI migration phase
 - emit canonical snapshot JSON
-- print the current cache path during the cache-backed migration phase
+- print the current cache path during the remaining cache cleanup phase
 
 Target automation contract:
 

@@ -192,7 +192,7 @@ pub(crate) enum DaemonSnapshotError {
 }
 
 impl DaemonSnapshotError {
-    fn into_anyhow(self) -> anyhow::Error {
+    pub(crate) fn into_anyhow(self) -> anyhow::Error {
         anyhow::anyhow!("{self}")
     }
 }
@@ -395,7 +395,12 @@ fn lifecycle_status_once(socket_path: &Path) -> Result<LifecycleQuery> {
         ipc::DaemonFrame::Shutdown { reason, message } => Ok(LifecycleQuery::Incompatible(
             format!("daemon rejected lifecycle handshake ({reason:?}): {message}"),
         )),
-        ipc::DaemonFrame::HelloAck { .. } => {
+        ipc::DaemonFrame::HelloAck {
+            protocol_version,
+            snapshot_schema_version,
+        } if protocol_version == ipc::WIRE_PROTOCOL_VERSION
+            && snapshot_schema_version == CACHE_SCHEMA_VERSION =>
+        {
             let Some(second_frame) = ipc::read_daemon_frame(&mut reader)? else {
                 return Ok(LifecycleQuery::Incompatible(
                     "daemon acknowledged lifecycle hello but did not send status".to_string(),
@@ -408,6 +413,14 @@ fn lifecycle_status_once(socket_path: &Path) -> Result<LifecycleQuery> {
                 ))),
             }
         }
+        ipc::DaemonFrame::HelloAck {
+            protocol_version,
+            snapshot_schema_version,
+        } => Ok(LifecycleQuery::Incompatible(format!(
+            "daemon acknowledged incompatible lifecycle handshake (protocol {protocol_version}, schema {snapshot_schema_version}; expected protocol {}, schema {})",
+            ipc::WIRE_PROTOCOL_VERSION,
+            CACHE_SCHEMA_VERSION
+        ))),
         other => Ok(LifecycleQuery::Incompatible(format!(
             "daemon returned unexpected lifecycle frame {other:?}"
         ))),
@@ -466,7 +479,12 @@ fn snapshot_once_from_socket(socket_path: &Path) -> Result<SnapshotQuery> {
         ipc::DaemonFrame::Shutdown { reason, message } => Ok(SnapshotQuery::Incompatible(format!(
             "daemon rejected snapshot handshake ({reason:?}): {message}"
         ))),
-        ipc::DaemonFrame::HelloAck { .. } => {
+        ipc::DaemonFrame::HelloAck {
+            protocol_version,
+            snapshot_schema_version,
+        } if protocol_version == ipc::WIRE_PROTOCOL_VERSION
+            && snapshot_schema_version == CACHE_SCHEMA_VERSION =>
+        {
             let Some(second_frame) = ipc::read_daemon_frame(&mut reader)? else {
                 return Ok(SnapshotQuery::Unexpected(
                     "daemon acknowledged snapshot hello but did not send snapshot".to_string(),
@@ -494,6 +512,14 @@ fn snapshot_once_from_socket(socket_path: &Path) -> Result<SnapshotQuery> {
                 ))),
             }
         }
+        ipc::DaemonFrame::HelloAck {
+            protocol_version,
+            snapshot_schema_version,
+        } => Ok(SnapshotQuery::Incompatible(format!(
+            "daemon acknowledged incompatible snapshot handshake (protocol {protocol_version}, schema {snapshot_schema_version}; expected protocol {}, schema {})",
+            ipc::WIRE_PROTOCOL_VERSION,
+            CACHE_SCHEMA_VERSION
+        ))),
         other => Ok(SnapshotQuery::Unexpected(format!(
             "daemon returned unexpected snapshot frame {other:?}"
         ))),
@@ -536,7 +562,14 @@ fn snapshot_via_socket_path_with_starter(
                 message: error.to_string(),
             }
         })? {
-            SnapshotQuery::Snapshot(snapshot) => return Ok(snapshot),
+            SnapshotQuery::Snapshot(snapshot) => {
+                cache::validate_snapshot(&snapshot, None).map_err(|error| {
+                    DaemonSnapshotError::Incompatible {
+                        message: format!("daemon returned invalid snapshot: {error:#}"),
+                    }
+                })?;
+                return Ok(snapshot);
+            }
             SnapshotQuery::NotRunning(reason) if policy.disabled => {
                 return Err(DaemonSnapshotError::AutoStartDisabled { reason });
             }
@@ -945,10 +978,14 @@ pub(super) fn daemon_run() -> Result<()> {
 
 pub(super) fn daemon_status() -> Result<()> {
     let socket_path = ipc::resolve_socket_path()?;
-    let paths = LifecyclePaths::from_socket_path(&socket_path);
-    match lifecycle_status_from_socket(&socket_path, LIFECYCLE_CONNECT_TIMEOUT)? {
+    daemon_status_with_socket_path(&socket_path)
+}
+
+pub(crate) fn daemon_status_with_socket_path(socket_path: &Path) -> Result<()> {
+    let paths = LifecyclePaths::from_socket_path(socket_path);
+    match lifecycle_status_from_socket(socket_path, LIFECYCLE_CONNECT_TIMEOUT)? {
         LifecycleQuery::NotRunning(reason) => {
-            print_lifecycle_not_running(&socket_path, &paths, &reason);
+            print_lifecycle_not_running(socket_path, &paths, &reason);
             Ok(())
         }
         LifecycleQuery::Status(status) => {

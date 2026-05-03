@@ -117,7 +117,7 @@ impl TestHarness {
             "--state",
             "busy",
         ])?;
-        self.agentscan(["-f", "cache", "show"])
+        self.agentscan(["-f", "cache", "validate"])
     }
 
     fn start_daemon(&self) -> Result<DaemonHandle> {

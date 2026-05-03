@@ -171,13 +171,51 @@ fn serve_snapshot_responses(
                 socket_hello(ipc::ClientMode::Snapshot)
             );
             for frame in response {
-                stream
-                    .write_all(&ipc::encode_frame(&frame).expect("frame should encode"))
-                    .expect("daemon response should write");
+                if let Err(error) =
+                    stream.write_all(&ipc::encode_frame(&frame).expect("frame should encode"))
+                {
+                    assert_eq!(
+                        error.kind(),
+                        std::io::ErrorKind::BrokenPipe,
+                        "daemon response should write or observe client disconnect"
+                    );
+                    break;
+                }
             }
             accepted += 1;
         }
         accepted
+    })
+}
+
+fn serve_lifecycle_responses(
+    socket_path: &Path,
+    responses: Vec<ipc::DaemonFrame>,
+) -> JoinHandle<usize> {
+    let listener = UnixListener::bind(socket_path).expect("lifecycle listener should bind");
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("lifecycle client should connect");
+        let reader_stream = stream.try_clone().expect("server stream should clone");
+        let mut reader = BufReader::new(reader_stream);
+        assert_eq!(
+            ipc::read_client_frame(&mut reader)
+                .expect("client hello should decode")
+                .expect("client should send hello"),
+            socket_hello(ipc::ClientMode::LifecycleStatus)
+        );
+        for frame in responses {
+            if let Err(error) =
+                stream.write_all(&ipc::encode_frame(&frame).expect("frame should encode"))
+            {
+                assert_eq!(
+                    error.kind(),
+                    std::io::ErrorKind::BrokenPipe,
+                    "daemon response should write or observe client disconnect"
+                );
+                break;
+            }
+        }
+        1
     })
 }
 
@@ -484,6 +522,45 @@ fn daemon_socket_lifecycle_status_reports_ready_identity_and_counts() {
         }
         other => panic!("expected lifecycle status frames, got {other:?}"),
     }
+}
+
+#[test]
+fn daemon_lifecycle_query_rejects_incompatible_hello_ack() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let socket_path = tempdir.path().join("agentscan.sock");
+    let status = ipc::LifecycleStatusFrame {
+        state: ipc::LifecycleDaemonState::Ready,
+        identity: ipc::DaemonIdentityFrame {
+            pid: 42,
+            daemon_start_time: "2026-05-03T00:00:00Z".to_string(),
+            executable: "/bin/agentscan".to_string(),
+            executable_canonical: None,
+            socket_path: socket_path.display().to_string(),
+            protocol_version: ipc::WIRE_PROTOCOL_VERSION + 1,
+            snapshot_schema_version: CACHE_SCHEMA_VERSION,
+        },
+        subscriber_count: 0,
+        latest_snapshot_generated_at: None,
+        latest_snapshot_pane_count: None,
+        unavailable_reason: None,
+        message: None,
+    };
+    let handle = serve_lifecycle_responses(
+        &socket_path,
+        vec![
+            ipc::DaemonFrame::HelloAck {
+                protocol_version: ipc::WIRE_PROTOCOL_VERSION + 1,
+                snapshot_schema_version: CACHE_SCHEMA_VERSION,
+            },
+            ipc::DaemonFrame::LifecycleStatus { status },
+        ],
+    );
+
+    let error = daemon::daemon_status_with_socket_path(&socket_path)
+        .expect_err("incompatible lifecycle ack should fail");
+
+    assert!(error.to_string().contains("incompatible lifecycle handshake"));
+    assert_eq!(handle.join().expect("server should join"), 1);
 }
 
 #[test]
@@ -1040,6 +1117,61 @@ fn daemon_snapshot_helper_reports_incompatible_daemon_guidance() {
             .to_string()
             .contains("stop the incompatible daemon manually")
     );
+    assert_eq!(handle.join().expect("server should join"), 1);
+}
+
+#[test]
+fn daemon_snapshot_helper_rejects_incompatible_hello_ack() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let socket_path = tempdir.path().join("agentscan.sock");
+    let snapshot = empty_socket_snapshot("2026-05-03T00:00:00Z");
+    let handle = serve_snapshot_responses(
+        &socket_path,
+        vec![vec![
+            ipc::DaemonFrame::HelloAck {
+                protocol_version: ipc::WIRE_PROTOCOL_VERSION + 1,
+                snapshot_schema_version: CACHE_SCHEMA_VERSION,
+            },
+            ipc::DaemonFrame::Snapshot { snapshot },
+        ]],
+    );
+
+    let error =
+        daemon::snapshot_via_socket_path(&socket_path, daemon::AutoStartPolicy::enabled_for_tests())
+            .expect_err("incompatible hello ack should fail");
+
+    assert!(matches!(
+        error,
+        daemon::DaemonSnapshotError::Incompatible { .. }
+    ));
+    assert!(error.to_string().contains("incompatible snapshot handshake"));
+    assert_eq!(handle.join().expect("server should join"), 1);
+}
+
+#[test]
+fn daemon_snapshot_helper_rejects_invalid_snapshot_schema() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let socket_path = tempdir.path().join("agentscan.sock");
+    let mut snapshot = empty_socket_snapshot("2026-05-03T00:00:00Z");
+    snapshot.schema_version = CACHE_SCHEMA_VERSION + 1;
+    let handle = serve_snapshot_responses(
+        &socket_path,
+        vec![vec![
+            hello_ack_frame(),
+            ipc::DaemonFrame::Snapshot { snapshot },
+        ]],
+    );
+
+    let error =
+        daemon::snapshot_via_socket_path(&socket_path, daemon::AutoStartPolicy::enabled_for_tests())
+            .expect_err("invalid snapshot schema should fail");
+
+    assert!(matches!(
+        error,
+        daemon::DaemonSnapshotError::Incompatible { .. }
+    ));
+    assert!(error.to_string().contains("invalid snapshot"));
+    assert!(error.to_string().contains("unsupported cache schema version"));
     assert_eq!(handle.join().expect("server should join"), 1);
 }
 

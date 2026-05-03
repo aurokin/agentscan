@@ -18,6 +18,8 @@ pub(crate) enum Commands {
     Scan(ScanArgs),
     /// List panes using the best available state source.
     List(ListArgs),
+    /// Print the current raw snapshot envelope.
+    Snapshot(SnapshotArgs),
     /// Open the interactive TUI. `tui` is interactive-only; use `list --format json` for automation.
     Tui(TuiArgs),
     /// Inspect one pane by pane id.
@@ -57,6 +59,19 @@ pub(crate) struct ScanArgs {
     /// Include all tmux panes, not only likely agent panes.
     #[arg(long)]
     pub(crate) all: bool,
+
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    pub(crate) format: OutputFormat,
+}
+
+#[derive(Args, Clone, Copy, Debug)]
+pub(crate) struct SnapshotArgs {
+    #[command(flatten)]
+    pub(crate) refresh: RefreshArgs,
+
+    #[command(flatten)]
+    pub(crate) auto_start: AutoStartArgs,
 
     /// Output format.
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
@@ -127,20 +142,8 @@ pub(crate) struct TmuxArgs {
 pub(crate) enum CacheCommands {
     /// Print the cache path.
     Path,
-    /// Show cache contents or summary information.
-    Show(CacheShowArgs),
     /// Validate the current cache file.
     Validate(CacheValidateArgs),
-}
-
-#[derive(Args, Debug)]
-pub(crate) struct CacheShowArgs {
-    #[command(flatten)]
-    pub(crate) refresh: RefreshArgs,
-
-    /// Output format.
-    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
-    pub(crate) format: OutputFormat,
 }
 
 #[derive(Args, Debug)]
@@ -215,7 +218,7 @@ pub(crate) struct TmuxClearMetadataArgs {
 
 #[derive(Args, Clone, Copy, Debug, Default)]
 pub(crate) struct RefreshArgs {
-    /// Force a fresh tmux snapshot and rewrite the cache before running the command.
+    /// Bypass daemon-backed state and read a fresh tmux snapshot.
     #[arg(short = 'f', long = "refresh")]
     pub(crate) refresh: bool,
 }

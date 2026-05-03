@@ -175,13 +175,12 @@ pub(super) fn print_json<T: Serialize>(value: &T) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn print_cache_summary_text(snapshot: &SnapshotEnvelope) -> Result<()> {
-    let path = cache::cache_path()?;
+pub(super) fn print_snapshot_summary_text(snapshot: &SnapshotEnvelope) -> Result<()> {
     let summary = cache::summarize_snapshot(snapshot)?;
-    let diagnostics = cache::cache_diagnostics(snapshot, None)?;
 
-    print_cache_snapshot_fields(&path, snapshot, &diagnostics, true);
-    print_daemon_cache_diagnostics(&diagnostics);
+    println!("schema_version: {}", snapshot.schema_version);
+    println!("generated_at: {}", snapshot.generated_at);
+    println!("source: {:?}", snapshot.source.kind);
     println!(
         "tmux_version: {}",
         snapshot
