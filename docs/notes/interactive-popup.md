@@ -51,9 +51,9 @@ The current implementation remains the baseline:
 - cache-only open by default, with `-f` / `--refresh` for on-demand recovery
 - in-popup cache error rendering instead of a raw CLI failure
 
-Target replacement behavior is tracked in
-`docs/notes/daemon-socket-migration.md`: no initial cache read, socket-only
-bootstrap, reconnect state, and a daemon connection indicator.
+Target replacement behavior is tracked in Linear and summarized in the primary
+architecture docs: no initial cache read, socket-only bootstrap, reconnect
+state, and a daemon connection indicator.
 
 ## Follow-up Notes
 
@@ -74,10 +74,10 @@ Use one of these forms instead:
 
 ### Maintenance rule
 
-Treat this file as a narrow legacy popup note. `README.md`, `ROADMAP.md`,
-`docs/architecture.md`, and `docs/notes/daemon-socket-migration.md` are the
-sources of truth for the adopted TUI direction. As socket phases land, delete
-sections here instead of keeping a parallel cache-polling plan alive.
+Treat this file as a narrow legacy popup note. `README.md`, `ROADMAP.md`, and
+`docs/architecture.md` are the sources of truth for the adopted TUI direction.
+As socket phases land, delete sections here instead of keeping a parallel
+cache-polling plan alive.
 
 ## Out Of Scope
 

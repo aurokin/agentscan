@@ -89,9 +89,8 @@ The core architecture is moving to a daemon-required, socket-backed model:
 - `agentscan scan` and refresh-capable command flags remain direct tmux
   recovery paths that do not start or require the daemon
 
-The detailed in-flight plan is in `docs/notes/daemon-socket-migration.md`.
-Until that migration lands, some current commands still use the older
-cache-backed names and behavior.
+Active migration sequencing lives in Linear. Until that migration lands, some
+current commands still use the older cache-backed names and behavior.
 
 ## Current Shipped Scope
 
