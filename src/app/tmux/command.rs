@@ -9,11 +9,10 @@ pub(crate) fn tmux_command() -> Command {
 }
 
 pub(super) fn env_has_utf8_locale(read: impl Fn(&str) -> Option<String>) -> bool {
-    ["LC_ALL", "LC_CTYPE", "LANG"].iter().any(|name| {
-        read(name)
-            .filter(|value| !value.is_empty())
-            .is_some_and(|value| value.to_ascii_uppercase().contains("UTF-8"))
-    })
+    ["LC_ALL", "LC_CTYPE", "LANG"]
+        .iter()
+        .find_map(|name| read(name).filter(|value| !value.is_empty()))
+        .is_some_and(|value| value.to_ascii_uppercase().contains("UTF-8"))
 }
 
 pub(super) fn run_tmux_output(args: &[&str], context: &str) -> Result<std::process::Output> {
@@ -160,7 +159,31 @@ mod tests {
     fn lc_all_overrides_other_vars() {
         assert!(env_has_utf8_locale(read_from(&[
             ("LC_ALL", "C.UTF-8"),
-            ("LANG", "POSIX")
+            ("LANG", "POSIX"),
+        ])));
+    }
+
+    #[test]
+    fn lc_all_takes_precedence_over_utf8_lang() {
+        assert!(!env_has_utf8_locale(read_from(&[
+            ("LC_ALL", "C"),
+            ("LANG", "en_US.UTF-8"),
+        ])));
+    }
+
+    #[test]
+    fn lc_ctype_takes_precedence_over_lang_when_lc_all_unset() {
+        assert!(!env_has_utf8_locale(read_from(&[
+            ("LC_CTYPE", "C"),
+            ("LANG", "en_US.UTF-8"),
+        ])));
+    }
+
+    #[test]
+    fn empty_lc_all_falls_through_to_lower_priority_var() {
+        assert!(env_has_utf8_locale(read_from(&[
+            ("LC_ALL", ""),
+            ("LANG", "en_US.UTF-8"),
         ])));
     }
 
