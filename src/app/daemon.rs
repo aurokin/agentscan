@@ -1,7 +1,12 @@
 use super::*;
 use std::collections::HashMap;
+use std::fs::File;
+use std::fs::OpenOptions;
 use std::io::Read;
 use std::os::fd::AsRawFd;
+use std::os::unix::fs::FileTypeExt;
+use std::os::unix::fs::MetadataExt;
+use std::os::unix::process::CommandExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
@@ -17,13 +22,681 @@ const SUBSCRIBER_WRITE_TIMEOUT: Duration = Duration::from_millis(250);
 const SUBSCRIBER_MONITOR_POLL_INTERVAL: Duration = Duration::from_millis(250);
 pub(crate) const MAX_PENDING_HANDSHAKES: usize = 8;
 pub(crate) const MAX_SUBSCRIBERS: usize = 64;
+const LIFECYCLE_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+const DAEMON_START_READINESS_TIMEOUT: Duration = Duration::from_secs(5);
+const DAEMON_STOP_TIMEOUT: Duration = Duration::from_secs(3);
+const LIFECYCLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const LOG_TRUNCATE_THRESHOLD_BYTES: u64 = 1024 * 1024;
+
+static DAEMON_SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 type SubscriberId = u64;
 pub(crate) type EncodedDaemonFrame = Arc<[u8]>;
 
+#[derive(Clone)]
+struct DaemonRuntimeIdentity {
+    pid: u32,
+    daemon_start_time: String,
+    executable: String,
+    executable_canonical: Option<String>,
+    socket_path: String,
+}
+
+impl DaemonRuntimeIdentity {
+    fn new(socket_path: &Path) -> Result<Self> {
+        let executable = env::current_exe()
+            .context("failed to resolve current executable")?
+            .display()
+            .to_string();
+        let executable_canonical = fs::canonicalize(&executable)
+            .ok()
+            .map(|path| path.display().to_string());
+        Ok(Self {
+            pid: std::process::id(),
+            daemon_start_time: cache::now_rfc3339()?,
+            executable,
+            executable_canonical,
+            socket_path: socket_path.display().to_string(),
+        })
+    }
+
+    fn frame(&self) -> ipc::DaemonIdentityFrame {
+        ipc::DaemonIdentityFrame {
+            pid: self.pid,
+            daemon_start_time: self.daemon_start_time.clone(),
+            executable: self.executable.clone(),
+            executable_canonical: self.executable_canonical.clone(),
+            socket_path: self.socket_path.clone(),
+            protocol_version: ipc::WIRE_PROTOCOL_VERSION,
+            snapshot_schema_version: CACHE_SCHEMA_VERSION,
+        }
+    }
+
+    fn unknown_for_tests() -> Self {
+        Self {
+            pid: std::process::id(),
+            daemon_start_time: "1970-01-01T00:00:00Z".to_string(),
+            executable: "unknown".to_string(),
+            executable_canonical: None,
+            socket_path: "unknown".to_string(),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct LifecyclePaths {
+    lock_path: PathBuf,
+    start_lock_path: PathBuf,
+    identity_path: PathBuf,
+    log_path: PathBuf,
+}
+
+impl LifecyclePaths {
+    fn from_socket_path(socket_path: &Path) -> Self {
+        Self {
+            lock_path: socket_path.with_extension("sock.lock"),
+            start_lock_path: socket_path.with_extension("sock.start.lock"),
+            identity_path: socket_path.with_extension("sock.identity.json"),
+            log_path: socket_path.with_extension("sock.log"),
+        }
+    }
+}
+
+enum LifecycleQuery {
+    NotRunning(String),
+    Status(ipc::LifecycleStatusFrame),
+    Incompatible(String),
+    Busy(String),
+}
+
+struct DaemonStartGuard {
+    lock_file: File,
+}
+
+impl DaemonStartGuard {
+    fn acquire(paths: &LifecyclePaths) -> Result<Self> {
+        let lock_file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&paths.start_lock_path)
+            .with_context(|| {
+                format!(
+                    "failed to open daemon start lock {}",
+                    paths.start_lock_path.display()
+                )
+            })?;
+        let result = unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX) };
+        if result != 0 {
+            return Err(std::io::Error::last_os_error())
+                .with_context(|| format!("failed to lock {}", paths.start_lock_path.display()));
+        }
+        Ok(Self { lock_file })
+    }
+}
+
+impl Drop for DaemonStartGuard {
+    fn drop(&mut self) {
+        unsafe {
+            libc::flock(self.lock_file.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
+}
+
+struct DaemonLifecycleGuard {
+    lock_file: File,
+    identity_path: PathBuf,
+    identity: ipc::DaemonIdentityFrame,
+}
+
+impl DaemonLifecycleGuard {
+    fn acquire(paths: &LifecyclePaths, identity: &DaemonRuntimeIdentity) -> Result<Self> {
+        let lock_file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&paths.lock_path)
+            .with_context(|| format!("failed to open daemon lock {}", paths.lock_path.display()))?;
+        let result = unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if result != 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::EWOULDBLOCK)
+                || error.raw_os_error() == Some(libc::EAGAIN)
+            {
+                bail!(
+                    "another agentscan daemon already owns lock {}",
+                    paths.lock_path.display()
+                );
+            }
+            return Err(error)
+                .with_context(|| format!("failed to lock {}", paths.lock_path.display()));
+        }
+
+        let identity_frame = identity.frame();
+        let encoded = serde_json::to_vec_pretty(&identity_frame)
+            .context("failed to encode daemon identity")?;
+        fs::write(&paths.identity_path, encoded).with_context(|| {
+            format!("failed to write identity {}", paths.identity_path.display())
+        })?;
+
+        Ok(Self {
+            lock_file,
+            identity_path: paths.identity_path.clone(),
+            identity: identity_frame,
+        })
+    }
+}
+
+impl Drop for DaemonLifecycleGuard {
+    fn drop(&mut self) {
+        if let Ok(bytes) = fs::read(&self.identity_path)
+            && let Ok(current) = serde_json::from_slice::<ipc::DaemonIdentityFrame>(&bytes)
+            && current == self.identity
+        {
+            let _ = fs::remove_file(&self.identity_path);
+        }
+        unsafe {
+            libc::flock(self.lock_file.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
+}
+
+fn lifecycle_status_from_socket(socket_path: &Path, timeout: Duration) -> Result<LifecycleQuery> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match lifecycle_status_once(socket_path)? {
+            LifecycleQuery::Busy(message) if Instant::now() < deadline => {
+                std::thread::sleep(LIFECYCLE_POLL_INTERVAL);
+                let _ = message;
+            }
+            result => return Ok(result),
+        }
+    }
+}
+
+fn lifecycle_status_once(socket_path: &Path) -> Result<LifecycleQuery> {
+    let mut stream = match std::os::unix::net::UnixStream::connect(socket_path) {
+        Ok(stream) => stream,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(LifecycleQuery::NotRunning("socket is missing".to_string()));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
+            return Ok(LifecycleQuery::NotRunning(
+                "socket exists but no daemon accepted the connection".to_string(),
+            ));
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to connect to daemon socket {}",
+                    socket_path.display()
+                )
+            });
+        }
+    };
+    stream
+        .set_read_timeout(Some(CLIENT_WRITE_TIMEOUT))
+        .context("failed to set daemon lifecycle read timeout")?;
+    stream
+        .set_write_timeout(Some(CLIENT_WRITE_TIMEOUT))
+        .context("failed to set daemon lifecycle write timeout")?;
+    let hello = ipc::ClientFrame::Hello {
+        protocol_version: ipc::WIRE_PROTOCOL_VERSION,
+        snapshot_schema_version: CACHE_SCHEMA_VERSION,
+        mode: ipc::ClientMode::LifecycleStatus,
+    };
+    stream
+        .write_all(&ipc::encode_frame(&hello)?)
+        .context("failed to write daemon lifecycle hello")?;
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .context("failed to close daemon lifecycle write side")?;
+    let mut reader = BufReader::new(stream);
+    let Some(first_frame) = ipc::read_daemon_frame(&mut reader)? else {
+        return Ok(LifecycleQuery::Incompatible(
+            "daemon closed without lifecycle response".to_string(),
+        ));
+    };
+    match first_frame {
+        ipc::DaemonFrame::Shutdown {
+            reason: ipc::ShutdownReason::ServerBusy,
+            message,
+        } => Ok(LifecycleQuery::Busy(message)),
+        ipc::DaemonFrame::Shutdown { reason, message } => Ok(LifecycleQuery::Incompatible(
+            format!("daemon rejected lifecycle handshake ({reason:?}): {message}"),
+        )),
+        ipc::DaemonFrame::HelloAck { .. } => {
+            let Some(second_frame) = ipc::read_daemon_frame(&mut reader)? else {
+                return Ok(LifecycleQuery::Incompatible(
+                    "daemon acknowledged lifecycle hello but did not send status".to_string(),
+                ));
+            };
+            match second_frame {
+                ipc::DaemonFrame::LifecycleStatus { status } => Ok(LifecycleQuery::Status(status)),
+                other => Ok(LifecycleQuery::Incompatible(format!(
+                    "daemon returned unexpected lifecycle frame {other:?}"
+                ))),
+            }
+        }
+        other => Ok(LifecycleQuery::Incompatible(format!(
+            "daemon returned unexpected lifecycle frame {other:?}"
+        ))),
+    }
+}
+
+fn print_lifecycle_not_running(socket_path: &Path, paths: &LifecyclePaths, reason: &str) {
+    println!("daemon_state: not_running");
+    println!("socket_path: {}", socket_path.display());
+    println!("lock_path: {}", paths.lock_path.display());
+    println!("start_lock_path: {}", paths.start_lock_path.display());
+    println!("log_path: {}", paths.log_path.display());
+    println!("reason: {reason}");
+}
+
+fn incompatible_daemon_guidance(message: &str) -> String {
+    format!(
+        "{message}; stop the incompatible daemon manually, remove the socket only if it is stale, then run `agentscan daemon start`"
+    )
+}
+
+fn lifecycle_state_label(state: ipc::LifecycleDaemonState) -> &'static str {
+    match state {
+        ipc::LifecycleDaemonState::Initializing => "initializing",
+        ipc::LifecycleDaemonState::Ready => "ready",
+        ipc::LifecycleDaemonState::StartupFailed => "startup_failed",
+        ipc::LifecycleDaemonState::Closing => "closing",
+    }
+}
+
+fn unavailable_reason_label(reason: ipc::UnavailableReason) -> &'static str {
+    match reason {
+        ipc::UnavailableReason::DaemonNotReady => "daemon_not_ready",
+        ipc::UnavailableReason::StartupFailed => "startup_failed",
+        ipc::UnavailableReason::ServerClosing => "server_closing",
+        ipc::UnavailableReason::SubscribeUnavailable => "subscribe_unavailable",
+        ipc::UnavailableReason::SubscriberLimitReached => "subscriber_limit_reached",
+    }
+}
+
+fn print_lifecycle_status(paths: &LifecyclePaths, status: &ipc::LifecycleStatusFrame) {
+    println!("daemon_state: {}", lifecycle_state_label(status.state));
+    println!("socket_path: {}", status.identity.socket_path);
+    println!("lock_path: {}", paths.lock_path.display());
+    println!("start_lock_path: {}", paths.start_lock_path.display());
+    println!("log_path: {}", paths.log_path.display());
+    println!("pid: {}", status.identity.pid);
+    println!("daemon_start_time: {}", status.identity.daemon_start_time);
+    println!("executable: {}", status.identity.executable);
+    if let Some(executable) = &status.identity.executable_canonical {
+        println!("executable_canonical: {executable}");
+    }
+    println!("protocol_version: {}", status.identity.protocol_version);
+    println!(
+        "snapshot_schema_version: {}",
+        status.identity.snapshot_schema_version
+    );
+    println!("subscriber_count: {}", status.subscriber_count);
+    if let Some(generated_at) = &status.latest_snapshot_generated_at {
+        println!("latest_snapshot_generated_at: {generated_at}");
+    }
+    if let Some(pane_count) = status.latest_snapshot_pane_count {
+        println!("latest_snapshot_pane_count: {pane_count}");
+    }
+    if let Some(reason) = status.unavailable_reason {
+        println!("unavailable_reason: {}", unavailable_reason_label(reason));
+    }
+    if let Some(message) = &status.message {
+        println!("message: {message}");
+    }
+}
+
+fn remove_stale_socket_if_present(socket_path: &Path) -> Result<()> {
+    let Ok(metadata) = fs::symlink_metadata(socket_path) else {
+        return Ok(());
+    };
+    if !metadata.file_type().is_socket() {
+        bail!(
+            "refusing to remove non-socket path at daemon socket location {}",
+            socket_path.display()
+        );
+    }
+    match std::os::unix::net::UnixStream::connect(socket_path) {
+        Ok(_) => bail!(
+            "daemon socket {} is still accepting connections",
+            socket_path.display()
+        ),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+            ) =>
+        {
+            fs::remove_file(socket_path)
+                .with_context(|| format!("failed to remove stale socket {}", socket_path.display()))
+        }
+        Err(error) => Err(error)
+            .with_context(|| format!("failed to probe daemon socket {}", socket_path.display())),
+    }
+}
+
+fn ensure_socket_path_is_socket_if_present(socket_path: &Path) -> Result<()> {
+    let Ok(metadata) = fs::symlink_metadata(socket_path) else {
+        return Ok(());
+    };
+    if metadata.file_type().is_socket() {
+        return Ok(());
+    }
+    bail!(
+        "refusing to use non-socket path at daemon socket location {}",
+        socket_path.display()
+    );
+}
+
+fn prepare_log_file(log_path: &Path) -> Result<()> {
+    if fs::metadata(log_path).is_ok_and(|metadata| metadata.len() > LOG_TRUNCATE_THRESHOLD_BYTES) {
+        File::create(log_path)
+            .with_context(|| format!("failed to truncate daemon log {}", log_path.display()))?;
+    }
+    Ok(())
+}
+
+fn wait_for_daemon_start(
+    socket_path: &Path,
+    paths: &LifecyclePaths,
+    child: &mut std::process::Child,
+) -> Result<()> {
+    wait_for_daemon_readiness(socket_path, paths, Some(child), "agentscan daemon started")
+}
+
+fn wait_for_existing_daemon_start(socket_path: &Path, paths: &LifecyclePaths) -> Result<()> {
+    wait_for_daemon_readiness(socket_path, paths, None, "agentscan daemon already running")
+}
+
+fn wait_for_daemon_readiness(
+    socket_path: &Path,
+    paths: &LifecyclePaths,
+    mut child: Option<&mut std::process::Child>,
+    confirmation: &str,
+) -> Result<()> {
+    let deadline = Instant::now() + DAEMON_START_READINESS_TIMEOUT;
+    loop {
+        match lifecycle_status_from_socket(socket_path, LIFECYCLE_CONNECT_TIMEOUT)? {
+            LifecycleQuery::Status(status) if status.state == ipc::LifecycleDaemonState::Ready => {
+                println!("{confirmation}");
+                print_lifecycle_status(paths, &status);
+                return Ok(());
+            }
+            LifecycleQuery::Status(status)
+                if status.state == ipc::LifecycleDaemonState::StartupFailed =>
+            {
+                bail!(
+                    "daemon startup failed: {}; see log {}",
+                    status
+                        .message
+                        .unwrap_or_else(|| "startup_failed".to_string()),
+                    paths.log_path.display()
+                );
+            }
+            LifecycleQuery::Incompatible(message) => {
+                bail!("{message}; see log {}", paths.log_path.display())
+            }
+            LifecycleQuery::Busy(_) | LifecycleQuery::Status(_) | LifecycleQuery::NotRunning(_) => {
+            }
+        }
+        if let Some(child) = child.as_deref_mut()
+            && let Some(status) = child.try_wait().context("failed to poll daemon process")?
+        {
+            bail!(
+                "daemon exited before readiness with status {status}; see log {}",
+                paths.log_path.display()
+            );
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "timed out waiting for daemon readiness; see log {}",
+                paths.log_path.display()
+            );
+        }
+        std::thread::sleep(LIFECYCLE_POLL_INTERVAL);
+    }
+}
+
+fn matching_live_status(
+    socket_path: &Path,
+    expected_identity: &ipc::DaemonIdentityFrame,
+) -> Result<ipc::LifecycleStatusFrame> {
+    match lifecycle_status_from_socket(socket_path, LIFECYCLE_CONNECT_TIMEOUT)? {
+        LifecycleQuery::Status(status) if status.identity == *expected_identity => Ok(status),
+        LifecycleQuery::Status(status) => bail!(
+            "daemon identity changed from pid {} to pid {}; not sending forced signal",
+            expected_identity.pid,
+            status.identity.pid
+        ),
+        LifecycleQuery::NotRunning(reason) => bail!("daemon is no longer running: {reason}"),
+        LifecycleQuery::Incompatible(message) => {
+            bail!("{message}; not signaling an incompatible daemon")
+        }
+        LifecycleQuery::Busy(message) => bail!("{message}; not signaling daemon while busy"),
+    }
+}
+
+fn validate_live_identity_for_signal(identity: &ipc::DaemonIdentityFrame) -> Result<()> {
+    if identity.pid == 0 {
+        bail!("daemon live identity did not include a valid pid");
+    }
+    if !process_is_live(identity.pid) {
+        bail!("daemon pid {} is not running", identity.pid);
+    }
+    Ok(())
+}
+
+fn process_is_live(pid: u32) -> bool {
+    let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+fn signal_process(pid: u32, signal: libc::c_int) -> Result<()> {
+    let result = unsafe { libc::kill(pid as libc::pid_t, signal) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+            .with_context(|| format!("failed to signal daemon pid {pid}"))
+    }
+}
+
+fn wait_for_process_exit(pid: u32, timeout: Duration) -> Result<bool> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if !process_is_live(pid) {
+            return Ok(true);
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        std::thread::sleep(LIFECYCLE_POLL_INTERVAL);
+    }
+}
+
+fn remove_matching_identity(
+    identity_path: &Path,
+    identity: &ipc::DaemonIdentityFrame,
+) -> Result<()> {
+    let bytes = match fs::read(identity_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to read identity {}", identity_path.display()));
+        }
+    };
+    let current = serde_json::from_slice::<ipc::DaemonIdentityFrame>(&bytes)
+        .with_context(|| format!("failed to parse identity {}", identity_path.display()))?;
+    if current != *identity {
+        return Ok(());
+    }
+    match fs::remove_file(identity_path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error)
+            .with_context(|| format!("failed to remove identity {}", identity_path.display())),
+    }
+}
+
+fn daemon_start_existing_status(socket_path: &Path, paths: &LifecyclePaths) -> Result<bool> {
+    ensure_socket_path_is_socket_if_present(socket_path)?;
+    match lifecycle_status_from_socket(socket_path, LIFECYCLE_CONNECT_TIMEOUT)? {
+        LifecycleQuery::Status(status) if status.state == ipc::LifecycleDaemonState::Ready => {
+            println!("agentscan daemon already running");
+            print_lifecycle_status(paths, &status);
+            Ok(true)
+        }
+        LifecycleQuery::Status(status)
+            if status.state == ipc::LifecycleDaemonState::Initializing =>
+        {
+            wait_for_existing_daemon_start(socket_path, paths)?;
+            Ok(true)
+        }
+        LifecycleQuery::Status(status)
+            if status.state == ipc::LifecycleDaemonState::StartupFailed =>
+        {
+            bail!(
+                "daemon startup failed: {}; see log {}",
+                status
+                    .message
+                    .unwrap_or_else(|| "startup_failed".to_string()),
+                paths.log_path.display()
+            );
+        }
+        LifecycleQuery::Status(status) => {
+            bail!(
+                "daemon socket is reachable but not startable (state {}); use `agentscan daemon status` for details",
+                lifecycle_state_label(status.state)
+            );
+        }
+        LifecycleQuery::Incompatible(message) => {
+            bail!("{}", incompatible_daemon_guidance(&message))
+        }
+        LifecycleQuery::Busy(message) => bail!("{message}; retry daemon start later"),
+        LifecycleQuery::NotRunning(_) => Ok(false),
+    }
+}
+
 pub(super) fn daemon_run() -> Result<()> {
     let socket_path = ipc::resolve_socket_path()?;
     daemon_run_with_socket_path_and_startup(&socket_path, DaemonStartup)
+}
+
+pub(super) fn daemon_status() -> Result<()> {
+    let socket_path = ipc::resolve_socket_path()?;
+    let paths = LifecyclePaths::from_socket_path(&socket_path);
+    match lifecycle_status_from_socket(&socket_path, LIFECYCLE_CONNECT_TIMEOUT)? {
+        LifecycleQuery::NotRunning(reason) => {
+            print_lifecycle_not_running(&socket_path, &paths, &reason);
+            Ok(())
+        }
+        LifecycleQuery::Status(status) => {
+            print_lifecycle_status(&paths, &status);
+            Ok(())
+        }
+        LifecycleQuery::Incompatible(message) => {
+            bail!("{}", incompatible_daemon_guidance(&message))
+        }
+        LifecycleQuery::Busy(message) => bail!("{message}"),
+    }
+}
+
+pub(super) fn daemon_start() -> Result<()> {
+    let socket_path = ipc::resolve_socket_path()?;
+    let paths = LifecyclePaths::from_socket_path(&socket_path);
+
+    if daemon_start_existing_status(&socket_path, &paths)? {
+        return Ok(());
+    }
+    let _start_guard = DaemonStartGuard::acquire(&paths)?;
+    if daemon_start_existing_status(&socket_path, &paths)? {
+        return Ok(());
+    }
+
+    remove_stale_socket_if_present(&socket_path)?;
+    prepare_log_file(&paths.log_path)?;
+
+    let log_stdout = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&paths.log_path)
+        .with_context(|| format!("failed to open daemon log {}", paths.log_path.display()))?;
+    let log_stderr = log_stdout
+        .try_clone()
+        .context("failed to clone daemon log handle")?;
+    let stdin = File::open("/dev/null").context("failed to open /dev/null for daemon stdin")?;
+
+    let mut command =
+        Command::new(env::current_exe().context("failed to resolve current executable")?);
+    command
+        .args(["daemon", "run"])
+        .stdin(Stdio::from(stdin))
+        .stdout(Stdio::from(log_stdout))
+        .stderr(Stdio::from(log_stderr));
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
+    let mut child = command.spawn().context("failed to start daemon process")?;
+    match wait_for_daemon_start(&socket_path, &paths, &mut child) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            cleanup_detached_daemon_child(&mut child);
+            Err(error)
+        }
+    }
+}
+
+pub(super) fn daemon_stop() -> Result<()> {
+    let socket_path = ipc::resolve_socket_path()?;
+    let paths = LifecyclePaths::from_socket_path(&socket_path);
+    match lifecycle_status_from_socket(&socket_path, LIFECYCLE_CONNECT_TIMEOUT)? {
+        LifecycleQuery::NotRunning(reason) => {
+            remove_stale_socket_if_present(&socket_path)?;
+            print_lifecycle_not_running(&socket_path, &paths, &reason);
+            Ok(())
+        }
+        LifecycleQuery::Incompatible(message) => {
+            bail!("{message}; not signaling an incompatible daemon")
+        }
+        LifecycleQuery::Busy(message) => bail!("{message}; not signaling daemon while busy"),
+        LifecycleQuery::Status(status) => {
+            validate_live_identity_for_signal(&status.identity)?;
+            signal_process(status.identity.pid, libc::SIGTERM)?;
+            if !wait_for_process_exit(status.identity.pid, DAEMON_STOP_TIMEOUT)? {
+                let live_status = matching_live_status(&socket_path, &status.identity)?;
+                validate_live_identity_for_signal(&live_status.identity)?;
+                signal_process(live_status.identity.pid, libc::SIGKILL)?;
+                if !wait_for_process_exit(live_status.identity.pid, DAEMON_STOP_TIMEOUT)? {
+                    bail!(
+                        "timed out waiting for daemon pid {} to exit after SIGKILL",
+                        live_status.identity.pid
+                    );
+                }
+            }
+            remove_stale_socket_if_present(&socket_path)?;
+            remove_matching_identity(&paths.identity_path, &status.identity)?;
+            println!("agentscan daemon stopped");
+            Ok(())
+        }
+    }
+}
+
+pub(super) fn daemon_restart() -> Result<()> {
+    daemon_stop()?;
+    daemon_start()
 }
 
 #[cfg(test)]
@@ -38,8 +711,14 @@ fn daemon_run_with_socket_path_and_startup(
     socket_path: &Path,
     startup: impl StartupActions,
 ) -> Result<()> {
+    install_shutdown_signal_handlers();
+    DAEMON_SHUTDOWN_REQUESTED.store(false, Ordering::Relaxed);
+    let identity = DaemonRuntimeIdentity::new(socket_path)?;
+    let lifecycle_paths = LifecyclePaths::from_socket_path(socket_path);
+    let _lifecycle_guard = DaemonLifecycleGuard::acquire(&lifecycle_paths, &identity)?;
     let server = DaemonSocketServer::bind(socket_path)?;
     let socket_state = server.state();
+    socket_state.set_identity(identity);
     let server_handle = server.spawn();
 
     let pending_snapshot = match startup.initial_snapshot().and_then(PreparedSnapshot::new) {
@@ -110,6 +789,9 @@ fn daemon_run_with_socket_path_and_startup(
     let mut next_reconcile_at = Instant::now() + RECONCILE_INTERVAL;
 
     loop {
+        if DAEMON_SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
+            break;
+        }
         let now = Instant::now();
         if now >= next_reconcile_at {
             reconcile_full_snapshot(&mut snapshot)?;
@@ -145,7 +827,11 @@ fn daemon_run_with_socket_path_and_startup(
 
     closing_guard.mark_closing();
 
-    running_tmux_client.wait_for_exit()?;
+    if DAEMON_SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
+        running_tmux_client.terminate();
+    } else {
+        running_tmux_client.wait_for_exit()?;
+    }
 
     Ok(())
 }
@@ -226,11 +912,32 @@ impl RunningTmuxControlModeClient<'_> {
         }
         Ok(())
     }
+
+    fn terminate(&mut self) {
+        cleanup_startup_child(self.child);
+    }
 }
 
 impl Drop for RunningTmuxControlModeClient<'_> {
     fn drop(&mut self) {
         cleanup_startup_child(self.child);
+    }
+}
+
+extern "C" fn daemon_shutdown_signal_handler(_signal: libc::c_int) {
+    DAEMON_SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
+}
+
+fn install_shutdown_signal_handlers() {
+    unsafe {
+        libc::signal(
+            libc::SIGTERM,
+            daemon_shutdown_signal_handler as *const () as usize,
+        );
+        libc::signal(
+            libc::SIGINT,
+            daemon_shutdown_signal_handler as *const () as usize,
+        );
     }
 }
 
@@ -411,11 +1118,58 @@ fn cleanup_startup_child(child: &mut std::process::Child) {
     let _ = child.wait();
 }
 
+fn cleanup_detached_daemon_child(child: &mut std::process::Child) {
+    if let Ok(None) = child.try_wait() {
+        let _ = unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+        let deadline = Instant::now() + STARTUP_FAILURE_OBSERVABILITY_WINDOW * 5;
+        while Instant::now() < deadline {
+            match child.try_wait() {
+                Ok(Some(_)) => {
+                    let _ = child.wait();
+                    return;
+                }
+                Ok(None) => std::thread::sleep(LIFECYCLE_POLL_INTERVAL),
+                Err(_) => break,
+            }
+        }
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+}
+
 struct DaemonSocketServer {
     listener: std::os::unix::net::UnixListener,
     socket_path: PathBuf,
+    socket_identity: Option<SocketFileIdentity>,
     state: DaemonSocketState,
     stop: Arc<AtomicBool>,
+}
+
+#[derive(Clone, Copy)]
+struct SocketFileIdentity {
+    dev: u64,
+    ino: u64,
+}
+
+impl SocketFileIdentity {
+    fn from_path(path: &Path) -> Result<Option<Self>> {
+        let metadata = fs::symlink_metadata(path)
+            .with_context(|| format!("failed to stat socket path {}", path.display()))?;
+        if !metadata.file_type().is_socket() {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            dev: metadata.dev(),
+            ino: metadata.ino(),
+        }))
+    }
+
+    fn still_matches(self, path: &Path) -> bool {
+        Self::from_path(path)
+            .ok()
+            .flatten()
+            .is_some_and(|current| current.dev == self.dev && current.ino == self.ino)
+    }
 }
 
 impl DaemonSocketServer {
@@ -428,6 +1182,7 @@ impl DaemonSocketServer {
         Ok(Self {
             listener,
             socket_path: socket_path.to_path_buf(),
+            socket_identity: SocketFileIdentity::from_path(socket_path)?,
             state: DaemonSocketState::new(),
             stop: Arc::new(AtomicBool::new(false)),
         })
@@ -478,6 +1233,7 @@ impl DaemonSocketServer {
             stop: handle_stop,
             join: Some(join),
             socket_path: self.socket_path,
+            socket_identity: self.socket_identity,
         }
     }
 }
@@ -486,6 +1242,7 @@ struct DaemonSocketServerHandle {
     stop: Arc<AtomicBool>,
     join: Option<std::thread::JoinHandle<()>>,
     socket_path: PathBuf,
+    socket_identity: Option<SocketFileIdentity>,
 }
 
 impl Drop for DaemonSocketServerHandle {
@@ -494,7 +1251,10 @@ impl Drop for DaemonSocketServerHandle {
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
-        if let Err(error) = fs::remove_file(&self.socket_path)
+        if self
+            .socket_identity
+            .is_some_and(|identity| identity.still_matches(&self.socket_path))
+            && let Err(error) = fs::remove_file(&self.socket_path)
             && error.kind() != std::io::ErrorKind::NotFound
         {
             eprintln!(
@@ -520,6 +1280,7 @@ enum DaemonStartupState {
 
 struct DaemonSocketStateInner {
     startup_state: DaemonStartupState,
+    identity: Option<DaemonRuntimeIdentity>,
     latest_snapshot: Option<SnapshotEnvelope>,
     latest_snapshot_frame: Option<EncodedDaemonFrame>,
     pending_handshakes: usize,
@@ -544,6 +1305,7 @@ impl DaemonSocketState {
         Self {
             inner: Arc::new(Mutex::new(DaemonSocketStateInner {
                 startup_state: DaemonStartupState::Initializing,
+                identity: None,
                 latest_snapshot: None,
                 latest_snapshot_frame: None,
                 pending_handshakes: 0,
@@ -551,6 +1313,10 @@ impl DaemonSocketState {
                 next_subscriber_id: 1,
             })),
         }
+    }
+
+    fn set_identity(&self, identity: DaemonRuntimeIdentity) {
+        self.lock().identity = Some(identity);
     }
 
     #[cfg(test)]
@@ -679,6 +1445,48 @@ impl DaemonSocketState {
         }
     }
 
+    fn lifecycle_status(&self) -> ipc::LifecycleStatusFrame {
+        let inner = self.lock();
+        let identity = inner
+            .identity
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(DaemonRuntimeIdentity::unknown_for_tests);
+        let (state, unavailable_reason, message) = match &inner.startup_state {
+            DaemonStartupState::Initializing => (
+                ipc::LifecycleDaemonState::Initializing,
+                Some(ipc::UnavailableReason::DaemonNotReady),
+                Some("daemon has not published its initial snapshot yet".to_string()),
+            ),
+            DaemonStartupState::Ready => (ipc::LifecycleDaemonState::Ready, None, None),
+            DaemonStartupState::StartupFailed(message) => (
+                ipc::LifecycleDaemonState::StartupFailed,
+                Some(ipc::UnavailableReason::StartupFailed),
+                Some(message.clone()),
+            ),
+            DaemonStartupState::Closing => (
+                ipc::LifecycleDaemonState::Closing,
+                Some(ipc::UnavailableReason::ServerClosing),
+                Some("daemon socket server is closing".to_string()),
+            ),
+        };
+        ipc::LifecycleStatusFrame {
+            state,
+            identity: identity.frame(),
+            subscriber_count: inner.subscribers.len(),
+            latest_snapshot_generated_at: inner
+                .latest_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.generated_at.clone()),
+            latest_snapshot_pane_count: inner
+                .latest_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.panes.len()),
+            unavailable_reason,
+            message,
+        }
+    }
+
     pub(crate) fn try_acquire_pending_handshake(&self) -> Option<PendingHandshake> {
         let mut inner = self.lock();
         if inner.pending_handshakes >= MAX_PENDING_HANDSHAKES {
@@ -799,8 +1607,18 @@ fn fan_out_snapshot(frame: EncodedDaemonFrame, subscribers: Vec<SubscriberMailbo
 }
 
 fn close_subscribers(subscribers: HashMap<SubscriberId, SubscriberMailbox>) {
+    let closing_frame = ipc::encode_frame(&ipc::DaemonFrame::Unavailable {
+        reason: ipc::UnavailableReason::ServerClosing,
+        message: "daemon socket server is closing".to_string(),
+    })
+    .map(Arc::<[u8]>::from)
+    .ok();
     for subscriber in subscribers.into_values() {
-        subscriber.close();
+        if let Some(frame) = &closing_frame {
+            subscriber.close_with_frame(frame.clone());
+        } else {
+            subscriber.close();
+        }
     }
 }
 
@@ -857,6 +1675,14 @@ impl SubscriberMailbox {
         let mut state = lock.lock().expect("subscriber mailbox lock poisoned");
         state.closed = true;
         state.pending_frame = None;
+        condvar.notify_all();
+    }
+
+    pub(crate) fn close_with_frame(&self, frame: EncodedDaemonFrame) {
+        let (lock, condvar) = &*self.inner;
+        let mut state = lock.lock().expect("subscriber mailbox lock poisoned");
+        state.pending_frame = Some(frame);
+        state.closed = true;
         condvar.notify_all();
     }
 
@@ -987,6 +1813,21 @@ fn handle_daemon_socket_client_with_pending(
                     .context("failed to flush daemon socket frame")
             }
         },
+        ipc::ClientFrame::Hello {
+            mode: ipc::ClientMode::LifecycleStatus,
+            ..
+        } => {
+            write_daemon_frame(&mut writer, &ack)?;
+            write_daemon_frame(
+                &mut writer,
+                &ipc::DaemonFrame::LifecycleStatus {
+                    status: state.lifecycle_status(),
+                },
+            )?;
+            writer
+                .flush()
+                .context("failed to flush daemon socket frame")
+        }
     }
 }
 

@@ -215,21 +215,6 @@ pub(super) fn print_cache_validate_text(
     print_max_age_seconds(max_age_seconds);
 }
 
-pub(super) fn print_daemon_status_text(
-    path: &Path,
-    snapshot: &SnapshotEnvelope,
-    summary: &CacheSummary,
-    diagnostics: &CacheDiagnostics,
-    max_age_seconds: Option<u64>,
-) {
-    print_daemon_cache_diagnostics(diagnostics);
-    print_cache_file_fields(path, snapshot, diagnostics, false);
-    print_daemon_refresh_fields(snapshot, diagnostics);
-    println!("source: {:?}", snapshot.source.kind);
-    println!("pane_count: {}", summary.pane_count);
-    print_max_age_seconds(max_age_seconds);
-}
-
 fn print_cache_snapshot_fields(
     path: &Path,
     snapshot: &SnapshotEnvelope,

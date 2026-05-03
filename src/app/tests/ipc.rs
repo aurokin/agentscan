@@ -215,6 +215,50 @@ fn ipc_frame_accepts_subscribe_mode() {
 }
 
 #[test]
+fn ipc_frame_accepts_lifecycle_status_mode() {
+    let bytes = br#"{"type":"hello","protocol_version":1,"snapshot_schema_version":4,"mode":"lifecycle_status"}"#;
+
+    let decoded = ipc::decode_client_frame(bytes).expect("lifecycle status hello should decode");
+
+    assert_eq!(
+        decoded,
+        ipc::ClientFrame::Hello {
+            protocol_version: ipc::WIRE_PROTOCOL_VERSION,
+            snapshot_schema_version: CACHE_SCHEMA_VERSION,
+            mode: ipc::ClientMode::LifecycleStatus,
+        }
+    );
+}
+
+#[test]
+fn ipc_lifecycle_status_frame_roundtrips() {
+    let frame = ipc::DaemonFrame::LifecycleStatus {
+        status: ipc::LifecycleStatusFrame {
+            state: ipc::LifecycleDaemonState::Ready,
+            identity: ipc::DaemonIdentityFrame {
+                pid: 42,
+                daemon_start_time: "2026-05-03T00:00:00Z".to_string(),
+                executable: "/tmp/agentscan".to_string(),
+                executable_canonical: Some("/tmp/agentscan".to_string()),
+                socket_path: "/tmp/agentscan.sock".to_string(),
+                protocol_version: ipc::WIRE_PROTOCOL_VERSION,
+                snapshot_schema_version: CACHE_SCHEMA_VERSION,
+            },
+            subscriber_count: 3,
+            latest_snapshot_generated_at: Some("2026-05-03T00:00:01Z".to_string()),
+            latest_snapshot_pane_count: Some(5),
+            unavailable_reason: None,
+            message: None,
+        },
+    };
+
+    let encoded = ipc::encode_frame(&frame).expect("frame should encode");
+    let decoded = ipc::decode_daemon_frame(encoded.trim_ascii()).expect("frame should decode");
+
+    assert_eq!(decoded, frame);
+}
+
+#[test]
 fn ipc_hello_validation_rejects_protocol_mismatch() {
     let frame = ipc::ClientFrame::Hello {
         protocol_version: ipc::WIRE_PROTOCOL_VERSION + 1,

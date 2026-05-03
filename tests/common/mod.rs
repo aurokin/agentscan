@@ -25,6 +25,10 @@ pub fn agentscan_bin() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("CARGO_BIN_EXE_agentscan") {
         return Ok(PathBuf::from(path));
     }
+    let cargo_bin = PathBuf::from(env!("CARGO_BIN_EXE_agentscan"));
+    if cargo_bin.is_file() {
+        return Ok(cargo_bin);
+    }
 
     let current_exe = std::env::current_exe().context("failed to resolve current test binary")?;
     let debug_dir = current_exe

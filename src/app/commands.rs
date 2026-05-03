@@ -191,36 +191,11 @@ fn command_focus(args: &FocusArgs) -> Result<()> {
 
 fn command_daemon(args: &DaemonArgs) -> Result<()> {
     match args.command {
+        DaemonCommands::Start => daemon::daemon_start(),
         DaemonCommands::Run => daemon::daemon_run(),
-        DaemonCommands::Status(ref args) => command_daemon_status(args),
-    }
-}
-
-fn command_daemon_status(args: &DaemonStatusArgs) -> Result<()> {
-    let path = cache::cache_path()?;
-    let snapshot = cache::read_snapshot_from_cache()?;
-    let summary = cache::summarize_snapshot(&snapshot)?;
-    let diagnostics = cache::cache_diagnostics(&snapshot, args.max_age_seconds)?;
-
-    output::print_daemon_status_text(
-        &path,
-        &snapshot,
-        &summary,
-        &diagnostics,
-        args.max_age_seconds,
-    );
-
-    match diagnostics.daemon_cache_status {
-        DaemonCacheStatus::Healthy => Ok(()),
-        DaemonCacheStatus::Stale => bail!("daemon cache is stale"),
-        DaemonCacheStatus::SnapshotOnly => {
-            bail!("daemon cache is snapshot-only; run `agentscan daemon run` for normal cached use")
-        }
-        DaemonCacheStatus::Unavailable => {
-            bail!(
-                "daemon cache is unavailable because the cache does not include a usable daemon refresh timestamp"
-            )
-        }
+        DaemonCommands::Status => daemon::daemon_status(),
+        DaemonCommands::Stop => daemon::daemon_stop(),
+        DaemonCommands::Restart => daemon::daemon_restart(),
     }
 }
 

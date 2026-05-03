@@ -54,6 +54,7 @@ struct SocketPathCandidate {
 pub(crate) enum ClientMode {
     Snapshot,
     Subscribe,
+    LifecycleStatus,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -98,10 +99,44 @@ pub(crate) enum DaemonFrame {
         reason: UnavailableReason,
         message: String,
     },
+    LifecycleStatus {
+        status: LifecycleStatusFrame,
+    },
     Shutdown {
         reason: ShutdownReason,
         message: String,
     },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum LifecycleDaemonState {
+    Initializing,
+    Ready,
+    StartupFailed,
+    Closing,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct DaemonIdentityFrame {
+    pub(crate) pid: u32,
+    pub(crate) daemon_start_time: String,
+    pub(crate) executable: String,
+    pub(crate) executable_canonical: Option<String>,
+    pub(crate) socket_path: String,
+    pub(crate) protocol_version: u32,
+    pub(crate) snapshot_schema_version: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct LifecycleStatusFrame {
+    pub(crate) state: LifecycleDaemonState,
+    pub(crate) identity: DaemonIdentityFrame,
+    pub(crate) subscriber_count: usize,
+    pub(crate) latest_snapshot_generated_at: Option<String>,
+    pub(crate) latest_snapshot_pane_count: Option<usize>,
+    pub(crate) unavailable_reason: Option<UnavailableReason>,
+    pub(crate) message: Option<String>,
 }
 
 impl SocketPathConfig {

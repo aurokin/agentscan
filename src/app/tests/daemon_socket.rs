@@ -422,6 +422,36 @@ fn daemon_socket_closing_state_wins_over_not_ready() {
 }
 
 #[test]
+fn daemon_socket_lifecycle_status_reports_ready_identity_and_counts() {
+    let state = daemon::DaemonSocketState::new();
+    let snapshot = empty_socket_snapshot("2026-05-03T00:00:00Z");
+    state
+        .publish_initial_snapshot(snapshot)
+        .expect("snapshot should publish");
+
+    let frames = exchange_daemon_frames(state, socket_hello(ipc::ClientMode::LifecycleStatus));
+
+    match frames.as_slice() {
+        [
+            ipc::DaemonFrame::HelloAck { .. },
+            ipc::DaemonFrame::LifecycleStatus { status },
+        ] => {
+            assert_eq!(status.state, ipc::LifecycleDaemonState::Ready);
+            assert_eq!(status.identity.protocol_version, ipc::WIRE_PROTOCOL_VERSION);
+            assert_eq!(status.identity.snapshot_schema_version, CACHE_SCHEMA_VERSION);
+            assert_eq!(status.subscriber_count, 0);
+            assert_eq!(
+                status.latest_snapshot_generated_at.as_deref(),
+                Some("2026-05-03T00:00:00Z")
+            );
+            assert_eq!(status.latest_snapshot_pane_count, Some(0));
+            assert_eq!(status.unavailable_reason, None);
+        }
+        other => panic!("expected lifecycle status frames, got {other:?}"),
+    }
+}
+
+#[test]
 fn daemon_socket_subscribe_client_receives_bootstrap_and_update() {
     let state = daemon::DaemonSocketState::new();
     let initial = empty_socket_snapshot("2026-05-03T00:00:00Z");
@@ -670,6 +700,13 @@ fn daemon_socket_closing_retires_subscribers_and_rejects_new_subscribers() {
 
     state.mark_closing();
     state.mark_closing();
+    assert!(matches!(
+        subscriber.read_frame(),
+        ipc::DaemonFrame::Unavailable {
+            reason: ipc::UnavailableReason::ServerClosing,
+            ..
+        }
+    ));
     wait_for_subscriber_count(&state, 0);
     subscriber.join();
 

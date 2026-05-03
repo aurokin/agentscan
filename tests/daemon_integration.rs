@@ -1,7 +1,7 @@
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::UnixStream;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -171,6 +171,399 @@ fn daemon_fans_out_live_updates_to_subscriber_socket() -> Result<()> {
         .shutdown(std::net::Shutdown::Write)
         .context("failed to close subscriber write side")?;
     daemon.shutdown()?;
+    Ok(())
+}
+
+#[test]
+fn daemon_lifecycle_start_status_stop() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let pane_id = harness.start_session("lifecycle-start", "sleep 300")?;
+
+    let start_output = harness.agentscan_output(["daemon", "start"])?;
+    assert!(
+        start_output.contains("agentscan daemon started"),
+        "expected start confirmation, got:\n{start_output}"
+    );
+    assert!(
+        start_output.contains("daemon_state: ready"),
+        "expected ready status, got:\n{start_output}"
+    );
+
+    let status_output = harness.agentscan_output(["daemon", "status"])?;
+    assert!(
+        status_output.contains("daemon_state: ready"),
+        "expected ready daemon status, got:\n{status_output}"
+    );
+    assert!(
+        status_output.contains("pid:"),
+        "expected live identity pid in status, got:\n{status_output}"
+    );
+    assert!(
+        status_output.contains("latest_snapshot_pane_count:"),
+        "expected snapshot details in status, got:\n{status_output}"
+    );
+
+    let scan_output = harness.agentscan_output(["scan", "--all", "--format", "json"])?;
+    assert!(
+        scan_output.contains(&pane_id),
+        "expected test pane to exist while lifecycle daemon runs"
+    );
+
+    let stop_output = harness.agentscan_output(["daemon", "stop"])?;
+    assert!(
+        stop_output.contains("agentscan daemon stopped"),
+        "expected stop confirmation, got:\n{stop_output}"
+    );
+
+    let stopped_output = harness.agentscan_output(["daemon", "status"])?;
+    assert!(
+        stopped_output.contains("daemon_state: not_running"),
+        "expected not-running status after stop, got:\n{stopped_output}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn daemon_lifecycle_status_reports_not_running() -> Result<()> {
+    let harness = TestHarness::new()?;
+
+    let status_output = harness.agentscan_output(["daemon", "status"])?;
+
+    assert!(
+        status_output.contains("daemon_state: not_running"),
+        "expected not-running daemon status, got:\n{status_output}"
+    );
+    Ok(())
+}
+
+#[test]
+fn daemon_lifecycle_stop_is_idempotent() -> Result<()> {
+    let harness = TestHarness::new()?;
+
+    let first = harness.agentscan_output(["daemon", "stop"])?;
+    let second = harness.agentscan_output(["daemon", "stop"])?;
+
+    assert!(first.contains("daemon_state: not_running"));
+    assert!(second.contains("daemon_state: not_running"));
+    Ok(())
+}
+
+#[test]
+fn daemon_lifecycle_restart() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let _pane_id = harness.start_session("lifecycle-restart", "sleep 300")?;
+
+    harness.agentscan(["daemon", "start"])?;
+    let before = harness.agentscan_output(["daemon", "status"])?;
+    let before_pid = lifecycle_status_value(&before, "pid")
+        .context("status before restart did not include pid")?;
+    let before_started_at = lifecycle_status_value(&before, "daemon_start_time")
+        .context("status before restart did not include start time")?;
+
+    let restart = harness.agentscan_output(["daemon", "restart"])?;
+    assert!(
+        restart.contains("agentscan daemon started"),
+        "expected restart to start daemon, got:\n{restart}"
+    );
+    let after = harness.agentscan_output(["daemon", "status"])?;
+    let after_pid = lifecycle_status_value(&after, "pid")
+        .context("status after restart did not include pid")?;
+    let after_started_at = lifecycle_status_value(&after, "daemon_start_time")
+        .context("status after restart did not include start time")?;
+    assert!(
+        before_pid != after_pid || before_started_at != after_started_at,
+        "restart should replace daemon identity"
+    );
+
+    harness.agentscan(["daemon", "stop"])?;
+    Ok(())
+}
+
+#[test]
+fn daemon_lifecycle_start_reuses_running_daemon() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let _pane_id = harness.start_session("lifecycle-reuse", "sleep 300")?;
+
+    harness.agentscan(["daemon", "start"])?;
+    let before = harness.agentscan_output(["daemon", "status"])?;
+    let before_pid = lifecycle_status_value(&before, "pid")
+        .context("status before second start did not include pid")?;
+
+    let second_start = harness.agentscan_output(["daemon", "start"])?;
+    assert!(
+        second_start.contains("agentscan daemon already running"),
+        "expected second start to reuse daemon, got:\n{second_start}"
+    );
+    let after_pid = lifecycle_status_value(&second_start, "pid")
+        .context("second start status did not include pid")?;
+    assert_eq!(
+        before_pid, after_pid,
+        "second start should not replace daemon"
+    );
+
+    harness.agentscan(["daemon", "stop"])?;
+    Ok(())
+}
+
+#[test]
+fn daemon_lifecycle_concurrent_start_uses_single_daemon() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let _pane_id = harness.start_session("lifecycle-concurrent", "sleep 300")?;
+
+    let first = harness
+        .agentscan_command()?
+        .args(["daemon", "start"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("failed to spawn first daemon start")?;
+    let second = harness
+        .agentscan_command()?
+        .args(["daemon", "start"])
+        .output()
+        .context("failed to run second daemon start")?;
+    let first = first
+        .wait_with_output()
+        .context("first start wait failed")?;
+
+    assert!(
+        first.status.success(),
+        "first start should succeed; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&first.stdout),
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(
+        second.status.success(),
+        "second start should succeed; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&second.stdout),
+        String::from_utf8_lossy(&second.stderr)
+    );
+
+    let status = harness.agentscan_output(["daemon", "status"])?;
+    assert!(
+        lifecycle_status_value(&status, "pid").is_some(),
+        "status should include a single live daemon pid, got:\n{status}"
+    );
+
+    harness.agentscan(["daemon", "stop"])?;
+    Ok(())
+}
+
+#[test]
+fn daemon_lifecycle_stop_keeps_mismatched_identity_sidecar() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let _pane_id = harness.start_session("lifecycle-identity", "sleep 300")?;
+
+    harness.agentscan(["daemon", "start"])?;
+    let identity_path = harness
+        .agentscan_socket_path
+        .with_extension("sock.identity.json");
+    let mismatched_identity = serde_json::json!({
+        "pid": 0,
+        "daemon_start_time": "not-this-daemon",
+        "executable": "/tmp/other-agentscan",
+        "executable_canonical": null,
+        "socket_path": harness.agentscan_socket_path.display().to_string(),
+        "protocol_version": 1,
+        "snapshot_schema_version": 1
+    });
+    fs::write(
+        &identity_path,
+        serde_json::to_vec_pretty(&mismatched_identity)
+            .context("failed to encode mismatched identity")?,
+    )
+    .context("failed to overwrite daemon identity")?;
+
+    harness.agentscan(["daemon", "stop"])?;
+
+    let identity_after_stop =
+        fs::read_to_string(&identity_path).context("mismatched identity should remain")?;
+    assert!(
+        identity_after_stop.contains("not-this-daemon"),
+        "stop should not remove or replace mismatched identity, got:\n{identity_after_stop}"
+    );
+    Ok(())
+}
+
+#[test]
+fn daemon_lifecycle_stop_uses_guarded_sigkill_after_sigterm_timeout() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let pid_path = harness.agentscan_socket_path.with_extension("fake.pid");
+    let launch_script = "sh -c 'trap \"\" TERM; echo $$ > \"$PID_PATH\"; while true; do sleep 1; done' \
+        >/dev/null 2>&1 </dev/null &";
+    let launch_status = Command::new("sh")
+        .env("PID_PATH", &pid_path)
+        .args(["-c", launch_script])
+        .status()
+        .context("failed to launch SIGTERM-resistant process")?;
+    assert!(
+        launch_status.success(),
+        "failed to launch SIGTERM-resistant process: {launch_status}"
+    );
+    let pid = wait_for_pid_file(&pid_path)?;
+    let mut kill_guard = KillPidGuard::new(pid);
+    let socket_path = harness.agentscan_socket_path.clone();
+    let socket_path_text = socket_path.display().to_string();
+    let listener = UnixListener::bind(&socket_path).context("failed to bind fake daemon socket")?;
+    listener
+        .set_nonblocking(true)
+        .context("failed to make fake daemon listener nonblocking")?;
+    let handle = std::thread::spawn(move || {
+        for _ in 0..2 {
+            let mut stream = accept_fake_daemon_connection(&listener);
+            let mut request = String::new();
+            let _ = BufReader::new(stream.try_clone().expect("stream should clone"))
+                .read_line(&mut request);
+            write_fake_lifecycle_status(&mut stream, pid, &socket_path_text, "fake-start");
+        }
+    });
+
+    let output = harness
+        .agentscan_command()?
+        .args(["daemon", "stop"])
+        .output()
+        .context("failed to run daemon stop")?;
+
+    handle.join().expect("fake daemon should join");
+    assert!(
+        output.status.success(),
+        "daemon stop should use guarded SIGKILL; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    kill_guard.disarm();
+    Ok(())
+}
+
+#[test]
+fn daemon_lifecycle_refuses_non_socket_collision() -> Result<()> {
+    let harness = TestHarness::new()?;
+    fs::write(&harness.agentscan_socket_path, "not a socket")
+        .context("failed to create non-socket collision")?;
+
+    let output = harness
+        .agentscan_command()?
+        .args(["daemon", "start"])
+        .output()
+        .context("failed to run daemon start")?;
+
+    assert!(
+        !output.status.success(),
+        "daemon start should fail for non-socket collision"
+    );
+    assert!(
+        harness.agentscan_socket_path.exists(),
+        "daemon start must not unlink non-socket collision"
+    );
+    let stderr = String::from_utf8(output.stderr).context("stderr was not valid UTF-8")?;
+    assert!(
+        stderr.contains("non-socket path"),
+        "expected non-socket refusal, got:\n{stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn daemon_lifecycle_cleans_stale_socket() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let _pane_id = harness.start_session("lifecycle-stale", "sleep 300")?;
+    {
+        let _listener = UnixListener::bind(&harness.agentscan_socket_path)
+            .context("failed to create stale socket")?;
+    }
+    assert!(harness.agentscan_socket_path.exists());
+
+    harness.agentscan(["daemon", "start"])?;
+    let status = harness.agentscan_output(["daemon", "status"])?;
+    assert!(status.contains("daemon_state: ready"));
+
+    harness.agentscan(["daemon", "stop"])?;
+    Ok(())
+}
+
+#[test]
+fn daemon_lifecycle_stop_cleans_stale_socket() -> Result<()> {
+    let harness = TestHarness::new()?;
+    {
+        let _listener = UnixListener::bind(&harness.agentscan_socket_path)
+            .context("failed to create stale socket")?;
+    }
+    assert!(harness.agentscan_socket_path.exists());
+
+    let output = harness.agentscan_output(["daemon", "stop"])?;
+    assert!(
+        output.contains("daemon_state: not_running"),
+        "expected not-running stop output, got:\n{output}"
+    );
+    assert!(
+        !harness.agentscan_socket_path.exists(),
+        "daemon stop should unlink refused stale Unix socket"
+    );
+    Ok(())
+}
+
+#[test]
+fn daemon_lifecycle_status_reports_incompatible_daemon_guidance() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let listener = UnixListener::bind(&harness.agentscan_socket_path)
+        .context("failed to bind fake daemon socket")?;
+    let handle = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("fake daemon should accept");
+        let mut request = String::new();
+        let _ = BufReader::new(stream.try_clone().expect("stream should clone"))
+            .read_line(&mut request);
+        stream
+            .write_all(
+                br#"{"type":"shutdown","reason":"protocol_mismatch","message":"old daemon"}"#,
+            )
+            .expect("shutdown frame should write");
+        stream.write_all(b"\n").expect("newline should write");
+        stream.flush().expect("shutdown frame should flush");
+    });
+
+    let output = harness
+        .agentscan_command()?
+        .args(["daemon", "status"])
+        .output()
+        .context("failed to run daemon status")?;
+
+    handle.join().expect("fake daemon should join");
+    assert!(
+        !output.status.success(),
+        "status should reject incompatible daemon"
+    );
+    let stderr = String::from_utf8(output.stderr).context("stderr was not valid UTF-8")?;
+    assert!(
+        stderr.contains("stop the incompatible daemon manually"),
+        "expected manual incompatible-daemon guidance, got:\n{stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn daemon_lifecycle_start_failure_reports_log_and_cleans_socket() -> Result<()> {
+    let harness = TestHarness::new()?;
+
+    let output = harness
+        .agentscan_command()?
+        .args(["daemon", "start"])
+        .output()
+        .context("failed to run daemon start")?;
+
+    assert!(
+        !output.status.success(),
+        "daemon start without tmux server should fail"
+    );
+    let stderr = String::from_utf8(output.stderr).context("stderr was not valid UTF-8")?;
+    assert!(
+        stderr.contains("see log"),
+        "expected startup failure to mention log path, got:\n{stderr}"
+    );
+    assert!(
+        !harness.agentscan_socket_path.exists(),
+        "failed detached start should clean owned socket"
+    );
     Ok(())
 }
 
@@ -997,6 +1390,112 @@ fn read_daemon_socket_json_line(reader: &mut impl BufRead) -> Result<Value> {
         bail!("daemon socket closed before sending expected frame");
     }
     serde_json::from_str(&line).context("daemon socket frame was not valid JSON")
+}
+
+fn write_fake_lifecycle_status(
+    stream: &mut UnixStream,
+    pid: u32,
+    socket_path: &str,
+    daemon_start_time: &str,
+) {
+    let ack = serde_json::json!({
+        "type": "hello_ack",
+        "protocol_version": 1,
+        "snapshot_schema_version": 4
+    });
+    let status = serde_json::json!({
+        "type": "lifecycle_status",
+        "status": {
+            "state": "ready",
+            "identity": {
+                "pid": pid,
+                "daemon_start_time": daemon_start_time,
+                "executable": "/bin/sh",
+                "executable_canonical": null,
+                "socket_path": socket_path,
+                "protocol_version": 1,
+                "snapshot_schema_version": 4
+            },
+            "subscriber_count": 0,
+            "latest_snapshot_generated_at": null,
+            "latest_snapshot_pane_count": null,
+            "unavailable_reason": null,
+            "message": null
+        }
+    });
+    writeln!(stream, "{ack}").expect("fake lifecycle ack should write");
+    writeln!(stream, "{status}").expect("fake lifecycle status should write");
+    stream.flush().expect("fake lifecycle status should flush");
+}
+
+fn accept_fake_daemon_connection(listener: &UnixListener) -> UnixStream {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => return stream,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out waiting for fake daemon lifecycle connection"
+                );
+                sleep(POLL_INTERVAL);
+            }
+            Err(error) => panic!("fake daemon accept failed: {error}"),
+        }
+    }
+}
+
+struct KillPidGuard {
+    pid: u32,
+    active: bool,
+}
+
+impl KillPidGuard {
+    fn new(pid: u32) -> Self {
+        Self { pid, active: true }
+    }
+
+    fn disarm(&mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for KillPidGuard {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = unsafe { libc::kill(self.pid as libc::pid_t, libc::SIGKILL) };
+        }
+    }
+}
+
+fn wait_for_pid_file(path: &Path) -> Result<u32> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match fs::read_to_string(path) {
+            Ok(pid) => {
+                if let Ok(pid) = pid.trim().parse::<u32>() {
+                    return Ok(pid);
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("failed to read pid file {}", path.display()));
+            }
+        }
+        if Instant::now() >= deadline {
+            bail!("timed out waiting for pid file {}", path.display());
+        }
+        sleep(POLL_INTERVAL);
+    }
+}
+
+fn lifecycle_status_value<'a>(status: &'a str, key: &str) -> Option<&'a str> {
+    status.lines().find_map(|line| {
+        line.strip_prefix(key)
+            .and_then(|tail| tail.strip_prefix(": "))
+            .map(str::trim)
+    })
 }
 
 include!("common/tmux_harness.rs");

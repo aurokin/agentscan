@@ -132,17 +132,16 @@ pub(crate) struct CacheValidateArgs {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum DaemonCommands {
+    /// Start the daemon in the background.
+    Start,
     /// Run the long-lived daemon loop.
     Run,
-    /// Report daemon-backed cache health.
-    Status(DaemonStatusArgs),
-}
-
-#[derive(Args, Debug)]
-pub(crate) struct DaemonStatusArgs {
-    /// Mark the daemon cache unhealthy if it is older than this many seconds.
-    #[arg(long)]
-    pub(crate) max_age_seconds: Option<u64>,
+    /// Report daemon lifecycle status.
+    Status,
+    /// Stop the daemon if it is running.
+    Stop,
+    /// Restart the daemon.
+    Restart,
 }
 
 #[derive(Subcommand, Debug)]

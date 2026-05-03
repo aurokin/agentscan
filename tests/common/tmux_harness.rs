@@ -217,6 +217,27 @@ impl TestHarness {
         Ok(())
     }
 
+    fn agentscan_output<I, S>(&self, args: I) -> Result<String>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut command = self.agentscan_command()?;
+        for arg in args {
+            command.arg(arg.as_ref());
+        }
+
+        let output = command
+            .output()
+            .context("failed to execute agentscan command")?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("agentscan command failed: {}", stderr.trim());
+        }
+
+        String::from_utf8(output.stdout).context("agentscan output was not valid UTF-8")
+    }
+
     fn agentscan_output_with_tmux_tmpdir<I, S>(&self, args: I, tmux_tmpdir: &Path) -> Result<String>
     where
         I: IntoIterator<Item = S>,
@@ -911,6 +932,10 @@ fn display_popup_token(client_tty: &str, launch_index: usize) -> String {
 fn agentscan_bin() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("CARGO_BIN_EXE_agentscan") {
         return Ok(PathBuf::from(path));
+    }
+    let cargo_bin = PathBuf::from(env!("CARGO_BIN_EXE_agentscan"));
+    if cargo_bin.is_file() {
+        return Ok(cargo_bin);
     }
 
     let current_exe = std::env::current_exe().context("failed to resolve current test binary")?;
