@@ -31,6 +31,7 @@ use super::{
 };
 
 include!("support.rs");
+include!("daemon_socket.rs");
 include!("classification.rs");
 include!("tmux_cache.rs");
 include!("tui.rs");

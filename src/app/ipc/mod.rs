@@ -73,12 +73,28 @@ pub(crate) enum ShutdownReason {
     SchemaMismatch,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum UnavailableReason {
+    DaemonNotReady,
+    StartupFailed,
+    ServerClosing,
+    SubscribeUnavailable,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum DaemonFrame {
     HelloAck {
         protocol_version: u32,
         snapshot_schema_version: u32,
+    },
+    Snapshot {
+        snapshot: SnapshotEnvelope,
+    },
+    Unavailable {
+        reason: UnavailableReason,
+        message: String,
     },
     Shutdown {
         reason: ShutdownReason,

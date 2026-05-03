@@ -1,0 +1,535 @@
+use std::io::{BufReader, Write};
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::time::{Duration, Instant};
+
+fn empty_socket_snapshot(generated_at: &str) -> SnapshotEnvelope {
+    SnapshotEnvelope {
+        schema_version: CACHE_SCHEMA_VERSION,
+        generated_at: generated_at.to_string(),
+        source: super::SnapshotSource {
+            kind: SourceKind::Daemon,
+            tmux_version: Some("3.4".to_string()),
+            daemon_generated_at: Some(generated_at.to_string()),
+        },
+        panes: Vec::new(),
+    }
+}
+
+fn socket_hello(mode: ipc::ClientMode) -> ipc::ClientFrame {
+    ipc::ClientFrame::Hello {
+        protocol_version: ipc::WIRE_PROTOCOL_VERSION,
+        snapshot_schema_version: CACHE_SCHEMA_VERSION,
+        mode,
+    }
+}
+
+fn exchange_daemon_frames(
+    state: daemon::DaemonSocketState,
+    hello: ipc::ClientFrame,
+) -> Vec<ipc::DaemonFrame> {
+    let (mut client, server) = UnixStream::pair().expect("socket pair should be created");
+    let handle = std::thread::spawn(move || {
+        daemon::handle_daemon_socket_client(server, &state).expect("client should be handled");
+    });
+
+    client
+        .write_all(&ipc::encode_frame(&hello).expect("hello should encode"))
+        .expect("hello should be written");
+    client
+        .shutdown(std::net::Shutdown::Write)
+        .expect("client write side should close");
+
+    let mut reader = BufReader::new(client);
+    let mut frames = Vec::new();
+    while let Some(frame) =
+        ipc::read_daemon_frame(&mut reader).expect("daemon frame should decode")
+    {
+        frames.push(frame);
+    }
+
+    handle.join().expect("handler should join");
+    frames
+}
+
+fn read_all_daemon_frames(client: UnixStream) -> Vec<ipc::DaemonFrame> {
+    client
+        .shutdown(std::net::Shutdown::Write)
+        .expect("client write side should close");
+    let mut reader = BufReader::new(client);
+    let mut frames = Vec::new();
+    while let Some(frame) =
+        ipc::read_daemon_frame(&mut reader).expect("daemon frame should decode")
+    {
+        frames.push(frame);
+    }
+    frames
+}
+
+enum FakeInitialSnapshot {
+    Ready,
+    Oversized,
+    Failed(&'static str),
+}
+
+enum FakeTmuxStartup {
+    Started,
+    Failed(&'static str),
+}
+
+struct FakeDaemonStartup {
+    initial_snapshot: FakeInitialSnapshot,
+    tmux_startup: FakeTmuxStartup,
+    cache_publication_error: Option<&'static str>,
+}
+
+impl FakeDaemonStartup {
+    fn ready() -> Self {
+        Self {
+            initial_snapshot: FakeInitialSnapshot::Ready,
+            tmux_startup: FakeTmuxStartup::Started,
+            cache_publication_error: None,
+        }
+    }
+
+    fn with_initial_snapshot(initial_snapshot: FakeInitialSnapshot) -> Self {
+        Self {
+            initial_snapshot,
+            ..Self::ready()
+        }
+    }
+
+    fn with_tmux_startup(tmux_startup: FakeTmuxStartup) -> Self {
+        Self {
+            tmux_startup,
+            ..Self::ready()
+        }
+    }
+
+    fn with_cache_publication_error(message: &'static str) -> Self {
+        Self {
+            cache_publication_error: Some(message),
+            ..Self::ready()
+        }
+    }
+}
+
+impl daemon::StartupActions for FakeDaemonStartup {
+    fn initial_snapshot(&self) -> anyhow::Result<SnapshotEnvelope> {
+        match self.initial_snapshot {
+            FakeInitialSnapshot::Ready => Ok(empty_socket_snapshot("2026-05-03T00:00:00Z")),
+            FakeInitialSnapshot::Oversized => {
+                let mut snapshot = empty_socket_snapshot("2026-05-03T00:00:00Z");
+                snapshot.generated_at = "x".repeat(ipc::DAEMON_FRAME_MAX_BYTES);
+                Ok(snapshot)
+            }
+            FakeInitialSnapshot::Failed(message) => anyhow::bail!("{message}"),
+        }
+    }
+
+    fn start_tmux_control_mode_client(
+        &self,
+    ) -> anyhow::Result<daemon::StartedTmuxControlModeClient> {
+        match self.tmux_startup {
+            FakeTmuxStartup::Started => {
+                Ok(daemon::StartedTmuxControlModeClient::test_started_without_process())
+            }
+            FakeTmuxStartup::Failed(message) => anyhow::bail!("{message}"),
+        }
+    }
+
+    fn publish_initial_cache_snapshot(&self, _snapshot: &SnapshotEnvelope) -> anyhow::Result<()> {
+        match self.cache_publication_error {
+            Some(message) => anyhow::bail!("{message}"),
+            None => Ok(()),
+        }
+    }
+}
+
+fn wait_for_socket_connection(socket_path: &Path) -> UnixStream {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match UnixStream::connect(socket_path) {
+            Ok(stream) => return stream,
+            Err(error) if Instant::now() < deadline => {
+                if !matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                ) {
+                    panic!("unexpected socket connection error: {error}");
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => panic!("daemon socket did not become observable: {error}"),
+        }
+    }
+}
+
+fn observe_startup_failed_frames(
+    startup: FakeDaemonStartup,
+) -> (Vec<ipc::DaemonFrame>, String) {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let socket_path = tempdir.path().join("agentscan.sock");
+    let run_socket_path = socket_path.clone();
+    let handle =
+        std::thread::spawn(move || daemon::test_daemon_run_with_startup(&run_socket_path, startup));
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let frames = loop {
+        let mut client = wait_for_socket_connection(&socket_path);
+        client
+            .write_all(
+                &ipc::encode_frame(&socket_hello(ipc::ClientMode::Snapshot))
+                    .expect("hello should encode"),
+            )
+            .expect("hello should write");
+        let frames = read_all_daemon_frames(client);
+        if matches!(
+            frames.as_slice(),
+            [
+                ipc::DaemonFrame::HelloAck { .. },
+                ipc::DaemonFrame::Unavailable {
+                    reason: ipc::UnavailableReason::StartupFailed,
+                    ..
+                },
+            ]
+        ) {
+            break frames;
+        }
+        if Instant::now() >= deadline {
+            panic!("daemon socket did not expose startup_failed; last frames: {frames:?}");
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+
+    let error = handle
+        .join()
+        .expect("daemon startup thread should join")
+        .expect_err("startup should fail");
+
+    (frames, format!("{error:#}"))
+}
+
+fn assert_startup_failed_contains(
+    startup: FakeDaemonStartup,
+    expected_reason: &str,
+) -> String {
+    let (frames, error) = observe_startup_failed_frames(startup);
+
+    match frames.as_slice() {
+        [
+            ipc::DaemonFrame::HelloAck { .. },
+            ipc::DaemonFrame::Unavailable {
+                reason: ipc::UnavailableReason::StartupFailed,
+                message,
+            },
+        ] => {
+            assert!(
+                message.contains(expected_reason),
+                "expected startup_failed message to contain {expected_reason:?}, got {message:?}"
+            );
+            assert!(
+                message.contains("no usable socket snapshot was published"),
+                "expected startup_failed message to include publication guidance, got {message:?}"
+            );
+        }
+        other => panic!("expected startup_failed frames, got {other:?}"),
+    }
+
+    assert!(
+        error.contains(expected_reason),
+        "expected daemon error to contain {expected_reason:?}, got {error:?}"
+    );
+    assert!(
+        error.contains("no usable socket snapshot was published"),
+        "expected daemon error to include publication guidance, got {error:?}"
+    );
+
+    error
+}
+
+#[test]
+fn daemon_socket_snapshot_client_receives_ack_snapshot_and_eof() {
+    let state = daemon::DaemonSocketState::new();
+    let snapshot = empty_socket_snapshot("2026-05-03T00:00:00Z");
+    state
+        .publish_initial_snapshot(snapshot.clone())
+        .expect("snapshot should publish");
+
+    let frames = exchange_daemon_frames(state, socket_hello(ipc::ClientMode::Snapshot));
+
+    assert_eq!(
+        frames,
+        vec![
+            ipc::DaemonFrame::HelloAck {
+                protocol_version: ipc::WIRE_PROTOCOL_VERSION,
+                snapshot_schema_version: CACHE_SCHEMA_VERSION,
+            },
+            ipc::DaemonFrame::Snapshot { snapshot },
+        ]
+    );
+}
+
+#[test]
+fn daemon_socket_snapshot_client_receives_not_ready_during_initialization() {
+    let state = daemon::DaemonSocketState::new();
+
+    let frames = exchange_daemon_frames(state, socket_hello(ipc::ClientMode::Snapshot));
+
+    assert!(matches!(
+        frames.as_slice(),
+        [
+            ipc::DaemonFrame::HelloAck { .. },
+            ipc::DaemonFrame::Unavailable {
+                reason: ipc::UnavailableReason::DaemonNotReady,
+                ..
+            },
+        ]
+    ));
+}
+
+#[test]
+fn daemon_socket_snapshot_client_receives_startup_failed_after_failure() {
+    let state = daemon::DaemonSocketState::new();
+    state.mark_startup_failed("tmux attach failed".to_string());
+
+    let frames = exchange_daemon_frames(state, socket_hello(ipc::ClientMode::Snapshot));
+
+    assert!(matches!(
+        frames.as_slice(),
+        [
+            ipc::DaemonFrame::HelloAck { .. },
+            ipc::DaemonFrame::Unavailable {
+                reason: ipc::UnavailableReason::StartupFailed,
+                ..
+            },
+        ]
+    ));
+}
+
+#[test]
+fn daemon_socket_closing_state_wins_over_not_ready() {
+    let state = daemon::DaemonSocketState::new();
+    state.mark_closing();
+
+    let frames = exchange_daemon_frames(state, socket_hello(ipc::ClientMode::Snapshot));
+
+    assert!(matches!(
+        frames.as_slice(),
+        [
+            ipc::DaemonFrame::HelloAck { .. },
+            ipc::DaemonFrame::Unavailable {
+                reason: ipc::UnavailableReason::ServerClosing,
+                ..
+            },
+        ]
+    ));
+}
+
+#[test]
+fn daemon_socket_subscribe_mode_is_unavailable_without_registering() {
+    let state = daemon::DaemonSocketState::new();
+    state
+        .publish_initial_snapshot(empty_socket_snapshot("2026-05-03T00:00:00Z"))
+        .expect("snapshot should publish");
+
+    let frames = exchange_daemon_frames(state, socket_hello(ipc::ClientMode::Subscribe));
+
+    assert!(matches!(
+        frames.as_slice(),
+        [
+            ipc::DaemonFrame::HelloAck { .. },
+            ipc::DaemonFrame::Unavailable {
+                reason: ipc::UnavailableReason::SubscribeUnavailable,
+                ..
+            },
+        ]
+    ));
+}
+
+#[test]
+fn daemon_socket_protocol_mismatch_shutdown_skips_ack() {
+    let state = daemon::DaemonSocketState::new();
+    let hello = ipc::ClientFrame::Hello {
+        protocol_version: ipc::WIRE_PROTOCOL_VERSION + 1,
+        snapshot_schema_version: CACHE_SCHEMA_VERSION,
+        mode: ipc::ClientMode::Snapshot,
+    };
+
+    let frames = exchange_daemon_frames(state, hello);
+
+    assert!(matches!(
+        frames.as_slice(),
+        [ipc::DaemonFrame::Shutdown {
+            reason: ipc::ShutdownReason::ProtocolMismatch,
+            ..
+        }]
+    ));
+}
+
+#[test]
+fn daemon_socket_oversized_initial_snapshot_fails_publication() {
+    let state = daemon::DaemonSocketState::new();
+    let mut snapshot = empty_socket_snapshot("2026-05-03T00:00:00Z");
+    snapshot.generated_at = "x".repeat(ipc::DAEMON_FRAME_MAX_BYTES);
+
+    let error = state
+        .publish_initial_snapshot(snapshot)
+        .expect_err("oversized snapshot should fail");
+
+    assert!(
+        error.to_string().contains("exceeded socket frame limit"),
+        "expected frame limit error, got {error:#}"
+    );
+}
+
+#[test]
+fn daemon_socket_oversized_later_snapshot_preserves_last_good_frame() {
+    let state = daemon::DaemonSocketState::new();
+    let initial = empty_socket_snapshot("2026-05-03T00:00:00Z");
+    state
+        .publish_initial_snapshot(initial.clone())
+        .expect("initial snapshot should publish");
+
+    let mut oversized = empty_socket_snapshot("2026-05-03T00:00:01Z");
+    oversized.generated_at = "x".repeat(ipc::DAEMON_FRAME_MAX_BYTES);
+    state.publish_later_snapshot(oversized);
+
+    let frames = exchange_daemon_frames(state, socket_hello(ipc::ClientMode::Snapshot));
+
+    assert_eq!(
+        frames,
+        vec![
+            ipc::DaemonFrame::HelloAck {
+                protocol_version: ipc::WIRE_PROTOCOL_VERSION,
+                snapshot_schema_version: CACHE_SCHEMA_VERSION,
+            },
+            ipc::DaemonFrame::Snapshot { snapshot: initial },
+        ]
+    );
+}
+
+#[test]
+fn daemon_socket_initial_snapshot_failure_is_observable_as_startup_failed() {
+    assert_startup_failed_contains(
+        FakeDaemonStartup::with_initial_snapshot(FakeInitialSnapshot::Failed(
+            "initial tmux snapshot failed",
+        )),
+        "initial tmux snapshot failed",
+    );
+}
+
+#[test]
+fn daemon_socket_oversized_initial_snapshot_fails_startup_with_guidance() {
+    let error = assert_startup_failed_contains(
+        FakeDaemonStartup::with_initial_snapshot(FakeInitialSnapshot::Oversized),
+        "encoded snapshot frame was",
+    );
+
+    assert!(
+        error.contains("exceeding daemon frame limit"),
+        "expected frame limit in startup error, got {error:?}"
+    );
+    assert!(
+        error.contains("initial snapshot failed before daemon socket readiness"),
+        "expected initial snapshot context in startup error, got {error:?}"
+    );
+}
+
+#[test]
+fn daemon_socket_tmux_attach_failure_is_observable_as_startup_failed() {
+    assert_startup_failed_contains(
+        FakeDaemonStartup::with_tmux_startup(FakeTmuxStartup::Failed("tmux attach failed")),
+        "tmux attach failed",
+    );
+}
+
+#[test]
+fn daemon_socket_subscription_setup_failure_is_observable_as_startup_failed() {
+    assert_startup_failed_contains(
+        FakeDaemonStartup::with_tmux_startup(FakeTmuxStartup::Failed(
+            "tmux rejected daemon subscription setup",
+        )),
+        "tmux rejected daemon subscription setup",
+    );
+}
+
+#[test]
+fn daemon_socket_initial_cache_publication_failure_blocks_socket_readiness() {
+    assert_startup_failed_contains(
+        FakeDaemonStartup::with_cache_publication_error("cache write failed"),
+        "cache write failed",
+    );
+}
+
+#[test]
+fn daemon_socket_startup_failure_removes_owned_socket_path() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let socket_path = tempdir.path().join("agentscan.sock");
+    let run_socket_path = socket_path.clone();
+    let handle = std::thread::spawn(move || {
+        daemon::test_daemon_run_with_startup(
+            &run_socket_path,
+            FakeDaemonStartup::with_initial_snapshot(FakeInitialSnapshot::Failed(
+                "initial tmux snapshot failed",
+            )),
+        )
+    });
+
+    let mut client = wait_for_socket_connection(&socket_path);
+    client
+        .write_all(
+            &ipc::encode_frame(&socket_hello(ipc::ClientMode::Snapshot))
+                .expect("hello should encode"),
+        )
+        .expect("hello should write");
+    let _ = read_all_daemon_frames(client);
+
+    handle
+        .join()
+        .expect("daemon startup thread should join")
+        .expect_err("startup should fail");
+    assert!(
+        !socket_path.exists(),
+        "owned daemon socket path should be removed on startup failure"
+    );
+}
+
+#[test]
+fn daemon_socket_client_handler_works_over_real_unix_socket_path() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let socket_path = tempdir.path().join("agentscan.sock");
+    let listener = UnixListener::bind(&socket_path).expect("listener should bind temp socket path");
+    assert!(socket_path.exists());
+
+    let state = daemon::DaemonSocketState::new();
+    let snapshot = empty_socket_snapshot("2026-05-03T00:00:00Z");
+    state
+        .publish_initial_snapshot(snapshot.clone())
+        .expect("snapshot should publish");
+    let server_state = state.clone();
+    let handle = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("client should connect");
+        daemon::handle_daemon_socket_client(stream, &server_state).expect("client should handle");
+    });
+
+    let mut client = UnixStream::connect(&socket_path).expect("client should connect to path");
+    client
+        .write_all(
+            &ipc::encode_frame(&socket_hello(ipc::ClientMode::Snapshot))
+                .expect("hello should encode"),
+        )
+        .expect("hello should write");
+    let frames = read_all_daemon_frames(client);
+
+    handle.join().expect("server should join");
+    assert_eq!(
+        frames,
+        vec![
+            ipc::DaemonFrame::HelloAck {
+                protocol_version: ipc::WIRE_PROTOCOL_VERSION,
+                snapshot_schema_version: CACHE_SCHEMA_VERSION,
+            },
+            ipc::DaemonFrame::Snapshot { snapshot },
+        ]
+    );
+}

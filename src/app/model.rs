@@ -46,7 +46,7 @@ pub(crate) enum ClassificationMatchKind {
     ProcProcessTree,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct SnapshotEnvelope {
     pub(crate) schema_version: u32,
     pub(crate) generated_at: String,
@@ -54,7 +54,7 @@ pub(crate) struct SnapshotEnvelope {
     pub(crate) panes: Vec<PaneRecord>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct SnapshotSource {
     pub(crate) kind: SourceKind,
     pub(crate) tmux_version: Option<String>,
@@ -62,7 +62,7 @@ pub(crate) struct SnapshotSource {
     pub(crate) daemon_generated_at: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct PaneRecord {
     pub(crate) pane_id: String,
     pub(crate) location: PaneLocation,
@@ -85,7 +85,7 @@ impl PaneRecord {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct PaneLocation {
     pub(crate) session_name: String,
     pub(crate) window_index: u32,
@@ -102,7 +102,7 @@ impl PaneLocation {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct TmuxPaneMetadata {
     pub(crate) pane_pid: u32,
     pub(crate) pane_tty: String,
@@ -115,13 +115,13 @@ pub(crate) struct TmuxPaneMetadata {
     pub(crate) window_id: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct DisplayMetadata {
     pub(crate) label: String,
     pub(crate) activity_label: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct PaneStatus {
     pub(crate) kind: StatusKind,
     pub(crate) source: StatusSource,
@@ -149,7 +149,7 @@ impl PaneStatus {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct PaneClassification {
     pub(crate) matched_by: Option<ClassificationMatchKind>,
     pub(crate) confidence: Option<ClassificationConfidence>,
@@ -166,7 +166,7 @@ pub(crate) enum ProcFallbackOutcome {
     Resolved,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct ProcFallbackDiagnostics {
     pub(crate) outcome: ProcFallbackOutcome,
     pub(crate) reason: String,
@@ -183,7 +183,7 @@ impl Default for ProcFallbackDiagnostics {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct AgentMetadata {
     pub(crate) provider: Option<String>,
     pub(crate) label: Option<String>,
@@ -192,7 +192,7 @@ pub(crate) struct AgentMetadata {
     pub(crate) session_id: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct PaneDiagnostics {
     pub(crate) cache_origin: String,
     #[serde(default)]

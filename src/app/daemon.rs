@@ -1,40 +1,82 @@
 use super::*;
+use std::io::Read;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::time::Instant;
 
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(1);
+const STARTUP_FAILURE_OBSERVABILITY_WINDOW: Duration = Duration::from_millis(200);
+const CLIENT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
+const CLIENT_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub(super) fn daemon_run() -> Result<()> {
-    let mut snapshot = cache::daemon_snapshot_from_tmux()?;
-    cache::write_snapshot_to_cache(&snapshot)?;
+    let socket_path = ipc::resolve_socket_path()?;
+    daemon_run_with_socket_path_and_startup(&socket_path, DaemonStartup)
+}
 
-    let session_target = tmux::default_session_target()?;
-    let mut child = tmux::tmux_command()
-        .args(["-C", "attach-session", "-t", &session_target])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .context("failed to start tmux control-mode client")?;
+#[cfg(test)]
+pub(crate) fn test_daemon_run_with_startup(
+    socket_path: &Path,
+    startup: impl StartupActions,
+) -> Result<()> {
+    daemon_run_with_socket_path_and_startup(socket_path, startup)
+}
 
-    let mut stdin = child
-        .stdin
-        .take()
-        .context("tmux control-mode client did not provide stdin")?;
-    writeln!(stdin, "refresh-client -B '{DAEMON_SUBSCRIPTION_FORMAT}'")
-        .context("failed to subscribe to pane and metadata updates")?;
-    stdin
-        .flush()
-        .context("failed to flush tmux control commands")?;
+fn daemon_run_with_socket_path_and_startup(
+    socket_path: &Path,
+    startup: impl StartupActions,
+) -> Result<()> {
+    let server = DaemonSocketServer::bind(socket_path)?;
+    let socket_state = server.state();
+    let server_handle = server.spawn();
 
-    let stdout = child
-        .stdout
+    let pending_snapshot = match startup.initial_snapshot().and_then(PreparedSnapshot::new) {
+        Ok(pending_snapshot) => pending_snapshot,
+        Err(error) => {
+            let message = startup_failure_message("initial snapshot", &error);
+            socket_state.mark_startup_failed(message.clone());
+            std::thread::sleep(STARTUP_FAILURE_OBSERVABILITY_WINDOW);
+            drop(server_handle);
+            return Err(error.context(message));
+        }
+    };
+
+    let mut tmux_client = match startup.start_tmux_control_mode_client() {
+        Ok(client) => client,
+        Err(error) => {
+            let message = startup_failure_message("tmux control-mode startup", &error);
+            socket_state.mark_startup_failed(message.clone());
+            std::thread::sleep(STARTUP_FAILURE_OBSERVABILITY_WINDOW);
+            drop(server_handle);
+            return Err(error.context(message));
+        }
+    };
+
+    if let Err(error) = startup.publish_initial_cache_snapshot(&pending_snapshot.snapshot) {
+        let message = startup_failure_message("initial snapshot publication", &error);
+        socket_state.mark_startup_failed(message.clone());
+        tmux_client.cleanup();
+        std::thread::sleep(STARTUP_FAILURE_OBSERVABILITY_WINDOW);
+        drop(server_handle);
+        return Err(error.context(message));
+    }
+    let mut snapshot = pending_snapshot.snapshot.clone();
+    socket_state.publish_prepared_snapshot(pending_snapshot);
+    let stdout_reader = tmux_client
+        .stdout_reader
         .take()
         .context("tmux control-mode client did not provide stdout")?;
+    let mut child = tmux_client
+        .child
+        .take()
+        .context("tmux control-mode client did not provide child process")?;
+    let _stdin = tmux_client.stdin.take();
+
     let (line_tx, line_rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let mut reader = BufReader::new(stdout);
+        let mut reader = stdout_reader;
         loop {
             match read_control_mode_line(&mut reader) {
                 Ok(Some(line)) => {
@@ -57,6 +99,7 @@ pub(super) fn daemon_run() -> Result<()> {
         let now = Instant::now();
         if now >= next_reconcile_at {
             reconcile_full_snapshot(&mut snapshot)?;
+            socket_state.publish_later_snapshot(snapshot.clone());
             cache::write_snapshot_to_cache(&snapshot)?;
             next_reconcile_at = Instant::now() + RECONCILE_INTERVAL;
         }
@@ -68,21 +111,26 @@ pub(super) fn daemon_run() -> Result<()> {
                 let event = control_event_from_line(&line);
                 let should_exit = event == ControlEvent::Exit;
                 if apply_control_event(&mut snapshot, &line, &event)? {
+                    socket_state.publish_later_snapshot(snapshot.clone());
                     cache::write_snapshot_to_cache(&snapshot)?;
                 }
 
                 if should_exit {
+                    socket_state.mark_closing();
                     break;
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 reconcile_full_snapshot(&mut snapshot)?;
+                socket_state.publish_later_snapshot(snapshot.clone());
                 cache::write_snapshot_to_cache(&snapshot)?;
                 next_reconcile_at = Instant::now() + RECONCILE_INTERVAL;
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
+
+    socket_state.mark_closing();
 
     let status = child
         .wait()
@@ -92,6 +140,488 @@ pub(super) fn daemon_run() -> Result<()> {
     }
 
     Ok(())
+}
+
+pub(crate) trait StartupActions {
+    fn initial_snapshot(&self) -> Result<SnapshotEnvelope>;
+    fn start_tmux_control_mode_client(&self) -> Result<StartedTmuxControlModeClient>;
+    fn publish_initial_cache_snapshot(&self, snapshot: &SnapshotEnvelope) -> Result<()>;
+}
+
+#[derive(Default)]
+struct DaemonStartup;
+
+impl StartupActions for DaemonStartup {
+    fn initial_snapshot(&self) -> Result<SnapshotEnvelope> {
+        cache::daemon_snapshot_from_tmux()
+    }
+
+    fn start_tmux_control_mode_client(&self) -> Result<StartedTmuxControlModeClient> {
+        start_tmux_control_mode_client().map(StartedTmuxControlModeClient::from_real)
+    }
+
+    fn publish_initial_cache_snapshot(&self, snapshot: &SnapshotEnvelope) -> Result<()> {
+        cache::write_snapshot_to_cache(snapshot)
+    }
+}
+
+pub(crate) struct StartedTmuxControlModeClient {
+    child: Option<std::process::Child>,
+    stdout_reader: Option<BufReader<std::process::ChildStdout>>,
+    stdin: Option<std::process::ChildStdin>,
+}
+
+impl StartedTmuxControlModeClient {
+    fn from_real(
+        (child, stdout_reader, stdin): (
+            std::process::Child,
+            BufReader<std::process::ChildStdout>,
+            std::process::ChildStdin,
+        ),
+    ) -> Self {
+        Self {
+            child: Some(child),
+            stdout_reader: Some(stdout_reader),
+            stdin: Some(stdin),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_started_without_process() -> Self {
+        Self {
+            child: None,
+            stdout_reader: None,
+            stdin: None,
+        }
+    }
+
+    fn cleanup(&mut self) {
+        if let Some(child) = &mut self.child {
+            cleanup_startup_child(child);
+        }
+    }
+}
+
+fn startup_failure_message(context: &str, error: &anyhow::Error) -> String {
+    format!(
+        "{context} failed before daemon socket readiness; no usable socket snapshot was published: {error:#}"
+    )
+}
+
+fn start_tmux_control_mode_client() -> Result<(
+    std::process::Child,
+    BufReader<std::process::ChildStdout>,
+    std::process::ChildStdin,
+)> {
+    let session_target = tmux::default_session_target()?;
+    let mut child = tmux::tmux_command()
+        .args(["-C", "attach-session", "-t", &session_target])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .context("failed to start tmux control-mode client")?;
+
+    match configure_started_tmux_control_mode_client(&mut child) {
+        Ok((stdout_reader, stdin)) => Ok((child, stdout_reader, stdin)),
+        Err(error) => {
+            cleanup_startup_child(&mut child);
+            Err(error)
+        }
+    }
+}
+
+fn configure_started_tmux_control_mode_client(
+    child: &mut std::process::Child,
+) -> Result<(
+    BufReader<std::process::ChildStdout>,
+    std::process::ChildStdin,
+)> {
+    let stdout = child
+        .stdout
+        .take()
+        .context("tmux control-mode client did not provide stdout")?;
+    let mut stdout_reader = BufReader::new(stdout);
+
+    let mut stdin = child
+        .stdin
+        .take()
+        .context("tmux control-mode client did not provide stdin")?;
+    writeln!(stdin, "refresh-client -B '{DAEMON_SUBSCRIPTION_FORMAT}'")
+        .context("failed to subscribe to pane and metadata updates")?;
+    stdin
+        .flush()
+        .context("failed to flush tmux control commands")?;
+    wait_for_subscription_setup(&mut stdout_reader)?;
+
+    Ok((stdout_reader, stdin))
+}
+
+fn wait_for_subscription_setup(reader: &mut BufReader<std::process::ChildStdout>) -> Result<()> {
+    loop {
+        let line = read_control_mode_line(reader)?
+            .context("tmux control-mode client exited before confirming subscription setup")?;
+        if line.starts_with("%error") {
+            bail!("tmux rejected daemon subscription setup: {line}");
+        }
+        if line.starts_with("%end") {
+            return Ok(());
+        }
+    }
+}
+
+fn cleanup_startup_child(child: &mut std::process::Child) {
+    if let Ok(None) = child.try_wait() {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+}
+
+struct DaemonSocketServer {
+    listener: std::os::unix::net::UnixListener,
+    socket_path: PathBuf,
+    state: DaemonSocketState,
+    stop: Arc<AtomicBool>,
+}
+
+impl DaemonSocketServer {
+    fn bind(socket_path: &Path) -> Result<Self> {
+        let listener = std::os::unix::net::UnixListener::bind(socket_path)
+            .with_context(|| format!("failed to bind daemon socket {}", socket_path.display()))?;
+        listener
+            .set_nonblocking(true)
+            .context("failed to configure daemon socket listener")?;
+        Ok(Self {
+            listener,
+            socket_path: socket_path.to_path_buf(),
+            state: DaemonSocketState::new(),
+            stop: Arc::new(AtomicBool::new(false)),
+        })
+    }
+
+    fn state(&self) -> DaemonSocketState {
+        self.state.clone()
+    }
+
+    fn spawn(self) -> DaemonSocketServerHandle {
+        let stop = self.stop.clone();
+        let handle_stop = self.stop.clone();
+        let join = std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                match self.listener.accept() {
+                    Ok((stream, _)) => {
+                        let state = self.state.clone();
+                        std::thread::spawn(move || {
+                            if let Err(error) = handle_daemon_socket_client(stream, &state) {
+                                eprintln!("agentscan: daemon socket client failed: {error:#}");
+                            }
+                        });
+                    }
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                        ) =>
+                    {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => {
+                        eprintln!("agentscan: daemon socket accept failed: {error}");
+                        break;
+                    }
+                }
+            }
+        });
+        DaemonSocketServerHandle {
+            stop: handle_stop,
+            join: Some(join),
+            socket_path: self.socket_path,
+        }
+    }
+}
+
+struct DaemonSocketServerHandle {
+    stop: Arc<AtomicBool>,
+    join: Option<std::thread::JoinHandle<()>>,
+    socket_path: PathBuf,
+}
+
+impl Drop for DaemonSocketServerHandle {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+        if let Err(error) = fs::remove_file(&self.socket_path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            eprintln!(
+                "agentscan: failed to remove daemon socket {}: {error}",
+                self.socket_path.display()
+            );
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct DaemonSocketState {
+    inner: Arc<Mutex<DaemonSocketStateInner>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum DaemonStartupState {
+    Initializing,
+    Ready,
+    StartupFailed(String),
+    Closing,
+}
+
+struct DaemonSocketStateInner {
+    startup_state: DaemonStartupState,
+    latest_snapshot: Option<SnapshotEnvelope>,
+    latest_snapshot_frame: Option<Vec<u8>>,
+}
+
+struct PreparedSnapshot {
+    snapshot: SnapshotEnvelope,
+    frame: Vec<u8>,
+}
+
+impl PreparedSnapshot {
+    fn new(snapshot: SnapshotEnvelope) -> Result<Self> {
+        let frame = encode_snapshot_frame(&snapshot)?;
+        Ok(Self { snapshot, frame })
+    }
+}
+
+impl DaemonSocketState {
+    pub(crate) fn new() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(DaemonSocketStateInner {
+                startup_state: DaemonStartupState::Initializing,
+                latest_snapshot: None,
+                latest_snapshot_frame: None,
+            })),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn publish_initial_snapshot(&self, snapshot: SnapshotEnvelope) -> Result<()> {
+        let prepared = PreparedSnapshot::new(snapshot)
+            .context("initial daemon snapshot exceeded socket frame limit")?;
+        self.publish_prepared_snapshot(prepared);
+        Ok(())
+    }
+
+    fn publish_prepared_snapshot(&self, prepared: PreparedSnapshot) {
+        let mut inner = self.lock();
+        inner.latest_snapshot = Some(prepared.snapshot);
+        inner.latest_snapshot_frame = Some(prepared.frame);
+        inner.startup_state = DaemonStartupState::Ready;
+    }
+
+    pub(crate) fn publish_later_snapshot(&self, snapshot: SnapshotEnvelope) {
+        match encode_snapshot_frame(&snapshot) {
+            Ok(frame) => {
+                let mut inner = self.lock();
+                inner.latest_snapshot = Some(snapshot);
+                inner.latest_snapshot_frame = Some(frame);
+                inner.startup_state = DaemonStartupState::Ready;
+            }
+            Err(error) => {
+                eprintln!(
+                    "agentscan: skipped daemon socket snapshot update because encoded frame exceeded {} bytes; previous good snapshot remains active: {error:#}",
+                    ipc::DAEMON_FRAME_MAX_BYTES
+                );
+            }
+        }
+    }
+
+    pub(crate) fn mark_startup_failed(&self, message: String) {
+        let mut inner = self.lock();
+        inner.startup_state = DaemonStartupState::StartupFailed(message);
+    }
+
+    pub(crate) fn mark_closing(&self) {
+        let mut inner = self.lock();
+        inner.startup_state = DaemonStartupState::Closing;
+    }
+
+    fn snapshot_response(&self) -> DaemonSocketResponse {
+        let inner = self.lock();
+        match &inner.startup_state {
+            DaemonStartupState::Closing => DaemonSocketResponse::Unavailable {
+                reason: ipc::UnavailableReason::ServerClosing,
+                message: "daemon socket server is closing".to_string(),
+            },
+            DaemonStartupState::StartupFailed(message) => DaemonSocketResponse::Unavailable {
+                reason: ipc::UnavailableReason::StartupFailed,
+                message: message.clone(),
+            },
+            DaemonStartupState::Ready => {
+                if let Some(frame) = &inner.latest_snapshot_frame {
+                    DaemonSocketResponse::Snapshot(frame.clone())
+                } else {
+                    DaemonSocketResponse::Unavailable {
+                        reason: ipc::UnavailableReason::StartupFailed,
+                        message: "daemon reported ready without a snapshot".to_string(),
+                    }
+                }
+            }
+            DaemonStartupState::Initializing => DaemonSocketResponse::Unavailable {
+                reason: ipc::UnavailableReason::DaemonNotReady,
+                message: "daemon has not published its initial snapshot yet".to_string(),
+            },
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, DaemonSocketStateInner> {
+        self.inner
+            .lock()
+            .expect("daemon socket state lock poisoned")
+    }
+}
+
+enum DaemonSocketResponse {
+    Snapshot(Vec<u8>),
+    Unavailable {
+        reason: ipc::UnavailableReason,
+        message: String,
+    },
+}
+
+fn encode_snapshot_frame(snapshot: &SnapshotEnvelope) -> Result<Vec<u8>> {
+    let frame = ipc::DaemonFrame::Snapshot {
+        snapshot: snapshot.clone(),
+    };
+    let encoded = ipc::encode_frame(&frame)?;
+    if encoded.len() > ipc::DAEMON_FRAME_MAX_BYTES {
+        bail!(
+            "encoded snapshot frame was {} bytes, exceeding daemon frame limit of {} bytes",
+            encoded.len(),
+            ipc::DAEMON_FRAME_MAX_BYTES
+        );
+    }
+    Ok(encoded)
+}
+
+pub(crate) fn handle_daemon_socket_client(
+    mut stream: std::os::unix::net::UnixStream,
+    state: &DaemonSocketState,
+) -> Result<()> {
+    stream
+        .set_write_timeout(Some(CLIENT_WRITE_TIMEOUT))
+        .context("failed to set daemon socket write timeout")?;
+    let mut writer = stream
+        .try_clone()
+        .context("failed to clone daemon socket stream")?;
+    writer
+        .set_write_timeout(Some(CLIENT_WRITE_TIMEOUT))
+        .context("failed to set daemon socket writer timeout")?;
+    let Some(frame) = read_client_frame_with_deadline(&mut stream)? else {
+        return Ok(());
+    };
+
+    match ipc::validate_client_hello(&frame) {
+        ack @ ipc::DaemonFrame::HelloAck { .. } => {
+            write_daemon_frame(&mut writer, &ack)?;
+        }
+        shutdown => {
+            write_daemon_frame(&mut writer, &shutdown)?;
+            return Ok(());
+        }
+    }
+
+    match frame {
+        ipc::ClientFrame::Hello {
+            mode: ipc::ClientMode::Snapshot,
+            ..
+        } => match state.snapshot_response() {
+            DaemonSocketResponse::Snapshot(bytes) => writer
+                .write_all(&bytes)
+                .context("failed to write daemon snapshot frame")?,
+            DaemonSocketResponse::Unavailable { reason, message } => write_daemon_frame(
+                &mut writer,
+                &ipc::DaemonFrame::Unavailable { reason, message },
+            )?,
+        },
+        ipc::ClientFrame::Hello {
+            mode: ipc::ClientMode::Subscribe,
+            ..
+        } => write_daemon_frame(
+            &mut writer,
+            &ipc::DaemonFrame::Unavailable {
+                reason: ipc::UnavailableReason::SubscribeUnavailable,
+                message: "subscribe mode is not available until daemon fan-out is enabled"
+                    .to_string(),
+            },
+        )?,
+    }
+
+    writer
+        .flush()
+        .context("failed to flush daemon socket frame")
+}
+
+fn read_client_frame_with_deadline(
+    stream: &mut std::os::unix::net::UnixStream,
+) -> Result<Option<ipc::ClientFrame>> {
+    let deadline = Instant::now() + CLIENT_HANDSHAKE_TIMEOUT;
+    let mut output = Vec::new();
+    let mut byte = [0; 1];
+
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            bail!("timed out waiting for daemon client hello");
+        }
+        stream
+            .set_read_timeout(Some(deadline.saturating_duration_since(now)))
+            .context("failed to set daemon socket read timeout")?;
+
+        match stream.read(&mut byte) {
+            Ok(0) if output.is_empty() => return Ok(None),
+            Ok(0) => bail!("IPC frame ended before newline"),
+            Ok(_) => {
+                if output.len() >= ipc::CLIENT_HELLO_MAX_BYTES {
+                    bail!(
+                        "IPC frame exceeds {} byte limit",
+                        ipc::CLIENT_HELLO_MAX_BYTES
+                    );
+                }
+                if byte[0] == b'\n' {
+                    if output.ends_with(b"\r") {
+                        output.pop();
+                    }
+                    return ipc::decode_client_frame(&output).map(Some);
+                }
+                output.push(byte[0]);
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                bail!("timed out waiting for daemon client hello");
+            }
+            Err(error) => return Err(error).context("failed to read daemon client hello"),
+        }
+    }
+}
+
+fn write_daemon_frame(writer: &mut impl Write, frame: &ipc::DaemonFrame) -> Result<()> {
+    let encoded = ipc::encode_frame(frame)?;
+    if encoded.len() > ipc::DAEMON_FRAME_MAX_BYTES {
+        bail!(
+            "daemon frame was {} bytes, exceeding daemon frame limit of {} bytes",
+            encoded.len(),
+            ipc::DAEMON_FRAME_MAX_BYTES
+        );
+    }
+    writer
+        .write_all(&encoded)
+        .context("failed to write daemon socket frame")
 }
 
 #[derive(Debug, Eq, PartialEq)]
