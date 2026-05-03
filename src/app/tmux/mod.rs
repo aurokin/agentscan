@@ -5,7 +5,9 @@ mod focus;
 mod metadata;
 mod parse;
 
-pub(crate) use command::{default_session_target, tmux_target_is_missing, tmux_version};
+pub(crate) use command::{
+    default_session_target, tmux_command, tmux_target_is_missing, tmux_version,
+};
 use command::{
     run_tmux_status, run_tmux_text_output, tmux_pane_target_is_missing,
     tmux_scope_target_is_missing,

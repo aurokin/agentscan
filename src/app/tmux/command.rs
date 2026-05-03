@@ -1,7 +1,23 @@
 use super::*;
 
+pub(crate) fn tmux_command() -> Command {
+    let mut command = Command::new("tmux");
+    if !env_has_utf8_locale(|name| env::var(name).ok()) {
+        command.env("LANG", "en_US.UTF-8");
+    }
+    command
+}
+
+pub(super) fn env_has_utf8_locale(read: impl Fn(&str) -> Option<String>) -> bool {
+    ["LC_ALL", "LC_CTYPE", "LANG"].iter().any(|name| {
+        read(name)
+            .filter(|value| !value.is_empty())
+            .is_some_and(|value| value.to_ascii_uppercase().contains("UTF-8"))
+    })
+}
+
 pub(super) fn run_tmux_output(args: &[&str], context: &str) -> Result<std::process::Output> {
-    Command::new("tmux")
+    tmux_command()
         .args(args)
         .output()
         .with_context(|| format!("failed to execute {context}"))
@@ -107,4 +123,55 @@ pub(crate) fn default_session_target() -> Result<String> {
         .find(|line| !line.trim().is_empty())
         .context("no tmux sessions available for daemon attach")?;
     Ok(session.trim().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::env_has_utf8_locale;
+
+    fn read_from<'a>(entries: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| {
+            entries
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).to_string())
+        }
+    }
+
+    #[test]
+    fn empty_env_is_not_utf8() {
+        assert!(!env_has_utf8_locale(read_from(&[])));
+    }
+
+    #[test]
+    fn lang_with_utf8_is_recognised() {
+        assert!(env_has_utf8_locale(read_from(&[("LANG", "en_US.UTF-8")])));
+    }
+
+    #[test]
+    fn lc_ctype_with_lowercase_utf8_is_recognised() {
+        assert!(env_has_utf8_locale(read_from(&[(
+            "LC_CTYPE",
+            "en_US.utf-8"
+        )])));
+    }
+
+    #[test]
+    fn lc_all_overrides_other_vars() {
+        assert!(env_has_utf8_locale(read_from(&[
+            ("LC_ALL", "C.UTF-8"),
+            ("LANG", "POSIX")
+        ])));
+    }
+
+    #[test]
+    fn non_utf8_locale_is_not_recognised() {
+        assert!(!env_has_utf8_locale(read_from(&[("LANG", "POSIX")])));
+        assert!(!env_has_utf8_locale(read_from(&[("LC_ALL", "C")])));
+    }
+
+    #[test]
+    fn empty_value_is_ignored() {
+        assert!(!env_has_utf8_locale(read_from(&[("LANG", "")])));
+    }
 }

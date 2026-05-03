@@ -158,7 +158,8 @@ fn proc_fallback_uses_foreground(pane: &PaneRecord) -> bool {
         && (is_proc_fallback_launcher_command(current_command)
             || is_shell_or_wrapper_command(current_command)
             || title_analysis.has_spinner_glyph
-            || title_analysis.has_idle_glyph)
+            || title_analysis.has_idle_glyph
+            || is_version_like_command(&pane.tmux.pane_current_command))
 }
 
 fn proc_fallback_uses_descendants(pane: &PaneRecord) -> bool {
@@ -168,6 +169,7 @@ fn proc_fallback_uses_descendants(pane: &PaneRecord) -> bool {
     is_proc_fallback_launcher_command(current_command)
         || title_analysis.has_spinner_glyph
         || title_analysis.has_idle_glyph
+        || is_version_like_command(&pane.tmux.pane_current_command)
 }
 
 fn is_proc_fallback_launcher_command(command: &str) -> bool {
@@ -204,10 +206,6 @@ fn proc_fallback_skip_reason(pane: &PaneRecord) -> String {
     }
     if pane.agent_metadata.provider.is_some() {
         return "agent.provider metadata is present".to_string();
-    }
-
-    if is_version_like_command(&pane.tmux.pane_current_command) {
-        return "pane_current_command is version-shaped and ignored".to_string();
     }
 
     format!(

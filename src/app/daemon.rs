@@ -10,7 +10,7 @@ pub(super) fn daemon_run() -> Result<()> {
     cache::write_snapshot_to_cache(&snapshot)?;
 
     let session_target = tmux::default_session_target()?;
-    let mut child = Command::new("tmux")
+    let mut child = tmux::tmux_command()
         .args(["-C", "attach-session", "-t", &session_target])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
