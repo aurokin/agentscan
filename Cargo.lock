@@ -10,6 +10,7 @@ dependencies = [
  "clap",
  "criterion",
  "crossterm",
+ "libc",
  "proptest",
  "serde",
  "serde_json",

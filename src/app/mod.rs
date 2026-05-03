@@ -17,6 +17,7 @@ mod classify;
 mod cli;
 mod commands;
 mod daemon;
+mod ipc;
 mod model;
 mod output;
 mod path;

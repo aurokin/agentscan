@@ -26,8 +26,8 @@ const TMUX_AMBIGUOUS_FIXTURE: &str = include_str!(concat!(
 use super::{
     CACHE_RELATIVE_PATH, CACHE_SCHEMA_VERSION, CLAUDE_SPINNER_GLYPHS, Cli,
     DAEMON_SUBSCRIPTION_FORMAT, IDLE_GLYPHS, OutputFormat, PaneRecord, PaneStatus, Provider,
-    SnapshotEnvelope, SourceKind, StatusKind, TmuxMetadataField, cache, classify, daemon, output,
-    proc, tmux,
+    SnapshotEnvelope, SourceKind, StatusKind, TmuxMetadataField, cache, classify, daemon, ipc,
+    output, proc, tmux,
 };
 
 include!("support.rs");
@@ -35,3 +35,4 @@ include!("classification.rs");
 include!("tmux_cache.rs");
 include!("tui.rs");
 include!("cli.rs");
+include!("ipc.rs");

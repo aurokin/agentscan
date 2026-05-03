@@ -93,6 +93,11 @@ Implications:
 
 - the snapshot envelope shape is an API contract
 - schema versioning must be explicit
+- the daemon socket uses a separate wire protocol version; socket clients start
+  with a strict hello frame that declares the wire version, snapshot schema
+  version, and requested mode
+- compatible socket clients receive `hello_ack`; protocol or schema mismatches
+  receive an explicit shutdown frame without acknowledgment
 - one-shot commands read a full snapshot frame and disconnect
 - TSV is an output adapter only, not the canonical store
 - persisted cache JSON is a migration artifact, not the target IPC boundary
