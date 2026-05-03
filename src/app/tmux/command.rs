@@ -12,7 +12,10 @@ pub(super) fn env_has_utf8_locale(read: impl Fn(&str) -> Option<String>) -> bool
     ["LC_ALL", "LC_CTYPE", "LANG"]
         .iter()
         .find_map(|name| read(name).filter(|value| !value.is_empty()))
-        .is_some_and(|value| value.to_ascii_uppercase().contains("UTF-8"))
+        .is_some_and(|value| {
+            let normalized = value.replace('-', "").to_ascii_uppercase();
+            normalized.contains("UTF8")
+        })
 }
 
 pub(super) fn run_tmux_output(args: &[&str], context: &str) -> Result<std::process::Output> {
@@ -152,6 +155,15 @@ mod tests {
         assert!(env_has_utf8_locale(read_from(&[(
             "LC_CTYPE",
             "en_US.utf-8"
+        )])));
+    }
+
+    #[test]
+    fn dashless_utf8_form_is_recognised() {
+        assert!(env_has_utf8_locale(read_from(&[("LANG", "C.UTF8")])));
+        assert!(env_has_utf8_locale(read_from(&[(
+            "LC_CTYPE",
+            "en_US.utf8"
         )])));
     }
 
