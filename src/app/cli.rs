@@ -15,7 +15,7 @@ pub(crate) struct Cli {
 #[derive(Subcommand, Debug)]
 pub(crate) enum Commands {
     /// Take a direct snapshot from tmux.
-    Scan(ListArgs),
+    Scan(ScanArgs),
     /// List panes using the best available state source.
     List(ListArgs),
     /// Open the interactive TUI. `tui` is interactive-only; use `list --format json` for automation.
@@ -37,6 +37,23 @@ pub(crate) struct ListArgs {
     #[command(flatten)]
     pub(crate) refresh: RefreshArgs,
 
+    #[command(flatten)]
+    pub(crate) auto_start: AutoStartArgs,
+
+    /// Include all tmux panes, not only likely agent panes.
+    #[arg(long)]
+    pub(crate) all: bool,
+
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    pub(crate) format: OutputFormat,
+}
+
+#[derive(Args, Clone, Copy, Debug)]
+pub(crate) struct ScanArgs {
+    #[command(flatten)]
+    pub(crate) refresh: RefreshArgs,
+
     /// Include all tmux panes, not only likely agent panes.
     #[arg(long)]
     pub(crate) all: bool,
@@ -54,6 +71,9 @@ pub(crate) struct InspectArgs {
     #[command(flatten)]
     pub(crate) refresh: RefreshArgs,
 
+    #[command(flatten)]
+    pub(crate) auto_start: AutoStartArgs,
+
     /// Output format.
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     pub(crate) format: OutputFormat,
@@ -66,6 +86,9 @@ pub(crate) struct FocusArgs {
 
     #[command(flatten)]
     pub(crate) refresh: RefreshArgs,
+
+    #[command(flatten)]
+    pub(crate) auto_start: AutoStartArgs,
 
     /// The tmux client tty to target when switching panes.
     #[arg(long)]
@@ -195,6 +218,13 @@ pub(crate) struct RefreshArgs {
     /// Force a fresh tmux snapshot and rewrite the cache before running the command.
     #[arg(short = 'f', long = "refresh")]
     pub(crate) refresh: bool,
+}
+
+#[derive(Args, Clone, Copy, Debug, Default)]
+pub(crate) struct AutoStartArgs {
+    /// Disable daemon auto-start when this command uses daemon-backed state.
+    #[arg(long = "no-auto-start")]
+    pub(crate) no_auto_start: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]

@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -14,6 +15,7 @@ use tempfile::TempDir;
 
 const DAEMON_TIMEOUT: Duration = Duration::from_secs(40);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
+const CACHE_SNAPSHOT_FIXTURE: &str = include_str!("fixtures/cache_snapshot_v1.json");
 
 #[test]
 fn agentscan_uses_explicit_test_tmux_socket_when_default_tmux_tmpdir_is_poisoned() -> Result<()> {
@@ -95,6 +97,54 @@ fn daemon_serves_snapshot_over_owned_socket_path() -> Result<()> {
     );
 
     daemon.shutdown()?;
+    Ok(())
+}
+
+#[test]
+fn daemon_auto_start_helper_starts_daemon_and_reads_snapshot() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let pane_id = harness.start_session("auto-start-helper", "sleep 300")?;
+    let executable_path = agentscan_bin()?;
+    let envs = vec![
+        (
+            OsString::from("TMUX_TMPDIR"),
+            harness.tmux_tmpdir.as_os_str().to_owned(),
+        ),
+        (
+            OsString::from(AGENTSCAN_TMUX_SOCKET_ENV_VAR),
+            harness.tmux_socket_path.as_os_str().to_owned(),
+        ),
+        (
+            OsString::from("AGENTSCAN_CACHE_PATH"),
+            harness.cache_path.as_os_str().to_owned(),
+        ),
+        (
+            OsString::from("AGENTSCAN_SOCKET_PATH"),
+            harness.agentscan_socket_path.as_os_str().to_owned(),
+        ),
+    ];
+    let env_removes = vec![OsString::from("TMUX")];
+
+    let snapshot_json = agentscan::app::bench_support::daemon_snapshot_via_socket_path_for_tests(
+        &harness.agentscan_socket_path,
+        &executable_path,
+        &envs,
+        &env_removes,
+    )?;
+    let snapshot: Value =
+        serde_json::from_str(&snapshot_json).context("helper snapshot should be JSON")?;
+
+    assert_eq!(snapshot["source"]["kind"], "daemon");
+    assert!(
+        snapshot["panes"]
+            .as_array()
+            .context("snapshot panes should be an array")?
+            .iter()
+            .any(|pane| pane["pane_id"] == pane_id),
+        "auto-start helper snapshot did not include pane {pane_id}: {snapshot_json}"
+    );
+
+    let _ = harness.agentscan(["daemon", "stop"]);
     Ok(())
 }
 
@@ -837,6 +887,156 @@ fn focus_targets_explicit_client_tty() -> Result<()> {
     harness.agentscan(["-f", "focus", "--client-tty", &client.tty, &split_pane_id])?;
     harness.wait_for_client_pane(&mut client, &split_pane_id)?;
 
+    Ok(())
+}
+
+#[test]
+fn list_no_auto_start_preserves_cache_backed_behavior_before_socket_migration() -> Result<()> {
+    let harness = TestHarness::new()?;
+    fs::write(&harness.cache_path, CACHE_SNAPSHOT_FIXTURE)
+        .context("failed to seed cache fixture")?;
+    fs::write(&harness.agentscan_socket_path, b"not a socket")
+        .context("failed to poison daemon socket path")?;
+
+    let stdout = harness.agentscan_output(["list", "--no-auto-start", "--format", "json"])?;
+    let snapshot: Value = serde_json::from_str(&stdout).context("list output should be JSON")?;
+
+    assert!(
+        snapshot["panes"]
+            .as_array()
+            .context("snapshot panes should be an array")?
+            .iter()
+            .any(|pane| pane["pane_id"] == "%67" && pane["provider"] == "codex"),
+        "list should read the existing cache fixture, got:\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn inspect_no_auto_start_preserves_cache_backed_behavior_before_socket_migration() -> Result<()> {
+    let harness = TestHarness::new()?;
+    fs::write(&harness.cache_path, CACHE_SNAPSHOT_FIXTURE)
+        .context("failed to seed cache fixture")?;
+    fs::write(&harness.agentscan_socket_path, b"not a socket")
+        .context("failed to poison daemon socket path")?;
+
+    let stdout =
+        harness.agentscan_output(["inspect", "%67", "--no-auto-start", "--format", "json"])?;
+    let pane: Value = serde_json::from_str(&stdout).context("inspect output should be JSON")?;
+
+    assert_eq!(pane["pane_id"], "%67");
+    assert_eq!(pane["provider"], "codex");
+    Ok(())
+}
+
+#[test]
+fn focus_no_auto_start_refresh_preserves_direct_tmux_behavior_before_socket_migration() -> Result<()>
+{
+    let harness = TestHarness::new()?;
+    let _root_pane_id = harness.start_session("focus-no-auto-start", "sleep 300")?;
+    let split_pane_id = harness.split_window("focus-no-auto-start:0.0", "sleep 300")?;
+    let mut client = harness.attach_client("focus-no-auto-start")?;
+    fs::write(&harness.agentscan_socket_path, b"not a socket")
+        .context("failed to poison daemon socket path")?;
+
+    harness.agentscan([
+        "focus",
+        "--client-tty",
+        &client.tty,
+        &split_pane_id,
+        "--no-auto-start",
+        "--refresh",
+    ])?;
+    harness.wait_for_client_pane(&mut client, &split_pane_id)?;
+
+    Ok(())
+}
+
+#[test]
+fn env_no_auto_start_preserves_cache_backed_behavior_before_socket_migration() -> Result<()> {
+    let harness = TestHarness::new()?;
+    fs::write(&harness.cache_path, CACHE_SNAPSHOT_FIXTURE)
+        .context("failed to seed cache fixture")?;
+    fs::write(&harness.agentscan_socket_path, b"not a socket")
+        .context("failed to poison daemon socket path")?;
+
+    let output = harness
+        .agentscan_command()?
+        .args(["list", "--format", "json"])
+        .env("AGENTSCAN_NO_AUTO_START", "1")
+        .output()
+        .context("failed to run list with env opt-out")?;
+    assert!(
+        output.status.success(),
+        "list should succeed from cache; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).context("list output should be UTF-8")?;
+    let snapshot: Value = serde_json::from_str(&stdout).context("list output should be JSON")?;
+    assert!(
+        snapshot["panes"]
+            .as_array()
+            .context("snapshot panes should be an array")?
+            .iter()
+            .any(|pane| pane["pane_id"] == "%67" && pane["provider"] == "codex"),
+        "list should read the existing cache fixture, got:\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn env_no_auto_start_does_not_disable_daemon_start_command() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let _pane_id = harness.start_session("env-no-auto-start-daemon-start", "sleep 300")?;
+
+    let output = harness
+        .agentscan_command()?
+        .args(["daemon", "start"])
+        .env("AGENTSCAN_NO_AUTO_START", "1")
+        .output()
+        .context("failed to run daemon start with env opt-out")?;
+    assert!(
+        output.status.success(),
+        "daemon start should ignore consumer opt-out; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).context("daemon start output should be UTF-8")?;
+    assert!(
+        stdout.contains("agentscan daemon started"),
+        "expected daemon start confirmation, got:\n{stdout}"
+    );
+
+    harness.agentscan(["daemon", "stop"])?;
+    Ok(())
+}
+
+#[test]
+fn cache_commands_reject_root_no_auto_start_before_socket_migration() -> Result<()> {
+    let harness = TestHarness::new()?;
+    fs::write(&harness.cache_path, CACHE_SNAPSHOT_FIXTURE)
+        .context("failed to seed cache fixture")?;
+
+    for args in [
+        ["--no-auto-start", "cache", "show"].as_slice(),
+        ["--no-auto-start", "cache", "validate"].as_slice(),
+    ] {
+        let output = harness
+            .agentscan_command()?
+            .args(args)
+            .output()
+            .context("failed to run cache command with root no-auto-start")?;
+        assert!(
+            !output.status.success(),
+            "cache command should reject root no-auto-start; args: {args:?}"
+        );
+        let stderr = String::from_utf8(output.stderr).context("stderr should be UTF-8")?;
+        assert!(
+            stderr.contains("`--no-auto-start` is not supported"),
+            "expected root no-auto-start rejection, got:\n{stderr}"
+        );
+    }
     Ok(())
 }
 

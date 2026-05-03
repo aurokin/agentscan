@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+use std::ffi::OsString;
+use std::path::Path;
 
 use super::*;
 
@@ -25,4 +27,21 @@ pub fn deserialize_snapshot_pane_count(input: &str) -> Result<usize> {
     let snapshot: SnapshotEnvelope =
         serde_json::from_str(input).context("cache fixture should deserialize")?;
     Ok(snapshot.panes.len())
+}
+
+#[doc(hidden)]
+pub fn daemon_snapshot_via_socket_path_for_tests(
+    socket_path: &Path,
+    executable_path: &Path,
+    envs: &[(OsString, OsString)],
+    env_removes: &[OsString],
+) -> Result<String> {
+    let snapshot = daemon::snapshot_via_socket_path_with_start_command(
+        socket_path,
+        executable_path,
+        envs,
+        env_removes,
+    )
+    .map_err(anyhow::Error::new)?;
+    serde_json::to_string(&snapshot).context("failed to serialize daemon snapshot")
 }

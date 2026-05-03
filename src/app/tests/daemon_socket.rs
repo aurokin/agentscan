@@ -146,6 +146,41 @@ fn open_ready_subscriber(
     subscriber
 }
 
+fn hello_ack_frame() -> ipc::DaemonFrame {
+    ipc::DaemonFrame::HelloAck {
+        protocol_version: ipc::WIRE_PROTOCOL_VERSION,
+        snapshot_schema_version: CACHE_SCHEMA_VERSION,
+    }
+}
+
+fn serve_snapshot_responses(
+    socket_path: &Path,
+    responses: Vec<Vec<ipc::DaemonFrame>>,
+) -> JoinHandle<usize> {
+    let listener = UnixListener::bind(socket_path).expect("snapshot listener should bind");
+    std::thread::spawn(move || {
+        let mut accepted = 0;
+        for response in responses {
+            let (mut stream, _) = listener.accept().expect("snapshot client should connect");
+            let reader_stream = stream.try_clone().expect("server stream should clone");
+            let mut reader = BufReader::new(reader_stream);
+            assert_eq!(
+                ipc::read_client_frame(&mut reader)
+                    .expect("client hello should decode")
+                    .expect("client should send hello"),
+                socket_hello(ipc::ClientMode::Snapshot)
+            );
+            for frame in response {
+                stream
+                    .write_all(&ipc::encode_frame(&frame).expect("frame should encode"))
+                    .expect("daemon response should write");
+            }
+            accepted += 1;
+        }
+        accepted
+    })
+}
+
 fn wait_for_subscriber_count(state: &daemon::DaemonSocketState, expected: usize) {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
@@ -867,5 +902,160 @@ fn daemon_socket_client_handler_works_over_real_unix_socket_path() {
             },
             ipc::DaemonFrame::Snapshot { snapshot },
         ]
+    );
+}
+
+#[test]
+fn daemon_snapshot_helper_reads_ready_socket() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let socket_path = tempdir.path().join("agentscan.sock");
+    let snapshot = empty_socket_snapshot("2026-05-03T00:00:00Z");
+    let handle = serve_snapshot_responses(
+        &socket_path,
+        vec![vec![
+            hello_ack_frame(),
+            ipc::DaemonFrame::Snapshot {
+                snapshot: snapshot.clone(),
+            },
+        ]],
+    );
+
+    let actual =
+        daemon::snapshot_via_socket_path(&socket_path, daemon::AutoStartPolicy::disabled_for_tests())
+            .expect("snapshot helper should read ready daemon");
+
+    assert_eq!(actual, snapshot);
+    assert_eq!(handle.join().expect("server should join"), 1);
+}
+
+#[test]
+fn daemon_snapshot_helper_retries_not_ready_then_succeeds() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let socket_path = tempdir.path().join("agentscan.sock");
+    let snapshot = empty_socket_snapshot("2026-05-03T00:00:01Z");
+    let handle = serve_snapshot_responses(
+        &socket_path,
+        vec![
+            vec![
+                hello_ack_frame(),
+                ipc::DaemonFrame::Unavailable {
+                    reason: ipc::UnavailableReason::DaemonNotReady,
+                    message: "initializing".to_string(),
+                },
+            ],
+            vec![
+                hello_ack_frame(),
+                ipc::DaemonFrame::Snapshot {
+                    snapshot: snapshot.clone(),
+                },
+            ],
+        ],
+    );
+
+    let actual =
+        daemon::snapshot_via_socket_path(&socket_path, daemon::AutoStartPolicy::disabled_for_tests())
+            .expect("snapshot helper should retry not-ready daemon");
+
+    assert_eq!(actual, snapshot);
+    assert_eq!(handle.join().expect("server should join"), 2);
+}
+
+#[test]
+fn daemon_snapshot_helper_treats_startup_failed_as_terminal() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let socket_path = tempdir.path().join("agentscan.sock");
+    let handle = serve_snapshot_responses(
+        &socket_path,
+        vec![vec![
+            hello_ack_frame(),
+            ipc::DaemonFrame::Unavailable {
+                reason: ipc::UnavailableReason::StartupFailed,
+                message: "tmux server is unavailable".to_string(),
+            },
+        ]],
+    );
+
+    let error =
+        daemon::snapshot_via_socket_path(&socket_path, daemon::AutoStartPolicy::enabled_for_tests())
+            .expect_err("startup_failed should be terminal");
+
+    assert!(matches!(
+        error,
+        daemon::DaemonSnapshotError::StartupFailed { .. }
+    ));
+    assert!(error.to_string().contains("tmux server is unavailable"));
+    assert_eq!(handle.join().expect("server should join"), 1);
+}
+
+#[test]
+fn daemon_snapshot_helper_treats_server_closing_as_terminal() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let socket_path = tempdir.path().join("agentscan.sock");
+    let handle = serve_snapshot_responses(
+        &socket_path,
+        vec![vec![
+            hello_ack_frame(),
+            ipc::DaemonFrame::Unavailable {
+                reason: ipc::UnavailableReason::ServerClosing,
+                message: "daemon is shutting down".to_string(),
+            },
+        ]],
+    );
+
+    let error =
+        daemon::snapshot_via_socket_path(&socket_path, daemon::AutoStartPolicy::enabled_for_tests())
+            .expect_err("server_closing should be terminal");
+
+    assert_eq!(
+        error,
+        daemon::DaemonSnapshotError::ServerClosing {
+            message: "daemon is shutting down".to_string()
+        }
+    );
+    assert_eq!(handle.join().expect("server should join"), 1);
+}
+
+#[test]
+fn daemon_snapshot_helper_reports_incompatible_daemon_guidance() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let socket_path = tempdir.path().join("agentscan.sock");
+    let handle = serve_snapshot_responses(
+        &socket_path,
+        vec![vec![ipc::DaemonFrame::Shutdown {
+            reason: ipc::ShutdownReason::ProtocolMismatch,
+            message: "protocol 0 is unsupported".to_string(),
+        }]],
+    );
+
+    let error =
+        daemon::snapshot_via_socket_path(&socket_path, daemon::AutoStartPolicy::enabled_for_tests())
+            .expect_err("protocol mismatch should be incompatible");
+
+    assert!(matches!(
+        error,
+        daemon::DaemonSnapshotError::Incompatible { .. }
+    ));
+    assert!(
+        error
+            .to_string()
+            .contains("stop the incompatible daemon manually")
+    );
+    assert_eq!(handle.join().expect("server should join"), 1);
+}
+
+#[test]
+fn daemon_snapshot_helper_reports_disabled_auto_start_when_socket_is_missing() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let socket_path = tempdir.path().join("missing.sock");
+
+    let error =
+        daemon::snapshot_via_socket_path(&socket_path, daemon::AutoStartPolicy::disabled_for_tests())
+            .expect_err("missing socket with opt-out should not auto-start");
+
+    assert_eq!(
+        error,
+        daemon::DaemonSnapshotError::AutoStartDisabled {
+            reason: "socket is missing".to_string()
+        }
     );
 }

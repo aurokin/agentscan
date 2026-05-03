@@ -27,6 +27,7 @@ const DAEMON_START_READINESS_TIMEOUT: Duration = Duration::from_secs(5);
 const DAEMON_STOP_TIMEOUT: Duration = Duration::from_secs(3);
 const LIFECYCLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const LOG_TRUNCATE_THRESHOLD_BYTES: u64 = 1024 * 1024;
+pub(crate) const NO_AUTO_START_ENV_VAR: &str = "AGENTSCAN_NO_AUTO_START";
 
 static DAEMON_SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
@@ -108,6 +109,133 @@ enum LifecycleQuery {
     Incompatible(String),
     Busy(String),
 }
+
+// AUR-175 lands this helper before AUR-176 wires command consumers to it.
+#[allow(dead_code)]
+enum SnapshotQuery {
+    NotRunning(String),
+    Snapshot(SnapshotEnvelope),
+    NotReady,
+    StartupFailed(String),
+    ServerClosing(String),
+    Incompatible(String),
+    Busy(String),
+    Unexpected(String),
+}
+
+// Quiet mode is consumed by the AUR-175 auto-start helper before command consumers are migrated.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StartOutput {
+    Verbose,
+    Quiet,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StartConfirmation {
+    Started,
+    AlreadyRunning,
+}
+
+impl StartOutput {
+    fn print_ready(
+        self,
+        confirmation: StartConfirmation,
+        paths: &LifecyclePaths,
+        status: &ipc::LifecycleStatusFrame,
+    ) {
+        if self == Self::Verbose {
+            match confirmation {
+                StartConfirmation::Started => println!("agentscan daemon started"),
+                StartConfirmation::AlreadyRunning => println!("agentscan daemon already running"),
+            }
+            print_lifecycle_status(paths, status);
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct AutoStartPolicy {
+    disabled: bool,
+}
+
+impl AutoStartPolicy {
+    pub(crate) fn from_args(args: AutoStartArgs) -> Self {
+        Self {
+            disabled: args.no_auto_start || env::var(NO_AUTO_START_ENV_VAR).as_deref() == Ok("1"),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn enabled_for_tests() -> Self {
+        Self { disabled: false }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn disabled_for_tests() -> Self {
+        Self { disabled: true }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum DaemonSnapshotError {
+    NotRunning { reason: String },
+    AutoStartDisabled { reason: String },
+    Incompatible { message: String },
+    StartupFailed { message: String, log_path: PathBuf },
+    ChildExited { status: String, log_path: PathBuf },
+    ReadinessTimeout { log_path: PathBuf },
+    ServerBusy { message: String },
+    ServerClosing { message: String },
+    UnexpectedFrame { message: String },
+}
+
+impl DaemonSnapshotError {
+    fn into_anyhow(self) -> anyhow::Error {
+        anyhow::anyhow!("{self}")
+    }
+}
+
+impl std::fmt::Display for DaemonSnapshotError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotRunning { reason } => write!(formatter, "daemon is not running: {reason}"),
+            Self::AutoStartDisabled { reason } => {
+                write!(formatter, "daemon auto-start is disabled: {reason}")
+            }
+            Self::Incompatible { message } => {
+                write!(formatter, "{}", incompatible_daemon_guidance(message))
+            }
+            Self::StartupFailed { message, log_path } => {
+                write!(
+                    formatter,
+                    "daemon startup failed: {message}; see log {}",
+                    log_path.display()
+                )
+            }
+            Self::ChildExited { status, log_path } => {
+                write!(
+                    formatter,
+                    "daemon exited before readiness with status {status}; see log {}",
+                    log_path.display()
+                )
+            }
+            Self::ReadinessTimeout { log_path } => {
+                write!(
+                    formatter,
+                    "timed out waiting for daemon readiness; see log {}",
+                    log_path.display()
+                )
+            }
+            Self::ServerBusy { message } => write!(formatter, "{message}"),
+            Self::ServerClosing { message } => write!(formatter, "{message}"),
+            Self::UnexpectedFrame { message } => write!(formatter, "{message}"),
+        }
+    }
+}
+
+impl std::error::Error for DaemonSnapshotError {}
 
 struct DaemonStartGuard {
     lock_file: File,
@@ -286,6 +414,191 @@ fn lifecycle_status_once(socket_path: &Path) -> Result<LifecycleQuery> {
     }
 }
 
+#[allow(dead_code)]
+fn snapshot_once_from_socket(socket_path: &Path) -> Result<SnapshotQuery> {
+    let mut stream = match std::os::unix::net::UnixStream::connect(socket_path) {
+        Ok(stream) => stream,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(SnapshotQuery::NotRunning("socket is missing".to_string()));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
+            return Ok(SnapshotQuery::NotRunning(
+                "socket exists but no daemon accepted the connection".to_string(),
+            ));
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to connect to daemon socket {}",
+                    socket_path.display()
+                )
+            });
+        }
+    };
+    stream
+        .set_read_timeout(Some(CLIENT_WRITE_TIMEOUT))
+        .context("failed to set daemon snapshot read timeout")?;
+    stream
+        .set_write_timeout(Some(CLIENT_WRITE_TIMEOUT))
+        .context("failed to set daemon snapshot write timeout")?;
+    let hello = ipc::ClientFrame::Hello {
+        protocol_version: ipc::WIRE_PROTOCOL_VERSION,
+        snapshot_schema_version: CACHE_SCHEMA_VERSION,
+        mode: ipc::ClientMode::Snapshot,
+    };
+    stream
+        .write_all(&ipc::encode_frame(&hello)?)
+        .context("failed to write daemon snapshot hello")?;
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .context("failed to close daemon snapshot write side")?;
+    let mut reader = BufReader::new(stream);
+    let Some(first_frame) = ipc::read_daemon_frame(&mut reader)? else {
+        return Ok(SnapshotQuery::Unexpected(
+            "daemon closed without snapshot response".to_string(),
+        ));
+    };
+    match first_frame {
+        ipc::DaemonFrame::Shutdown {
+            reason: ipc::ShutdownReason::ServerBusy,
+            message,
+        } => Ok(SnapshotQuery::Busy(message)),
+        ipc::DaemonFrame::Shutdown { reason, message } => Ok(SnapshotQuery::Incompatible(format!(
+            "daemon rejected snapshot handshake ({reason:?}): {message}"
+        ))),
+        ipc::DaemonFrame::HelloAck { .. } => {
+            let Some(second_frame) = ipc::read_daemon_frame(&mut reader)? else {
+                return Ok(SnapshotQuery::Unexpected(
+                    "daemon acknowledged snapshot hello but did not send snapshot".to_string(),
+                ));
+            };
+            match second_frame {
+                ipc::DaemonFrame::Snapshot { snapshot } => Ok(SnapshotQuery::Snapshot(snapshot)),
+                ipc::DaemonFrame::Unavailable {
+                    reason: ipc::UnavailableReason::DaemonNotReady,
+                    message: _,
+                } => Ok(SnapshotQuery::NotReady),
+                ipc::DaemonFrame::Unavailable {
+                    reason: ipc::UnavailableReason::StartupFailed,
+                    message,
+                } => Ok(SnapshotQuery::StartupFailed(message)),
+                ipc::DaemonFrame::Unavailable {
+                    reason: ipc::UnavailableReason::ServerClosing,
+                    message,
+                } => Ok(SnapshotQuery::ServerClosing(message)),
+                ipc::DaemonFrame::Unavailable { reason, message } => Ok(SnapshotQuery::Unexpected(
+                    format!("daemon returned unexpected unavailable reason {reason:?}: {message}"),
+                )),
+                other => Ok(SnapshotQuery::Unexpected(format!(
+                    "daemon returned unexpected snapshot frame {other:?}"
+                ))),
+            }
+        }
+        other => Ok(SnapshotQuery::Unexpected(format!(
+            "daemon returned unexpected snapshot frame {other:?}"
+        ))),
+    }
+}
+
+// AUR-175 foundation for AUR-176 socket-backed one-shot consumers.
+#[allow(dead_code)]
+pub(crate) fn snapshot_via_socket(
+    policy: AutoStartPolicy,
+) -> std::result::Result<SnapshotEnvelope, DaemonSnapshotError> {
+    let socket_path =
+        ipc::resolve_socket_path().map_err(|error| DaemonSnapshotError::UnexpectedFrame {
+            message: error.to_string(),
+        })?;
+    snapshot_via_socket_path(&socket_path, policy)
+}
+
+#[allow(dead_code)]
+pub(crate) fn snapshot_via_socket_path(
+    socket_path: &Path,
+    policy: AutoStartPolicy,
+) -> std::result::Result<SnapshotEnvelope, DaemonSnapshotError> {
+    snapshot_via_socket_path_with_starter(socket_path, policy, |socket_path| {
+        daemon_start_with_socket_path_and_output(socket_path, StartOutput::Quiet)
+    })
+}
+
+fn snapshot_via_socket_path_with_starter(
+    socket_path: &Path,
+    policy: AutoStartPolicy,
+    mut start_daemon: impl FnMut(&Path) -> std::result::Result<(), DaemonSnapshotError>,
+) -> std::result::Result<SnapshotEnvelope, DaemonSnapshotError> {
+    let paths = LifecyclePaths::from_socket_path(socket_path);
+    let deadline = Instant::now() + DAEMON_START_READINESS_TIMEOUT;
+    let mut attempted_start = false;
+    loop {
+        match snapshot_once_from_socket(socket_path).map_err(|error| {
+            DaemonSnapshotError::UnexpectedFrame {
+                message: error.to_string(),
+            }
+        })? {
+            SnapshotQuery::Snapshot(snapshot) => return Ok(snapshot),
+            SnapshotQuery::NotRunning(reason) if policy.disabled => {
+                return Err(DaemonSnapshotError::AutoStartDisabled { reason });
+            }
+            SnapshotQuery::NotRunning(reason) if !attempted_start => {
+                attempted_start = true;
+                start_daemon(socket_path)?;
+                let _ = reason;
+            }
+            SnapshotQuery::NotRunning(reason) => {
+                if Instant::now() >= deadline {
+                    return Err(DaemonSnapshotError::NotRunning { reason });
+                }
+            }
+            SnapshotQuery::NotReady => {
+                if Instant::now() >= deadline {
+                    return Err(DaemonSnapshotError::ReadinessTimeout {
+                        log_path: paths.log_path,
+                    });
+                }
+            }
+            SnapshotQuery::Busy(message) => {
+                if Instant::now() >= deadline {
+                    return Err(DaemonSnapshotError::ServerBusy { message });
+                }
+            }
+            SnapshotQuery::StartupFailed(message) => {
+                return Err(DaemonSnapshotError::StartupFailed {
+                    message,
+                    log_path: paths.log_path,
+                });
+            }
+            SnapshotQuery::ServerClosing(message) => {
+                return Err(DaemonSnapshotError::ServerClosing { message });
+            }
+            SnapshotQuery::Incompatible(message) => {
+                return Err(DaemonSnapshotError::Incompatible { message });
+            }
+            SnapshotQuery::Unexpected(message) => {
+                return Err(DaemonSnapshotError::UnexpectedFrame { message });
+            }
+        }
+        std::thread::sleep(LIFECYCLE_POLL_INTERVAL);
+    }
+}
+
+pub(super) fn snapshot_via_socket_path_with_start_command(
+    socket_path: &Path,
+    executable_path: &Path,
+    envs: &[(OsString, OsString)],
+    env_removes: &[OsString],
+) -> std::result::Result<SnapshotEnvelope, DaemonSnapshotError> {
+    snapshot_via_socket_path_with_starter(socket_path, AutoStartPolicy::default(), |socket_path| {
+        daemon_start_with_socket_path_output_and_command(
+            socket_path,
+            StartOutput::Quiet,
+            executable_path,
+            envs,
+            env_removes,
+        )
+    })
+}
+
 fn print_lifecycle_not_running(socket_path: &Path, paths: &LifecyclePaths, reason: &str) {
     println!("daemon_state: not_running");
     println!("socket_path: {}", socket_path.display());
@@ -406,58 +719,86 @@ fn wait_for_daemon_start(
     socket_path: &Path,
     paths: &LifecyclePaths,
     child: &mut std::process::Child,
-) -> Result<()> {
-    wait_for_daemon_readiness(socket_path, paths, Some(child), "agentscan daemon started")
+    output: StartOutput,
+) -> std::result::Result<(), DaemonSnapshotError> {
+    wait_for_daemon_readiness(
+        socket_path,
+        paths,
+        Some(child),
+        output,
+        StartConfirmation::Started,
+    )
 }
 
-fn wait_for_existing_daemon_start(socket_path: &Path, paths: &LifecyclePaths) -> Result<()> {
-    wait_for_daemon_readiness(socket_path, paths, None, "agentscan daemon already running")
+fn wait_for_existing_daemon_start(
+    socket_path: &Path,
+    paths: &LifecyclePaths,
+    output: StartOutput,
+) -> std::result::Result<(), DaemonSnapshotError> {
+    wait_for_daemon_readiness(
+        socket_path,
+        paths,
+        None,
+        output,
+        StartConfirmation::AlreadyRunning,
+    )
 }
 
 fn wait_for_daemon_readiness(
     socket_path: &Path,
     paths: &LifecyclePaths,
     mut child: Option<&mut std::process::Child>,
-    confirmation: &str,
-) -> Result<()> {
+    output: StartOutput,
+    confirmation: StartConfirmation,
+) -> std::result::Result<(), DaemonSnapshotError> {
     let deadline = Instant::now() + DAEMON_START_READINESS_TIMEOUT;
     loop {
-        match lifecycle_status_from_socket(socket_path, LIFECYCLE_CONNECT_TIMEOUT)? {
+        match lifecycle_status_from_socket(socket_path, LIFECYCLE_CONNECT_TIMEOUT).map_err(
+            |error| DaemonSnapshotError::UnexpectedFrame {
+                message: error.to_string(),
+            },
+        )? {
             LifecycleQuery::Status(status) if status.state == ipc::LifecycleDaemonState::Ready => {
-                println!("{confirmation}");
-                print_lifecycle_status(paths, &status);
+                output.print_ready(confirmation, paths, &status);
                 return Ok(());
             }
             LifecycleQuery::Status(status)
                 if status.state == ipc::LifecycleDaemonState::StartupFailed =>
             {
-                bail!(
-                    "daemon startup failed: {}; see log {}",
-                    status
+                return Err(DaemonSnapshotError::StartupFailed {
+                    message: status
                         .message
                         .unwrap_or_else(|| "startup_failed".to_string()),
-                    paths.log_path.display()
-                );
+                    log_path: paths.log_path.clone(),
+                });
             }
             LifecycleQuery::Incompatible(message) => {
-                bail!("{message}; see log {}", paths.log_path.display())
+                return Err(DaemonSnapshotError::Incompatible { message });
             }
-            LifecycleQuery::Busy(_) | LifecycleQuery::Status(_) | LifecycleQuery::NotRunning(_) => {
+            LifecycleQuery::Busy(message) => {
+                if Instant::now() >= deadline {
+                    return Err(DaemonSnapshotError::ServerBusy { message });
+                }
             }
+            LifecycleQuery::Status(_) | LifecycleQuery::NotRunning(_) => {}
         }
         if let Some(child) = child.as_deref_mut()
-            && let Some(status) = child.try_wait().context("failed to poll daemon process")?
+            && let Some(status) =
+                child
+                    .try_wait()
+                    .map_err(|error| DaemonSnapshotError::UnexpectedFrame {
+                        message: format!("failed to poll daemon process: {error}"),
+                    })?
         {
-            bail!(
-                "daemon exited before readiness with status {status}; see log {}",
-                paths.log_path.display()
-            );
+            return Err(DaemonSnapshotError::ChildExited {
+                status: status.to_string(),
+                log_path: paths.log_path.clone(),
+            });
         }
         if Instant::now() >= deadline {
-            bail!(
-                "timed out waiting for daemon readiness; see log {}",
-                paths.log_path.display()
-            );
+            return Err(DaemonSnapshotError::ReadinessTimeout {
+                log_path: paths.log_path.clone(),
+            });
         }
         std::thread::sleep(LIFECYCLE_POLL_INTERVAL);
     }
@@ -545,47 +886,60 @@ fn remove_matching_identity(
     }
 }
 
-fn daemon_start_existing_status(socket_path: &Path, paths: &LifecyclePaths) -> Result<bool> {
-    ensure_socket_path_is_socket_if_present(socket_path)?;
-    match lifecycle_status_from_socket(socket_path, LIFECYCLE_CONNECT_TIMEOUT)? {
+fn daemon_start_existing_status(
+    socket_path: &Path,
+    paths: &LifecyclePaths,
+    output: StartOutput,
+) -> std::result::Result<bool, DaemonSnapshotError> {
+    ensure_socket_path_is_socket_if_present(socket_path).map_err(|error| {
+        DaemonSnapshotError::UnexpectedFrame {
+            message: error.to_string(),
+        }
+    })?;
+    match lifecycle_status_from_socket(socket_path, LIFECYCLE_CONNECT_TIMEOUT).map_err(|error| {
+        DaemonSnapshotError::UnexpectedFrame {
+            message: error.to_string(),
+        }
+    })? {
         LifecycleQuery::Status(status) if status.state == ipc::LifecycleDaemonState::Ready => {
-            println!("agentscan daemon already running");
-            print_lifecycle_status(paths, &status);
+            output.print_ready(StartConfirmation::AlreadyRunning, paths, &status);
             Ok(true)
         }
         LifecycleQuery::Status(status)
             if status.state == ipc::LifecycleDaemonState::Initializing =>
         {
-            wait_for_existing_daemon_start(socket_path, paths)?;
+            wait_for_existing_daemon_start(socket_path, paths, output)?;
             Ok(true)
         }
         LifecycleQuery::Status(status)
             if status.state == ipc::LifecycleDaemonState::StartupFailed =>
         {
-            bail!(
-                "daemon startup failed: {}; see log {}",
-                status
+            Err(DaemonSnapshotError::StartupFailed {
+                message: status
                     .message
                     .unwrap_or_else(|| "startup_failed".to_string()),
-                paths.log_path.display()
-            );
+                log_path: paths.log_path.clone(),
+            })
         }
-        LifecycleQuery::Status(status) => {
-            bail!(
+        LifecycleQuery::Status(status) => Err(DaemonSnapshotError::UnexpectedFrame {
+            message: format!(
                 "daemon socket is reachable but not startable (state {}); use `agentscan daemon status` for details",
                 lifecycle_state_label(status.state)
-            );
-        }
-        LifecycleQuery::Incompatible(message) => {
-            bail!("{}", incompatible_daemon_guidance(&message))
-        }
-        LifecycleQuery::Busy(message) => bail!("{message}; retry daemon start later"),
+            ),
+        }),
+        LifecycleQuery::Incompatible(message) => Err(DaemonSnapshotError::Incompatible { message }),
+        LifecycleQuery::Busy(message) => Err(DaemonSnapshotError::ServerBusy {
+            message: format!("{message}; retry daemon start later"),
+        }),
         LifecycleQuery::NotRunning(_) => Ok(false),
     }
 }
 
 pub(super) fn daemon_run() -> Result<()> {
-    let socket_path = ipc::resolve_socket_path()?;
+    let socket_path =
+        ipc::resolve_socket_path().map_err(|error| DaemonSnapshotError::UnexpectedFrame {
+            message: error.to_string(),
+        })?;
     daemon_run_with_socket_path_and_startup(&socket_path, DaemonStartup)
 }
 
@@ -609,37 +963,94 @@ pub(super) fn daemon_status() -> Result<()> {
 }
 
 pub(super) fn daemon_start() -> Result<()> {
-    let socket_path = ipc::resolve_socket_path()?;
-    let paths = LifecyclePaths::from_socket_path(&socket_path);
+    daemon_start_with_output(StartOutput::Verbose).map_err(DaemonSnapshotError::into_anyhow)
+}
 
-    if daemon_start_existing_status(&socket_path, &paths)? {
+fn daemon_start_with_output(output: StartOutput) -> std::result::Result<(), DaemonSnapshotError> {
+    let socket_path =
+        ipc::resolve_socket_path().map_err(|error| DaemonSnapshotError::UnexpectedFrame {
+            message: error.to_string(),
+        })?;
+    daemon_start_with_socket_path_and_output(&socket_path, output)
+}
+
+fn daemon_start_with_socket_path_and_output(
+    socket_path: &Path,
+    output: StartOutput,
+) -> std::result::Result<(), DaemonSnapshotError> {
+    let executable_path =
+        env::current_exe().map_err(|error| DaemonSnapshotError::UnexpectedFrame {
+            message: format!("failed to resolve current executable: {error}"),
+        })?;
+    daemon_start_with_socket_path_output_and_command(
+        socket_path,
+        output,
+        &executable_path,
+        &[],
+        &[],
+    )
+}
+
+fn daemon_start_with_socket_path_output_and_command(
+    socket_path: &Path,
+    output: StartOutput,
+    executable_path: &Path,
+    envs: &[(OsString, OsString)],
+    env_removes: &[OsString],
+) -> std::result::Result<(), DaemonSnapshotError> {
+    let paths = LifecyclePaths::from_socket_path(socket_path);
+
+    if daemon_start_existing_status(socket_path, &paths, output)? {
         return Ok(());
     }
-    let _start_guard = DaemonStartGuard::acquire(&paths)?;
-    if daemon_start_existing_status(&socket_path, &paths)? {
+    let _start_guard = DaemonStartGuard::acquire(&paths).map_err(|error| {
+        DaemonSnapshotError::UnexpectedFrame {
+            message: error.to_string(),
+        }
+    })?;
+    if daemon_start_existing_status(socket_path, &paths, output)? {
         return Ok(());
     }
 
-    remove_stale_socket_if_present(&socket_path)?;
-    prepare_log_file(&paths.log_path)?;
+    remove_stale_socket_if_present(socket_path).map_err(|error| {
+        DaemonSnapshotError::UnexpectedFrame {
+            message: error.to_string(),
+        }
+    })?;
+    prepare_log_file(&paths.log_path).map_err(|error| DaemonSnapshotError::UnexpectedFrame {
+        message: error.to_string(),
+    })?;
 
     let log_stdout = OpenOptions::new()
         .create(true)
         .append(true)
         .open(&paths.log_path)
-        .with_context(|| format!("failed to open daemon log {}", paths.log_path.display()))?;
+        .with_context(|| format!("failed to open daemon log {}", paths.log_path.display()))
+        .map_err(|error| DaemonSnapshotError::UnexpectedFrame {
+            message: error.to_string(),
+        })?;
     let log_stderr = log_stdout
         .try_clone()
-        .context("failed to clone daemon log handle")?;
-    let stdin = File::open("/dev/null").context("failed to open /dev/null for daemon stdin")?;
+        .context("failed to clone daemon log handle")
+        .map_err(|error| DaemonSnapshotError::UnexpectedFrame {
+            message: error.to_string(),
+        })?;
+    let stdin = File::open("/dev/null")
+        .context("failed to open /dev/null for daemon stdin")
+        .map_err(|error| DaemonSnapshotError::UnexpectedFrame {
+            message: error.to_string(),
+        })?;
 
-    let mut command =
-        Command::new(env::current_exe().context("failed to resolve current executable")?);
+    let mut command = Command::new(executable_path);
     command
         .args(["daemon", "run"])
         .stdin(Stdio::from(stdin))
         .stdout(Stdio::from(log_stdout))
         .stderr(Stdio::from(log_stderr));
+    command.envs(envs.iter().cloned());
+    for key in env_removes {
+        command.env_remove(key);
+    }
     unsafe {
         command.pre_exec(|| {
             if libc::setsid() == -1 {
@@ -649,8 +1060,13 @@ pub(super) fn daemon_start() -> Result<()> {
         });
     }
 
-    let mut child = command.spawn().context("failed to start daemon process")?;
-    match wait_for_daemon_start(&socket_path, &paths, &mut child) {
+    let mut child = command
+        .spawn()
+        .context("failed to start daemon process")
+        .map_err(|error| DaemonSnapshotError::UnexpectedFrame {
+            message: error.to_string(),
+        })?;
+    match wait_for_daemon_start(socket_path, &paths, &mut child, output) {
         Ok(()) => Ok(()),
         Err(error) => {
             cleanup_detached_daemon_child(&mut child);

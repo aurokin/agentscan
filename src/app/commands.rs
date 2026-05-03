@@ -6,7 +6,8 @@ pub fn run() -> Result<()> {
 
     match cli.command {
         Some(Commands::Scan(mut args)) => {
-            merge_list_args(&mut args, &root_list_args);
+            reject_root_auto_start(&root_list_args, "scan")?;
+            merge_scan_args(&mut args, &root_list_args);
             command_scan(&args)
         }
         Some(Commands::List(mut args)) => {
@@ -37,6 +38,15 @@ pub fn run() -> Result<()> {
 
 pub(super) fn merge_list_args(args: &mut ListArgs, root_list_args: &ListArgs) {
     args.refresh.refresh |= root_list_args.refresh.refresh;
+    args.auto_start.no_auto_start |= root_list_args.auto_start.no_auto_start;
+    args.all |= root_list_args.all;
+    if args.format == OutputFormat::Text {
+        args.format = root_list_args.format;
+    }
+}
+
+pub(super) fn merge_scan_args(args: &mut ScanArgs, root_list_args: &ListArgs) {
+    args.refresh.refresh |= root_list_args.refresh.refresh;
     args.all |= root_list_args.all;
     if args.format == OutputFormat::Text {
         args.format = root_list_args.format;
@@ -45,6 +55,7 @@ pub(super) fn merge_list_args(args: &mut ListArgs, root_list_args: &ListArgs) {
 
 pub(super) fn merge_inspect_args(args: &mut InspectArgs, root_list_args: &ListArgs) -> Result<()> {
     reject_root_all(root_list_args, "inspect")?;
+    args.auto_start.no_auto_start |= root_list_args.auto_start.no_auto_start;
     args.refresh.refresh |= root_list_args.refresh.refresh;
     if args.format == OutputFormat::Text {
         args.format = root_list_args.format;
@@ -56,6 +67,7 @@ pub(super) fn merge_inspect_args(args: &mut InspectArgs, root_list_args: &ListAr
 pub(super) fn merge_focus_args(args: &mut FocusArgs, root_list_args: &ListArgs) -> Result<()> {
     reject_root_all(root_list_args, "focus")?;
     reject_root_format(root_list_args, "focus")?;
+    args.auto_start.no_auto_start |= root_list_args.auto_start.no_auto_start;
     args.refresh.refresh |= root_list_args.refresh.refresh;
 
     Ok(())
@@ -63,6 +75,7 @@ pub(super) fn merge_focus_args(args: &mut FocusArgs, root_list_args: &ListArgs) 
 
 pub(super) fn merge_tui_args(args: &mut TuiArgs, root_list_args: &ListArgs) -> Result<()> {
     reject_tui_format(root_list_args)?;
+    reject_root_auto_start(root_list_args, "tui")?;
     args.refresh.refresh |= root_list_args.refresh.refresh;
     args.all |= root_list_args.all;
 
@@ -99,6 +112,16 @@ pub(super) fn reject_root_format(root_list_args: &ListArgs, command_name: &str) 
     Ok(())
 }
 
+pub(super) fn reject_root_auto_start(root_list_args: &ListArgs, command_name: &str) -> Result<()> {
+    if root_list_args.auto_start.no_auto_start {
+        bail!(
+            "`--no-auto-start` is not supported before `{command_name}`; place it on a daemon-backed consumer command or omit it"
+        );
+    }
+
+    Ok(())
+}
+
 pub(super) fn reject_tui_format(root_list_args: &ListArgs) -> Result<()> {
     if root_list_args.format != OutputFormat::Text {
         bail!(
@@ -112,10 +135,11 @@ pub(super) fn reject_tui_format(root_list_args: &ListArgs) -> Result<()> {
 fn reject_root_list_args(root_list_args: &ListArgs, command_name: &str) -> Result<()> {
     reject_root_refresh(root_list_args, command_name)?;
     reject_root_all(root_list_args, command_name)?;
-    reject_root_format(root_list_args, command_name)
+    reject_root_format(root_list_args, command_name)?;
+    reject_root_auto_start(root_list_args, command_name)
 }
 
-fn command_scan(args: &ListArgs) -> Result<()> {
+fn command_scan(args: &ScanArgs) -> Result<()> {
     emit_filtered_snapshot(
         snapshot_for_scan(args.refresh.refresh)?,
         args.all,
@@ -132,6 +156,7 @@ fn snapshot_for_scan(refresh: bool) -> Result<SnapshotEnvelope> {
 }
 
 fn command_list(args: &ListArgs) -> Result<()> {
+    let _auto_start_policy = daemon::AutoStartPolicy::from_args(args.auto_start);
     let snapshot = cache::load_snapshot(args.refresh.refresh)?;
     emit_filtered_snapshot(snapshot, args.all, args.format)
 }
@@ -150,6 +175,7 @@ fn command_tui(args: &TuiArgs) -> Result<()> {
 }
 
 fn command_inspect(args: &InspectArgs) -> Result<()> {
+    let _auto_start_policy = daemon::AutoStartPolicy::from_args(args.auto_start);
     let snapshot = cache::load_snapshot(args.refresh.refresh)?;
     let snapshot_name = if args.refresh.refresh {
         "fresh tmux snapshot"
@@ -171,6 +197,7 @@ fn command_inspect(args: &InspectArgs) -> Result<()> {
 }
 
 fn command_focus(args: &FocusArgs) -> Result<()> {
+    let _auto_start_policy = daemon::AutoStartPolicy::from_args(args.auto_start);
     if args.refresh.refresh {
         let snapshot = cache::refresh_cache_from_tmux()?;
         let pane_exists = snapshot
@@ -207,6 +234,7 @@ fn command_cache(args: &CacheArgs, root_list_args: &ListArgs) -> Result<()> {
         }
         CacheCommands::Show(ref args) => {
             reject_root_all(root_list_args, "cache show")?;
+            reject_root_auto_start(root_list_args, "cache show")?;
             let snapshot =
                 cache::load_snapshot(args.refresh.refresh || root_list_args.refresh.refresh)?;
             match merged_output_format(args.format, root_list_args.format) {
@@ -217,6 +245,7 @@ fn command_cache(args: &CacheArgs, root_list_args: &ListArgs) -> Result<()> {
         CacheCommands::Validate(ref args) => {
             reject_root_all(root_list_args, "cache validate")?;
             reject_root_format(root_list_args, "cache validate")?;
+            reject_root_auto_start(root_list_args, "cache validate")?;
             let path = cache::cache_path()?;
             let snapshot =
                 cache::load_snapshot(args.refresh.refresh || root_list_args.refresh.refresh)?;
