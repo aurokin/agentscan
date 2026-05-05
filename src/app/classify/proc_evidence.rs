@@ -95,6 +95,18 @@ pub(super) fn provider_match_from_proc_evidence(
         ));
     }
 
+    if let Some(arg) = process
+        .argv
+        .iter()
+        .find(|arg| hermes_arg_has_known_package_path(arg))
+    {
+        return Some(proc_provider_arg_match(
+            Provider::Hermes,
+            source_reason_prefix,
+            arg,
+        ));
+    }
+
     if process_has_pi_env(process) {
         return Some(proc_provider_env_match(
             Provider::Pi,
@@ -210,6 +222,33 @@ fn pi_arg_has_known_package_path(arg: &str) -> bool {
 
 fn pi_arg_has_known_bin_shim_path(lower: &str) -> bool {
     arg_has_known_bin_shim_path(lower, "pi", &["/opt/homebrew/bin", "/usr/local/bin"], false)
+}
+
+fn hermes_arg_has_known_package_path(arg: &str) -> bool {
+    let lower = normalize_proc_arg(arg);
+
+    lower.ends_with("/.local/bin/hermes")
+        || lower.ends_with("/.local/bin/hermes-agent")
+        || lower.contains("/.hermes/hermes-agent/")
+        || lower.contains("/site-packages/hermes_cli/")
+        || lower.ends_with("/hermes-agent/hermes")
+        || lower.ends_with("/hermes-agent/run_agent.py")
+        || lower.ends_with("/hermes-agent/hermes_cli/main.py")
+        || hermes_arg_has_known_bin_shim_path(&lower)
+}
+
+fn hermes_arg_has_known_bin_shim_path(lower: &str) -> bool {
+    arg_has_known_bin_shim_path(
+        lower,
+        "hermes",
+        &["/opt/homebrew/bin", "/usr/local/bin"],
+        false,
+    ) || arg_has_known_bin_shim_path(
+        lower,
+        "hermes-agent",
+        &["/opt/homebrew/bin", "/usr/local/bin"],
+        false,
+    )
 }
 
 fn opencode_arg_has_known_package_path(arg: &str) -> bool {

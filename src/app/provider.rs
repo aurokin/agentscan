@@ -16,6 +16,8 @@ pub(crate) enum Provider {
     CursorCli,
     #[value(alias = "pi-coding-agent")]
     Pi,
+    #[value(alias = "hermes-agent")]
+    Hermes,
 }
 
 impl fmt::Display for Provider {
@@ -123,6 +125,19 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
         title_prefixes: &["π - ", "pi - "],
         title_aliases: &[],
         generic_display_labels: &[],
+    },
+    ProviderInfo {
+        provider: Provider::Hermes,
+        canonical_name: "hermes",
+        display_marker: "⚕",
+        metadata_aliases: &["hermes", "hermes-agent", "hermes agent"],
+        command_aliases: &[
+            ProviderCommandAlias::new("hermes", false),
+            ProviderCommandAlias::new("hermes-agent", false),
+        ],
+        title_prefixes: &[],
+        title_aliases: &[],
+        generic_display_labels: &["Hermes", "Hermes Agent", "hermes", "hermes-agent"],
     },
 ];
 

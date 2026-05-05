@@ -103,6 +103,24 @@ Completed source-analysis baselines:
   package and platform binary paths, and Linux `OPENCODE` process markers.
   Default opencode titles do not carry run state; richer status should remain a
   later optional plugin/metadata path.
+- Hermes Agent: source analysis found package `hermes-agent`, console scripts
+  `hermes`, `hermes-agent`, and `hermes-acp`, and a checked-in `hermes`
+  wrapper that dispatches to `hermes_cli.main:main`. Upstream does not appear
+  to set a process title or tmux title explicitly, so title-only Hermes
+  classification should stay out of the baseline. Local tmux probing on
+  2026-05-04 used three panes:
+  - `agentscan:5.1` idle/new exposed `pane_current_command=python3.11`,
+    `pane_title_raw=agentscan: hermes`, and foreground argv
+    `/Users/auro/.hermes/hermes-agent/venv/bin/python3 /Users/auro/.local/bin/hermes`.
+  - `agentscan:6.1` busy exposed the same tmux/process identity shape and a
+    current pane footer containing `⚕ ❯ msg=interrupt · /queue · /bg · /steer · Ctrl+C cancel`.
+  - `agentscan:7.1` idle/used exposed the same tmux/process identity shape and
+    a current pane prompt line `❯` below the Hermes status bar.
+  Hermes baseline detection should therefore prefer metadata, exact foreground
+  `hermes` / `hermes-agent` commands, and targeted process evidence for Python
+  launchers whose argv points at the Hermes package or bin shim. Pane-output
+  status should remain provider-scoped and current-prompt anchored after
+  identity is known.
 
 Closed-source providers require empirical probing and conservative inference.
 For each provider, capture snapshots while idle, busy, waiting for input, and

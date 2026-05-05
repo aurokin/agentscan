@@ -80,6 +80,10 @@ fn provider_display_marker_uses_compact_markers_for_codex_and_claude() {
         "\u{e22c}"
     );
     assert_eq!(
+        super::provider_display_marker(Some(Provider::Hermes)),
+        "⚕"
+    );
+    assert_eq!(
         super::provider_display_marker(Some(Provider::Opencode)),
         "\u{f07e2}"
     );

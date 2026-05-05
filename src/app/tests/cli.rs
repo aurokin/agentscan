@@ -270,6 +270,8 @@ fn tmux_set_metadata_accepts_provider_aliases() {
         ("github-copilot", Provider::Copilot),
         ("pi", Provider::Pi),
         ("pi-coding-agent", Provider::Pi),
+        ("hermes", Provider::Hermes),
+        ("hermes-agent", Provider::Hermes),
     ] {
         let cli = <Cli as clap::Parser>::parse_from([
             "agentscan",

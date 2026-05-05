@@ -308,6 +308,8 @@ fn provider_metadata_table_covers_aliases_commands_and_summary_order() {
         ("cursor-cli", Provider::CursorCli),
         ("cursor cli", Provider::CursorCli),
         ("pi coding agent", Provider::Pi),
+        ("hermes-agent", Provider::Hermes),
+        ("hermes agent", Provider::Hermes),
     ] {
         assert_eq!(
             super::provider_from_metadata(Some(alias)),
@@ -318,6 +320,19 @@ fn provider_metadata_table_covers_aliases_commands_and_summary_order() {
 
     assert_eq!(super::provider_from_metadata(Some(" unknown ")), None);
     assert_eq!(super::provider_from_command("codex-exec"), Some((Provider::Codex, false)));
+    assert_eq!(
+        super::provider_from_command("hermes"),
+        Some((Provider::Hermes, true))
+    );
+    assert_eq!(
+        super::provider_from_command("hermes-agent"),
+        Some((Provider::Hermes, true))
+    );
+    assert_eq!(
+        super::provider_from_command("hermes-agent-beta"),
+        None,
+        "generic provider names should not accept suffixed binaries"
+    );
     assert_eq!(
         super::provider_from_command("cursor-agent-beta"),
         None,
@@ -333,6 +348,7 @@ fn provider_metadata_table_covers_aliases_commands_and_summary_order() {
             Provider::Copilot,
             Provider::CursorCli,
             Provider::Pi,
+            Provider::Hermes,
         ]
     );
 }

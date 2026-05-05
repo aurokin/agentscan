@@ -854,6 +854,71 @@ fn proc_fallback_does_not_treat_pi_env_text_in_argv_as_pi() {
 }
 
 #[test]
+fn proc_fallback_resolves_hermes_from_python_bin_shim_path() {
+    let mut pane = proc_fallback_pane(763, "python3.11", "agentscan: hermes");
+    let inspector = FakeProcessInspector::with_processes([(
+        763,
+        vec![proc::ProcessEvidence {
+            pid: 764,
+            command: "/Users/auro/.her".to_string(),
+            argv: vec![
+                "/Users/auro/.hermes/hermes-agent/venv/bin/python3".to_string(),
+                "/Users/auro/.local/bin/hermes".to_string(),
+            ],
+            env: Vec::new(),
+        }],
+    )]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_eq!(pane.provider, Some(Provider::Hermes));
+    assert_eq!(pane.status.kind, StatusKind::Unknown);
+    assert_eq!(
+        pane.classification.matched_by,
+        Some(super::ClassificationMatchKind::ProcProcessTree)
+    );
+    assert_eq!(
+        pane.classification.reasons,
+        vec!["proc_descendant_argv=/Users/auro/.hermes/hermes-agent/venv/bin/python3"]
+    );
+    assert_eq!(
+        pane.diagnostics.proc_fallback.outcome,
+        super::ProcFallbackOutcome::Resolved
+    );
+}
+
+#[test]
+fn proc_fallback_resolves_hermes_from_user_local_hermes_agent_shim_path() {
+    let mut pane = proc_fallback_pane(769, "python3.12", "agentscan: hermes");
+    let inspector = FakeProcessInspector::with_processes([(
+        769,
+        vec![proc::ProcessEvidence {
+            pid: 770,
+            command: "python3.12".to_string(),
+            argv: vec![
+                "/opt/python/bin/python3".to_string(),
+                "/Users/auro/.local/bin/hermes-agent".to_string(),
+            ],
+            env: Vec::new(),
+        }],
+    )]);
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_eq!(pane.provider, Some(Provider::Hermes));
+    assert_eq!(
+        pane.classification.reasons,
+        vec!["proc_descendant_argv=/Users/auro/.local/bin/hermes-agent"]
+    );
+}
+
+#[test]
+fn hermes_title_text_alone_does_not_classify_provider() {
+    assert!(classify::classify_provider(None, "zsh", "Hermes Agent").is_none());
+    assert!(classify::classify_provider(None, "zsh", "⚕ gpt-5.5").is_none());
+}
+
+#[test]
 fn proc_fallback_resolves_claude_from_title_glyph_and_descendant_command() {
     let mut pane = classify::pane_from_row(super::TmuxPaneRow {
         session_name: "ambiguous".to_string(),
@@ -1858,6 +1923,36 @@ fn copilot_default_title_does_not_invent_activity_label() {
 }
 
 #[test]
+fn hermes_display_metadata_keeps_title_without_activity_state() {
+    let hermes = classify::display_metadata(
+        Some(Provider::Hermes),
+        Some(super::ClassificationMatchKind::ProcProcessTree),
+        None,
+        "agentscan: hermes",
+        "python3.11",
+        "python3.11",
+    );
+
+    assert_eq!(hermes.label, "agentscan: hermes");
+    assert_eq!(hermes.activity_label, None);
+}
+
+#[test]
+fn hermes_display_metadata_preserves_published_label_activity_state() {
+    let hermes = classify::display_metadata(
+        Some(Provider::Hermes),
+        Some(super::ClassificationMatchKind::PaneMetadata),
+        Some("Review auth flow"),
+        "agentscan: hermes",
+        "python3.11",
+        "python3.11",
+    );
+
+    assert_eq!(hermes.label, "Review auth flow");
+    assert_eq!(hermes.activity_label.as_deref(), Some("Review auth flow"));
+}
+
+#[test]
 fn copilot_pane_output_marks_busy_only_after_provider_is_known() {
     let mut copilot = pane_output_status_pane(745, Provider::Copilot, "GitHub Copilot");
 
@@ -2163,6 +2258,69 @@ fn cursor_cli_pane_output_marks_initial_prompt_idle() {
 
     assert_eq!(cursor.status.kind, StatusKind::Idle);
     assert_eq!(cursor.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn hermes_pane_output_marks_busy_only_after_provider_is_known() {
+    let mut hermes = pane_output_status_pane(765, Provider::Hermes, "agentscan: hermes");
+
+    classify::apply_pane_output_status_fallback(
+        &mut hermes,
+        "╭─ task ─╮\n\
+         │ working │\n\
+         ╰─────────╯\n\
+         ⚕ gpt-5.5 │ 65.4K/272K │ [██░░░░░░░░] 24% │ 2m │ ⏱ 1m 19s\n\
+         ⚕ ❯ msg=interrupt · /queue · /bg · /steer · Ctrl+C cancel\n",
+    );
+
+    assert_eq!(hermes.status.kind, StatusKind::Busy);
+    assert_eq!(hermes.status.source, super::StatusSource::PaneOutput);
+
+    let mut unknown = proc_fallback_pane(766, "python3.11", "agentscan: hermes");
+    classify::apply_pane_output_status_fallback(
+        &mut unknown,
+        "⚕ gpt-5.5 │ 65.4K/272K │ [██░░░░░░░░] 24% │ 2m │ ⏱ 1m 19s\n\
+         ⚕ ❯ msg=interrupt · /queue · /bg · /steer · Ctrl+C cancel\n",
+    );
+
+    assert_eq!(unknown.status.kind, StatusKind::Unknown);
+    assert_eq!(unknown.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn hermes_pane_output_marks_current_prompt_idle() {
+    let mut hermes = pane_output_status_pane(767, Provider::Hermes, "agentscan: hermes");
+
+    classify::apply_pane_output_status_fallback(
+        &mut hermes,
+        "┌─────────────────────────────────────────────────────────────────────────────┐\n\
+         │ Hermes Agent                                                                │\n\
+         └─────────────────────────────────────────────────────────────────────────────┘\n\
+         ⚕ gpt-5.5 │ ctx -- │ [░░░░░░░░░░] -- │ 2s │ ⏲ 0s\n\
+         ❯\n",
+    );
+
+    assert_eq!(hermes.status.kind, StatusKind::Idle);
+    assert_eq!(hermes.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn hermes_pane_output_uses_current_prompt_over_stale_busy_footer() {
+    let mut hermes = pane_output_status_pane(768, Provider::Hermes, "agentscan: hermes");
+
+    classify::apply_pane_output_status_fallback(
+        &mut hermes,
+        "⚕ gpt-5.5 │ 65.4K/272K │ [██░░░░░░░░] 24% │ 2m │ ⏱ 1m 19s\n\
+         ⚕ ❯ msg=interrupt · /queue · /bg · /steer · Ctrl+C cancel\n\
+         \n\
+         ⚕ Hermes\n\
+         Done.\n\
+         ⚕ gpt-5.5 │ 16K/272K │ [█░░░░░░░░░] 6% │ 6s │ ⏲ 3s\n\
+         ❯\n",
+    );
+
+    assert_eq!(hermes.status.kind, StatusKind::Idle);
+    assert_eq!(hermes.status.source, super::StatusSource::PaneOutput);
 }
 
 #[test]

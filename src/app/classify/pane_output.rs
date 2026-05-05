@@ -3,7 +3,7 @@ use super::*;
 pub(crate) fn pane_output_status_fallback_candidate(pane: &PaneRecord) -> bool {
     matches!(
         pane.provider,
-        Some(Provider::Copilot) | Some(Provider::CursorCli)
+        Some(Provider::Copilot) | Some(Provider::CursorCli) | Some(Provider::Hermes)
     ) && pane.status.kind == StatusKind::Unknown
         && pane.status.source == StatusSource::NotChecked
 }
@@ -16,6 +16,7 @@ pub(crate) fn apply_pane_output_status_fallback(pane: &mut PaneRecord, output: &
     let status = match pane.provider {
         Some(Provider::Copilot) => copilot_pane_output_status(output),
         Some(Provider::CursorCli) => cursor_cli_pane_output_status(output),
+        Some(Provider::Hermes) => hermes_pane_output_status(output),
         _ => None,
     };
 
@@ -147,4 +148,46 @@ fn cursor_cli_footer_indicates_idle(line: &str) -> bool {
 
 fn cursor_cli_footer_top_border(line: &str) -> bool {
     line.trim_start().starts_with("▄▄▄▄▄▄")
+}
+
+fn hermes_pane_output_status(output: &str) -> Option<StatusKind> {
+    let lines: Vec<&str> = output.lines().collect();
+    let busy_index = lines.iter().rposition(|line| hermes_busy_prompt_line(line));
+    let idle_index = lines.iter().rposition(|line| line.trim() == "❯");
+
+    if let Some(index) = busy_index
+        && hermes_status_bar_before(&lines, index).is_some()
+        && idle_index.is_none_or(|idle_index| idle_index < index)
+    {
+        return Some(StatusKind::Busy);
+    }
+
+    if let Some(index) = idle_index
+        && hermes_status_bar_before(&lines, index).is_some()
+        && busy_index.is_none_or(|busy_index| busy_index < index)
+    {
+        return Some(StatusKind::Idle);
+    }
+
+    None
+}
+
+fn hermes_status_bar_before<'a>(lines: &'a [&'a str], index: usize) -> Option<&'a str> {
+    lines[..index]
+        .iter()
+        .rev()
+        .map(|line| line.trim())
+        .find(|line| hermes_status_bar_line(line))
+}
+
+fn hermes_status_bar_line(line: &str) -> bool {
+    line.starts_with("⚕ ") && line.contains('│') && (line.contains("ctx") || line.contains("K/"))
+}
+
+fn hermes_busy_prompt_line(line: &str) -> bool {
+    let line = line.trim();
+    line.starts_with("⚕ ❯")
+        && line.contains("msg=interrupt")
+        && line.contains("/queue")
+        && line.contains("Ctrl+C cancel")
 }
