@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 - 2026-05-06
+
+### Highlights
+
+- The daemon now auto-starts on first use. Normal `agentscan`, `list`,
+  `inspect`, `focus`, `snapshot`, and `tui` invocations spawn a background
+  daemon if one is not already running, then read state from its socket. No
+  manual `daemon start` is required for everyday use.
 
 ### Breaking Changes
 
@@ -43,3 +50,14 @@
   `agentscan tui`.
 - Tmux `display-popup` remains a valid way to launch the binary inside tmux;
   it is separate from the removed `agentscan popup` command.
+
+### Daemon Lifecycle
+
+- `agentscan daemon run` runs the daemon in the foreground.
+- `agentscan daemon start` detaches a background daemon through the same path.
+- `agentscan daemon stop`, `daemon status`, and `daemon restart` manage the
+  running daemon over the socket.
+
+### Providers
+
+- Added Hermes provider detection.
