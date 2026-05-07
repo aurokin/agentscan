@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.2 - 2026-05-07
+
+### Safety
+
+- Block detached macOS daemon starts for ad-hoc or invalidly signed
+  executables, including explicit `agentscan daemon start`; use
+  `agentscan daemon run` for foreground debugging or a signed release binary
+  for detached daemon operation.
+- Removed `spctl` from daemon-start preflight so startup checks do not invoke
+  the AppleSystemPolicy/Gatekeeper assessment path.
+
 ## 0.2.1 - 2026-05-06
 
 ### Safety
@@ -8,8 +19,8 @@
   Gatekeeper-rejected executables to avoid re-triggering a macOS
   AppleSystemPolicy panic observed after the 0.2.0 auto-start rollout.
 - Kept recovery paths available: `agentscan scan`, refresh-capable one-shot
-  commands, and explicit `agentscan daemon start` do not depend on implicit
-  auto-start.
+  commands, and foreground `agentscan daemon run` do not depend on detached
+  daemon auto-start.
 - Added `AGENTSCAN_ALLOW_UNTRUSTED_DAEMON_AUTOSTART=1` as a debugging-only
   override for intentional local reproduction.
 - Logged daemon start preflight context before spawning the daemon, so failed

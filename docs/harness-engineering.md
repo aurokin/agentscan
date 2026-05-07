@@ -60,8 +60,9 @@ tmux server.
 Harness commands that intentionally exercise implicit daemon auto-start on macOS
 must set `AGENTSCAN_ALLOW_UNTRUSTED_DAEMON_AUTOSTART=1`, because local test
 binaries are commonly ad-hoc signed. Production code should not set this outside
-debugging; explicit `agentscan daemon start`, `agentscan scan`, and `--refresh`
-remain the preferred recovery paths for untrusted local binaries.
+debugging; `agentscan scan`, `--refresh`, foreground `agentscan daemon run`, or
+a signed release binary remain the preferred recovery paths for untrusted local
+binaries.
 
 The integration suite should keep a guard test that poisons the default
 `TMUX_TMPDIR` and asserts `agentscan scan --all --format json` still reads from

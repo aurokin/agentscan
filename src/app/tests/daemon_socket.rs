@@ -585,7 +585,7 @@ fn daemon_auto_start_preserves_explicit_agentscan_tmux_socket() {
 #[test]
 fn implicit_macos_auto_start_blocks_untrusted_executable() {
     let error = daemon::test_implicit_consumer_macos_auto_start_preflight(
-        Some("Gatekeeper assessment rejected it"),
+        Some("codesign reports an ad-hoc executable"),
         false,
     )
     .expect_err("implicit auto-start should block untrusted macOS executables");
@@ -598,7 +598,7 @@ fn implicit_macos_auto_start_blocks_untrusted_executable() {
     assert!(message.contains("macOS executable trust preflight"));
     assert!(message.contains("agentscan scan"));
     assert!(message.contains("--refresh"));
-    assert!(message.contains("agentscan daemon start"));
+    assert!(message.contains("agentscan daemon run"));
 }
 
 #[test]
@@ -620,17 +620,44 @@ fn tui_macos_auto_start_blocks_untrusted_executable() {
 }
 
 #[test]
-fn explicit_macos_daemon_start_allows_untrusted_executable() {
+fn explicit_macos_daemon_start_blocks_untrusted_executable() {
     daemon::test_explicit_macos_daemon_start_preflight(
         Some("codesign reports an ad-hoc executable"),
         false,
     )
-    .expect("explicit daemon start should preserve operator intent");
+    .expect_err("detached explicit daemon start should block untrusted macOS executables");
 }
 
 #[test]
-fn macos_preflight_skips_assessment_for_explicit_starts_and_debug_override() {
-    assert!(daemon::test_macos_preflight_skips_assessment(
+fn daemon_restart_skips_stop_when_start_preflight_fails() {
+    let stopped = std::cell::Cell::new(false);
+    let started = std::cell::Cell::new(false);
+
+    let error = daemon::test_daemon_restart_with_steps(
+        || {
+            Err(daemon::DaemonSnapshotError::AutoStartDisabled {
+                reason: "preflight blocked start".to_string(),
+            })
+        },
+        || {
+            stopped.set(true);
+            Ok(())
+        },
+        || {
+            started.set(true);
+            Ok(())
+        },
+    )
+    .expect_err("restart should fail before stopping when preflight rejects start");
+
+    assert!(!stopped.get(), "restart must preserve the running daemon");
+    assert!(!started.get(), "restart must not attempt start after preflight failure");
+    assert!(error.to_string().contains("preflight blocked start"));
+}
+
+#[test]
+fn macos_preflight_requires_assessment_for_explicit_starts_and_skips_for_debug_override() {
+    assert!(!daemon::test_macos_preflight_skips_assessment(
         true, false, false,
     ));
     assert!(daemon::test_macos_preflight_skips_assessment(
@@ -647,7 +674,7 @@ fn macos_preflight_skips_assessment_for_explicit_starts_and_debug_override() {
 #[test]
 fn implicit_macos_auto_start_override_allows_untrusted_executable() {
     daemon::test_implicit_consumer_macos_auto_start_preflight(
-        Some("Gatekeeper assessment rejected it"),
+        Some("codesign reports an ad-hoc executable"),
         true,
     )
     .expect("debug override should allow implicit auto-start");
@@ -671,8 +698,6 @@ TeamIdentifier=not set
         display_text,
         true,
         "",
-        false,
-        "/usr/bin/git: rejected (the code is valid but does not seem to be an app)",
     )
         .expect("valid non-ad-hoc CLI signatures should be trusted");
 }
@@ -689,8 +714,6 @@ TeamIdentifier=not set
     let reason = daemon::test_macos_executable_assessment_for_outputs(
         true,
         display_text,
-        true,
-        "",
         true,
         "",
     )
@@ -713,8 +736,6 @@ TeamIdentifier=ABCDE12345
         display_text,
         false,
         "/tmp/agentscan: invalid signature",
-        true,
-        "",
     )
     .expect_err("invalid signatures should be rejected");
 
@@ -722,7 +743,7 @@ TeamIdentifier=ABCDE12345
 }
 
 #[test]
-fn macos_executable_assessment_blocks_gatekeeper_rejected_signed_output() {
+fn macos_executable_assessment_trusts_valid_signed_output_without_spctl() {
     let display_text = "\
 Executable=/tmp/agentscan
 Identifier=com.example.agentscan
@@ -730,17 +751,8 @@ Authority=Developer ID Application: Example
 TeamIdentifier=ABCDE12345
 ";
 
-    let reason = daemon::test_macos_executable_assessment_for_outputs(
-        true,
-        display_text,
-        true,
-        "",
-        false,
-        "/tmp/agentscan: rejected\norigin=Developer ID Application: Example",
-    )
-    .expect_err("Gatekeeper-rejected signatures should be rejected");
-
-    assert!(reason.contains("Gatekeeper assessment rejected"));
+    daemon::test_macos_executable_assessment_for_outputs(true, display_text, true, "")
+        .expect("valid signed output should not require Gatekeeper assessment");
 }
 
 #[test]

@@ -154,10 +154,7 @@ enum DaemonStartIntent {
 
 impl DaemonStartIntent {
     fn requires_macos_trust_preflight(self) -> bool {
-        matches!(
-            self,
-            Self::ImplicitConsumerAutoStart | Self::TuiSubscriptionAutoStart
-        )
+        true
     }
 }
 
@@ -1681,7 +1678,7 @@ fn daemon_start_preflight_from_macos_assessment(
         MacExecutableAssessment::Trusted => Ok(()),
         MacExecutableAssessment::Untrusted(reason) => Err(DaemonSnapshotError::AutoStartDisabled {
             reason: format!(
-                "macOS executable trust preflight rejected implicit daemon start for {}; {reason}. {}",
+                "macOS executable trust preflight rejected detached daemon start for {}; {reason}. {}",
                 executable_path.display(),
                 macos_auto_start_recovery_guidance(intent)
             ),
@@ -1693,13 +1690,13 @@ fn daemon_start_preflight_from_macos_assessment(
 fn macos_auto_start_recovery_guidance(intent: DaemonStartIntent) -> &'static str {
     match intent {
         DaemonStartIntent::ImplicitConsumerAutoStart => {
-            "Run `agentscan scan`, pass `--refresh`, explicitly run `agentscan daemon start`, install a signed release binary, or set AGENTSCAN_ALLOW_UNTRUSTED_DAEMON_AUTOSTART=1 to override for debugging"
+            "Run `agentscan scan`, pass `--refresh`, run `agentscan daemon run` in the foreground, install a signed release binary, or set AGENTSCAN_ALLOW_UNTRUSTED_DAEMON_AUTOSTART=1 to override for debugging"
         }
         DaemonStartIntent::TuiSubscriptionAutoStart => {
-            "Run `agentscan scan`, explicitly run `agentscan daemon start`, install a signed release binary, or set AGENTSCAN_ALLOW_UNTRUSTED_DAEMON_AUTOSTART=1 to override for debugging"
+            "Run `agentscan scan`, run `agentscan daemon run` in the foreground, install a signed release binary, or set AGENTSCAN_ALLOW_UNTRUSTED_DAEMON_AUTOSTART=1 to override for debugging"
         }
         DaemonStartIntent::ExplicitLifecycleCommand => {
-            "Explicit daemon starts are not blocked by this preflight"
+            "Run `agentscan daemon run` in the foreground, install a signed release binary, or set AGENTSCAN_ALLOW_UNTRUSTED_DAEMON_AUTOSTART=1 to override for debugging"
         }
     }
 }
@@ -1744,22 +1741,7 @@ fn assess_macos_executable_for_daemon_autostart(path: &Path) -> MacExecutableAss
         return MacExecutableAssessment::Untrusted(reason);
     }
 
-    let gatekeeper_output = match Command::new("/usr/sbin/spctl")
-        .args(["--assess", "--type", "execute", "-vv"])
-        .arg(path)
-        .output()
-    {
-        Ok(output) => output,
-        Err(error) => {
-            return MacExecutableAssessment::Untrusted(format!(
-                "Gatekeeper assessment could not run: {error}"
-            ));
-        }
-    };
-    assess_macos_gatekeeper(
-        gatekeeper_output.status.success(),
-        &command_output_text(&gatekeeper_output),
-    )
+    MacExecutableAssessment::Trusted
 }
 
 #[cfg(any(test, target_os = "macos"))]
@@ -1796,32 +1778,12 @@ fn assess_macos_codesign_verification(status_success: bool, text: &str) -> MacEx
     }
 }
 
-#[cfg(any(test, target_os = "macos"))]
-fn assess_macos_gatekeeper(status_success: bool, text: &str) -> MacExecutableAssessment {
-    if status_success || gatekeeper_rejected_because_signed_cli_is_not_app(text) {
-        MacExecutableAssessment::Trusted
-    } else {
-        MacExecutableAssessment::Untrusted(format!(
-            "Gatekeeper assessment rejected it: {}",
-            compact_command_output(text)
-        ))
-    }
-}
-
-#[cfg(any(test, target_os = "macos"))]
-fn gatekeeper_rejected_because_signed_cli_is_not_app(text: &str) -> bool {
-    text.to_ascii_lowercase()
-        .contains("the code is valid but does not seem to be an app")
-}
-
 #[cfg(test)]
 pub(crate) fn test_macos_executable_assessment_for_outputs(
     display_status_success: bool,
     display_text: &str,
     verify_status_success: bool,
     verify_text: &str,
-    gatekeeper_status_success: bool,
-    gatekeeper_text: &str,
 ) -> std::result::Result<(), String> {
     if let Some(MacExecutableAssessment::Untrusted(reason)) =
         macos_codesign_display_rejection(display_status_success, display_text)
@@ -1835,10 +1797,7 @@ pub(crate) fn test_macos_executable_assessment_for_outputs(
         return Err(reason);
     }
 
-    match assess_macos_gatekeeper(gatekeeper_status_success, gatekeeper_text) {
-        MacExecutableAssessment::Trusted => Ok(()),
-        MacExecutableAssessment::Untrusted(reason) => Err(reason),
-    }
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -2050,8 +2009,41 @@ pub(super) fn daemon_stop() -> Result<()> {
 }
 
 pub(super) fn daemon_restart() -> Result<()> {
-    daemon_stop()?;
-    daemon_start()
+    daemon_restart_with_steps(
+        || daemon_start_preflight_for_current_command(DaemonStartIntent::ExplicitLifecycleCommand),
+        daemon_stop,
+        daemon_start,
+    )
+}
+
+fn daemon_restart_with_steps(
+    preflight: impl FnOnce() -> std::result::Result<(), DaemonSnapshotError>,
+    stop: impl FnOnce() -> Result<()>,
+    start: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    preflight().map_err(DaemonSnapshotError::into_anyhow)?;
+    stop()?;
+    start()
+}
+
+fn daemon_start_preflight_for_current_command(
+    intent: DaemonStartIntent,
+) -> std::result::Result<(), DaemonSnapshotError> {
+    let executable_path =
+        env::current_exe().map_err(|error| DaemonSnapshotError::UnexpectedFrame {
+            message: format!("failed to resolve current executable: {error}"),
+        })?;
+    let envs = daemon_start_tmux_envs();
+    daemon_start_preflight(intent, &executable_path, &envs)
+}
+
+#[cfg(test)]
+pub(crate) fn test_daemon_restart_with_steps(
+    preflight: impl FnOnce() -> std::result::Result<(), DaemonSnapshotError>,
+    stop: impl FnOnce() -> Result<()>,
+    start: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    daemon_restart_with_steps(preflight, stop, start)
 }
 
 #[cfg(test)]

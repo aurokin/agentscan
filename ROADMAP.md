@@ -77,13 +77,13 @@ Implications:
 - consumers connect to the daemon over a Unix socket and read
   `SnapshotEnvelope` frames
 - daemon startup is automatic for normal desktop commands except on macOS
-  executables that fail the daemon auto-start trust preflight
+  executables that fail the detached daemon-start trust preflight
 - direct tmux snapshots remain available for debugging and recovery through
   `agentscan scan` and refresh-capable command flags
 - `AGENTSCAN_NO_AUTO_START=1` and `--no-auto-start` exist for CI and scripts
   that must not leave a daemon running
-- macOS ad-hoc or Gatekeeper-rejected binaries must use `agentscan scan`,
-  `--refresh`, explicit `agentscan daemon start`, a signed release binary, or
+- macOS ad-hoc or invalidly signed binaries must use `agentscan scan`,
+  `--refresh`, foreground `agentscan daemon run`, a signed release binary, or
   the debugging-only `AGENTSCAN_ALLOW_UNTRUSTED_DAEMON_AUTOSTART=1` override
 - when tmux disappears, the daemon reports failure through lifecycle/status
   paths; restart policy remains explicit user or supervisor policy
