@@ -125,6 +125,10 @@ fn daemon_auto_start_helper_starts_daemon_and_reads_snapshot() -> Result<()> {
             OsString::from("HOME"),
             harness.home_dir.as_os_str().to_owned(),
         ),
+        (
+            OsString::from("AGENTSCAN_ALLOW_UNTRUSTED_DAEMON_AUTOSTART"),
+            OsString::from("1"),
+        ),
     ];
     let env_removes = vec![OsString::from("TMUX")];
 

@@ -57,6 +57,12 @@ from those child commands. This protects destructive fixture operations such as
 `kill-server`, `kill-session`, and `kill-window` from drifting onto the default
 tmux server.
 
+Harness commands that intentionally exercise implicit daemon auto-start on macOS
+must set `AGENTSCAN_ALLOW_UNTRUSTED_DAEMON_AUTOSTART=1`, because local test
+binaries are commonly ad-hoc signed. Production code should not set this outside
+debugging; explicit `agentscan daemon start`, `agentscan scan`, and `--refresh`
+remain the preferred recovery paths for untrusted local binaries.
+
 The integration suite should keep a guard test that poisons the default
 `TMUX_TMPDIR` and asserts `agentscan scan --all --format json` still reads from
 the harness server. If that test starts reading the poisoned/default server, the

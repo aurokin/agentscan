@@ -583,6 +583,167 @@ fn daemon_auto_start_preserves_explicit_agentscan_tmux_socket() {
 }
 
 #[test]
+fn implicit_macos_auto_start_blocks_untrusted_executable() {
+    let error = daemon::test_implicit_consumer_macos_auto_start_preflight(
+        Some("Gatekeeper assessment rejected it"),
+        false,
+    )
+    .expect_err("implicit auto-start should block untrusted macOS executables");
+
+    assert!(matches!(
+        error,
+        daemon::DaemonSnapshotError::AutoStartDisabled { .. }
+    ));
+    let message = error.to_string();
+    assert!(message.contains("macOS executable trust preflight"));
+    assert!(message.contains("agentscan scan"));
+    assert!(message.contains("--refresh"));
+    assert!(message.contains("agentscan daemon start"));
+}
+
+#[test]
+fn tui_macos_auto_start_blocks_untrusted_executable() {
+    let error = daemon::test_tui_macos_auto_start_preflight(
+        Some("codesign reports an ad-hoc executable"),
+        false,
+    )
+    .expect_err("TUI auto-start should block untrusted macOS executables");
+
+    assert!(matches!(
+        error,
+        daemon::DaemonSnapshotError::AutoStartDisabled { .. }
+    ));
+    assert!(
+        !error.to_string().contains("--refresh"),
+        "TUI recovery guidance should not suggest unsupported refresh flag"
+    );
+}
+
+#[test]
+fn explicit_macos_daemon_start_allows_untrusted_executable() {
+    daemon::test_explicit_macos_daemon_start_preflight(
+        Some("codesign reports an ad-hoc executable"),
+        false,
+    )
+    .expect("explicit daemon start should preserve operator intent");
+}
+
+#[test]
+fn macos_preflight_skips_assessment_for_explicit_starts_and_debug_override() {
+    assert!(daemon::test_macos_preflight_skips_assessment(
+        true, false, false,
+    ));
+    assert!(daemon::test_macos_preflight_skips_assessment(
+        false, false, true,
+    ));
+    assert!(daemon::test_macos_preflight_skips_assessment(
+        false, true, true,
+    ));
+    assert!(!daemon::test_macos_preflight_skips_assessment(
+        false, false, false,
+    ));
+}
+
+#[test]
+fn implicit_macos_auto_start_override_allows_untrusted_executable() {
+    daemon::test_implicit_consumer_macos_auto_start_preflight(
+        Some("Gatekeeper assessment rejected it"),
+        true,
+    )
+    .expect("debug override should allow implicit auto-start");
+}
+
+#[test]
+fn macos_codesign_assessment_allows_valid_signed_cli_output() {
+    let display_text = "\
+Executable=/usr/bin/git
+Identifier=com.apple.git
+Format=Mach-O universal
+CodeDirectory v=20400 size=123 flags=0x0(none) hashes=1+0 location=embedded
+Authority=Software Signing
+Authority=Apple Code Signing Certification Authority
+Authority=Apple Root CA
+TeamIdentifier=not set
+";
+
+    daemon::test_macos_executable_assessment_for_outputs(
+        true,
+        display_text,
+        true,
+        "",
+        false,
+        "/usr/bin/git: rejected (the code is valid but does not seem to be an app)",
+    )
+        .expect("valid non-ad-hoc CLI signatures should be trusted");
+}
+
+#[test]
+fn macos_codesign_assessment_blocks_adhoc_output_before_verify() {
+    let display_text = "\
+Executable=/tmp/agentscan
+CodeDirectory v=20400 size=123 flags=0x20002(adhoc,linker-signed) hashes=1+0 location=embedded
+Signature=adhoc
+TeamIdentifier=not set
+";
+
+    let reason = daemon::test_macos_executable_assessment_for_outputs(
+        true,
+        display_text,
+        true,
+        "",
+        true,
+        "",
+    )
+    .expect_err("ad-hoc signatures should be rejected");
+
+    assert!(reason.contains("ad-hoc executable"));
+}
+
+#[test]
+fn macos_codesign_assessment_blocks_invalid_signed_output() {
+    let display_text = "\
+Executable=/tmp/agentscan
+Identifier=com.example.agentscan
+Authority=Developer ID Application: Example
+TeamIdentifier=ABCDE12345
+";
+
+    let reason = daemon::test_macos_executable_assessment_for_outputs(
+        true,
+        display_text,
+        false,
+        "/tmp/agentscan: invalid signature",
+        true,
+        "",
+    )
+    .expect_err("invalid signatures should be rejected");
+
+    assert!(reason.contains("codesign verification failed"));
+}
+
+#[test]
+fn macos_executable_assessment_blocks_gatekeeper_rejected_signed_output() {
+    let display_text = "\
+Executable=/tmp/agentscan
+Identifier=com.example.agentscan
+Authority=Developer ID Application: Example
+TeamIdentifier=ABCDE12345
+";
+
+    let reason = daemon::test_macos_executable_assessment_for_outputs(
+        true,
+        display_text,
+        true,
+        "",
+        false,
+        "/tmp/agentscan: rejected\norigin=Developer ID Application: Example",
+    )
+    .expect_err("Gatekeeper-rejected signatures should be rejected");
+
+    assert!(reason.contains("Gatekeeper assessment rejected"));
+}
+
+#[test]
 fn daemon_socket_subscribe_client_receives_bootstrap_and_update() {
     let state = daemon::DaemonSocketState::new();
     let initial = empty_socket_snapshot("2026-05-03T00:00:00Z");

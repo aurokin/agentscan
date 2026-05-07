@@ -12,6 +12,8 @@ struct TestHarness {
 }
 
 const AGENTSCAN_TMUX_SOCKET_ENV_VAR: &str = "AGENTSCAN_TMUX_SOCKET";
+const AGENTSCAN_ALLOW_UNTRUSTED_DAEMON_AUTOSTART_ENV_VAR: &str =
+    "AGENTSCAN_ALLOW_UNTRUSTED_DAEMON_AUTOSTART";
 
 impl TestHarness {
     fn new() -> Result<Self> {
@@ -276,6 +278,7 @@ impl TestHarness {
         command.env("AGENTSCAN_SOCKET_PATH", &self.agentscan_socket_path);
         command.env("XDG_CACHE_HOME", &self.cache_home);
         command.env("HOME", &self.home_dir);
+        command.env(AGENTSCAN_ALLOW_UNTRUSTED_DAEMON_AUTOSTART_ENV_VAR, "1");
         Ok(command)
     }
 
@@ -395,7 +398,7 @@ impl TestHarness {
 
     fn agentscan_tui_command(&self, extra_args: &[&str]) -> Result<String> {
         let mut command = format!(
-            "TMUX_TMPDIR={} AGENTSCAN_TMUX_SOCKET={} AGENTSCAN_SOCKET_PATH={} XDG_CACHE_HOME={} HOME={} {} tui",
+            "TMUX_TMPDIR={} AGENTSCAN_TMUX_SOCKET={} AGENTSCAN_SOCKET_PATH={} XDG_CACHE_HOME={} HOME={} AGENTSCAN_ALLOW_UNTRUSTED_DAEMON_AUTOSTART=1 {} tui",
             shell_escape_path(&self.tmux_tmpdir),
             shell_escape_path(&self.tmux_socket_path),
             shell_escape_path(&self.agentscan_socket_path),
@@ -417,7 +420,7 @@ impl TestHarness {
         done_path: &Path,
     ) -> Result<String> {
         let mut command = format!(
-            "TMUX_TMPDIR={} AGENTSCAN_TMUX_SOCKET={} AGENTSCAN_SOCKET_PATH={} XDG_CACHE_HOME={} HOME={} AGENTSCAN_TUI_READY_PATH={} AGENTSCAN_TUI_DONE_PATH={} {} tui",
+            "TMUX_TMPDIR={} AGENTSCAN_TMUX_SOCKET={} AGENTSCAN_SOCKET_PATH={} XDG_CACHE_HOME={} HOME={} AGENTSCAN_ALLOW_UNTRUSTED_DAEMON_AUTOSTART=1 AGENTSCAN_TUI_READY_PATH={} AGENTSCAN_TUI_DONE_PATH={} {} tui",
             shell_escape_path(&self.tmux_tmpdir),
             shell_escape_path(&self.tmux_socket_path),
             shell_escape_path(&self.agentscan_socket_path),

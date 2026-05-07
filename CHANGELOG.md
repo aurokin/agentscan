@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.1 - 2026-05-06
+
+### Safety
+
+- Disabled implicit daemon auto-start on macOS for ad-hoc, invalidly signed, or
+  Gatekeeper-rejected executables to avoid re-triggering a macOS
+  AppleSystemPolicy panic observed after the 0.2.0 auto-start rollout.
+- Kept recovery paths available: `agentscan scan`, refresh-capable one-shot
+  commands, and explicit `agentscan daemon start` do not depend on implicit
+  auto-start.
+- Added `AGENTSCAN_ALLOW_UNTRUSTED_DAEMON_AUTOSTART=1` as a debugging-only
+  override for intentional local reproduction.
+- Logged daemon start preflight context before spawning the daemon, so failed
+  or blocked starts have actionable diagnostics in the daemon log.
+
 ## 0.2.0 - 2026-05-06
 
 ### Highlights

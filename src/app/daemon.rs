@@ -33,6 +33,9 @@ const TUI_SUBSCRIPTION_INITIAL_BACKOFF: Duration = Duration::from_millis(250);
 const TUI_SUBSCRIPTION_INITIAL_BACKOFF: Duration = Duration::from_millis(10);
 const TUI_SUBSCRIPTION_MAX_BACKOFF: Duration = Duration::from_secs(1);
 pub(crate) const NO_AUTO_START_ENV_VAR: &str = "AGENTSCAN_NO_AUTO_START";
+#[cfg(any(test, target_os = "macos"))]
+pub(crate) const ALLOW_UNTRUSTED_DAEMON_AUTOSTART_ENV_VAR: &str =
+    "AGENTSCAN_ALLOW_UNTRUSTED_DAEMON_AUTOSTART";
 
 static DAEMON_SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
@@ -140,6 +143,29 @@ enum StartOutput {
 enum StartConfirmation {
     Started,
     AlreadyRunning,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DaemonStartIntent {
+    ExplicitLifecycleCommand,
+    ImplicitConsumerAutoStart,
+    TuiSubscriptionAutoStart,
+}
+
+impl DaemonStartIntent {
+    fn requires_macos_trust_preflight(self) -> bool {
+        matches!(
+            self,
+            Self::ImplicitConsumerAutoStart | Self::TuiSubscriptionAutoStart
+        )
+    }
+}
+
+#[cfg(any(test, target_os = "macos"))]
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum MacExecutableAssessment {
+    Trusted,
+    Untrusted(String),
 }
 
 impl StartOutput {
@@ -650,7 +676,11 @@ fn subscription_worker_loop(
                         message: format!("starting daemon after {reason}"),
                     },
                 )?;
-                match daemon_start_with_socket_path_and_output(&socket_path, StartOutput::Quiet) {
+                match daemon_start_with_socket_path_and_output(
+                    &socket_path,
+                    StartOutput::Quiet,
+                    DaemonStartIntent::TuiSubscriptionAutoStart,
+                ) {
                     Ok(()) => {}
                     Err(error) => {
                         send_subscription_event(
@@ -979,7 +1009,11 @@ pub(crate) fn snapshot_via_socket_path(
     policy: AutoStartPolicy,
 ) -> std::result::Result<SnapshotEnvelope, DaemonSnapshotError> {
     snapshot_via_socket_path_with_starter(socket_path, policy, |socket_path| {
-        daemon_start_with_socket_path_and_output(socket_path, StartOutput::Quiet)
+        daemon_start_with_socket_path_and_output(
+            socket_path,
+            StartOutput::Quiet,
+            DaemonStartIntent::ImplicitConsumerAutoStart,
+        )
     })
 }
 
@@ -1060,6 +1094,7 @@ pub(super) fn snapshot_via_socket_path_with_start_command(
         daemon_start_with_socket_path_output_and_command(
             socket_path,
             StartOutput::Quiet,
+            DaemonStartIntent::ImplicitConsumerAutoStart,
             executable_path,
             envs,
             env_removes,
@@ -1443,12 +1478,17 @@ fn daemon_start_with_output(output: StartOutput) -> std::result::Result<(), Daem
         ipc::resolve_socket_path().map_err(|error| DaemonSnapshotError::UnexpectedFrame {
             message: error.to_string(),
         })?;
-    daemon_start_with_socket_path_and_output(&socket_path, output)
+    daemon_start_with_socket_path_and_output(
+        &socket_path,
+        output,
+        DaemonStartIntent::ExplicitLifecycleCommand,
+    )
 }
 
 fn daemon_start_with_socket_path_and_output(
     socket_path: &Path,
     output: StartOutput,
+    intent: DaemonStartIntent,
 ) -> std::result::Result<(), DaemonSnapshotError> {
     let executable_path =
         env::current_exe().map_err(|error| DaemonSnapshotError::UnexpectedFrame {
@@ -1459,6 +1499,7 @@ fn daemon_start_with_socket_path_and_output(
     daemon_start_with_socket_path_output_and_command(
         socket_path,
         output,
+        intent,
         &executable_path,
         &envs,
         &env_removes,
@@ -1519,9 +1560,368 @@ pub(crate) fn test_daemon_start_env_removes_from(
     daemon_start_env_removes_from(read_env)
 }
 
+#[cfg(test)]
+pub(crate) fn test_implicit_consumer_macos_auto_start_preflight(
+    rejection_reason: Option<&str>,
+    allow_untrusted: bool,
+) -> std::result::Result<(), DaemonSnapshotError> {
+    test_macos_auto_start_preflight(
+        DaemonStartIntent::ImplicitConsumerAutoStart,
+        rejection_reason,
+        allow_untrusted,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn test_tui_macos_auto_start_preflight(
+    rejection_reason: Option<&str>,
+    allow_untrusted: bool,
+) -> std::result::Result<(), DaemonSnapshotError> {
+    test_macos_auto_start_preflight(
+        DaemonStartIntent::TuiSubscriptionAutoStart,
+        rejection_reason,
+        allow_untrusted,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn test_explicit_macos_daemon_start_preflight(
+    rejection_reason: Option<&str>,
+    allow_untrusted: bool,
+) -> std::result::Result<(), DaemonSnapshotError> {
+    test_macos_auto_start_preflight(
+        DaemonStartIntent::ExplicitLifecycleCommand,
+        rejection_reason,
+        allow_untrusted,
+    )
+}
+
+#[cfg(test)]
+fn test_macos_auto_start_preflight(
+    intent: DaemonStartIntent,
+    rejection_reason: Option<&str>,
+    allow_untrusted: bool,
+) -> std::result::Result<(), DaemonSnapshotError> {
+    let assessment = match rejection_reason {
+        Some(reason) => MacExecutableAssessment::Untrusted(reason.to_string()),
+        None => MacExecutableAssessment::Trusted,
+    };
+    daemon_start_preflight_from_macos_assessment(
+        intent,
+        Path::new("/tmp/agentscan"),
+        assessment,
+        allow_untrusted,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn daemon_start_preflight(
+    intent: DaemonStartIntent,
+    executable_path: &Path,
+    envs: &[(OsString, OsString)],
+) -> std::result::Result<(), DaemonSnapshotError> {
+    let allow_untrusted = daemon_start_allows_untrusted_autostart(envs);
+    if !intent.requires_macos_trust_preflight() || allow_untrusted {
+        return Ok(());
+    }
+    let assessment = assess_macos_executable_for_daemon_autostart(executable_path);
+    daemon_start_preflight_from_macos_assessment(
+        intent,
+        executable_path,
+        assessment,
+        allow_untrusted,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn test_macos_preflight_skips_assessment(
+    explicit_start: bool,
+    tui_start: bool,
+    allow_untrusted: bool,
+) -> bool {
+    let intent = match (explicit_start, tui_start) {
+        (true, _) => DaemonStartIntent::ExplicitLifecycleCommand,
+        (false, true) => DaemonStartIntent::TuiSubscriptionAutoStart,
+        (false, false) => DaemonStartIntent::ImplicitConsumerAutoStart,
+    };
+    !intent.requires_macos_trust_preflight() || allow_untrusted
+}
+
+#[cfg(not(target_os = "macos"))]
+fn daemon_start_preflight(
+    intent: DaemonStartIntent,
+    executable_path: &Path,
+    envs: &[(OsString, OsString)],
+) -> std::result::Result<(), DaemonSnapshotError> {
+    let _ = (intent, executable_path, envs);
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn daemon_start_allows_untrusted_autostart(envs: &[(OsString, OsString)]) -> bool {
+    env::var(ALLOW_UNTRUSTED_DAEMON_AUTOSTART_ENV_VAR).as_deref() == Ok("1")
+        || envs.iter().any(|(key, value)| {
+            key == std::ffi::OsStr::new(ALLOW_UNTRUSTED_DAEMON_AUTOSTART_ENV_VAR)
+                && value == std::ffi::OsStr::new("1")
+        })
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn daemon_start_preflight_from_macos_assessment(
+    intent: DaemonStartIntent,
+    executable_path: &Path,
+    assessment: MacExecutableAssessment,
+    allow_untrusted: bool,
+) -> std::result::Result<(), DaemonSnapshotError> {
+    if !intent.requires_macos_trust_preflight() || allow_untrusted {
+        return Ok(());
+    }
+
+    match assessment {
+        MacExecutableAssessment::Trusted => Ok(()),
+        MacExecutableAssessment::Untrusted(reason) => Err(DaemonSnapshotError::AutoStartDisabled {
+            reason: format!(
+                "macOS executable trust preflight rejected implicit daemon start for {}; {reason}. {}",
+                executable_path.display(),
+                macos_auto_start_recovery_guidance(intent)
+            ),
+        }),
+    }
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn macos_auto_start_recovery_guidance(intent: DaemonStartIntent) -> &'static str {
+    match intent {
+        DaemonStartIntent::ImplicitConsumerAutoStart => {
+            "Run `agentscan scan`, pass `--refresh`, explicitly run `agentscan daemon start`, install a signed release binary, or set AGENTSCAN_ALLOW_UNTRUSTED_DAEMON_AUTOSTART=1 to override for debugging"
+        }
+        DaemonStartIntent::TuiSubscriptionAutoStart => {
+            "Run `agentscan scan`, explicitly run `agentscan daemon start`, install a signed release binary, or set AGENTSCAN_ALLOW_UNTRUSTED_DAEMON_AUTOSTART=1 to override for debugging"
+        }
+        DaemonStartIntent::ExplicitLifecycleCommand => {
+            "Explicit daemon starts are not blocked by this preflight"
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn assess_macos_executable_for_daemon_autostart(path: &Path) -> MacExecutableAssessment {
+    let display_output = match Command::new("/usr/bin/codesign")
+        .args(["-dv", "--verbose=4"])
+        .arg(path)
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) => {
+            return MacExecutableAssessment::Untrusted(format!(
+                "codesign inspection could not run: {error}"
+            ));
+        }
+    };
+    let display_text = command_output_text(&display_output);
+    if let Some(assessment) =
+        macos_codesign_display_rejection(display_output.status.success(), &display_text)
+    {
+        return assessment;
+    }
+
+    let verify_output = match Command::new("/usr/bin/codesign")
+        .args(["--verify", "--verbose=4"])
+        .arg(path)
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) => {
+            return MacExecutableAssessment::Untrusted(format!(
+                "codesign verification could not run: {error}"
+            ));
+        }
+    };
+    if let MacExecutableAssessment::Untrusted(reason) = assess_macos_codesign_verification(
+        verify_output.status.success(),
+        &command_output_text(&verify_output),
+    ) {
+        return MacExecutableAssessment::Untrusted(reason);
+    }
+
+    let gatekeeper_output = match Command::new("/usr/sbin/spctl")
+        .args(["--assess", "--type", "execute", "-vv"])
+        .arg(path)
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) => {
+            return MacExecutableAssessment::Untrusted(format!(
+                "Gatekeeper assessment could not run: {error}"
+            ));
+        }
+    };
+    assess_macos_gatekeeper(
+        gatekeeper_output.status.success(),
+        &command_output_text(&gatekeeper_output),
+    )
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn macos_codesign_display_rejection(
+    status_success: bool,
+    text: &str,
+) -> Option<MacExecutableAssessment> {
+    if !status_success {
+        return Some(MacExecutableAssessment::Untrusted(format!(
+            "codesign inspection failed: {}",
+            compact_command_output(text)
+        )));
+    }
+
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("signature=adhoc") || lower.contains("(adhoc") || lower.contains("adhoc,") {
+        return Some(MacExecutableAssessment::Untrusted(format!(
+            "codesign reports an ad-hoc executable: {}",
+            compact_command_output(text)
+        )));
+    }
+    None
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn assess_macos_codesign_verification(status_success: bool, text: &str) -> MacExecutableAssessment {
+    if status_success {
+        MacExecutableAssessment::Trusted
+    } else {
+        MacExecutableAssessment::Untrusted(format!(
+            "codesign verification failed: {}",
+            compact_command_output(text)
+        ))
+    }
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn assess_macos_gatekeeper(status_success: bool, text: &str) -> MacExecutableAssessment {
+    if status_success || gatekeeper_rejected_because_signed_cli_is_not_app(text) {
+        MacExecutableAssessment::Trusted
+    } else {
+        MacExecutableAssessment::Untrusted(format!(
+            "Gatekeeper assessment rejected it: {}",
+            compact_command_output(text)
+        ))
+    }
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn gatekeeper_rejected_because_signed_cli_is_not_app(text: &str) -> bool {
+    text.to_ascii_lowercase()
+        .contains("the code is valid but does not seem to be an app")
+}
+
+#[cfg(test)]
+pub(crate) fn test_macos_executable_assessment_for_outputs(
+    display_status_success: bool,
+    display_text: &str,
+    verify_status_success: bool,
+    verify_text: &str,
+    gatekeeper_status_success: bool,
+    gatekeeper_text: &str,
+) -> std::result::Result<(), String> {
+    if let Some(MacExecutableAssessment::Untrusted(reason)) =
+        macos_codesign_display_rejection(display_status_success, display_text)
+    {
+        return Err(reason);
+    }
+
+    if let MacExecutableAssessment::Untrusted(reason) =
+        assess_macos_codesign_verification(verify_status_success, verify_text)
+    {
+        return Err(reason);
+    }
+
+    match assess_macos_gatekeeper(gatekeeper_status_success, gatekeeper_text) {
+        MacExecutableAssessment::Trusted => Ok(()),
+        MacExecutableAssessment::Untrusted(reason) => Err(reason),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn command_output_text(output: &std::process::Output) -> String {
+    let mut text = String::new();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    if !output.stdout.is_empty() {
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(&String::from_utf8_lossy(&output.stdout));
+    }
+    text
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn compact_command_output(text: &str) -> String {
+    let compact = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("; ");
+    if compact.chars().count() > 500 {
+        let prefix = compact.chars().take(500).collect::<String>();
+        format!("{prefix}...")
+    } else {
+        compact
+    }
+}
+
+fn log_daemon_start_preflight(
+    paths: &LifecyclePaths,
+    socket_path: &Path,
+    intent: DaemonStartIntent,
+    executable_path: &Path,
+    envs: &[(OsString, OsString)],
+    env_removes: &[OsString],
+    preflight: &std::result::Result<(), DaemonSnapshotError>,
+) {
+    let Ok(mut log) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&paths.log_path)
+    else {
+        return;
+    };
+    let timestamp = snapshot::now_rfc3339().unwrap_or_else(|_| "unknown".to_string());
+    let executable_canonical = fs::canonicalize(executable_path)
+        .ok()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "<unavailable>".to_string());
+    let env_keys = envs
+        .iter()
+        .map(|(key, _)| key.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(",");
+    let env_remove_keys = env_removes
+        .iter()
+        .map(|key| key.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(",");
+    let result = match preflight {
+        Ok(()) => "allowed".to_string(),
+        Err(error) => format!("blocked: {error}"),
+    };
+    let _ = writeln!(
+        log,
+        "daemon_start_preflight timestamp={timestamp} parent_pid={} intent={intent:?} target_os={} socket_path={} executable_path={} executable_canonical={} envs={} env_removes={} result={result}",
+        std::process::id(),
+        std::env::consts::OS,
+        socket_path.display(),
+        executable_path.display(),
+        executable_canonical,
+        env_keys,
+        env_remove_keys,
+    );
+}
+
 fn daemon_start_with_socket_path_output_and_command(
     socket_path: &Path,
     output: StartOutput,
+    intent: DaemonStartIntent,
     executable_path: &Path,
     envs: &[(OsString, OsString)],
     env_removes: &[OsString],
@@ -1548,6 +1948,17 @@ fn daemon_start_with_socket_path_output_and_command(
     prepare_log_file(&paths.log_path).map_err(|error| DaemonSnapshotError::UnexpectedFrame {
         message: error.to_string(),
     })?;
+    let preflight = daemon_start_preflight(intent, executable_path, envs);
+    log_daemon_start_preflight(
+        &paths,
+        socket_path,
+        intent,
+        executable_path,
+        envs,
+        env_removes,
+        &preflight,
+    );
+    preflight?;
 
     let log_stdout = OpenOptions::new()
         .create(true)
