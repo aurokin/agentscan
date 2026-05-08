@@ -151,7 +151,7 @@ enum DaemonStartIntent {
 impl DaemonStartIntent {
     #[cfg(any(test, target_os = "macos"))]
     fn requires_macos_trust_preflight(self) -> bool {
-        true
+        matches!(self, Self::ExplicitLifecycleCommand)
     }
 }
 
@@ -664,6 +664,39 @@ fn subscription_worker_loop(
                 send_subscription_event(events, event)?;
                 break;
             }
+            SubscriptionConnect::NotRunning(reason)
+                if macos_implicit_auto_start_is_disabled(
+                    DaemonStartIntent::TuiSubscriptionAutoStart,
+                ) =>
+            {
+                if let Err(error) = remove_stale_socket_if_present(&socket_path) {
+                    send_subscription_event(
+                        events,
+                        DaemonSubscriptionEvent::Fatal {
+                            message: error.to_string(),
+                        },
+                    )?;
+                    break;
+                }
+                let message = macos_implicit_auto_start_disabled_reason(
+                    DaemonStartIntent::TuiSubscriptionAutoStart,
+                    &reason,
+                );
+                let event = if bootstrapped {
+                    DaemonSubscriptionEvent::Offline {
+                        message,
+                        retrying: true,
+                    }
+                } else {
+                    DaemonSubscriptionEvent::Fatal { message }
+                };
+                send_subscription_event(events, event)?;
+                if !bootstrapped {
+                    break;
+                }
+                sleep_subscription_backoff(cancel, backoff);
+                backoff = next_subscription_backoff(backoff);
+            }
             SubscriptionConnect::NotRunning(reason) if !attempted_start => {
                 attempted_start = true;
                 send_subscription_event(
@@ -1037,6 +1070,23 @@ fn snapshot_via_socket_path_with_starter(
             }
             SnapshotQuery::NotRunning(reason) if policy.disabled => {
                 return Err(DaemonSnapshotError::AutoStartDisabled { reason });
+            }
+            SnapshotQuery::NotRunning(reason)
+                if macos_implicit_auto_start_is_disabled(
+                    DaemonStartIntent::ImplicitConsumerAutoStart,
+                ) =>
+            {
+                remove_stale_socket_if_present(socket_path).map_err(|error| {
+                    DaemonSnapshotError::UnexpectedFrame {
+                        message: error.to_string(),
+                    }
+                })?;
+                return Err(DaemonSnapshotError::AutoStartDisabled {
+                    reason: macos_implicit_auto_start_disabled_reason(
+                        DaemonStartIntent::ImplicitConsumerAutoStart,
+                        &reason,
+                    ),
+                });
             }
             SnapshotQuery::NotRunning(reason) if !attempted_start => {
                 attempted_start = true;
@@ -1614,6 +1664,11 @@ fn daemon_start_preflight(
     envs: &[(OsString, OsString)],
 ) -> std::result::Result<(), DaemonSnapshotError> {
     let _ = envs;
+    if macos_implicit_auto_start_is_disabled(intent) {
+        return Err(DaemonSnapshotError::AutoStartDisabled {
+            reason: macos_implicit_auto_start_disabled_reason(intent, "daemon is not running"),
+        });
+    }
     if !intent.requires_macos_trust_preflight() {
         return Ok(());
     }
@@ -1647,6 +1702,11 @@ fn daemon_start_preflight_from_macos_assessment(
     executable_path: &Path,
     assessment: MacExecutableAssessment,
 ) -> std::result::Result<(), DaemonSnapshotError> {
+    if macos_implicit_auto_start_is_disabled_for_policy_tests(intent) {
+        return Err(DaemonSnapshotError::AutoStartDisabled {
+            reason: macos_implicit_auto_start_disabled_reason(intent, "daemon is not running"),
+        });
+    }
     if !intent.requires_macos_trust_preflight() {
         return Ok(());
     }
@@ -1661,6 +1721,45 @@ fn daemon_start_preflight_from_macos_assessment(
             ),
         }),
     }
+}
+
+fn macos_daemon_run_guidance() -> &'static str {
+    "Start the daemon in a long-lived tmux pane with `agentscan daemon run`"
+}
+
+fn macos_implicit_auto_start_disabled_reason(intent: DaemonStartIntent, reason: &str) -> String {
+    let recovery = match intent {
+        DaemonStartIntent::ImplicitConsumerAutoStart => {
+            "Use `agentscan scan` or a refresh-capable command for one-shot direct tmux reads."
+        }
+        DaemonStartIntent::TuiSubscriptionAutoStart => {
+            "The TUI requires a running daemon on macOS."
+        }
+        DaemonStartIntent::ExplicitLifecycleCommand => {
+            "Use `agentscan daemon start` with a signed binary or `agentscan daemon run` in the foreground."
+        }
+    };
+    format!(
+        "{reason}; macOS does not implicitly auto-start the agentscan daemon. {} {recovery}",
+        macos_daemon_run_guidance()
+    )
+}
+
+fn macos_implicit_auto_start_is_disabled(intent: DaemonStartIntent) -> bool {
+    cfg!(target_os = "macos")
+        && matches!(
+            intent,
+            DaemonStartIntent::ImplicitConsumerAutoStart
+                | DaemonStartIntent::TuiSubscriptionAutoStart
+        )
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn macos_implicit_auto_start_is_disabled_for_policy_tests(intent: DaemonStartIntent) -> bool {
+    matches!(
+        intent,
+        DaemonStartIntent::ImplicitConsumerAutoStart | DaemonStartIntent::TuiSubscriptionAutoStart
+    )
 }
 
 #[cfg(any(test, target_os = "macos"))]
@@ -2039,6 +2138,7 @@ fn daemon_run_with_socket_path_and_startup(
     DAEMON_SHUTDOWN_REQUESTED.store(false, Ordering::Relaxed);
     let identity = DaemonRuntimeIdentity::new(socket_path)?;
     let lifecycle_paths = LifecyclePaths::from_socket_path(socket_path);
+    remove_stale_socket_if_present(socket_path)?;
     let _lifecycle_guard = DaemonLifecycleGuard::acquire(&lifecycle_paths, &identity)?;
     let server = DaemonSocketServer::bind(socket_path)?;
     let socket_state = server.state();

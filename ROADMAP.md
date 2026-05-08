@@ -76,14 +76,14 @@ Implications:
 - the daemon is the single source of live pane state
 - consumers connect to the daemon over a Unix socket and read
   `SnapshotEnvelope` frames
-- daemon startup is automatic for normal desktop commands except on macOS
-  executables that fail the detached daemon-start trust preflight
+- daemon startup is automatic for normal desktop commands on non-macOS
+  platforms; macOS users start the daemon explicitly
 - direct tmux snapshots remain available for debugging and recovery through
   `agentscan scan` and refresh-capable command flags
 - `AGENTSCAN_NO_AUTO_START=1` and `--no-auto-start` exist for CI and scripts
   that must not leave a daemon running
-- macOS ad-hoc or invalidly signed binaries must use `agentscan scan`,
-  `--refresh`, foreground `agentscan daemon run`, or a signed release binary
+- macOS daemon-backed commands do not implicitly auto-start the daemon; use
+  `agentscan scan`, `--refresh`, or foreground `agentscan daemon run`
 - when tmux disappears, the daemon reports failure through lifecycle/status
   paths; restart policy remains explicit user or supervisor policy
 
@@ -224,7 +224,8 @@ Delivered daemon architecture:
 
 - daemon is required for normal `list`, `inspect`, `focus`, `tui`, and
   `snapshot` flows
-- normal consumers auto-start the daemon unless explicitly opted out
+- normal consumers auto-start the daemon unless explicitly opted out on
+  non-macOS platforms; macOS requires an explicitly running daemon
 - live state uses a Unix-socket JSON-Lines protocol
 - the cache file and `agentscan cache` surface are removed
 - `agentscan tui` is the interactive command; `agentscan popup` is removed

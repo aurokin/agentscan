@@ -57,11 +57,10 @@ from those child commands. This protects destructive fixture operations such as
 `kill-server`, `kill-session`, and `kill-window` from drifting onto the default
 tmux server.
 
-Harness commands that intentionally exercise implicit daemon auto-start on macOS
-must use a signed binary. Ad-hoc local binaries are not supported for detached
-daemon start paths. Use `agentscan scan`, `--refresh`, foreground
-`agentscan daemon run`, or a signed release binary when local test binaries are
-untrusted.
+Harness commands must not expect implicit daemon auto-start on macOS. Use
+foreground `agentscan daemon run`, direct `agentscan scan`, or refresh-capable
+command flags for local macOS harness work. Explicit detached
+`agentscan daemon start` on macOS requires a signed binary.
 
 The integration suite should keep a guard test that poisons the default
 `TMUX_TMPDIR` and asserts `agentscan scan --all --format json` still reads from

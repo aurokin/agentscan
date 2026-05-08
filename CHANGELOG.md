@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.2.4 - 2026-05-08
+
+### Safety
+
+- Removed implicit daemon auto-start on macOS. Daemon-backed commands now require
+  an already-running daemon on macOS and guide users to run
+  `agentscan daemon run` in a long-lived tmux pane; explicit detached
+  `agentscan daemon start` remains signed-binary-only.
+
 ### Diagnostics
 
 - Added daemon snapshot update telemetry to `agentscan daemon status`, including

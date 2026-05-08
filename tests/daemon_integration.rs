@@ -102,6 +102,9 @@ fn daemon_serves_snapshot_over_owned_socket_path() -> Result<()> {
 #[test]
 fn daemon_auto_start_helper_starts_daemon_and_reads_snapshot() -> Result<()> {
     let harness = TestHarness::new()?;
+    if cfg!(target_os = "macos") {
+        return Ok(());
+    }
     if !harness.detached_daemon_start_supported()? {
         return Ok(());
     }

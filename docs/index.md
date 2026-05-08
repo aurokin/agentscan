@@ -18,6 +18,9 @@ This repo uses progressively disclosed documentation.
   Validation posture and the rule for what belongs in repo docs versus Linear.
 - `docs/notes/`
   Narrow follow-up or historical notes that are too specific for the primary docs but still worth keeping in the repo.
+  - `docs/notes/macos-daemon-autostart-adr.md`
+    ADR for macOS daemon auto-start, executable assessment, observed
+    AppleSystemPolicy panics, and the signed-versus-ad-hoc lifecycle boundary.
   - `docs/notes/provider-evidence-roadmap.md`
     Provider-specific evidence plans, plug-and-play detection policy, and the
     deep-roadmap hook/extension direction.

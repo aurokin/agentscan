@@ -82,7 +82,9 @@ fixtures.
 The core architecture is a daemon-required, socket-backed model:
 
 - the daemon is the single source of live pane state
-- normal consumers auto-start the daemon unless explicitly opted out
+- normal consumers auto-start the daemon unless explicitly opted out; on macOS,
+  implicit auto-start is disabled and users should run
+  `agentscan daemon run` in a long-lived tmux pane
 - consumers read full `SnapshotEnvelope` frames over a Unix socket
 - the cache file is removed as an IPC boundary
 - the interactive command is `agentscan tui`
@@ -105,6 +107,7 @@ The current branch centers on:
 It can:
 
 - run the daemon with tmux control mode and auto-start it for normal consumers
+  on non-macOS platforms
 - fail fast when the daemon loses tmux, leaving restart policy to an external supervisor
 - preserve raw tmux `session_id` and `window_id` values in the canonical pane model for socket consumers and local daemon updates
 - refresh individual panes on daemon title and metadata updates, refresh affected windows or sessions when tmux emits stable ids for those scopes, and keep a periodic full reconcile as a safety net
@@ -176,6 +179,11 @@ Operational commands:
 - `agentscan tmux clear-metadata`
 
 `agentscan` without a subcommand runs the default daemon-backed `list` flow.
+On macOS, start the daemon first in a long-lived tmux pane:
+
+```sh
+agentscan daemon run
+```
 
 For repo-local tmux `display-popup` testing without installing the binary on
 `PATH`, use `tmux display-popup -E "$PWD/target/debug/agentscan" tui` after

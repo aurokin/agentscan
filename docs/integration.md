@@ -46,11 +46,13 @@ that as an API gap in `list` or snapshot JSON. Do not add hidden `tui --format`
 paths, TUI-shaped TSV, or parser compatibility branches to preserve legacy
 stdout parsing.
 
-Normal consumers are daemon-backed. They auto-start the daemon by default so
-desktop workflows do not need service setup. Scripts and CI that must avoid
-spawning a long-lived process should use `--no-auto-start`,
-`AGENTSCAN_NO_AUTO_START=1`, or direct tmux recovery paths such as
-`agentscan scan` and refresh-capable command flags.
+Normal consumers are daemon-backed. On non-macOS platforms they auto-start the
+daemon by default so desktop workflows do not need service setup. On macOS,
+implicit auto-start is disabled; users should run `agentscan daemon run` in a
+long-lived tmux pane before using daemon-backed commands or the TUI. Scripts and
+CI that must avoid spawning a long-lived process should use `--no-auto-start`,
+`AGENTSCAN_NO_AUTO_START=1`, or direct tmux recovery paths such as `agentscan
+scan` and refresh-capable command flags.
 
 Status provenance is part of the JSON contract. `status.source="pane_output"`
 means the provider was already identified by stronger evidence, and agentscan
