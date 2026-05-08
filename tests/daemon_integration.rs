@@ -102,6 +102,9 @@ fn daemon_serves_snapshot_over_owned_socket_path() -> Result<()> {
 #[test]
 fn daemon_auto_start_helper_starts_daemon_and_reads_snapshot() -> Result<()> {
     let harness = TestHarness::new()?;
+    if !harness.detached_daemon_start_supported()? {
+        return Ok(());
+    }
     let pane_id = harness.start_session("auto-start-helper", "sleep 300")?;
     let executable_path = agentscan_bin()?;
     let envs = vec![
@@ -124,10 +127,6 @@ fn daemon_auto_start_helper_starts_daemon_and_reads_snapshot() -> Result<()> {
         (
             OsString::from("HOME"),
             harness.home_dir.as_os_str().to_owned(),
-        ),
-        (
-            OsString::from("AGENTSCAN_ALLOW_UNTRUSTED_DAEMON_AUTOSTART"),
-            OsString::from("1"),
         ),
     ];
     let env_removes = vec![OsString::from("TMUX")];
@@ -234,6 +233,9 @@ fn daemon_fans_out_live_updates_to_subscriber_socket() -> Result<()> {
 #[test]
 fn daemon_lifecycle_start_status_stop() -> Result<()> {
     let harness = TestHarness::new()?;
+    if !harness.detached_daemon_start_supported()? {
+        return Ok(());
+    }
     let pane_id = harness.start_session("lifecycle-start", "sleep 300")?;
 
     let start_output = harness.agentscan_output(["daemon", "start"])?;
@@ -309,6 +311,9 @@ fn daemon_lifecycle_stop_is_idempotent() -> Result<()> {
 #[test]
 fn daemon_lifecycle_restart() -> Result<()> {
     let harness = TestHarness::new()?;
+    if !harness.detached_daemon_start_supported()? {
+        return Ok(());
+    }
     let _pane_id = harness.start_session("lifecycle-restart", "sleep 300")?;
 
     harness.agentscan(["daemon", "start"])?;
@@ -340,6 +345,9 @@ fn daemon_lifecycle_restart() -> Result<()> {
 #[test]
 fn daemon_lifecycle_start_reuses_running_daemon() -> Result<()> {
     let harness = TestHarness::new()?;
+    if !harness.detached_daemon_start_supported()? {
+        return Ok(());
+    }
     let _pane_id = harness.start_session("lifecycle-reuse", "sleep 300")?;
 
     harness.agentscan(["daemon", "start"])?;
@@ -366,6 +374,9 @@ fn daemon_lifecycle_start_reuses_running_daemon() -> Result<()> {
 #[test]
 fn daemon_lifecycle_concurrent_start_uses_single_daemon() -> Result<()> {
     let harness = TestHarness::new()?;
+    if !harness.detached_daemon_start_supported()? {
+        return Ok(());
+    }
     let _pane_id = harness.start_session("lifecycle-concurrent", "sleep 300")?;
 
     let first = harness
@@ -410,6 +421,9 @@ fn daemon_lifecycle_concurrent_start_uses_single_daemon() -> Result<()> {
 #[test]
 fn daemon_lifecycle_stop_keeps_mismatched_identity_sidecar() -> Result<()> {
     let harness = TestHarness::new()?;
+    if !harness.detached_daemon_start_supported()? {
+        return Ok(());
+    }
     let _pane_id = harness.start_session("lifecycle-identity", "sleep 300")?;
 
     harness.agentscan(["daemon", "start"])?;
@@ -524,6 +538,9 @@ fn daemon_lifecycle_refuses_non_socket_collision() -> Result<()> {
 #[test]
 fn daemon_lifecycle_cleans_stale_socket() -> Result<()> {
     let harness = TestHarness::new()?;
+    if !harness.detached_daemon_start_supported()? {
+        return Ok(());
+    }
     let _pane_id = harness.start_session("lifecycle-stale", "sleep 300")?;
     {
         let _listener = UnixListener::bind(&harness.agentscan_socket_path)
@@ -601,6 +618,9 @@ fn daemon_lifecycle_status_reports_incompatible_daemon_guidance() -> Result<()> 
 #[test]
 fn daemon_lifecycle_start_failure_reports_log_and_cleans_socket() -> Result<()> {
     let harness = TestHarness::new()?;
+    if !harness.detached_daemon_start_supported()? {
+        return Ok(());
+    }
 
     let output = harness
         .agentscan_command()?
@@ -948,6 +968,9 @@ fn focus_refresh_bypasses_daemon_socket() -> Result<()> {
 #[test]
 fn env_no_auto_start_does_not_disable_daemon_start_command() -> Result<()> {
     let harness = TestHarness::new()?;
+    if !harness.detached_daemon_start_supported()? {
+        return Ok(());
+    }
     let _pane_id = harness.start_session("env-no-auto-start-daemon-start", "sleep 300")?;
 
     let output = harness
@@ -1001,6 +1024,8 @@ fn tui_focuses_selected_pane_from_interactive_tmux_pane() -> Result<()> {
         "--state",
         "busy",
     ])?;
+    let mut daemon = harness.start_daemon()?;
+    harness.wait_for_daemon_pane(&mut daemon, &split_pane_id, |_| true)?;
     let mut client = harness.attach_client("tui-focus")?;
 
     let tui_pane_id = harness.start_agentscan_tui_pane("tui-focus:0.0", &[])?;
@@ -1020,6 +1045,8 @@ fn display_popup_focuses_selected_pane_from_attached_client() -> Result<()> {
     let root_pane_id = harness.start_session("display-tui-focus", "sleep 300")?;
     let split_pane_id = harness.split_window("display-tui-focus:0.0", "sleep 300")?;
     harness.seed_tui_two_pane_metadata(&root_pane_id, &split_pane_id)?;
+    let mut daemon = harness.start_daemon()?;
+    harness.wait_for_daemon_pane(&mut daemon, &split_pane_id, |_| true)?;
     harness.agentscan(["snapshot", "--format", "json"])?;
     let mut client = harness.attach_client("display-tui-focus")?;
 
@@ -1063,6 +1090,8 @@ fn tui_displays_message_when_selected_pane_no_longer_exists() -> Result<()> {
         "busy",
     ])?;
     harness.tmux(["kill-pane", "-t", &split_pane_id])?;
+    let mut daemon = harness.start_daemon()?;
+    harness.wait_for_daemon_pane(&mut daemon, &root_pane_id, |_| true)?;
     let mut client = harness.attach_client("tui-missing")?;
 
     let tui_pane_id = harness.start_agentscan_tui_pane("tui-missing:0.0", &[])?;
@@ -1082,6 +1111,8 @@ fn display_popup_closes_when_selected_pane_no_longer_exists() -> Result<()> {
     let root_pane_id = harness.start_session("display-tui-missing", "sleep 300")?;
     let split_pane_id = harness.split_window("display-tui-missing:0.0", "sleep 300")?;
     harness.seed_tui_two_pane_metadata(&root_pane_id, &split_pane_id)?;
+    let mut daemon = harness.start_daemon()?;
+    harness.wait_for_daemon_pane(&mut daemon, &split_pane_id, |_| true)?;
     harness.agentscan(["snapshot", "--format", "json"])?;
     let mut client = harness.attach_client("display-tui-missing")?;
 
@@ -1100,6 +1131,7 @@ fn display_popup_closes_when_selected_pane_no_longer_exists() -> Result<()> {
 fn tui_ctrl_b_passthrough_returns_to_tmux_prefix_table() -> Result<()> {
     let harness = TestHarness::new()?;
     let _pane_id = harness.start_session("tui-prefix", "sleep 300")?;
+    let _daemon = harness.start_daemon()?;
     let client = harness.attach_client("tui-prefix")?;
 
     let tui_pane_id = harness.start_agentscan_tui_pane("tui-prefix:0.0", &[])?;
@@ -1120,6 +1152,7 @@ fn display_popup_ctrl_b_passthrough_returns_to_tmux_prefix_table() -> Result<()>
         return Ok(());
     }
     let _pane_id = harness.start_session("display-tui-prefix", "sleep 300")?;
+    let _daemon = harness.start_daemon()?;
     let client = harness.attach_client("display-tui-prefix")?;
 
     let mut display_popup = harness.start_agentscan_display_popup(&client.tty, &[])?;
@@ -1148,6 +1181,8 @@ fn tui_bootstraps_from_socket() -> Result<()> {
         "--state",
         "busy",
     ])?;
+    let mut daemon = harness.start_daemon()?;
+    harness.wait_for_daemon_pane(&mut daemon, &pane_id, |_| true)?;
 
     let tui_pane_id = harness.start_agentscan_tui_pane("tui-socket-bootstrap:0.0", &[])?;
     harness.wait_for_pane_contents(&tui_pane_id, |contents| contents.contains("Socket Task"))?;
@@ -1183,6 +1218,8 @@ fn tui_rerenders_when_socket_snapshot_changes() -> Result<()> {
         "--state",
         "busy",
     ])?;
+    let mut daemon = harness.start_daemon()?;
+    harness.wait_for_daemon_pane(&mut daemon, &pane_id, |_| true)?;
 
     let tui_pane_id = harness.start_agentscan_tui_pane("tui-rerender:0.0", &[])?;
     harness.wait_for_pane_contents(&tui_pane_id, |contents| contents.contains("Initial Task"))?;
@@ -1199,6 +1236,9 @@ fn tui_rerenders_when_socket_snapshot_changes() -> Result<()> {
         "--state",
         "busy",
     ])?;
+    harness.wait_for_daemon_pane(&mut daemon, &pane_id, |pane| {
+        pane["display"]["label"] == "Updated Task"
+    })?;
     harness.wait_for_pane_contents(&tui_pane_id, |contents| contents.contains("Updated Task"))?;
 
     harness.tmux(["send-keys", "-t", &tui_pane_id, "Escape"])?;
@@ -1210,6 +1250,9 @@ fn tui_rerenders_when_socket_snapshot_changes() -> Result<()> {
 #[test]
 fn tui_reconnects_after_post_bootstrap_daemon_eof() -> Result<()> {
     let harness = TestHarness::new()?;
+    if !harness.detached_daemon_start_supported()? {
+        return Ok(());
+    }
     let pane_id = harness.start_session("tui-reconnect", "sleep 300")?;
     harness.agentscan([
         "tmux",
@@ -1251,6 +1294,7 @@ fn tui_reconnects_after_post_bootstrap_daemon_eof() -> Result<()> {
 fn tui_ignores_non_selection_keys_until_escape() -> Result<()> {
     let harness = TestHarness::new()?;
     let _pane_id = harness.start_session("tui-ignore", "sleep 300")?;
+    let _daemon = harness.start_daemon()?;
 
     let tui_pane_id = harness.start_agentscan_tui_pane("tui-ignore:0.0", &[])?;
     sleep(Duration::from_millis(200));
@@ -1268,6 +1312,7 @@ fn tui_ignores_non_selection_keys_until_escape() -> Result<()> {
 fn tui_ctrl_c_closes() -> Result<()> {
     let harness = TestHarness::new()?;
     let _pane_id = harness.start_session("tui-ctrl-c", "sleep 300")?;
+    let _daemon = harness.start_daemon()?;
 
     let tui_pane_id = harness.start_agentscan_tui_pane("tui-ctrl-c:0.0", &[])?;
     sleep(Duration::from_millis(200));
@@ -1301,6 +1346,8 @@ fn tui_pages_to_overflow_rows() -> Result<()> {
             "busy",
         ])?;
     }
+    let mut daemon = harness.start_daemon()?;
+    harness.wait_for_daemon_pane(&mut daemon, &root_pane_id, |_| true)?;
 
     let _client = harness.attach_client("tui-paging")?;
     let tui_pane_id = harness.start_agentscan_tui_pane("tui-paging:0.0", &[])?;
@@ -1343,6 +1390,8 @@ fn display_popup_pages_to_overflow_rows_and_focuses_selection() -> Result<()> {
             "busy",
         ])?;
     }
+    let mut daemon = harness.start_daemon()?;
+    harness.wait_for_daemon_pane(&mut daemon, &pane_ids[16], |_| true)?;
     harness.agentscan(["snapshot", "--format", "json"])?;
     let target_pane_id = pane_ids[16].clone();
     let mut client = harness.attach_client("display-tui-paging")?;

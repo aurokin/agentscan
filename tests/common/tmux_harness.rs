@@ -12,8 +12,6 @@ struct TestHarness {
 }
 
 const AGENTSCAN_TMUX_SOCKET_ENV_VAR: &str = "AGENTSCAN_TMUX_SOCKET";
-const AGENTSCAN_ALLOW_UNTRUSTED_DAEMON_AUTOSTART_ENV_VAR: &str =
-    "AGENTSCAN_ALLOW_UNTRUSTED_DAEMON_AUTOSTART";
 
 impl TestHarness {
     fn new() -> Result<Self> {
@@ -155,6 +153,36 @@ impl TestHarness {
         })
     }
 
+    fn detached_daemon_start_supported(&self) -> Result<bool> {
+        if !cfg!(target_os = "macos") {
+            return Ok(true);
+        }
+
+        let binary = agentscan_bin()?;
+        let display_output = Command::new("/usr/bin/codesign")
+            .args(["-dv", "--verbose=4"])
+            .arg(&binary)
+            .output()
+            .with_context(|| format!("failed to inspect {}", binary.display()))?;
+        let display_text = command_output_text(&display_output);
+        if !display_output.status.success() {
+            return Ok(false);
+        }
+
+        let lower = display_text.to_ascii_lowercase();
+        if lower.contains("signature=adhoc") || lower.contains("(adhoc") || lower.contains("adhoc,")
+        {
+            return Ok(false);
+        }
+
+        let verify_output = Command::new("/usr/bin/codesign")
+            .args(["--verify", "--verbose=4"])
+            .arg(&binary)
+            .output()
+            .with_context(|| format!("failed to verify {}", binary.display()))?;
+        Ok(verify_output.status.success())
+    }
+
     fn attach_client(&self, session_name: &str) -> Result<AttachedClientHandle> {
         let existing_ttys = self.client_ttys()?;
         let mut child = self.spawn_attached_client(session_name)?;
@@ -278,7 +306,6 @@ impl TestHarness {
         command.env("AGENTSCAN_SOCKET_PATH", &self.agentscan_socket_path);
         command.env("XDG_CACHE_HOME", &self.cache_home);
         command.env("HOME", &self.home_dir);
-        command.env(AGENTSCAN_ALLOW_UNTRUSTED_DAEMON_AUTOSTART_ENV_VAR, "1");
         Ok(command)
     }
 
@@ -398,7 +425,7 @@ impl TestHarness {
 
     fn agentscan_tui_command(&self, extra_args: &[&str]) -> Result<String> {
         let mut command = format!(
-            "TMUX_TMPDIR={} AGENTSCAN_TMUX_SOCKET={} AGENTSCAN_SOCKET_PATH={} XDG_CACHE_HOME={} HOME={} AGENTSCAN_ALLOW_UNTRUSTED_DAEMON_AUTOSTART=1 {} tui",
+            "TMUX_TMPDIR={} AGENTSCAN_TMUX_SOCKET={} AGENTSCAN_SOCKET_PATH={} XDG_CACHE_HOME={} HOME={} {} tui",
             shell_escape_path(&self.tmux_tmpdir),
             shell_escape_path(&self.tmux_socket_path),
             shell_escape_path(&self.agentscan_socket_path),
@@ -420,7 +447,7 @@ impl TestHarness {
         done_path: &Path,
     ) -> Result<String> {
         let mut command = format!(
-            "TMUX_TMPDIR={} AGENTSCAN_TMUX_SOCKET={} AGENTSCAN_SOCKET_PATH={} XDG_CACHE_HOME={} HOME={} AGENTSCAN_ALLOW_UNTRUSTED_DAEMON_AUTOSTART=1 AGENTSCAN_TUI_READY_PATH={} AGENTSCAN_TUI_DONE_PATH={} {} tui",
+            "TMUX_TMPDIR={} AGENTSCAN_TMUX_SOCKET={} AGENTSCAN_SOCKET_PATH={} XDG_CACHE_HOME={} HOME={} AGENTSCAN_TUI_READY_PATH={} AGENTSCAN_TUI_DONE_PATH={} {} tui",
             shell_escape_path(&self.tmux_tmpdir),
             shell_escape_path(&self.tmux_socket_path),
             shell_escape_path(&self.agentscan_socket_path),
@@ -958,6 +985,18 @@ fn snapshot_summary(snapshot: &Value) -> String {
 
 fn read_log(path: &Path) -> String {
     fs::read_to_string(path).unwrap_or_default()
+}
+
+fn command_output_text(output: &std::process::Output) -> String {
+    let mut text = String::new();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    if !output.stdout.is_empty() {
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(&String::from_utf8_lossy(&output.stdout));
+    }
+    text
 }
 
 fn parse_tmux_version(version: &str) -> Option<(u32, u32)> {

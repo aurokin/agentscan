@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.3 - 2026-05-08
+
+### Safety
+
+- Removed the debug override for detached macOS daemon starts from untrusted
+  binaries. Ad-hoc local builds must use foreground `agentscan daemon run`;
+  detached `agentscan daemon start` remains available for signed binaries.
+
 ## 0.2.2 - 2026-05-07
 
 ### Safety

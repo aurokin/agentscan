@@ -116,7 +116,7 @@ Current lifecycle policy:
 - auto-start by default for desktop commands
 - explicit `daemon start`, `run`, `stop`, `status`, and `restart` commands
 - on macOS, detached daemon starts require a non-ad-hoc, validly signed
-  executable unless the debugging override is set
+  executable; ad-hoc local builds should use foreground `agentscan daemon run`
 - `--no-auto-start` and `AGENTSCAN_NO_AUTO_START=1` for scripts and CI
 - `--refresh` for one-shot recovery or forced tmux snapshots
 - fail clearly when tmux disappears or the daemon protocol is incompatible

@@ -33,10 +33,6 @@ const TUI_SUBSCRIPTION_INITIAL_BACKOFF: Duration = Duration::from_millis(250);
 const TUI_SUBSCRIPTION_INITIAL_BACKOFF: Duration = Duration::from_millis(10);
 const TUI_SUBSCRIPTION_MAX_BACKOFF: Duration = Duration::from_secs(1);
 pub(crate) const NO_AUTO_START_ENV_VAR: &str = "AGENTSCAN_NO_AUTO_START";
-#[cfg(any(test, target_os = "macos"))]
-pub(crate) const ALLOW_UNTRUSTED_DAEMON_AUTOSTART_ENV_VAR: &str =
-    "AGENTSCAN_ALLOW_UNTRUSTED_DAEMON_AUTOSTART";
-
 static DAEMON_SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 type SubscriberId = u64;
@@ -153,6 +149,7 @@ enum DaemonStartIntent {
 }
 
 impl DaemonStartIntent {
+    #[cfg(any(test, target_os = "macos"))]
     fn requires_macos_trust_preflight(self) -> bool {
         true
     }
@@ -1560,36 +1557,30 @@ pub(crate) fn test_daemon_start_env_removes_from(
 #[cfg(test)]
 pub(crate) fn test_implicit_consumer_macos_auto_start_preflight(
     rejection_reason: Option<&str>,
-    allow_untrusted: bool,
 ) -> std::result::Result<(), DaemonSnapshotError> {
     test_macos_auto_start_preflight(
         DaemonStartIntent::ImplicitConsumerAutoStart,
         rejection_reason,
-        allow_untrusted,
     )
 }
 
 #[cfg(test)]
 pub(crate) fn test_tui_macos_auto_start_preflight(
     rejection_reason: Option<&str>,
-    allow_untrusted: bool,
 ) -> std::result::Result<(), DaemonSnapshotError> {
     test_macos_auto_start_preflight(
         DaemonStartIntent::TuiSubscriptionAutoStart,
         rejection_reason,
-        allow_untrusted,
     )
 }
 
 #[cfg(test)]
 pub(crate) fn test_explicit_macos_daemon_start_preflight(
     rejection_reason: Option<&str>,
-    allow_untrusted: bool,
 ) -> std::result::Result<(), DaemonSnapshotError> {
     test_macos_auto_start_preflight(
         DaemonStartIntent::ExplicitLifecycleCommand,
         rejection_reason,
-        allow_untrusted,
     )
 }
 
@@ -1597,18 +1588,12 @@ pub(crate) fn test_explicit_macos_daemon_start_preflight(
 fn test_macos_auto_start_preflight(
     intent: DaemonStartIntent,
     rejection_reason: Option<&str>,
-    allow_untrusted: bool,
 ) -> std::result::Result<(), DaemonSnapshotError> {
     let assessment = match rejection_reason {
         Some(reason) => MacExecutableAssessment::Untrusted(reason.to_string()),
         None => MacExecutableAssessment::Trusted,
     };
-    daemon_start_preflight_from_macos_assessment(
-        intent,
-        Path::new("/tmp/agentscan"),
-        assessment,
-        allow_untrusted,
-    )
+    daemon_start_preflight_from_macos_assessment(intent, Path::new("/tmp/agentscan"), assessment)
 }
 
 #[cfg(target_os = "macos")]
@@ -1617,31 +1602,22 @@ fn daemon_start_preflight(
     executable_path: &Path,
     envs: &[(OsString, OsString)],
 ) -> std::result::Result<(), DaemonSnapshotError> {
-    let allow_untrusted = daemon_start_allows_untrusted_autostart(envs);
-    if !intent.requires_macos_trust_preflight() || allow_untrusted {
+    let _ = envs;
+    if !intent.requires_macos_trust_preflight() {
         return Ok(());
     }
     let assessment = assess_macos_executable_for_daemon_autostart(executable_path);
-    daemon_start_preflight_from_macos_assessment(
-        intent,
-        executable_path,
-        assessment,
-        allow_untrusted,
-    )
+    daemon_start_preflight_from_macos_assessment(intent, executable_path, assessment)
 }
 
 #[cfg(test)]
-pub(crate) fn test_macos_preflight_skips_assessment(
-    explicit_start: bool,
-    tui_start: bool,
-    allow_untrusted: bool,
-) -> bool {
+pub(crate) fn test_macos_preflight_skips_assessment(explicit_start: bool, tui_start: bool) -> bool {
     let intent = match (explicit_start, tui_start) {
         (true, _) => DaemonStartIntent::ExplicitLifecycleCommand,
         (false, true) => DaemonStartIntent::TuiSubscriptionAutoStart,
         (false, false) => DaemonStartIntent::ImplicitConsumerAutoStart,
     };
-    !intent.requires_macos_trust_preflight() || allow_untrusted
+    !intent.requires_macos_trust_preflight()
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1654,23 +1630,13 @@ fn daemon_start_preflight(
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
-fn daemon_start_allows_untrusted_autostart(envs: &[(OsString, OsString)]) -> bool {
-    env::var(ALLOW_UNTRUSTED_DAEMON_AUTOSTART_ENV_VAR).as_deref() == Ok("1")
-        || envs.iter().any(|(key, value)| {
-            key == std::ffi::OsStr::new(ALLOW_UNTRUSTED_DAEMON_AUTOSTART_ENV_VAR)
-                && value == std::ffi::OsStr::new("1")
-        })
-}
-
 #[cfg(any(test, target_os = "macos"))]
 fn daemon_start_preflight_from_macos_assessment(
     intent: DaemonStartIntent,
     executable_path: &Path,
     assessment: MacExecutableAssessment,
-    allow_untrusted: bool,
 ) -> std::result::Result<(), DaemonSnapshotError> {
-    if !intent.requires_macos_trust_preflight() || allow_untrusted {
+    if !intent.requires_macos_trust_preflight() {
         return Ok(());
     }
 
@@ -1690,13 +1656,13 @@ fn daemon_start_preflight_from_macos_assessment(
 fn macos_auto_start_recovery_guidance(intent: DaemonStartIntent) -> &'static str {
     match intent {
         DaemonStartIntent::ImplicitConsumerAutoStart => {
-            "Run `agentscan scan`, pass `--refresh`, run `agentscan daemon run` in the foreground, install a signed release binary, or set AGENTSCAN_ALLOW_UNTRUSTED_DAEMON_AUTOSTART=1 to override for debugging"
+            "Run `agentscan scan`, pass `--refresh`, run `agentscan daemon run` in the foreground, or install a signed release binary for detached daemon operation"
         }
         DaemonStartIntent::TuiSubscriptionAutoStart => {
-            "Run `agentscan scan`, run `agentscan daemon run` in the foreground, install a signed release binary, or set AGENTSCAN_ALLOW_UNTRUSTED_DAEMON_AUTOSTART=1 to override for debugging"
+            "Run `agentscan scan`, run `agentscan daemon run` in the foreground, or install a signed release binary for detached daemon operation"
         }
         DaemonStartIntent::ExplicitLifecycleCommand => {
-            "Run `agentscan daemon run` in the foreground, install a signed release binary, or set AGENTSCAN_ALLOW_UNTRUSTED_DAEMON_AUTOSTART=1 to override for debugging"
+            "Run `agentscan daemon run` in the foreground, or install a signed release binary for detached daemon operation"
         }
     }
 }

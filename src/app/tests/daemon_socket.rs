@@ -586,7 +586,6 @@ fn daemon_auto_start_preserves_explicit_agentscan_tmux_socket() {
 fn implicit_macos_auto_start_blocks_untrusted_executable() {
     let error = daemon::test_implicit_consumer_macos_auto_start_preflight(
         Some("codesign reports an ad-hoc executable"),
-        false,
     )
     .expect_err("implicit auto-start should block untrusted macOS executables");
 
@@ -605,7 +604,6 @@ fn implicit_macos_auto_start_blocks_untrusted_executable() {
 fn tui_macos_auto_start_blocks_untrusted_executable() {
     let error = daemon::test_tui_macos_auto_start_preflight(
         Some("codesign reports an ad-hoc executable"),
-        false,
     )
     .expect_err("TUI auto-start should block untrusted macOS executables");
 
@@ -623,7 +621,6 @@ fn tui_macos_auto_start_blocks_untrusted_executable() {
 fn explicit_macos_daemon_start_blocks_untrusted_executable() {
     daemon::test_explicit_macos_daemon_start_preflight(
         Some("codesign reports an ad-hoc executable"),
-        false,
     )
     .expect_err("detached explicit daemon start should block untrusted macOS executables");
 }
@@ -656,28 +653,18 @@ fn daemon_restart_skips_stop_when_start_preflight_fails() {
 }
 
 #[test]
-fn macos_preflight_requires_assessment_for_explicit_starts_and_skips_for_debug_override() {
-    assert!(!daemon::test_macos_preflight_skips_assessment(
-        true, false, false,
-    ));
-    assert!(daemon::test_macos_preflight_skips_assessment(
-        false, false, true,
-    ));
-    assert!(daemon::test_macos_preflight_skips_assessment(
-        false, true, true,
-    ));
-    assert!(!daemon::test_macos_preflight_skips_assessment(
-        false, false, false,
-    ));
+fn macos_preflight_requires_assessment_for_detached_starts() {
+    assert!(!daemon::test_macos_preflight_skips_assessment(true, false));
+    assert!(!daemon::test_macos_preflight_skips_assessment(false, true));
+    assert!(!daemon::test_macos_preflight_skips_assessment(false, false));
 }
 
 #[test]
-fn implicit_macos_auto_start_override_allows_untrusted_executable() {
+fn implicit_macos_auto_start_blocks_untrusted_executable_without_override() {
     daemon::test_implicit_consumer_macos_auto_start_preflight(
         Some("codesign reports an ad-hoc executable"),
-        true,
     )
-    .expect("debug override should allow implicit auto-start");
+    .expect_err("implicit auto-start should not allow untrusted macOS executables");
 }
 
 #[test]

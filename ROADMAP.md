@@ -83,8 +83,7 @@ Implications:
 - `AGENTSCAN_NO_AUTO_START=1` and `--no-auto-start` exist for CI and scripts
   that must not leave a daemon running
 - macOS ad-hoc or invalidly signed binaries must use `agentscan scan`,
-  `--refresh`, foreground `agentscan daemon run`, a signed release binary, or
-  the debugging-only `AGENTSCAN_ALLOW_UNTRUSTED_DAEMON_AUTOSTART=1` override
+  `--refresh`, foreground `agentscan daemon run`, or a signed release binary
 - when tmux disappears, the daemon reports failure through lifecycle/status
   paths; restart policy remains explicit user or supervisor policy
 
