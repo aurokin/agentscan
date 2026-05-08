@@ -261,6 +261,10 @@ fn daemon_lifecycle_start_status_stop() -> Result<()> {
         status_output.contains("latest_snapshot_pane_count:"),
         "expected snapshot details in status, got:\n{status_output}"
     );
+    assert!(
+        status_output.contains("latest_snapshot_update_source:"),
+        "expected snapshot update telemetry in status, got:\n{status_output}"
+    );
 
     let scan_output = harness.agentscan_output(["scan", "--all", "--format", "json"])?;
     assert!(
@@ -1706,6 +1710,9 @@ fn write_fake_lifecycle_status(
             "subscriber_count": 0,
             "latest_snapshot_generated_at": null,
             "latest_snapshot_pane_count": null,
+            "latest_snapshot_update_source": null,
+            "latest_snapshot_update_detail": null,
+            "latest_snapshot_update_duration_ms": null,
             "unavailable_reason": null,
             "message": null
         }

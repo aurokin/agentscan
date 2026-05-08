@@ -135,6 +135,12 @@ pub(crate) struct LifecycleStatusFrame {
     pub(crate) subscriber_count: usize,
     pub(crate) latest_snapshot_generated_at: Option<String>,
     pub(crate) latest_snapshot_pane_count: Option<usize>,
+    #[serde(default)]
+    pub(crate) latest_snapshot_update_source: Option<String>,
+    #[serde(default)]
+    pub(crate) latest_snapshot_update_detail: Option<String>,
+    #[serde(default)]
+    pub(crate) latest_snapshot_update_duration_ms: Option<u64>,
     pub(crate) unavailable_reason: Option<UnavailableReason>,
     pub(crate) message: Option<String>,
 }

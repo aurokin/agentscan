@@ -109,7 +109,7 @@ impl LifecyclePaths {
 
 enum LifecycleQuery {
     NotRunning(String),
-    Status(ipc::LifecycleStatusFrame),
+    Status(Box<ipc::LifecycleStatusFrame>),
     Incompatible(String),
     Busy(String),
 }
@@ -454,7 +454,9 @@ fn lifecycle_status_once(socket_path: &Path) -> Result<LifecycleQuery> {
                 ));
             };
             match second_frame {
-                ipc::DaemonFrame::LifecycleStatus { status } => Ok(LifecycleQuery::Status(status)),
+                ipc::DaemonFrame::LifecycleStatus { status } => {
+                    Ok(LifecycleQuery::Status(Box::new(status)))
+                }
                 other => Ok(LifecycleQuery::Incompatible(format!(
                     "daemon returned unexpected lifecycle frame {other:?}"
                 ))),
@@ -1154,6 +1156,15 @@ fn print_lifecycle_status(paths: &LifecyclePaths, status: &ipc::LifecycleStatusF
     if let Some(pane_count) = status.latest_snapshot_pane_count {
         println!("latest_snapshot_pane_count: {pane_count}");
     }
+    if let Some(source) = &status.latest_snapshot_update_source {
+        println!("latest_snapshot_update_source: {source}");
+    }
+    if let Some(detail) = &status.latest_snapshot_update_detail {
+        println!("latest_snapshot_update_detail: {detail}");
+    }
+    if let Some(duration_ms) = status.latest_snapshot_update_duration_ms {
+        println!("latest_snapshot_update_duration_ms: {duration_ms}");
+    }
     if let Some(reason) = status.unavailable_reason {
         println!("unavailable_reason: {}", unavailable_reason_label(reason));
     }
@@ -1306,7 +1317,7 @@ fn matching_live_status(
     expected_identity: &ipc::DaemonIdentityFrame,
 ) -> Result<ipc::LifecycleStatusFrame> {
     match lifecycle_status_from_socket(socket_path, LIFECYCLE_CONNECT_TIMEOUT)? {
-        LifecycleQuery::Status(status) if status.identity == *expected_identity => Ok(status),
+        LifecycleQuery::Status(status) if status.identity == *expected_identity => Ok(*status),
         LifecycleQuery::Status(status) => bail!(
             "daemon identity changed from pid {} to pid {}; not sending forced signal",
             expected_identity.pid,
@@ -2099,8 +2110,9 @@ fn daemon_run_with_socket_path_and_startup(
         }
         let now = Instant::now();
         if now >= next_reconcile_at {
+            let publish_context = SnapshotPublishContext::new("reconcile").with_detail("interval");
             reconcile_full_snapshot(&mut snapshot)?;
-            socket_state.publish_later_snapshot(snapshot.clone());
+            socket_state.publish_later_snapshot_with_context(snapshot.clone(), publish_context);
             next_reconcile_at = Instant::now() + RECONCILE_INTERVAL;
         }
 
@@ -2110,8 +2122,14 @@ fn daemon_run_with_socket_path_and_startup(
                 let line = line?;
                 let event = control_event_from_line(&line);
                 let should_exit = event == ControlEvent::Exit;
+                let publish_context = event.publish_context();
                 if apply_control_event(&mut snapshot, &line, &event)? {
-                    socket_state.publish_later_snapshot(snapshot.clone());
+                    socket_state.publish_later_snapshot_with_context(
+                        snapshot.clone(),
+                        publish_context.unwrap_or_else(|| {
+                            SnapshotPublishContext::new("control_event").with_detail("unknown")
+                        }),
+                    );
                 }
 
                 if should_exit {
@@ -2119,8 +2137,10 @@ fn daemon_run_with_socket_path_and_startup(
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
+                let publish_context =
+                    SnapshotPublishContext::new("reconcile").with_detail("timeout");
                 reconcile_full_snapshot(&mut snapshot)?;
-                socket_state.publish_later_snapshot(snapshot.clone());
+                socket_state.publish_later_snapshot_with_context(snapshot.clone(), publish_context);
                 next_reconcile_at = Instant::now() + RECONCILE_INTERVAL;
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -2574,9 +2594,71 @@ struct DaemonSocketStateInner {
     identity: Option<DaemonRuntimeIdentity>,
     latest_snapshot: Option<SnapshotEnvelope>,
     latest_snapshot_frame: Option<EncodedDaemonFrame>,
+    latest_snapshot_update: Option<SnapshotUpdateTelemetry>,
     pending_handshakes: usize,
     subscribers: HashMap<SubscriberId, SubscriberMailbox>,
     next_subscriber_id: SubscriberId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SnapshotUpdateTelemetry {
+    source: &'static str,
+    detail: Option<String>,
+    duration_ms: Option<u64>,
+}
+
+struct SnapshotPublishContext {
+    source: &'static str,
+    detail: Option<String>,
+    started_at: Option<Instant>,
+}
+
+impl SnapshotPublishContext {
+    fn new(source: &'static str) -> Self {
+        Self {
+            source,
+            detail: None,
+            started_at: Some(Instant::now()),
+        }
+    }
+
+    fn initial() -> Self {
+        Self {
+            source: "initial_snapshot",
+            detail: None,
+            started_at: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn manual() -> Self {
+        Self {
+            source: "manual_update",
+            detail: None,
+            started_at: None,
+        }
+    }
+
+    fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    fn telemetry(&self) -> SnapshotUpdateTelemetry {
+        SnapshotUpdateTelemetry {
+            source: self.source,
+            detail: self.detail.clone(),
+            duration_ms: self.started_at.map(elapsed_millis_u64),
+        }
+    }
+}
+
+fn elapsed_millis_u64(started_at: Instant) -> u64 {
+    started_at
+        .elapsed()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
 }
 
 struct PreparedSnapshot {
@@ -2599,6 +2681,7 @@ impl DaemonSocketState {
                 identity: None,
                 latest_snapshot: None,
                 latest_snapshot_frame: None,
+                latest_snapshot_update: None,
                 pending_handshakes: 0,
                 subscribers: HashMap::new(),
                 next_subscriber_id: 1,
@@ -2619,23 +2702,45 @@ impl DaemonSocketState {
     }
 
     fn publish_prepared_snapshot(&self, prepared: PreparedSnapshot) {
+        let context = SnapshotPublishContext::initial();
+        self.publish_prepared_snapshot_with_context(prepared, context);
+    }
+
+    fn publish_prepared_snapshot_with_context(
+        &self,
+        prepared: PreparedSnapshot,
+        context: SnapshotPublishContext,
+    ) {
+        let telemetry = context.telemetry();
         let subscribers = {
             let mut inner = self.lock();
             inner.latest_snapshot = Some(prepared.snapshot);
             inner.latest_snapshot_frame = Some(prepared.frame.clone());
+            inner.latest_snapshot_update = Some(telemetry);
             inner.startup_state = DaemonStartupState::Ready;
             subscriber_mailboxes(&inner)
         };
         fan_out_snapshot(prepared.frame, subscribers);
     }
 
+    #[cfg(test)]
     pub(crate) fn publish_later_snapshot(&self, snapshot: SnapshotEnvelope) {
+        self.publish_later_snapshot_with_context(snapshot, SnapshotPublishContext::manual());
+    }
+
+    fn publish_later_snapshot_with_context(
+        &self,
+        snapshot: SnapshotEnvelope,
+        context: SnapshotPublishContext,
+    ) {
+        let telemetry = context.telemetry();
         match encode_snapshot_frame(&snapshot) {
             Ok(frame) => {
                 let subscribers = {
                     let mut inner = self.lock();
                     inner.latest_snapshot = Some(snapshot);
                     inner.latest_snapshot_frame = Some(frame.clone());
+                    inner.latest_snapshot_update = Some(telemetry);
                     inner.startup_state = DaemonStartupState::Ready;
                     subscriber_mailboxes(&inner)
                 };
@@ -2773,6 +2878,18 @@ impl DaemonSocketState {
                 .latest_snapshot
                 .as_ref()
                 .map(|snapshot| snapshot.panes.len()),
+            latest_snapshot_update_source: inner
+                .latest_snapshot_update
+                .as_ref()
+                .map(|update| update.source.to_string()),
+            latest_snapshot_update_detail: inner
+                .latest_snapshot_update
+                .as_ref()
+                .and_then(|update| update.detail.clone()),
+            latest_snapshot_update_duration_ms: inner
+                .latest_snapshot_update
+                .as_ref()
+                .and_then(|update| update.duration_ms),
             unavailable_reason,
             message,
         }
@@ -3290,6 +3407,32 @@ enum ControlEvent {
     Resnapshot,
     Exit,
     Ignored,
+}
+
+impl ControlEvent {
+    fn publish_context(&self) -> Option<SnapshotPublishContext> {
+        match self {
+            ControlEvent::PaneChanged(pane_id) => Some(
+                SnapshotPublishContext::new("control_event").with_detail(format!("pane:{pane_id}")),
+            ),
+            ControlEvent::TitleChanged { pane_id, .. } => Some(
+                SnapshotPublishContext::new("control_event")
+                    .with_detail(format!("title:{pane_id}")),
+            ),
+            ControlEvent::WindowChanged(window_id) => Some(
+                SnapshotPublishContext::new("control_event")
+                    .with_detail(format!("window:{window_id}")),
+            ),
+            ControlEvent::SessionChanged(session_id) => Some(
+                SnapshotPublishContext::new("control_event")
+                    .with_detail(format!("session:{session_id}")),
+            ),
+            ControlEvent::Resnapshot => {
+                Some(SnapshotPublishContext::new("control_event").with_detail("resnapshot"))
+            }
+            ControlEvent::Exit | ControlEvent::Ignored => None,
+        }
+    }
 }
 
 fn control_event_from_line(line: &str) -> ControlEvent {

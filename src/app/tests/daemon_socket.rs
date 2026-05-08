@@ -504,6 +504,12 @@ fn daemon_socket_lifecycle_status_reports_ready_identity_and_counts() {
                 Some("2026-05-03T00:00:00Z")
             );
             assert_eq!(status.latest_snapshot_pane_count, Some(0));
+            assert_eq!(
+                status.latest_snapshot_update_source.as_deref(),
+                Some("initial_snapshot")
+            );
+            assert_eq!(status.latest_snapshot_update_detail, None);
+            assert_eq!(status.latest_snapshot_update_duration_ms, None);
             assert_eq!(status.unavailable_reason, None);
         }
         other => panic!("expected lifecycle status frames, got {other:?}"),
@@ -528,6 +534,9 @@ fn daemon_lifecycle_query_rejects_incompatible_hello_ack() {
         subscriber_count: 0,
         latest_snapshot_generated_at: None,
         latest_snapshot_pane_count: None,
+        latest_snapshot_update_source: None,
+        latest_snapshot_update_detail: None,
+        latest_snapshot_update_duration_ms: None,
         unavailable_reason: None,
         message: None,
     };

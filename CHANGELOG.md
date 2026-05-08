@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Diagnostics
+
+- Added daemon snapshot update telemetry to `agentscan daemon status`, including
+  the latest update source, detail, and update duration.
+
 ## 0.2.3 - 2026-05-08
 
 ### Safety
