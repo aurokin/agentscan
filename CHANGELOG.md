@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.5 - 2026-05-08
+
 ### Release
 
 - Added local scripts and GitHub Actions release steps for Developer ID signing
