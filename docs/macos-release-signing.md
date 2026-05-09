@@ -46,7 +46,7 @@ artifact. Configure these repository secrets:
 - `APPLE_DEVELOPER_ID_CERTIFICATE_BASE64`: base64-encoded `.p12` export of the
   Developer ID certificate and private key
 - `APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD`: password used when exporting the
-  `.p12`
+  `.p12`; leave empty only if the `.p12` was exported without a password
 - `APPLE_KEYCHAIN_PASSWORD`: random CI-only password used for the temporary
   keychain
 - `APPLE_ID`: Apple ID email for notarization
@@ -61,8 +61,10 @@ Create the `.p12` secret from an exported Developer ID certificate:
    underneath the certificate. Exporting only the certificate is not enough.
 4. Select the certificate row and its private key, then choose
    `File > Export Items...`.
-5. Save as `DeveloperIDApplication.p12` and set an export password. Store that
-   password as `APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD`.
+5. Save as `DeveloperIDApplication.p12` and set an export password unless you
+   intentionally want an empty `.p12` password. Store that password as
+   `APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD`; for an empty-password export, set
+   the GitHub secret to an empty value.
 
 Verify the exported file contains a usable signing identity before adding it to
 GitHub:
