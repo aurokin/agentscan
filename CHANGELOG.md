@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Release
+
+- Added local scripts and GitHub Actions release steps for Developer ID signing
+  and notarization of macOS release binaries.
+
 ## 0.2.4 - 2026-05-08
 
 ### Safety

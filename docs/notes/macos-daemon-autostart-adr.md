@@ -121,12 +121,14 @@ Detached daemon auto-start on macOS has a stricter product boundary than Linux:
 5. The user must have a hard opt-out from auto-start through
    `--no-auto-start` and `AGENTSCAN_NO_AUTO_START=1`.
 
-## Open Questions
+## Follow-Ups
 
-- Can release packaging produce a stable signed binary through the current
-  cargo/mise install flow, or does macOS need a separate installation path?
-- Should the daemon parent write a structured pre-spawn attempt log for every
-  macOS explicit start decision, including rejected starts?
+- Release packaging now signs macOS release binaries with Developer ID, hardened
+  runtime, and secure timestamp before submitting them to Apple's notary
+  service. See `docs/macos-release-signing.md`.
+- Consider whether the daemon parent should write a structured pre-spawn
+  attempt log for every macOS explicit start decision, including rejected
+  starts.
 
 ## Next Options
 

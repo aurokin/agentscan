@@ -84,6 +84,9 @@ Implications:
   that must not leave a daemon running
 - macOS daemon-backed commands do not implicitly auto-start the daemon; use
   `agentscan scan`, `--refresh`, or foreground `agentscan daemon run`
+- macOS release binaries are Developer ID signed, hardened-runtime enabled,
+  timestamped, and notarized before release packaging so explicit detached
+  `agentscan daemon start` can run through a signed-binary path
 - when tmux disappears, the daemon reports failure through lifecycle/status
   paths; restart policy remains explicit user or supervisor policy
 

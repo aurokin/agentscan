@@ -58,6 +58,78 @@ jobs:
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
 
+      - name: Import Developer ID certificate
+        if: ${{ matrix.target == 'aarch64-apple-darwin' }}
+        env:
+          APPLE_DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_BASE64 }}
+          APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+          APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+        run: |
+          if [ -z "$APPLE_DEVELOPER_ID_CERTIFICATE_BASE64" ] || \
+             [ -z "$APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD" ] || \
+             [ -z "$APPLE_KEYCHAIN_PASSWORD" ]; then
+            echo "::error::Missing Apple signing secrets"
+            exit 1
+          fi
+
+          certificate_path="$RUNNER_TEMP/developer-id.p12"
+          keychain_path="$RUNNER_TEMP/agentscan-signing.keychain-db"
+
+          echo "$APPLE_DEVELOPER_ID_CERTIFICATE_BASE64" | base64 --decode > "$certificate_path"
+          security create-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"
+          security import "$certificate_path" \
+            -P "$APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12 \
+            -k "$keychain_path"
+          security list-keychains -d user -s "$keychain_path" "$HOME/Library/Keychains/login.keychain-db"
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$APPLE_KEYCHAIN_PASSWORD" \
+            "$keychain_path"
+          security find-identity -v -p codesigning "$keychain_path"
+          echo "APPLE_SIGNING_KEYCHAIN=$keychain_path" >> "$GITHUB_ENV"
+
+      - name: Sign macOS binary
+        if: ${{ matrix.target == 'aarch64-apple-darwin' }}
+        env:
+          AGENTSCAN_CODESIGN_IDENTITY: ${{ secrets.APPLE_DEVELOPER_IDENTITY }}
+        run: |
+          if [ -z "$AGENTSCAN_CODESIGN_IDENTITY" ]; then
+            echo "::error::Missing APPLE_DEVELOPER_IDENTITY secret"
+            exit 1
+          fi
+          scripts/sign-macos-binary.sh target/${{ matrix.target }}/release/agentscan
+
+      - name: Store notarization credentials
+        if: ${{ matrix.target == 'aarch64-apple-darwin' }}
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -z "$APPLE_ID" ] || [ -z "$APPLE_APP_SPECIFIC_PASSWORD" ] || [ -z "$APPLE_TEAM_ID" ]; then
+            echo "::error::Missing Apple notarization secrets"
+            exit 1
+          fi
+          xcrun notarytool store-credentials agentscan-notary \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --keychain "$APPLE_SIGNING_KEYCHAIN"
+
+      - name: Notarize macOS binary
+        if: ${{ matrix.target == 'aarch64-apple-darwin' }}
+        env:
+          AGENTSCAN_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          AGENTSCAN_NOTARY_KEYCHAIN="$APPLE_SIGNING_KEYCHAIN" \
+            scripts/notarize-macos-binary.sh target/${{ matrix.target }}/release/agentscan
+
       - name: Package
         run: |
           mkdir -p dist

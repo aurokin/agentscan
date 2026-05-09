@@ -44,6 +44,7 @@ remain unchanged until `agentscan` is ready to replace it.
 - `docs/architecture.md`: runtime model, daemon/socket contract, command families, and guardrails
 - `docs/integration.md`: wrapper metadata, daemon-backed automation surfaces, shell boundary, and migration posture
 - `docs/harness-engineering.md`: progressively disclosed harness engineering approach for the repo
+- `docs/macos-release-signing.md`: local and GitHub Actions Developer ID signing/notarization workflow
 
 Active milestone sequencing lives in Linear. The repo docs are intentionally for
 stable engineering guidance and operator-facing contracts, not live task

@@ -16,6 +16,9 @@ This repo uses progressively disclosed documentation.
   Wrapper metadata contract, daemon-backed automation surfaces, shell boundary, and migration posture.
 - `docs/harness-engineering.md`
   Validation posture and the rule for what belongs in repo docs versus Linear.
+- `docs/macos-release-signing.md`
+  Local and GitHub Actions Developer ID signing/notarization workflow for
+  macOS release binaries.
 - `docs/notes/`
   Narrow follow-up or historical notes that are too specific for the primary docs but still worth keeping in the repo.
   - `docs/notes/macos-daemon-autostart-adr.md`
