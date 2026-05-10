@@ -4,6 +4,21 @@
 runtime enabled, timestamped, and accepted by Apple's notary service before
 publishing.
 
+## Why This Matters
+
+Signing is part of the macOS daemon lifecycle policy, not just release
+polish. macOS release binaries are signed and notarized so an explicit detached
+`agentscan daemon start` can run through a trusted Apple policy assessment path.
+Implicit daemon auto-start remains disabled on macOS even for signed releases;
+users should start the daemon intentionally.
+
+Ad-hoc or local development builds should use foreground `agentscan daemon run`
+instead of detached background startup. This boundary exists because this host
+observed repeated kernel panics naming `agentscan` as the panicked task while
+the kernel backtrace was in `AppleSystemPolicy` during process launch or
+assessment. See `docs/notes/macos-daemon-autostart-adr.md` for the incident
+record and product policy.
+
 ## Local Signing
 
 Prerequisites:
