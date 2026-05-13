@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.2.6 - 2026-05-13
+
+### Safety
+
+- Replaced macOS process-inspection fallback shell-outs to `ps` and `pgrep`
+  with native `libproc` and `sysctl` calls, reducing executable policy churn
+  during daemon refreshes while preserving Linux `/proc` behavior.
+
 ## 0.2.5 - 2026-05-08
 
 ### Release
