@@ -77,7 +77,7 @@ fn descendant_processes(_root_pid: u32) -> Result<Vec<ProcessEvidence>> {
     Ok(Vec::new())
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn foreground_processes(pane_tty: &str) -> Result<Vec<ProcessEvidence>> {
     let Some(tty) = ps_tty_name(pane_tty) else {
         return Ok(Vec::new());
@@ -95,7 +95,7 @@ fn foreground_processes(_pane_tty: &str) -> Result<Vec<ProcessEvidence>> {
     Ok(Vec::new())
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn foreground_pids_for_tty(tty: &str) -> Result<Vec<u32>> {
     let output = Command::new("ps")
         .args(["-t", tty, "-o", "pid=", "-o", "stat="])
@@ -113,7 +113,7 @@ fn foreground_pids_for_tty(tty: &str) -> Result<Vec<u32>> {
         .collect())
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn foreground_pid_from_ps_line(line: &str) -> Option<u32> {
     let mut parts = line.split_whitespace();
     let pid = parts.next()?.parse::<u32>().ok()?;
@@ -121,7 +121,7 @@ fn foreground_pid_from_ps_line(line: &str) -> Option<u32> {
     stat.contains('+').then_some(pid)
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn ps_tty_name(pane_tty: &str) -> Option<String> {
     let tty = pane_tty.trim();
     if tty.is_empty() || tty == "not a tty" {
@@ -216,32 +216,56 @@ fn command_from_comm(pid: u32) -> Option<String> {
 
 #[cfg(target_os = "macos")]
 fn children_for_pid(pid: u32) -> Result<Vec<u32>> {
-    let output = Command::new("pgrep")
-        .args(["-P", &pid.to_string()])
-        .output()
-        .context("failed to execute pgrep for process fallback")?;
-
-    if !output.status.success() {
-        return Ok(Vec::new());
-    }
-
-    let stdout = String::from_utf8(output.stdout).context("pgrep output was not valid UTF-8")?;
-    Ok(stdout
-        .split_whitespace()
-        .filter_map(|value| value.parse::<u32>().ok())
-        .collect())
+    Ok(macos_list_child_pids(pid))
 }
 
 #[cfg(target_os = "macos")]
 fn process_evidence_for_pid(pid: u32) -> Option<ProcessEvidence> {
-    let comm = ps_field(pid, "comm=").unwrap_or_default();
-    let args = ps_field(pid, "args=").unwrap_or_default();
-    let argv = split_process_args(&args);
-    let command = command_basename(&comm)
+    let process = macos_process_info_for_pid(pid)?;
+    process_evidence_from_macos_info(process)
+}
+
+#[cfg(target_os = "macos")]
+fn foreground_processes(pane_tty: &str) -> Result<Vec<ProcessEvidence>> {
+    let Some(tty_device) = macos_tty_device_id(pane_tty) else {
+        return Ok(Vec::new());
+    };
+
+    Ok(macos_list_all_pids()
+        .into_iter()
+        .filter_map(macos_process_info_for_pid)
+        .filter(|process| process.is_foreground_on_tty(tty_device))
+        .filter_map(process_evidence_from_macos_info)
+        .collect())
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Debug)]
+struct MacProcessInfo {
+    pid: u32,
+    process_group_id: u32,
+    tty_device: u32,
+    tty_process_group_id: u32,
+    command: String,
+}
+
+#[cfg(target_os = "macos")]
+impl MacProcessInfo {
+    fn is_foreground_on_tty(&self, tty_device: u32) -> bool {
+        self.tty_device == tty_device
+            && self.tty_process_group_id != 0
+            && self.process_group_id == self.tty_process_group_id
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn process_evidence_from_macos_info(process: MacProcessInfo) -> Option<ProcessEvidence> {
+    let argv = macos_argv_for_pid(process.pid);
+    let command = command_basename(&process.command)
         .or_else(|| argv.first().and_then(|argv0| command_basename(argv0)))?;
 
     Some(ProcessEvidence {
-        pid,
+        pid: process.pid,
         command,
         argv,
         env: Vec::new(),
@@ -249,27 +273,200 @@ fn process_evidence_for_pid(pid: u32) -> Option<ProcessEvidence> {
 }
 
 #[cfg(target_os = "macos")]
-fn ps_field(pid: u32, field: &str) -> Option<String> {
-    let output = Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", field])
-        .output()
-        .ok()?;
-    if !output.status.success() {
+fn macos_process_info_for_pid(pid: u32) -> Option<MacProcessInfo> {
+    let mut info = std::mem::MaybeUninit::<libc::proc_taskallinfo>::zeroed();
+    let info_size = std::mem::size_of::<libc::proc_taskallinfo>() as libc::c_int;
+    let bytes = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTASKALLINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            info_size,
+        )
+    };
+    if bytes != info_size {
         return None;
     }
 
-    String::from_utf8(output.stdout)
-        .ok()
-        .map(|stdout| stdout.trim().to_string())
-        .filter(|value| !value.is_empty())
+    let info = unsafe { info.assume_init() };
+    let bsd = info.pbsd;
+    Some(MacProcessInfo {
+        pid: bsd.pbi_pid,
+        process_group_id: bsd.pbi_pgid,
+        tty_device: bsd.e_tdev,
+        tty_process_group_id: bsd.e_tpgid,
+        command: c_char_array_to_string(&bsd.pbi_comm),
+    })
 }
 
 #[cfg(target_os = "macos")]
-fn split_process_args(args: &str) -> Vec<String> {
-    args.split_whitespace()
-        .filter(|arg| !arg.trim().is_empty())
-        .map(str::to_string)
-        .collect()
+fn macos_list_child_pids(pid: u32) -> Vec<u32> {
+    macos_pid_list(16, |buffer, bytes| unsafe {
+        libc::proc_listchildpids(pid as libc::pid_t, buffer, bytes)
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn macos_list_all_pids() -> Vec<u32> {
+    macos_pid_list(1024, |buffer, bytes| unsafe {
+        libc::proc_listallpids(buffer, bytes)
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn macos_pid_list(
+    initial_capacity: usize,
+    mut list: impl FnMut(*mut libc::c_void, libc::c_int) -> libc::c_int,
+) -> Vec<u32> {
+    let pid_size = std::mem::size_of::<libc::pid_t>();
+    let mut pids = vec![0 as libc::pid_t; initial_capacity.max(1)];
+
+    loop {
+        let Some(buffer_size) = pids
+            .len()
+            .checked_mul(pid_size)
+            .and_then(|size| libc::c_int::try_from(size).ok())
+        else {
+            return Vec::new();
+        };
+
+        let pid_count = list(pids.as_mut_ptr().cast(), buffer_size);
+        if pid_count <= 0 {
+            return Vec::new();
+        }
+
+        let count = pid_count as usize;
+        if count < pids.len() {
+            return pids
+                .into_iter()
+                .take(count)
+                .filter(|pid| *pid > 0)
+                .filter_map(|pid| u32::try_from(pid).ok())
+                .collect();
+        }
+
+        let Some(new_len) = pids.len().checked_mul(2) else {
+            return Vec::new();
+        };
+        pids.resize(new_len, 0);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_argv_for_pid(pid: u32) -> Vec<String> {
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
+    let mut buffer = vec![0_u8; macos_arg_buffer_len()];
+    let mut buffer_len = buffer.len();
+
+    let status = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            mib.len() as libc::c_uint,
+            buffer.as_mut_ptr().cast(),
+            &mut buffer_len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+
+    if status != 0 {
+        return Vec::new();
+    }
+
+    buffer.truncate(buffer_len);
+    macos_argv_from_procargs2_buffer(&buffer)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_arg_buffer_len() -> usize {
+    let arg_max = unsafe { libc::sysconf(libc::_SC_ARG_MAX) };
+    usize::try_from(arg_max)
+        .ok()
+        .filter(|size| *size >= 4096)
+        .unwrap_or(262_144)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_argv_from_procargs2_buffer(buffer: &[u8]) -> Vec<String> {
+    let argc_size = std::mem::size_of::<libc::c_int>();
+    if buffer.len() < argc_size {
+        return Vec::new();
+    }
+
+    let mut argc_bytes = [0_u8; std::mem::size_of::<libc::c_int>()];
+    argc_bytes.copy_from_slice(&buffer[..argc_size]);
+    let argc = libc::c_int::from_ne_bytes(argc_bytes);
+    let Ok(argc) = usize::try_from(argc) else {
+        return Vec::new();
+    };
+
+    let mut offset = argc_size;
+    offset = skip_until_nul(buffer, offset);
+    offset = skip_nuls(buffer, offset);
+
+    let mut argv = Vec::with_capacity(argc.min(64));
+    while offset < buffer.len() && argv.len() < argc {
+        let Some(end) = buffer[offset..].iter().position(|byte| *byte == 0) else {
+            break;
+        };
+
+        if end > 0
+            && let Ok(arg) = std::str::from_utf8(&buffer[offset..offset + end])
+        {
+            argv.push(arg.to_string());
+        }
+        offset += end + 1;
+    }
+
+    argv
+}
+
+#[cfg(target_os = "macos")]
+fn skip_until_nul(buffer: &[u8], offset: usize) -> usize {
+    buffer[offset..]
+        .iter()
+        .position(|byte| *byte == 0)
+        .map_or(buffer.len(), |position| offset + position + 1)
+}
+
+#[cfg(target_os = "macos")]
+fn skip_nuls(buffer: &[u8], mut offset: usize) -> usize {
+    while offset < buffer.len() && buffer[offset] == 0 {
+        offset += 1;
+    }
+    offset
+}
+
+#[cfg(target_os = "macos")]
+fn macos_tty_device_id(pane_tty: &str) -> Option<u32> {
+    use std::os::unix::fs::MetadataExt;
+
+    let tty = pane_tty.trim();
+    if tty.is_empty() || tty.eq_ignore_ascii_case("not a tty") {
+        return None;
+    }
+
+    let path = tty.strip_prefix("/dev/").map_or_else(
+        || std::path::PathBuf::from("/dev").join(tty),
+        |_| std::path::PathBuf::from(tty),
+    );
+    let metadata = fs::metadata(path).ok()?;
+    u32::try_from(metadata.rdev()).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn c_char_array_to_string(bytes: &[libc::c_char]) -> String {
+    let end = bytes
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(bytes.len());
+    let bytes = bytes[..end]
+        .iter()
+        .map(|byte| *byte as u8)
+        .collect::<Vec<_>>();
+
+    String::from_utf8_lossy(&bytes).trim().to_string()
 }
 
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
@@ -294,7 +491,7 @@ mod tests {
         );
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     #[test]
     fn foreground_ps_helpers_accept_only_foreground_rows() {
         assert_eq!(foreground_pid_from_ps_line("1234 Ss+"), Some(1234));
@@ -303,6 +500,76 @@ mod tests {
         assert_eq!(ps_tty_name("/dev/ttys001").as_deref(), Some("ttys001"));
         assert_eq!(ps_tty_name("/dev/pts/4").as_deref(), Some("pts/4"));
         assert_eq!(ps_tty_name("not a tty"), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_pid_list_treats_libproc_return_as_pid_count() {
+        let pids = macos_pid_list(16, |buffer, _bytes| {
+            let output = unsafe { std::slice::from_raw_parts_mut(buffer.cast::<libc::pid_t>(), 3) };
+            output.copy_from_slice(&[11, 12, 13]);
+            3
+        });
+
+        assert_eq!(pids, vec![11, 12, 13]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_pid_list_grows_past_initially_full_large_buffers() {
+        let pids = macos_pid_list(4096, |buffer, bytes| {
+            let pid_capacity = bytes as usize / std::mem::size_of::<libc::pid_t>();
+            let pid_count = if pid_capacity == 4096 { 4096 } else { 4097 };
+            let output =
+                unsafe { std::slice::from_raw_parts_mut(buffer.cast::<libc::pid_t>(), pid_count) };
+            for (index, pid) in output.iter_mut().enumerate() {
+                *pid = libc::pid_t::try_from(index + 1).expect("test pid should fit");
+            }
+            libc::c_int::try_from(pid_count).expect("test pid count should fit")
+        });
+
+        assert_eq!(pids.len(), 4097);
+        assert_eq!(pids.last(), Some(&4097));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_argv_parser_reads_procargs2_arguments_only() {
+        let mut buffer = Vec::new();
+        buffer.extend_from_slice(&(2 as libc::c_int).to_ne_bytes());
+        buffer.extend_from_slice(b"/bin/zsh\0\0\0");
+        buffer.extend_from_slice(b"zsh\0-l\0SHELL=/bin/zsh\0");
+
+        assert_eq!(
+            macos_argv_from_procargs2_buffer(&buffer),
+            vec!["zsh".to_string(), "-l".to_string()]
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_foreground_match_requires_tty_and_foreground_group() {
+        let process = MacProcessInfo {
+            pid: 123,
+            process_group_id: 42,
+            tty_device: 7,
+            tty_process_group_id: 42,
+            command: "zsh".to_string(),
+        };
+
+        assert!(process.is_foreground_on_tty(7));
+
+        let background = MacProcessInfo {
+            process_group_id: 41,
+            ..process.clone()
+        };
+        assert!(!background.is_foreground_on_tty(7));
+
+        let other_tty = MacProcessInfo {
+            tty_device: 8,
+            ..process
+        };
+        assert!(!other_tty.is_foreground_on_tty(7));
     }
 
     #[cfg(target_os = "macos")]

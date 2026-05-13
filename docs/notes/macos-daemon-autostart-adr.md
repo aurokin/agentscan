@@ -126,6 +126,10 @@ Detached daemon auto-start on macOS has a stricter product boundary than Linux:
 - Release packaging now signs macOS release binaries with Developer ID, hardened
   runtime, and secure timestamp before submitting them to Apple's notary
   service. See `docs/macos-release-signing.md`.
+- The daemon process-inspection fallback no longer shells out to `ps` or `pgrep`
+  on macOS. Native `libproc` and `sysctl` inspection now provide foreground
+  process, descendant, command, and argv evidence without adding executable
+  policy events from helper processes during normal refreshes.
 - Consider whether the daemon parent should write a structured pre-spawn
   attempt log for every macOS explicit start decision, including rejected
   starts.
