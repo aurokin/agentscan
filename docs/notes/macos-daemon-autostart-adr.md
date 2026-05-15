@@ -1,7 +1,8 @@
 # ADR: macOS Daemon Auto-Start And Executable Assessment
 
-Status: accepted
+Status: accepted, under review after new stability evidence
 Date: 2026-05-08
+Updated: 2026-05-14
 
 ## Context
 
@@ -58,6 +59,50 @@ guards inside the child process cannot be relied on. A child that panics before
 userspace initialization will not log, reject, or clean up through application
 code.
 
+This understanding is intentionally conservative. It explains why `agentscan`
+removed implicit macOS auto-start during the incident, but it is not a proven
+root-cause statement. Later evidence weakens the claim that daemon auto-start,
+tmux restore, or local ad-hoc signing was independently sufficient to trigger
+the panics.
+
+## 2026-05-14 Update
+
+The host became stable after several variables changed close together:
+
+- `agentscan` release binaries were Developer ID signed and notarized.
+- local entrypoints were aligned to signed `agentscan 0.2.6`.
+- wrapper-based attribution was removed.
+- the macOS process-inspection fallback stopped shelling out to `ps` and
+  `pgrep`; it now uses native `libproc` and `sysctl` inspection.
+- tmux resurrect and continuum were disabled.
+- macOS was updated from `26.4.1 (25E253)` to `26.5 (25F71)`.
+- the daemon was run explicitly in a long-lived tmux pane while a focused
+  EndpointSecurity exec logger watched future invocations.
+
+As of the post-update checks, signed `agentscan 0.2.6` had run for many hours
+without a new panic, without `agentscan` AppleSystemPolicy denial lines, and
+without an unexpected `cargo-agentscan` or wrapper process. A small number of
+generic `syspolicyd` validation messages still appeared, but they did not name
+`agentscan` and no nearby ES logger event tied them to an `agentscan` exec.
+
+This does not prove which variable fixed the panics. Plausible explanations now
+include:
+
+- a macOS `25E253` AppleSystemPolicy/kernel bug fixed or avoided by `25F71`
+- excessive process launch/policy activity from shelling out to `ps`/`pgrep`
+  during daemon refreshes
+- repeated execution of unsigned or provenance-tagged wrapper/binary paths
+- tmux restore/continuum replaying an invocation path after crashes
+- the original implicit daemon auto-start path
+- an interaction among several of the above rather than one isolated cause
+
+Future work should not treat this ADR as proof that macOS auto-start is
+inherently unsafe. It should treat the current product policy as a safety
+rollback made under uncertainty. Reintroducing auto-start may be reasonable if
+it is tested as a controlled experiment with a signed/notarized binary, native
+process inspection, clear pre-spawn logging, no wrapper indirection, and ES
+logger coverage.
+
 ## Evidence
 
 Observed panic files:
@@ -82,10 +127,11 @@ explained the unattended launch. Durable invocation paths found locally were:
 - mise install path:
   `~/.local/share/mise/installs/github-aurokin-agentscan/0.2.3/agentscan`
 
-## Current Mitigation
+## Historical Host Mitigation
 
-The installed cargo and mise entrypoints on the affected host were replaced by
-shell intercept wrappers, and the real binaries were moved aside as:
+During the investigation, the affected host temporarily replaced installed cargo
+and mise entrypoints with shell intercept wrappers, and moved the real binaries
+aside as:
 
 - `~/.cargo/bin/agentscan.real`
 - `~/.local/share/mise/installs/github-aurokin-agentscan/0.2.3/agentscan.real`
@@ -104,11 +150,14 @@ execution of the real binary requires:
 AGENTSCAN_EXEC_REAL=1 agentscan daemon run
 ```
 
-This mitigation is host-local and not a product design.
+This mitigation was host-local and not a product design. It was removed after
+signed release binaries and a focused EndpointSecurity exec logger replaced the
+wrapper-based attribution path.
 
-## Accepted Decision
+## Accepted Interim Decision
 
-Detached daemon auto-start on macOS has a stricter product boundary than Linux:
+Detached daemon auto-start on macOS currently has a stricter product boundary
+than Linux:
 
 1. A normal foreground command may not silently self-exec a detached daemon on
    macOS.
@@ -138,9 +187,11 @@ Detached daemon auto-start on macOS has a stricter product boundary than Linux:
 
 Option A: signed-only detached daemon on macOS.
 
-This was rejected as too permissive for implicit starts. `daemon start` remains
-signed-only, but implicit auto-start and TUI subscription auto-start are removed
-on macOS.
+This was rejected during the incident as too permissive for implicit starts.
+`daemon start` remains signed-only, but implicit auto-start and TUI subscription
+auto-start are removed on macOS. Given the 2026-05-14 stability evidence, this
+option should be reconsidered through a staged experiment rather than treated as
+permanently closed.
 
 Option B: no implicit auto-start on macOS.
 
@@ -161,6 +212,16 @@ This preserves the Linux-like UX but has the highest risk because the failing
 component is the macOS policy path itself. It is only reasonable if a signed
 binary path is available and the parent logs every assessment before spawning.
 
+Option E: reintroduce Linux-like auto-start behind macOS safety gates.
+
+This would restore product ergonomics while keeping observability from the
+incident. Preconditions should include signed/notarized release binaries,
+native macOS process inspection, no shell wrapper indirection in the daemon
+path, structured parent-side spawn decision logs, and a hard opt-out through
+`--no-auto-start` and `AGENTSCAN_NO_AUTO_START=1`. This option exists because
+the stable post-26.5 run suggests the original panic may have been caused by a
+kernel bug or by helper-process churn rather than by daemon auto-start alone.
+
 ## Implemented Policy
 
 - macOS signed release binary: explicit detached `agentscan daemon start` is
@@ -171,4 +232,6 @@ binary path is available and the parent logs every assessment before spawning.
   to run `agentscan daemon run` in a long-lived tmux pane when none is running.
 
 This avoids silent background self-exec on macOS while preserving explicit
-daemon workflows.
+daemon workflows. This policy is intentionally reversible if follow-up testing
+shows that signed binaries plus native process inspection make macOS auto-start
+safe enough for normal users.
