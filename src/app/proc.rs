@@ -79,15 +79,16 @@ fn descendant_processes(_root_pid: u32) -> Result<Vec<ProcessEvidence>> {
 
 #[cfg(target_os = "linux")]
 fn foreground_processes(pane_tty: &str) -> Result<Vec<ProcessEvidence>> {
-    let Some(tty) = ps_tty_name(pane_tty) else {
+    let Some(tty_device) = linux_tty_device_id(pane_tty) else {
         return Ok(Vec::new());
     };
 
-    foreground_pids_for_tty(&tty).map(|pids| {
-        pids.into_iter()
-            .filter_map(process_evidence_for_pid)
-            .collect()
-    })
+    Ok(linux_list_all_pids()
+        .into_iter()
+        .filter_map(linux_process_stat_for_pid)
+        .filter(|process| process.is_foreground_on_tty(tty_device))
+        .filter_map(|process| process_evidence_for_pid(process.pid))
+        .collect())
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -96,39 +97,76 @@ fn foreground_processes(_pane_tty: &str) -> Result<Vec<ProcessEvidence>> {
 }
 
 #[cfg(target_os = "linux")]
-fn foreground_pids_for_tty(tty: &str) -> Result<Vec<u32>> {
-    let output = Command::new("ps")
-        .args(["-t", tty, "-o", "pid=", "-o", "stat="])
-        .output()
-        .context("failed to execute ps for foreground process fallback")?;
+fn linux_tty_device_id(pane_tty: &str) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
 
-    if !output.status.success() {
-        return Ok(Vec::new());
-    }
-
-    let stdout = String::from_utf8(output.stdout).context("ps output was not valid UTF-8")?;
-    Ok(stdout
-        .lines()
-        .filter_map(foreground_pid_from_ps_line)
-        .collect())
-}
-
-#[cfg(target_os = "linux")]
-fn foreground_pid_from_ps_line(line: &str) -> Option<u32> {
-    let mut parts = line.split_whitespace();
-    let pid = parts.next()?.parse::<u32>().ok()?;
-    let stat = parts.next()?;
-    stat.contains('+').then_some(pid)
-}
-
-#[cfg(target_os = "linux")]
-fn ps_tty_name(pane_tty: &str) -> Option<String> {
     let tty = pane_tty.trim();
     if tty.is_empty() || tty == "not a tty" {
         return None;
     }
 
-    Some(tty.strip_prefix("/dev/").unwrap_or(tty).to_string())
+    let path = tty.strip_prefix("/dev/").map_or_else(
+        || std::path::PathBuf::from("/dev").join(tty),
+        |_| std::path::PathBuf::from(tty),
+    );
+    fs::metadata(path).ok().map(|metadata| metadata.rdev())
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LinuxProcessStat {
+    pid: u32,
+    process_group_id: i64,
+    tty_device: i64,
+    tty_process_group_id: i64,
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxProcessStat {
+    fn is_foreground_on_tty(&self, tty_device: u64) -> bool {
+        self.tty_device > 0
+            && u64::try_from(self.tty_device).ok() == Some(tty_device)
+            && self.tty_process_group_id > 0
+            && self.process_group_id == self.tty_process_group_id
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_list_all_pids() -> Vec<u32> {
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+
+    entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse().ok())
+        })
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn linux_process_stat_for_pid(pid: u32) -> Option<LinuxProcessStat> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    linux_process_stat_from_line(&stat)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_process_stat_from_line(line: &str) -> Option<LinuxProcessStat> {
+    let open = line.find('(')?;
+    let close = line.rfind(") ")?;
+    let pid = line[..open].trim().parse().ok()?;
+    let fields = line[close + 2..].split_whitespace().collect::<Vec<_>>();
+
+    Some(LinuxProcessStat {
+        pid,
+        process_group_id: fields.get(2)?.parse().ok()?,
+        tty_device: fields.get(4)?.parse().ok()?,
+        tty_process_group_id: fields.get(5)?.parse().ok()?,
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -493,13 +531,54 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn foreground_ps_helpers_accept_only_foreground_rows() {
-        assert_eq!(foreground_pid_from_ps_line("1234 Ss+"), Some(1234));
-        assert_eq!(foreground_pid_from_ps_line("1235 S"), None);
-        assert_eq!(foreground_pid_from_ps_line("not-a-pid Ss+"), None);
-        assert_eq!(ps_tty_name("/dev/ttys001").as_deref(), Some("ttys001"));
-        assert_eq!(ps_tty_name("/dev/pts/4").as_deref(), Some("pts/4"));
-        assert_eq!(ps_tty_name("not a tty"), None);
+    fn linux_stat_parser_reads_foreground_tty_fields() {
+        let stat = linux_process_stat_from_line(
+            "1234 (agent) S 1 42 42 34820 42 4194304 0 0 0 0 0 0 0 0 20 0 1 0 1",
+        )
+        .expect("parse proc stat");
+
+        assert_eq!(
+            stat,
+            LinuxProcessStat {
+                pid: 1234,
+                process_group_id: 42,
+                tty_device: 34820,
+                tty_process_group_id: 42,
+            }
+        );
+        assert!(stat.is_foreground_on_tty(34820));
+
+        let background = LinuxProcessStat {
+            process_group_id: 41,
+            ..stat.clone()
+        };
+        assert!(!background.is_foreground_on_tty(34820));
+
+        let other_tty = LinuxProcessStat {
+            tty_device: 34821,
+            ..stat
+        };
+        assert!(!other_tty.is_foreground_on_tty(34820));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_stat_parser_handles_command_names_with_parentheses() {
+        let stat = linux_process_stat_from_line(
+            "1234 (agent) worker) S 1 42 42 34820 42 4194304 0 0 0 0 0 0 0 0 20 0 1 0 1",
+        )
+        .expect("parse proc stat");
+
+        assert_eq!(stat.pid, 1234);
+        assert_eq!(stat.process_group_id, 42);
+        assert_eq!(stat.tty_device, 34820);
+        assert_eq!(stat.tty_process_group_id, 42);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_tty_device_id_rejects_missing_tty() {
+        assert_eq!(linux_tty_device_id("not a tty"), None);
     }
 
     #[cfg(target_os = "macos")]
