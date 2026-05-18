@@ -1,7 +1,7 @@
 use super::*;
 
-pub(super) fn daemon_snapshot_from_tmux() -> Result<SnapshotEnvelope> {
-    let mut snapshot = scanner::snapshot_from_tmux()?;
+pub(super) fn daemon_snapshot_from_tmux(tmux_version: Option<&str>) -> Result<SnapshotEnvelope> {
+    let mut snapshot = scanner::snapshot_from_tmux_with_version(tmux_version.map(str::to_string))?;
     set_snapshot_cache_origin(&mut snapshot, "daemon_snapshot");
     mark_snapshot_as_daemon(&mut snapshot)?;
     Ok(snapshot)

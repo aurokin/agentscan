@@ -275,11 +275,20 @@ impl FakeDaemonStartup {
 }
 
 impl daemon::StartupActions for FakeDaemonStartup {
-    fn initial_snapshot(&self) -> anyhow::Result<SnapshotEnvelope> {
+    fn tmux_version(&self) -> Option<String> {
+        Some("test-tmux".to_string())
+    }
+
+    fn initial_snapshot(&self, tmux_version: Option<&str>) -> anyhow::Result<SnapshotEnvelope> {
         match self.initial_snapshot {
-            FakeInitialSnapshot::Ready => Ok(empty_socket_snapshot("2026-05-03T00:00:00Z")),
+            FakeInitialSnapshot::Ready => {
+                let mut snapshot = empty_socket_snapshot("2026-05-03T00:00:00Z");
+                snapshot.source.tmux_version = tmux_version.map(str::to_string);
+                Ok(snapshot)
+            }
             FakeInitialSnapshot::Oversized => {
                 let mut snapshot = empty_socket_snapshot("2026-05-03T00:00:00Z");
+                snapshot.source.tmux_version = tmux_version.map(str::to_string);
                 snapshot.generated_at = "x".repeat(ipc::DAEMON_FRAME_MAX_BYTES);
                 Ok(snapshot)
             }

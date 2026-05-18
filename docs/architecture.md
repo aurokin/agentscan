@@ -41,6 +41,22 @@ Pane output is not a provider-identity source. It is a last status fallback for
 providers with observed stable current prompt/footer shapes. Consumers can see
 that provenance as `status.source="pane_output"` in JSON.
 
+The remaining production child processes are intentional product-boundary or
+lifecycle operations:
+
+- one long-lived tmux control-mode client for daemon event subscription
+- short-lived tmux commands for initial snapshots, targeted refreshes, direct
+  recovery scans, focus, metadata helpers, and provider-scoped pane-output
+  status fallback
+- detached `agentscan daemon run` self-spawn for explicit daemon start and
+  non-macOS implicit auto-start
+- macOS `codesign` inspection for explicit detached daemon start preflight
+
+Process inspection itself must not shell out to `ps`, `pgrep`, `grep`, or
+similar helpers. Linux uses procfs directly. macOS uses native `libproc` and
+`sysctl` calls directly. macOS selected environment evidence is best-effort only
+because live env visibility is not guaranteed by the current native API path.
+
 ## Canonical State Model
 
 The canonical model is a typed Rust structure keyed by `pane_id`. It separates:

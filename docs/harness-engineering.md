@@ -43,6 +43,20 @@ The repo already uses multiple harnesses to validate behavior:
 These harnesses should be documented in terms of the contract they protect, not
 as checklists for an active milestone.
 
+## Subprocess Boundary
+
+Production subprocesses should be limited to explicit product boundaries and
+lifecycle work:
+
+- tmux commands and the daemon's long-lived tmux control-mode client
+- detached `agentscan daemon run` when daemon lifecycle policy allows it
+- macOS `codesign` checks for explicit detached daemon start preflight
+
+Process-inspection fallback should remain in-process through platform APIs:
+procfs on Linux and `libproc` / `sysctl` on macOS. Tests may spawn helper
+processes to build fixtures or validate lifecycle behavior, but those helpers
+should not leak into production scanning paths.
+
 ## Tmux Server Isolation
 
 Live tmux integration tests must run against their own isolated tmux server, not

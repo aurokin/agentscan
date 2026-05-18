@@ -1,6 +1,12 @@
 use super::*;
 
 pub(crate) fn snapshot_from_tmux() -> Result<SnapshotEnvelope> {
+    snapshot_from_tmux_with_version(tmux::tmux_version())
+}
+
+pub(crate) fn snapshot_from_tmux_with_version(
+    tmux_version: Option<String>,
+) -> Result<SnapshotEnvelope> {
     let rows = tmux::tmux_list_panes()?;
     let proc_inspector = proc::ProcProcessInspector;
     let mut panes = classify::panes_from_rows_with_proc_fallback(rows, &proc_inspector);
@@ -11,7 +17,7 @@ pub(crate) fn snapshot_from_tmux() -> Result<SnapshotEnvelope> {
         generated_at: snapshot::now_rfc3339()?,
         source: SnapshotSource {
             kind: SourceKind::Snapshot,
-            tmux_version: tmux::tmux_version(),
+            tmux_version,
             daemon_generated_at: None,
         },
         panes,

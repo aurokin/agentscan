@@ -2145,7 +2145,12 @@ fn daemon_run_with_socket_path_and_startup(
     socket_state.set_identity(identity);
     let server_handle = server.spawn();
 
-    let pending_snapshot = match startup.initial_snapshot().and_then(PreparedSnapshot::new) {
+    let tmux_version = startup.tmux_version();
+
+    let pending_snapshot = match startup
+        .initial_snapshot(tmux_version.as_deref())
+        .and_then(PreparedSnapshot::new)
+    {
         Ok(pending_snapshot) => pending_snapshot,
         Err(error) => {
             let message = startup_failure_message("initial snapshot", &error);
@@ -2211,7 +2216,7 @@ fn daemon_run_with_socket_path_and_startup(
         let now = Instant::now();
         if now >= next_reconcile_at {
             let publish_context = SnapshotPublishContext::new("reconcile").with_detail("interval");
-            reconcile_full_snapshot(&mut snapshot)?;
+            reconcile_full_snapshot(&mut snapshot, tmux_version.as_deref())?;
             socket_state.publish_later_snapshot_with_context(snapshot.clone(), publish_context);
             next_reconcile_at = Instant::now() + RECONCILE_INTERVAL;
         }
@@ -2239,7 +2244,7 @@ fn daemon_run_with_socket_path_and_startup(
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 let publish_context =
                     SnapshotPublishContext::new("reconcile").with_detail("timeout");
-                reconcile_full_snapshot(&mut snapshot)?;
+                reconcile_full_snapshot(&mut snapshot, tmux_version.as_deref())?;
                 socket_state.publish_later_snapshot_with_context(snapshot.clone(), publish_context);
                 next_reconcile_at = Instant::now() + RECONCILE_INTERVAL;
             }
@@ -2259,7 +2264,8 @@ fn daemon_run_with_socket_path_and_startup(
 }
 
 pub(crate) trait StartupActions {
-    fn initial_snapshot(&self) -> Result<SnapshotEnvelope>;
+    fn tmux_version(&self) -> Option<String>;
+    fn initial_snapshot(&self, tmux_version: Option<&str>) -> Result<SnapshotEnvelope>;
     fn start_tmux_control_mode_client(&self) -> Result<StartedTmuxControlModeClient>;
 }
 
@@ -2267,8 +2273,12 @@ pub(crate) trait StartupActions {
 struct DaemonStartup;
 
 impl StartupActions for DaemonStartup {
-    fn initial_snapshot(&self) -> Result<SnapshotEnvelope> {
-        snapshot::daemon_snapshot_from_tmux()
+    fn tmux_version(&self) -> Option<String> {
+        tmux::tmux_version()
+    }
+
+    fn initial_snapshot(&self, tmux_version: Option<&str>) -> Result<SnapshotEnvelope> {
+        snapshot::daemon_snapshot_from_tmux(tmux_version)
     }
 
     fn start_tmux_control_mode_client(&self) -> Result<StartedTmuxControlModeClient> {
@@ -3591,7 +3601,8 @@ fn apply_control_event(
             Ok(true)
         }
         ControlEvent::Resnapshot => {
-            reconcile_full_snapshot(snapshot)?;
+            let tmux_version = snapshot.source.tmux_version.clone();
+            reconcile_full_snapshot(snapshot, tmux_version.as_deref())?;
             Ok(true)
         }
         ControlEvent::Exit | ControlEvent::Ignored => Ok(false),
@@ -3838,11 +3849,15 @@ fn fallback_to_full_resnapshot(
         "agentscan: targeted refresh failed for control-mode line {:?}: {error:#}",
         line
     );
-    reconcile_full_snapshot(snapshot)
+    let tmux_version = snapshot.source.tmux_version.clone();
+    reconcile_full_snapshot(snapshot, tmux_version.as_deref())
 }
 
-fn reconcile_full_snapshot(snapshot: &mut SnapshotEnvelope) -> Result<()> {
-    *snapshot = snapshot::daemon_snapshot_from_tmux()?;
+fn reconcile_full_snapshot(
+    snapshot: &mut SnapshotEnvelope,
+    tmux_version: Option<&str>,
+) -> Result<()> {
+    *snapshot = snapshot::daemon_snapshot_from_tmux(tmux_version)?;
     Ok(())
 }
 

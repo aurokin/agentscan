@@ -9,6 +9,19 @@ pub(crate) trait ProcessInspector {
     }
 }
 
+const SELECTED_ENV_KEYS: &[&str] = &[
+    "CLAUDECODE",
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_AGENT",
+    "CLAUDE_CODE_REMOTE",
+    "PI_CODING_AGENT",
+    "OPENCODE",
+    "OPENCODE_PID",
+    "OPENCODE_RUN_ID",
+    "OPENCODE_PROCESS_ROLE",
+];
+
 #[derive(Default)]
 pub(crate) struct ProcProcessInspector;
 
@@ -47,6 +60,52 @@ impl ProcessEvidence {
             .iter()
             .any(|(env_key, value)| env_key == key && value == expected)
     }
+}
+
+fn tty_path_from_pane_tty(pane_tty: &str) -> Option<PathBuf> {
+    let tty = pane_tty.trim();
+    if tty.is_empty() || tty.eq_ignore_ascii_case("not a tty") {
+        return None;
+    }
+
+    Some(
+        tty.strip_prefix("/dev/")
+            .map_or_else(|| PathBuf::from("/dev").join(tty), |_| PathBuf::from(tty)),
+    )
+}
+
+fn process_is_foreground_on_tty(
+    pane_tty_device: u64,
+    process_tty_device: u64,
+    process_group_id: i64,
+    tty_process_group_id: i64,
+) -> bool {
+    process_tty_device == pane_tty_device
+        && tty_process_group_id > 0
+        && process_group_id == tty_process_group_id
+}
+
+fn strings_from_nul_separated_bytes(bytes: &[u8]) -> Vec<String> {
+    bytes
+        .split(|byte| *byte == 0)
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| std::str::from_utf8(part).ok())
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn selected_env_from_nul_separated_bytes(bytes: &[u8]) -> Vec<(String, String)> {
+    strings_from_nul_separated_bytes(bytes)
+        .into_iter()
+        .filter_map(|entry| {
+            let (key, value) = entry.split_once('=')?;
+            SELECTED_ENV_KEYS
+                .contains(&key)
+                .then(|| (key.to_string(), value.to_string()))
+        })
+        .collect()
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -100,15 +159,7 @@ fn foreground_processes(_pane_tty: &str) -> Result<Vec<ProcessEvidence>> {
 fn linux_tty_device_id(pane_tty: &str) -> Option<u64> {
     use std::os::unix::fs::MetadataExt;
 
-    let tty = pane_tty.trim();
-    if tty.is_empty() || tty == "not a tty" {
-        return None;
-    }
-
-    let path = tty.strip_prefix("/dev/").map_or_else(
-        || std::path::PathBuf::from("/dev").join(tty),
-        |_| std::path::PathBuf::from(tty),
-    );
+    let path = tty_path_from_pane_tty(pane_tty)?;
     fs::metadata(path).ok().map(|metadata| metadata.rdev())
 }
 
@@ -124,10 +175,16 @@ struct LinuxProcessStat {
 #[cfg(target_os = "linux")]
 impl LinuxProcessStat {
     fn is_foreground_on_tty(&self, tty_device: u64) -> bool {
-        self.tty_device > 0
-            && u64::try_from(self.tty_device).ok() == Some(tty_device)
-            && self.tty_process_group_id > 0
-            && self.process_group_id == self.tty_process_group_id
+        u64::try_from(self.tty_device)
+            .ok()
+            .is_some_and(|process_tty| {
+                process_is_foreground_on_tty(
+                    tty_device,
+                    process_tty,
+                    self.process_group_id,
+                    self.tty_process_group_id,
+                )
+            })
     }
 }
 
@@ -205,44 +262,17 @@ fn argv_for_pid(pid: u32) -> Vec<String> {
         return Vec::new();
     };
 
-    contents
-        .split(|byte| *byte == 0)
-        .filter(|part| !part.is_empty())
-        .filter_map(|part| std::str::from_utf8(part).ok())
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-        .map(str::to_string)
-        .collect()
+    strings_from_nul_separated_bytes(&contents)
 }
 
 #[cfg(target_os = "linux")]
 fn selected_env_for_pid(pid: u32) -> Vec<(String, String)> {
-    const SELECTED_ENV_KEYS: &[&str] = &[
-        "CLAUDECODE",
-        "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",
-        "CLAUDE_CODE_ENTRYPOINT",
-        "CLAUDE_CODE_AGENT",
-        "CLAUDE_CODE_REMOTE",
-        "PI_CODING_AGENT",
-        "OPENCODE",
-        "OPENCODE_PID",
-        "OPENCODE_RUN_ID",
-        "OPENCODE_PROCESS_ROLE",
-    ];
-
     let path = format!("/proc/{pid}/environ");
     let Ok(contents) = fs::read(path) else {
         return Vec::new();
     };
 
-    contents
-        .split(|byte| *byte == 0)
-        .filter(|part| !part.is_empty())
-        .filter_map(|part| std::str::from_utf8(part).ok())
-        .filter_map(|entry| entry.split_once('='))
-        .filter(|(key, _)| SELECTED_ENV_KEYS.contains(key))
-        .map(|(key, value)| (key.to_string(), value.to_string()))
-        .collect()
+    selected_env_from_nul_separated_bytes(&contents)
 }
 
 #[cfg(target_os = "linux")]
@@ -290,23 +320,30 @@ struct MacProcessInfo {
 #[cfg(target_os = "macos")]
 impl MacProcessInfo {
     fn is_foreground_on_tty(&self, tty_device: u32) -> bool {
-        self.tty_device == tty_device
-            && self.tty_process_group_id != 0
-            && self.process_group_id == self.tty_process_group_id
+        process_is_foreground_on_tty(
+            u64::from(tty_device),
+            u64::from(self.tty_device),
+            i64::from(self.process_group_id),
+            i64::from(self.tty_process_group_id),
+        )
     }
 }
 
 #[cfg(target_os = "macos")]
 fn process_evidence_from_macos_info(process: MacProcessInfo) -> Option<ProcessEvidence> {
-    let argv = macos_argv_for_pid(process.pid);
-    let command = command_basename(&process.command)
-        .or_else(|| argv.first().and_then(|argv0| command_basename(argv0)))?;
+    let procargs = macos_procargs2_for_pid(process.pid);
+    let command = command_basename(&process.command).or_else(|| {
+        procargs
+            .argv
+            .first()
+            .and_then(|argv0| command_basename(argv0))
+    })?;
 
     Some(ProcessEvidence {
         pid: process.pid,
         command,
-        argv,
-        env: Vec::new(),
+        argv: procargs.argv,
+        env: procargs.env,
     })
 }
 
@@ -392,7 +429,14 @@ fn macos_pid_list(
 }
 
 #[cfg(target_os = "macos")]
-fn macos_argv_for_pid(pid: u32) -> Vec<String> {
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct MacProcArgs {
+    argv: Vec<String>,
+    env: Vec<(String, String)>,
+}
+
+#[cfg(target_os = "macos")]
+fn macos_procargs2_for_pid(pid: u32) -> MacProcArgs {
     let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
     let mut buffer = vec![0_u8; macos_arg_buffer_len()];
     let mut buffer_len = buffer.len();
@@ -409,11 +453,11 @@ fn macos_argv_for_pid(pid: u32) -> Vec<String> {
     };
 
     if status != 0 {
-        return Vec::new();
+        return MacProcArgs::default();
     }
 
     buffer.truncate(buffer_len);
-    macos_argv_from_procargs2_buffer(&buffer)
+    macos_procargs2_from_buffer(&buffer)
 }
 
 #[cfg(target_os = "macos")]
@@ -426,17 +470,17 @@ fn macos_arg_buffer_len() -> usize {
 }
 
 #[cfg(target_os = "macos")]
-fn macos_argv_from_procargs2_buffer(buffer: &[u8]) -> Vec<String> {
+fn macos_procargs2_from_buffer(buffer: &[u8]) -> MacProcArgs {
     let argc_size = std::mem::size_of::<libc::c_int>();
     if buffer.len() < argc_size {
-        return Vec::new();
+        return MacProcArgs::default();
     }
 
     let mut argc_bytes = [0_u8; std::mem::size_of::<libc::c_int>()];
     argc_bytes.copy_from_slice(&buffer[..argc_size]);
     let argc = libc::c_int::from_ne_bytes(argc_bytes);
     let Ok(argc) = usize::try_from(argc) else {
-        return Vec::new();
+        return MacProcArgs::default();
     };
 
     let mut offset = argc_size;
@@ -457,7 +501,10 @@ fn macos_argv_from_procargs2_buffer(buffer: &[u8]) -> Vec<String> {
         offset += end + 1;
     }
 
-    argv
+    MacProcArgs {
+        argv,
+        env: selected_env_from_nul_separated_bytes(&buffer[offset..]),
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -480,15 +527,7 @@ fn skip_nuls(buffer: &[u8], mut offset: usize) -> usize {
 fn macos_tty_device_id(pane_tty: &str) -> Option<u32> {
     use std::os::unix::fs::MetadataExt;
 
-    let tty = pane_tty.trim();
-    if tty.is_empty() || tty.eq_ignore_ascii_case("not a tty") {
-        return None;
-    }
-
-    let path = tty.strip_prefix("/dev/").map_or_else(
-        || std::path::PathBuf::from("/dev").join(tty),
-        |_| std::path::PathBuf::from(tty),
-    );
+    let path = tty_path_from_pane_tty(pane_tty)?;
     let metadata = fs::metadata(path).ok()?;
     u32::try_from(metadata.rdev()).ok()
 }
@@ -613,15 +652,23 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_argv_parser_reads_procargs2_arguments_only() {
+    fn macos_procargs2_parser_reads_arguments_and_selected_env() {
         let mut buffer = Vec::new();
         buffer.extend_from_slice(&(2 as libc::c_int).to_ne_bytes());
         buffer.extend_from_slice(b"/bin/zsh\0\0\0");
-        buffer.extend_from_slice(b"zsh\0-l\0SHELL=/bin/zsh\0");
+        buffer.extend_from_slice(
+            b"zsh\0-l\0SHELL=/bin/zsh\0PI_CODING_AGENT=true\0OPENCODE_PID=123\0",
+        );
 
         assert_eq!(
-            macos_argv_from_procargs2_buffer(&buffer),
-            vec!["zsh".to_string(), "-l".to_string()]
+            macos_procargs2_from_buffer(&buffer),
+            MacProcArgs {
+                argv: vec!["zsh".to_string(), "-l".to_string()],
+                env: vec![
+                    ("PI_CODING_AGENT".to_string(), "true".to_string()),
+                    ("OPENCODE_PID".to_string(), "123".to_string()),
+                ],
+            }
         );
     }
 
@@ -653,7 +700,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_process_evidence_does_not_claim_hidden_env_support() {
+    fn macos_process_evidence_does_not_require_env_visibility() {
         let mut child = Command::new("sleep")
             .arg("5")
             .env("PI_CODING_AGENT", "true")
@@ -665,6 +712,7 @@ mod tests {
         let _ = child.kill();
         let _ = child.wait();
 
-        assert_eq!(evidence.env, Vec::<(String, String)>::new());
+        assert_eq!(evidence.pid, child.id());
+        assert!(!evidence.command.trim().is_empty());
     }
 }

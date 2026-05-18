@@ -130,6 +130,13 @@ Implications:
   scanning. It is limited to concrete ambiguous panes, checks the foreground
   process group for shell or wrapper panes, and checks root/descendant process
   command, argv, and selected environment markers for known launcher panes.
+- process fallback should use native platform inspection only. Linux reads
+  procfs directly; macOS reads `libproc` / `sysctl` data directly. Avoidable
+  helper process launches such as `ps`, `pgrep`, and `grep` are not part of the
+  scanner hot path.
+- tmux subprocesses are an intentional boundary with the tmux server. Reducing
+  short-lived tmux reads is a future daemon architecture improvement, not an
+  incident-mitigation requirement.
 - provider logs, transcript files, session databases, and other historical
   state stores are not core detection inputs. They may be useful during
   research, but baseline detection must rely on live tmux, process, title, and
@@ -175,10 +182,12 @@ Linux and macOS are the primary targets for early fallback logic.
 
 Implications:
 
-- Linux fallback may read selected `/proc` argv/env fields for unresolved
-  launcher panes.
-- macOS fallback should stay targeted to descendant processes of unresolved
-  launcher panes rather than broad `ps` scans.
+- Linux fallback reads selected `/proc` command, argv, env, tty, and descendant
+  fields for unresolved launcher panes.
+- macOS fallback reads native `libproc` / `sysctl` command, argv, tty, and
+  descendant fields for unresolved launcher panes. `KERN_PROCARGS2` env strings
+  are parsed when present, but live macOS env visibility is not guaranteed and
+  must not be the only required signal for baseline detection.
 
 ## Reference Baseline
 

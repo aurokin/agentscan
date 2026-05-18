@@ -1987,6 +1987,25 @@ fn copilot_pane_output_marks_busy_only_after_provider_is_known() {
 }
 
 #[test]
+fn pane_output_status_fallback_is_limited_to_supported_providers() {
+    let mut codex = pane_output_status_pane(747, Provider::Codex, "codex");
+
+    classify::apply_pane_output_status_fallback(
+        &mut codex,
+        "❯ Review patch\n\n\
+         ● Thinking (Esc to cancel · 616 B)\n\
+         /tmp/probe [main]\n\
+         ────────────────────\n\
+         ❯\n\
+         ────────────────────\n\
+         / commands · ? help\n",
+    );
+
+    assert_eq!(codex.status.kind, StatusKind::Unknown);
+    assert_eq!(codex.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
 fn copilot_pane_output_ignores_stale_thinking_lines() {
     let mut copilot = pane_output_status_pane(748, Provider::Copilot, "GitHub Copilot");
 
