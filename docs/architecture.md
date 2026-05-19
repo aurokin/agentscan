@@ -53,7 +53,8 @@ Daemon refresh reads still use short-lived `tmux list-panes` commands. Routing
 those reads through the long-lived control-mode client requires a broker that
 owns the single control-mode stream, correlates `%begin` / `%end` / `%error`
 frames, and preserves event ordering while commands are pending. That belongs
-with the daemon redesign rather than the current scanner cleanup path.
+with the daemon redesign rather than the current scanner cleanup path. The
+design-prep brief is `docs/notes/daemon-redesign-brief.md`.
 
 The remaining production child processes are intentional product-boundary or
 lifecycle operations:

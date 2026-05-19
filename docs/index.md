@@ -27,6 +27,9 @@ This repo uses progressively disclosed documentation.
   - `docs/notes/provider-evidence-roadmap.md`
     Provider-specific evidence plans, plug-and-play detection policy, and the
     deep-roadmap hook/extension direction.
+  - `docs/notes/daemon-redesign-brief.md`
+    Prepared target shape, migration slices, and harness risks for the future
+    daemon redesign.
 - Linear
   Active milestones, blockers, sequencing, and execution detail.
 

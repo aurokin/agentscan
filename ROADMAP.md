@@ -144,7 +144,8 @@ Implications:
 - daemon refresh `list-panes` reads should not be moved onto the existing
   control-mode event client without a broker that owns response correlation,
   event buffering, timeouts, and recovery. That transport work belongs with the
-  daemon redesign.
+  daemon redesign. See `docs/notes/daemon-redesign-brief.md` for the prepared
+  target shape and migration slices.
 - provider logs, transcript files, session databases, and other historical
   state stores are not core detection inputs. They may be useful during
   research, but baseline detection must rely on live tmux, process, title, and
