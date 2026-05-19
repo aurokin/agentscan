@@ -634,6 +634,144 @@ fn control_mode_reader_tolerates_non_utf8_pane_output() {
 }
 
 #[test]
+fn control_mode_command_markers_parse_frame_ids_and_errors() {
+    assert_eq!(
+        daemon::control_mode_command_marker("%begin 1777830000 101 0"),
+        Some(daemon::ControlModeCommandMarker::Begin(
+            daemon::ControlModeCommandFrameId {
+                timestamp: "1777830000".to_string(),
+                command_number: "101".to_string(),
+                flags: "0".to_string(),
+            }
+        ))
+    );
+    assert_eq!(
+        daemon::control_mode_command_marker("%end 1777830000 101 0"),
+        Some(daemon::ControlModeCommandMarker::End(
+            daemon::ControlModeCommandFrameId {
+                timestamp: "1777830000".to_string(),
+                command_number: "101".to_string(),
+                flags: "0".to_string(),
+            }
+        ))
+    );
+    assert_eq!(
+        daemon::control_mode_command_marker("%error 1777830000 101 0 can't find pane: %404"),
+        Some(daemon::ControlModeCommandMarker::Error {
+            id: daemon::ControlModeCommandFrameId {
+                timestamp: "1777830000".to_string(),
+                command_number: "101".to_string(),
+                flags: "0".to_string(),
+            },
+            message: "can't find pane: %404".to_string(),
+        })
+    );
+    assert_eq!(daemon::control_mode_command_marker("%window-add @1"), None);
+}
+
+#[test]
+fn control_mode_command_response_collects_output_and_defers_prior_events() {
+    let expected_id = daemon::ControlModeCommandFrameId {
+        timestamp: "1777830000".to_string(),
+        command_number: "102".to_string(),
+        flags: "0".to_string(),
+    };
+
+    let response = daemon::test_collect_control_mode_command_response(
+        &expected_id,
+        [
+            "%subscription-changed agentscan $174 @251 1 %251 : %251:Claude Code | Working:claude::::",
+            "%begin 1777830000 102 0",
+            "s\u{1f}0\u{1f}0\u{1f}%251\u{1f}100\u{1f}claude\u{1f}Claude Code | Working",
+            "%end 1777830000 102 0",
+        ],
+    )
+    .expect("matching frame should parse");
+
+    assert_eq!(
+        response.deferred_events,
+        vec![
+            "%subscription-changed agentscan $174 @251 1 %251 : %251:Claude Code | Working:claude::::"
+        ]
+    );
+    assert_eq!(
+        response.output,
+        vec!["s\u{1f}0\u{1f}0\u{1f}%251\u{1f}100\u{1f}claude\u{1f}Claude Code | Working"]
+    );
+}
+
+#[test]
+fn control_mode_command_response_reports_errors_and_interleaved_frames() {
+    let expected_id = daemon::ControlModeCommandFrameId {
+        timestamp: "1777830000".to_string(),
+        command_number: "103".to_string(),
+        flags: "0".to_string(),
+    };
+
+    let missing = daemon::test_collect_control_mode_command_response(
+        &expected_id,
+        [
+            "%begin 1777830000 103 0",
+            "%error 1777830000 103 0 can't find pane: %404",
+        ],
+    )
+    .expect_err("matching error frame should fail");
+    assert!(
+        missing.to_string().contains("can't find pane: %404"),
+        "unexpected error: {missing:#}"
+    );
+
+    let interleaved = daemon::test_collect_control_mode_command_response(
+        &expected_id,
+        [
+            "%begin 1777830000 103 0",
+            "%begin 1777830000 104 0",
+            "%end 1777830000 104 0",
+            "%end 1777830000 103 0",
+        ],
+    )
+    .expect_err("interleaved command frames should fail");
+    assert!(
+        interleaved
+            .to_string()
+            .contains("interleaved control-mode command frame"),
+        "unexpected error: {interleaved:#}"
+    );
+
+    let unexpected_end = daemon::test_collect_control_mode_command_response(
+        &expected_id,
+        [
+            "%begin 1777830000 103 0",
+            "%end 1777830000 104 0",
+            "%end 1777830000 103 0",
+        ],
+    )
+    .expect_err("unexpected end frame should fail");
+    assert!(
+        unexpected_end
+            .to_string()
+            .contains("interleaved control-mode command frame"),
+        "unexpected error: {unexpected_end:#}"
+    );
+
+    let unexpected_error = daemon::test_collect_control_mode_command_response(
+        &expected_id,
+        [
+            "%begin 1777830000 103 0",
+            "%error 1777830000 104 0 other command failed",
+            "%end 1777830000 103 0",
+        ],
+    )
+    .expect_err("unexpected error frame should fail");
+    assert!(
+        unexpected_error
+            .to_string()
+            .contains("interleaved control-mode command frame"),
+        "unexpected error: {unexpected_error:#}"
+    );
+}
+
+#[test]
 fn daemon_subscription_format_includes_wrapper_metadata_fields() {
     assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{{pane_current_command}}"));
     assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{{pane_title}}"));

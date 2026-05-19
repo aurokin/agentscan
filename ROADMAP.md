@@ -141,6 +141,10 @@ Implications:
   throttle repeated `capture-pane` reads during refresh bursts. The cache is
   local to the daemon, keyed by pane identity and classification inputs, and is
   not canonical state. Direct `scan` snapshots remain uncached.
+- daemon refresh `list-panes` reads should not be moved onto the existing
+  control-mode event client without a broker that owns response correlation,
+  event buffering, timeouts, and recovery. That transport work belongs with the
+  daemon redesign.
 - provider logs, transcript files, session databases, and other historical
   state stores are not core detection inputs. They may be useful during
   research, but baseline detection must rely on live tmux, process, title, and

@@ -2478,6 +2478,94 @@ fn control_mode_startup_response_from_line(line: &str, context: &str) -> Result<
     Ok(line.starts_with("%end"))
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ControlModeCommandFrameId {
+    pub(crate) timestamp: String,
+    pub(crate) command_number: String,
+    pub(crate) flags: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ControlModeCommandMarker {
+    Begin(ControlModeCommandFrameId),
+    End(ControlModeCommandFrameId),
+    Error {
+        id: ControlModeCommandFrameId,
+        message: String,
+    },
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn control_mode_command_marker(line: &str) -> Option<ControlModeCommandMarker> {
+    let mut parts = line.splitn(5, ' ');
+    let marker = parts.next()?;
+    if !matches!(marker, "%begin" | "%end" | "%error") {
+        return None;
+    }
+
+    let id = ControlModeCommandFrameId {
+        timestamp: parts.next()?.to_string(),
+        command_number: parts.next()?.to_string(),
+        flags: parts.next()?.to_string(),
+    };
+
+    match marker {
+        "%begin" => Some(ControlModeCommandMarker::Begin(id)),
+        "%end" => Some(ControlModeCommandMarker::End(id)),
+        "%error" => Some(ControlModeCommandMarker::Error {
+            id,
+            message: parts.next().unwrap_or_default().to_string(),
+        }),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ControlModeCommandPrototypeResponse {
+    pub(crate) output: Vec<String>,
+    pub(crate) deferred_events: Vec<String>,
+}
+
+#[cfg(test)]
+pub(crate) fn test_collect_control_mode_command_response<'a>(
+    expected_id: &ControlModeCommandFrameId,
+    lines: impl IntoIterator<Item = &'a str>,
+) -> Result<ControlModeCommandPrototypeResponse> {
+    let mut started = false;
+    let mut output = Vec::new();
+    let mut deferred_events = Vec::new();
+
+    for line in lines {
+        match control_mode_command_marker(line) {
+            Some(ControlModeCommandMarker::Begin(id)) if id == *expected_id && !started => {
+                started = true;
+            }
+            Some(ControlModeCommandMarker::Begin(_)) if started => {
+                bail!("interleaved control-mode command frame before expected %end");
+            }
+            Some(ControlModeCommandMarker::End(id)) if id == *expected_id && started => {
+                return Ok(ControlModeCommandPrototypeResponse {
+                    output,
+                    deferred_events,
+                });
+            }
+            Some(ControlModeCommandMarker::Error { id, message })
+                if id == *expected_id && started =>
+            {
+                bail!("tmux control-mode command failed: {message}");
+            }
+            Some(_) if started => {
+                bail!("interleaved control-mode command frame before expected %end");
+            }
+            Some(_) | None if started => output.push(line.to_string()),
+            Some(_) | None => deferred_events.push(line.to_string()),
+        }
+    }
+
+    bail!("control-mode command response ended before expected %end")
+}
+
 #[cfg(test)]
 pub(crate) fn test_wait_for_attach_then_subscription_transcript(lines: &[&str]) -> Result<()> {
     let mut waiting_for_attach = true;

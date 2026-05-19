@@ -49,6 +49,12 @@ refresh churn; it is not persisted, not serialized, and not used by direct
 or temporarily unparseable current output does not trigger repeated
 `capture-pane` calls in a burst.
 
+Daemon refresh reads still use short-lived `tmux list-panes` commands. Routing
+those reads through the long-lived control-mode client requires a broker that
+owns the single control-mode stream, correlates `%begin` / `%end` / `%error`
+frames, and preserves event ordering while commands are pending. That belongs
+with the daemon redesign rather than the current scanner cleanup path.
+
 The remaining production child processes are intentional product-boundary or
 lifecycle operations:
 
