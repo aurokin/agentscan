@@ -3,7 +3,10 @@ use super::*;
 pub(crate) fn pane_output_status_fallback_candidate(pane: &PaneRecord) -> bool {
     matches!(
         pane.provider,
-        Some(Provider::Copilot) | Some(Provider::CursorCli) | Some(Provider::Hermes)
+        Some(Provider::Copilot)
+            | Some(Provider::CursorCli)
+            | Some(Provider::Grok)
+            | Some(Provider::Hermes)
     ) && pane.status.kind == StatusKind::Unknown
         && pane.status.source == StatusSource::NotChecked
 }
@@ -16,6 +19,7 @@ pub(crate) fn apply_pane_output_status_fallback(pane: &mut PaneRecord, output: &
     let status = match pane.provider {
         Some(Provider::Copilot) => copilot_pane_output_status(output),
         Some(Provider::CursorCli) => cursor_cli_pane_output_status(output),
+        Some(Provider::Grok) => grok_pane_output_status(output),
         Some(Provider::Hermes) => hermes_pane_output_status(output),
         _ => None,
     };
@@ -148,6 +152,69 @@ fn cursor_cli_footer_indicates_idle(line: &str) -> bool {
 
 fn cursor_cli_footer_top_border(line: &str) -> bool {
     line.trim_start().starts_with("▄▄▄▄▄▄")
+}
+
+fn grok_pane_output_status(output: &str) -> Option<StatusKind> {
+    let lines: Vec<&str> = output.lines().collect();
+    if let Some(footer) = lines
+        .iter()
+        .rev()
+        .map(|line| line.trim())
+        .find(|line| grok_keybind_footer_line(line))
+    {
+        return grok_footer_indicates_idle(footer).then_some(StatusKind::Idle);
+    }
+
+    let completed_index = lines
+        .iter()
+        .rposition(|line| line.trim_start().starts_with("Turn completed in "));
+    let running_index = lines
+        .iter()
+        .rposition(|line| grok_running_status_line(line));
+
+    completed_index
+        .is_some_and(|index| running_index.is_none_or(|running| running < index))
+        .then_some(StatusKind::Idle)
+}
+
+fn grok_keybind_footer_line(line: &str) -> bool {
+    line.contains("Shift+Tab:mode") && line.contains("Ctrl+.:shortcuts")
+}
+
+fn grok_footer_indicates_idle(line: &str) -> bool {
+    !grok_footer_has_working_binds(line) && !grok_footer_has_approval_text(line)
+}
+
+fn grok_footer_has_working_binds(line: &str) -> bool {
+    line.contains("Ctrl+c:cancel") || line.contains("Ctrl+Enter:interject")
+}
+
+fn grok_footer_has_approval_text(line: &str) -> bool {
+    let line = line.to_ascii_lowercase();
+    ["approve", "reject", "allow", "deny", "confirm"]
+        .iter()
+        .any(|word| line.contains(word))
+}
+
+fn grok_running_status_line(line: &str) -> bool {
+    let line = line.trim();
+    line.chars()
+        .next()
+        .is_some_and(|ch| ('\u{2800}'..='\u{28ff}').contains(&ch))
+        && (line.contains("Running:")
+            || (line.contains(" … ⇣")
+                && line.contains("[✗]")
+                && line.split_whitespace().any(grok_elapsed_token)))
+}
+
+fn grok_elapsed_token(token: &str) -> bool {
+    let Some(value) = token.strip_suffix('s') else {
+        return false;
+    };
+
+    !value.is_empty()
+        && value.chars().all(|ch| ch.is_ascii_digit() || ch == '.')
+        && value.chars().any(|ch| ch.is_ascii_digit())
 }
 
 fn hermes_pane_output_status(output: &str) -> Option<StatusKind> {

@@ -2034,6 +2034,90 @@ fn pane_output_status_fallback_is_limited_to_supported_providers() {
 }
 
 #[test]
+fn grok_pane_output_marks_idle_only_after_provider_is_known() {
+    let mut grok = pane_output_status_pane(769, Provider::Grok, "agentscan - grok");
+
+    classify::apply_pane_output_status_fallback(
+        &mut grok,
+        "Turn completed in 4.2s.\n\
+         Shift+Tab:mode │ Ctrl+.:shortcuts\n",
+    );
+
+    assert_eq!(grok.status.kind, StatusKind::Idle);
+    assert_eq!(grok.status.source, super::StatusSource::PaneOutput);
+
+    let mut unknown = proc_fallback_pane(770, "zsh", "custom title");
+    classify::apply_pane_output_status_fallback(
+        &mut unknown,
+        "Turn completed in 4.2s.\n\
+         Shift+Tab:mode │ Ctrl+.:shortcuts\n",
+    );
+
+    assert_eq!(unknown.status.kind, StatusKind::Unknown);
+    assert_eq!(unknown.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn grok_pane_output_does_not_mark_working_footer_idle() {
+    let mut grok = pane_output_status_pane(771, Provider::Grok, "⠹ - Running: shell - agentscan - grok");
+
+    classify::apply_pane_output_status_fallback(
+        &mut grok,
+        "Turn completed in 3.1s.\n\
+         ⠹ Running: shell - agentscan 8s … ⇣123 [✗]\n\
+         Shift+Tab:mode │ Ctrl+c:cancel │ Ctrl+Enter:interject │ Ctrl+.:shortcuts\n",
+    );
+
+    assert_eq!(grok.status.kind, StatusKind::Unknown);
+    assert_eq!(grok.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn grok_pane_output_uses_current_footer_over_stale_completed_turn() {
+    let mut grok = pane_output_status_pane(772, Provider::Grok, "agentscan - grok");
+
+    classify::apply_pane_output_status_fallback(
+        &mut grok,
+        "Turn completed in 2.8s.\n\
+         Shift+Tab:mode │ Ctrl+.:shortcuts\n\
+         \n\
+         ⠸ Running: shell - agentscan 5s … ⇣42 [✗]\n\
+         Shift+Tab:mode │ Ctrl+c:cancel │ Ctrl+Enter:interject │ Ctrl+.:shortcuts\n",
+    );
+
+    assert_eq!(grok.status.kind, StatusKind::Unknown);
+    assert_eq!(grok.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn grok_pane_output_uses_running_body_marker_over_stale_completed_turn() {
+    let mut grok = pane_output_status_pane(774, Provider::Grok, "agentscan - grok");
+
+    classify::apply_pane_output_status_fallback(
+        &mut grok,
+        "Turn completed in 2.8s.\n\
+         ⠹ Editing files 5s … ⇣42 [✗]\n",
+    );
+
+    assert_eq!(grok.status.kind, StatusKind::Unknown);
+    assert_eq!(grok.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn grok_pane_output_leaves_unprobed_approval_footer_unknown() {
+    let mut grok = pane_output_status_pane(773, Provider::Grok, "agentscan - grok");
+
+    classify::apply_pane_output_status_fallback(
+        &mut grok,
+        "Approve command?\n\
+         Shift+Tab:mode │ Ctrl+y:approve │ Ctrl+n:reject │ Ctrl+.:shortcuts\n",
+    );
+
+    assert_eq!(grok.status.kind, StatusKind::Unknown);
+    assert_eq!(grok.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
 fn copilot_pane_output_ignores_stale_thinking_lines() {
     let mut copilot = pane_output_status_pane(748, Provider::Copilot, "GitHub Copilot");
 
