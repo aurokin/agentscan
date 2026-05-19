@@ -270,6 +270,7 @@ fn tmux_set_metadata_accepts_provider_aliases() {
         ("github-copilot", Provider::Copilot),
         ("pi", Provider::Pi),
         ("pi-coding-agent", Provider::Pi),
+        ("grok", Provider::Grok),
         ("hermes", Provider::Hermes),
         ("hermes-agent", Provider::Hermes),
     ] {

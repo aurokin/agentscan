@@ -30,6 +30,7 @@ pub(super) struct TitleAnalysis<'a> {
     pub(super) copilot_label: Option<&'a str>,
     pub(super) cursor_label: Option<&'a str>,
     pub(super) pi_label: Option<&'a str>,
+    pub(super) grok_label: Option<&'a str>,
     pub(super) cursor_title_shaped: bool,
     provider_hint: Option<TitleProviderHint>,
     pub(super) codex_status_title: String,
@@ -94,6 +95,11 @@ impl<'a> TitleAnalysis<'a> {
         {
             return Some(stripped.to_string());
         }
+        if matches!(provider, Some(Provider::Grok))
+            && let Some(stripped) = self.grok_label
+        {
+            return Some(stripped.to_string());
+        }
 
         if matches!(provider, Some(Provider::Codex)) {
             return Some(self.codex_normalized_label.clone());
@@ -127,6 +133,7 @@ pub(super) fn analyze_title(raw_title: &str) -> TitleAnalysis<'_> {
     let pi_label = looks_like_pi_title(stripped)
         .then_some(())
         .and_then(|_| provider_prefixed_title_label(Provider::Pi, stripped));
+    let grok_label = grok_title_label(stripped);
     let gemini_title = parse_gemini_terminal_title(stripped);
 
     let provider_hint = if claude_label.is_some() || title_matches_alias(Provider::Claude, stripped)
@@ -170,6 +177,12 @@ pub(super) fn analyze_title(raw_title: &str) -> TitleAnalysis<'_> {
             },
             kind: TitleProviderHintKind::Explicit,
         })
+    } else if grok_label.is_some() {
+        Some(TitleProviderHint {
+            provider: Provider::Grok,
+            strength: TitleHintStrength::Strong,
+            kind: TitleProviderHintKind::Explicit,
+        })
     } else if gemini_title
         .as_ref()
         .is_some_and(|title| title.strong_provider_signal)
@@ -202,6 +215,7 @@ pub(super) fn analyze_title(raw_title: &str) -> TitleAnalysis<'_> {
         copilot_label,
         cursor_label,
         pi_label,
+        grok_label,
         cursor_title_shaped,
         provider_hint,
         codex_status_title,
@@ -219,6 +233,29 @@ fn title_matches_alias(provider: Provider, title: &str) -> bool {
     provider_title_aliases(provider)
         .iter()
         .any(|alias| title.eq_ignore_ascii_case(alias))
+}
+
+fn grok_title_label(title: &str) -> Option<&str> {
+    if title.eq_ignore_ascii_case("grok") {
+        return Some(title);
+    }
+
+    let suffix = " - grok";
+    if title.len() <= suffix.len() {
+        return None;
+    }
+
+    if !title.to_ascii_lowercase().ends_with(suffix) {
+        return None;
+    }
+
+    let label = &title[..title.len() - suffix.len()];
+    let label = label
+        .trim()
+        .strip_prefix("- ")
+        .unwrap_or_else(|| label.trim())
+        .trim();
+    (!label.is_empty()).then_some(label)
 }
 
 fn parse_gemini_terminal_title(title: &str) -> Option<GeminiTitle> {

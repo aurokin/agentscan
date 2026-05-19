@@ -1908,6 +1908,34 @@ fn display_metadata_extracts_activity_labels_from_titles() {
 }
 
 #[test]
+fn grok_display_metadata_strips_title_suffix() {
+    let grok = classify::display_metadata(
+        Some(Provider::Grok),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        None,
+        "⠹ - Running: shell - agentscan - grok",
+        "grok-0.1.212-ma",
+        "ai",
+    );
+    assert_eq!(grok.label, "Running: shell - agentscan");
+    assert_eq!(
+        grok.activity_label.as_deref(),
+        Some("Running: shell - agentscan")
+    );
+
+    let grok_home = classify::display_metadata(
+        Some(Provider::Grok),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        None,
+        "grok",
+        "grok",
+        "ai",
+    );
+    assert_eq!(grok_home.label, "grok");
+    assert_eq!(grok_home.activity_label, None);
+}
+
+#[test]
 fn copilot_default_title_does_not_invent_activity_label() {
     let copilot_default = classify::display_metadata(
         Some(Provider::Copilot),

@@ -16,6 +16,7 @@ pub(crate) enum Provider {
     CursorCli,
     #[value(alias = "pi-coding-agent")]
     Pi,
+    Grok,
     #[value(alias = "hermes-agent")]
     Hermes,
 }
@@ -125,6 +126,16 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
         title_prefixes: &["π - ", "pi - "],
         title_aliases: &[],
         generic_display_labels: &[],
+    },
+    ProviderInfo {
+        provider: Provider::Grok,
+        canonical_name: "grok",
+        display_marker: "G",
+        metadata_aliases: &["grok", "grok-build", "grok build"],
+        command_aliases: &[ProviderCommandAlias::new("grok", true)],
+        title_prefixes: &[],
+        title_aliases: &[],
+        generic_display_labels: &["grok"],
     },
     ProviderInfo {
         provider: Provider::Hermes,

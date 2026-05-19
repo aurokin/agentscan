@@ -79,6 +79,10 @@ pub(super) fn infer_title_status_from_analysis(
         return PaneStatus::title(StatusKind::Busy);
     }
 
+    if matches!(provider, Some(Provider::Grok)) && title_analysis.has_spinner_glyph {
+        return PaneStatus::title(StatusKind::Busy);
+    }
+
     PaneStatus::not_checked()
 }
 

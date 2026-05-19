@@ -308,6 +308,8 @@ fn provider_metadata_table_covers_aliases_commands_and_summary_order() {
         ("cursor-cli", Provider::CursorCli),
         ("cursor cli", Provider::CursorCli),
         ("pi coding agent", Provider::Pi),
+        ("grok", Provider::Grok),
+        ("grok build", Provider::Grok),
         ("hermes-agent", Provider::Hermes),
         ("hermes agent", Provider::Hermes),
     ] {
@@ -329,6 +331,14 @@ fn provider_metadata_table_covers_aliases_commands_and_summary_order() {
         Some((Provider::Hermes, true))
     );
     assert_eq!(
+        super::provider_from_command("grok"),
+        Some((Provider::Grok, true))
+    );
+    assert_eq!(
+        super::provider_from_command("grok-0.1.212-ma"),
+        Some((Provider::Grok, false))
+    );
+    assert_eq!(
         super::provider_from_command("hermes-agent-beta"),
         None,
         "generic provider names should not accept suffixed binaries"
@@ -348,6 +358,7 @@ fn provider_metadata_table_covers_aliases_commands_and_summary_order() {
             Provider::Copilot,
             Provider::CursorCli,
             Provider::Pi,
+            Provider::Grok,
             Provider::Hermes,
         ]
     );
@@ -1394,6 +1405,54 @@ fn detects_pi_titles() {
     assert_eq!(greek.provider, Provider::Pi);
     assert_eq!(default_greek.provider, Provider::Pi);
     assert_eq!(ascii.provider, Provider::Pi);
+}
+
+#[test]
+fn detects_grok_provider_and_working_titles() {
+    let exact_command =
+        classify::classify_provider(None, "grok", "grok").expect("grok command should match");
+    let versioned_command = classify::classify_provider(
+        None,
+        "grok-0.1.212-ma",
+        "⠹ - Running: shell - agentscan - grok",
+    )
+    .expect("versioned grok command should match");
+    let title_match = classify::classify_provider(None, "zsh", "agentscan - grok")
+        .expect("grok title suffix should match");
+    let home_title = classify::classify_provider(None, "zsh", "grok")
+        .expect("bare grok title should match");
+    let busy_status = classify::infer_title_status(
+        Some(Provider::Grok),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "⠹ - Running: shell - agentscan - grok",
+    );
+    let idle_title_status = classify::infer_title_status(
+        Some(Provider::Grok),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "agentscan - grok",
+    );
+    let home_title_status = classify::infer_title_status(
+        Some(Provider::Grok),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "grok",
+    );
+
+    assert_eq!(exact_command.provider, Provider::Grok);
+    assert_eq!(
+        exact_command.confidence,
+        super::ClassificationConfidence::High
+    );
+    assert_eq!(versioned_command.provider, Provider::Grok);
+    assert_eq!(
+        versioned_command.confidence,
+        super::ClassificationConfidence::Medium
+    );
+    assert_eq!(title_match.provider, Provider::Grok);
+    assert_eq!(home_title.provider, Provider::Grok);
+    assert_eq!(busy_status.kind, StatusKind::Busy);
+    assert_eq!(busy_status.source, super::StatusSource::TmuxTitle);
+    assert_eq!(idle_title_status.kind, StatusKind::Unknown);
+    assert_eq!(home_title_status.kind, StatusKind::Unknown);
 }
 
 #[test]

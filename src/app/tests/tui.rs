@@ -79,6 +79,7 @@ fn provider_display_marker_uses_compact_markers_for_codex_and_claude() {
         super::provider_display_marker(Some(Provider::Pi)),
         "\u{e22c}"
     );
+    assert_eq!(super::provider_display_marker(Some(Provider::Grok)), "G");
     assert_eq!(
         super::provider_display_marker(Some(Provider::Hermes)),
         "⚕"
