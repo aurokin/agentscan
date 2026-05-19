@@ -137,6 +137,10 @@ Implications:
 - tmux subprocesses are an intentional boundary with the tmux server. Reducing
   short-lived tmux reads is a future daemon architecture improvement, not an
   incident-mitigation requirement.
+- daemon pane-output status fallback may use a short-lived in-memory cache to
+  throttle repeated `capture-pane` reads during refresh bursts. The cache is
+  local to the daemon, keyed by pane identity and classification inputs, and is
+  not canonical state. Direct `scan` snapshots remain uncached.
 - provider logs, transcript files, session databases, and other historical
   state stores are not core detection inputs. They may be useful during
   research, but baseline detection must rely on live tmux, process, title, and

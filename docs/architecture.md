@@ -41,6 +41,14 @@ Pane output is not a provider-identity source. It is a last status fallback for
 providers with observed stable current prompt/footer shapes. Consumers can see
 that provenance as `status.source="pane_output"` in JSON.
 
+The daemon may reuse pane-output fallback results through a short-lived
+in-memory cache keyed by pane id, provider, title, command, session, and window.
+This cache is only a subprocess-throttling optimization for repeated daemon
+refresh churn; it is not persisted, not serialized, and not used by direct
+`scan` snapshots. Cached "no match" results are also short-lived so unsupported
+or temporarily unparseable current output does not trigger repeated
+`capture-pane` calls in a burst.
+
 The remaining production child processes are intentional product-boundary or
 lifecycle operations:
 

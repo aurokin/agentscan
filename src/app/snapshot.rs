@@ -1,7 +1,34 @@
 use super::*;
+use std::time::Instant;
 
 pub(super) fn daemon_snapshot_from_tmux(tmux_version: Option<&str>) -> Result<SnapshotEnvelope> {
     let mut snapshot = scanner::snapshot_from_tmux_with_version(tmux_version.map(str::to_string))?;
+    set_snapshot_cache_origin(&mut snapshot, "daemon_snapshot");
+    mark_snapshot_as_daemon(&mut snapshot)?;
+    Ok(snapshot)
+}
+
+pub(super) fn daemon_snapshot_from_tmux_with_pane_output_cache(
+    tmux_version: Option<&str>,
+    pane_output_cache: &mut scanner::PaneOutputStatusCache,
+    now: Instant,
+) -> Result<SnapshotEnvelope> {
+    let rows = tmux::tmux_list_panes()?;
+    let proc_inspector = proc::ProcProcessInspector;
+    let mut panes = classify::panes_from_rows_with_proc_fallback(rows, &proc_inspector);
+    scanner::apply_pane_output_status_fallbacks_with_cache(&mut panes, pane_output_cache, now);
+
+    let mut snapshot = SnapshotEnvelope {
+        schema_version: CACHE_SCHEMA_VERSION,
+        generated_at: now_rfc3339()?,
+        source: SnapshotSource {
+            kind: SourceKind::Snapshot,
+            tmux_version: tmux_version.map(str::to_string),
+            daemon_generated_at: None,
+        },
+        panes,
+    };
+    sort_snapshot_panes(&mut snapshot);
     set_snapshot_cache_origin(&mut snapshot, "daemon_snapshot");
     mark_snapshot_as_daemon(&mut snapshot)?;
     Ok(snapshot)

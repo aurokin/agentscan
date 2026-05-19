@@ -1,4 +1,8 @@
 use super::*;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+const PANE_OUTPUT_STATUS_LINES: usize = 30;
 
 pub(crate) fn snapshot_from_tmux() -> Result<SnapshotEnvelope> {
     snapshot_from_tmux_with_version(tmux::tmux_version())
@@ -27,17 +31,362 @@ pub(crate) fn snapshot_from_tmux_with_version(
 }
 
 pub(crate) fn apply_pane_output_status_fallbacks(panes: &mut [PaneRecord]) {
-    const PANE_OUTPUT_STATUS_LINES: usize = 30;
+    let mut capture = TmuxPaneOutputCapture;
+    apply_pane_output_status_fallbacks_with_capture(panes, &mut capture);
+}
 
+pub(crate) fn apply_pane_output_status_fallbacks_with_cache(
+    panes: &mut [PaneRecord],
+    cache: &mut PaneOutputStatusCache,
+    now: Instant,
+) {
+    let mut capture = TmuxPaneOutputCapture;
+    cache.apply(panes, &mut capture, now);
+}
+
+pub(crate) trait PaneOutputCapture {
+    fn capture_tail(&mut self, pane_id: &str, lines: usize) -> Result<Option<String>>;
+}
+
+struct TmuxPaneOutputCapture;
+
+impl PaneOutputCapture for TmuxPaneOutputCapture {
+    fn capture_tail(&mut self, pane_id: &str, lines: usize) -> Result<Option<String>> {
+        tmux::tmux_capture_pane_tail(pane_id, lines)
+    }
+}
+
+fn apply_pane_output_status_fallbacks_with_capture(
+    panes: &mut [PaneRecord],
+    capture: &mut impl PaneOutputCapture,
+) {
     for pane in panes {
         if !classify::pane_output_status_fallback_candidate(pane) {
             continue;
         }
 
-        if let Ok(Some(output)) =
-            tmux::tmux_capture_pane_tail(&pane.pane_id, PANE_OUTPUT_STATUS_LINES)
-        {
+        if let Ok(Some(output)) = capture.capture_tail(&pane.pane_id, PANE_OUTPUT_STATUS_LINES) {
             classify::apply_pane_output_status_fallback(pane, &output);
         }
+    }
+}
+
+pub(crate) struct PaneOutputStatusCache {
+    ttl: Duration,
+    entries: HashMap<String, PaneOutputStatusCacheEntry>,
+}
+
+impl PaneOutputStatusCache {
+    pub(crate) fn new(ttl: Duration) -> Self {
+        Self {
+            ttl,
+            entries: HashMap::new(),
+        }
+    }
+
+    pub(crate) fn apply(
+        &mut self,
+        panes: &mut [PaneRecord],
+        capture: &mut impl PaneOutputCapture,
+        now: Instant,
+    ) {
+        self.prune_expired(now);
+
+        for pane in panes {
+            if !classify::pane_output_status_fallback_candidate(pane) {
+                continue;
+            }
+
+            let key = PaneOutputStatusCacheKey::from_pane(pane);
+            if let Some(entry) = self.fresh_entry(&pane.pane_id, &key, now) {
+                if let Some(kind) = entry.status_kind {
+                    pane.status = PaneStatus::pane_output(kind);
+                }
+                continue;
+            }
+
+            let status_kind = match capture.capture_tail(&pane.pane_id, PANE_OUTPUT_STATUS_LINES) {
+                Ok(output) => {
+                    if let Some(output) = output {
+                        classify::apply_pane_output_status_fallback(pane, &output);
+                    }
+
+                    (pane.status.source == StatusSource::PaneOutput).then_some(pane.status.kind)
+                }
+                Err(_) => continue,
+            };
+
+            self.entries.insert(
+                pane.pane_id.clone(),
+                PaneOutputStatusCacheEntry {
+                    key,
+                    status_kind,
+                    checked_at: now,
+                },
+            );
+        }
+    }
+
+    fn fresh_entry(
+        &self,
+        pane_id: &str,
+        key: &PaneOutputStatusCacheKey,
+        now: Instant,
+    ) -> Option<&PaneOutputStatusCacheEntry> {
+        let entry = self.entries.get(pane_id)?;
+        if &entry.key != key {
+            return None;
+        }
+
+        now.checked_duration_since(entry.checked_at)
+            .is_some_and(|age| age <= self.ttl)
+            .then_some(entry)
+    }
+
+    fn prune_expired(&mut self, now: Instant) {
+        let ttl = self.ttl;
+        self.entries.retain(|_, entry| {
+            now.checked_duration_since(entry.checked_at)
+                .is_some_and(|age| age <= ttl)
+        });
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PaneOutputStatusCacheEntry {
+    key: PaneOutputStatusCacheKey,
+    status_kind: Option<StatusKind>,
+    checked_at: Instant,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PaneOutputStatusCacheKey {
+    provider: Provider,
+    pane_current_command: String,
+    pane_title_raw: String,
+    session_id: Option<String>,
+    window_id: Option<String>,
+}
+
+impl PaneOutputStatusCacheKey {
+    fn from_pane(pane: &PaneRecord) -> Self {
+        Self {
+            provider: pane
+                .provider
+                .expect("pane output cache key requires fallback candidate provider"),
+            pane_current_command: pane.tmux.pane_current_command.clone(),
+            pane_title_raw: pane.tmux.pane_title_raw.clone(),
+            session_id: pane.tmux.session_id.clone(),
+            window_id: pane.tmux.window_id.clone(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct FakePaneOutputCapture {
+        outputs: HashMap<String, Option<String>>,
+        calls: Vec<(String, usize)>,
+    }
+
+    impl FakePaneOutputCapture {
+        fn with_output(mut self, pane_id: &str, output: impl Into<String>) -> Self {
+            self.outputs
+                .insert(pane_id.to_string(), Some(output.into()));
+            self
+        }
+
+        fn call_count(&self) -> usize {
+            self.calls.len()
+        }
+    }
+
+    impl PaneOutputCapture for FakePaneOutputCapture {
+        fn capture_tail(&mut self, pane_id: &str, lines: usize) -> Result<Option<String>> {
+            self.calls.push((pane_id.to_string(), lines));
+            Ok(self.outputs.get(pane_id).cloned().unwrap_or(None))
+        }
+    }
+
+    fn pane(pane_id: &str, provider: Option<Provider>, status: PaneStatus) -> PaneRecord {
+        PaneRecord {
+            pane_id: pane_id.to_string(),
+            location: PaneLocation {
+                session_name: "s".to_string(),
+                window_index: 0,
+                pane_index: 0,
+                window_name: "w".to_string(),
+            },
+            tmux: TmuxPaneMetadata {
+                pane_pid: 100,
+                pane_tty: "/dev/ttys001".to_string(),
+                pane_current_path: "/tmp".to_string(),
+                pane_current_command: "node".to_string(),
+                pane_title_raw: "GitHub Copilot".to_string(),
+                session_id: Some("$1".to_string()),
+                window_id: Some("@1".to_string()),
+            },
+            display: DisplayMetadata {
+                label: "GitHub Copilot".to_string(),
+                activity_label: None,
+            },
+            provider,
+            status,
+            classification: PaneClassification {
+                matched_by: None,
+                confidence: None,
+                reasons: Vec::new(),
+            },
+            agent_metadata: AgentMetadata::default(),
+            diagnostics: PaneDiagnostics {
+                cache_origin: "test".to_string(),
+                proc_fallback: ProcFallbackDiagnostics::default(),
+            },
+        }
+    }
+
+    fn copilot_busy_output() -> &'static str {
+        "❯ Review patch\n\n\
+         ● Thinking (Esc to cancel · 616 B)\n\
+         /tmp/probe [main]\n\
+         ────────────────────\n\
+         ❯\n\
+         ────────────────────\n\
+         / commands · ? help\n"
+    }
+
+    #[test]
+    fn pane_output_capture_runs_only_for_supported_unknown_status_candidates() {
+        let mut panes = vec![
+            pane("%1", None, PaneStatus::not_checked()),
+            pane("%2", Some(Provider::Codex), PaneStatus::not_checked()),
+            pane(
+                "%3",
+                Some(Provider::Copilot),
+                PaneStatus::title(StatusKind::Busy),
+            ),
+            pane("%4", Some(Provider::Copilot), PaneStatus::not_checked()),
+        ];
+        let mut capture = FakePaneOutputCapture::default().with_output("%4", copilot_busy_output());
+
+        apply_pane_output_status_fallbacks_with_capture(&mut panes, &mut capture);
+
+        assert_eq!(
+            capture.calls,
+            vec![("%4".to_string(), PANE_OUTPUT_STATUS_LINES)]
+        );
+        assert_eq!(panes[3].status, PaneStatus::pane_output(StatusKind::Busy));
+    }
+
+    #[test]
+    fn pane_output_cache_reuses_recent_status_for_matching_key() {
+        let now = Instant::now();
+        let mut cache = PaneOutputStatusCache::new(Duration::from_secs(2));
+        let mut capture = FakePaneOutputCapture::default().with_output("%1", copilot_busy_output());
+        let mut first = vec![pane(
+            "%1",
+            Some(Provider::Copilot),
+            PaneStatus::not_checked(),
+        )];
+        cache.apply(&mut first, &mut capture, now);
+
+        let mut second = vec![pane(
+            "%1",
+            Some(Provider::Copilot),
+            PaneStatus::not_checked(),
+        )];
+        cache.apply(&mut second, &mut capture, now + Duration::from_millis(500));
+
+        assert_eq!(capture.call_count(), 1);
+        assert_eq!(second[0].status, PaneStatus::pane_output(StatusKind::Busy));
+    }
+
+    #[test]
+    fn pane_output_cache_invalidates_when_key_changes() {
+        let now = Instant::now();
+        let mut cache = PaneOutputStatusCache::new(Duration::from_secs(2));
+        let mut capture = FakePaneOutputCapture::default().with_output("%1", copilot_busy_output());
+        let mut first = vec![pane(
+            "%1",
+            Some(Provider::Copilot),
+            PaneStatus::not_checked(),
+        )];
+        cache.apply(&mut first, &mut capture, now);
+
+        let mut second = vec![pane(
+            "%1",
+            Some(Provider::Copilot),
+            PaneStatus::not_checked(),
+        )];
+        second[0].tmux.pane_title_raw = "GitHub Copilot | Query".to_string();
+        cache.apply(&mut second, &mut capture, now + Duration::from_millis(500));
+
+        assert_eq!(capture.call_count(), 2);
+    }
+
+    #[test]
+    fn pane_output_cache_expires() {
+        let now = Instant::now();
+        let mut cache = PaneOutputStatusCache::new(Duration::from_secs(2));
+        let mut capture = FakePaneOutputCapture::default().with_output("%1", copilot_busy_output());
+        let mut first = vec![pane(
+            "%1",
+            Some(Provider::Copilot),
+            PaneStatus::not_checked(),
+        )];
+        cache.apply(&mut first, &mut capture, now);
+
+        let mut second = vec![pane(
+            "%1",
+            Some(Provider::Copilot),
+            PaneStatus::not_checked(),
+        )];
+        cache.apply(&mut second, &mut capture, now + Duration::from_secs(3));
+
+        assert_eq!(capture.call_count(), 2);
+    }
+
+    #[test]
+    fn pane_output_cache_reuses_recent_no_match() {
+        let now = Instant::now();
+        let mut cache = PaneOutputStatusCache::new(Duration::from_secs(2));
+        let mut capture = FakePaneOutputCapture::default().with_output("%1", "plain output");
+        let mut first = vec![pane(
+            "%1",
+            Some(Provider::Copilot),
+            PaneStatus::not_checked(),
+        )];
+        cache.apply(&mut first, &mut capture, now);
+
+        let mut second = vec![pane(
+            "%1",
+            Some(Provider::Copilot),
+            PaneStatus::not_checked(),
+        )];
+        cache.apply(&mut second, &mut capture, now + Duration::from_millis(500));
+
+        assert_eq!(capture.call_count(), 1);
+        assert_eq!(second[0].status, PaneStatus::not_checked());
+    }
+
+    #[test]
+    fn pane_output_cache_prunes_expired_entries() {
+        let now = Instant::now();
+        let mut cache = PaneOutputStatusCache::new(Duration::from_secs(2));
+        let mut capture = FakePaneOutputCapture::default().with_output("%1", copilot_busy_output());
+        let mut first = vec![pane(
+            "%1",
+            Some(Provider::Copilot),
+            PaneStatus::not_checked(),
+        )];
+        cache.apply(&mut first, &mut capture, now);
+
+        let mut empty = Vec::new();
+        cache.apply(&mut empty, &mut capture, now + Duration::from_secs(3));
+
+        assert!(cache.entries.is_empty());
     }
 }
