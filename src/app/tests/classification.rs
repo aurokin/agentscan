@@ -1966,6 +1966,21 @@ fn hermes_display_metadata_keeps_title_without_activity_state() {
 }
 
 #[test]
+fn antigravity_display_metadata_keeps_generic_title_without_activity_state() {
+    let antigravity = classify::display_metadata(
+        Some(Provider::Antigravity),
+        Some(super::ClassificationMatchKind::PaneCurrentCommand),
+        None,
+        "koopa.home.arpa",
+        "agy",
+        "idle",
+    );
+
+    assert_eq!(antigravity.label, "koopa.home.arpa");
+    assert_eq!(antigravity.activity_label, None);
+}
+
+#[test]
 fn hermes_display_metadata_preserves_published_label_activity_state() {
     let hermes = classify::display_metadata(
         Some(Provider::Hermes),

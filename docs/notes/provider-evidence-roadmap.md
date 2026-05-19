@@ -138,6 +138,8 @@ a future roadmap item explicitly promotes them into an opt-in integration.
 
 Closed-source queue:
 
+- Antigravity CLI: available through local `agy`; the IDE cask launcher and
+  terminal-first CLI share the command name but expose different behavior.
 - GitHub Copilot CLI: available now because a Copilot subscription is available.
 - Cursor CLI: available now through local `cursor-agent` installation and
   empirical tmux probing.
@@ -147,6 +149,28 @@ changes. If a signal is weak, agentscan should prefer `unknown` over a richer
 but invented classification.
 
 ## Closed-Source Implementation Direction
+
+Antigravity / AGY CLI:
+
+- Treat exact live `agy` foreground commands as Antigravity provider evidence.
+- Current local probing used the native `~/.local/bin/agy` CLI in an isolated
+  tmux session. tmux reported `pane_current_command=agy`, argv `agy`, and a
+  generic hostname pane title while the TUI rendered the Antigravity login
+  screen.
+- The Homebrew cask wrapper at `/opt/homebrew/bin/agy` launches the
+  Antigravity IDE app and exits, so it is not itself a durable tmux pane
+  signal.
+- Official Antigravity CLI docs describe a terminal-first TUI installed as
+  `agy`; `agy chat` is not a documented subcommand in the current public CLI
+  docs or observed local help.
+- Do not infer Antigravity from Gemini-specific titles, packages, slash
+  commands, or Google-adjacent wording. Gemini CLI remains `gemini`; AGY may
+  import Gemini extensions through `agy plugin import gemini`, but that is not
+  Gemini CLI provider evidence.
+- Signed-in idle, working, approval, subagent, and browser task-state UI shapes
+  were not available in local probing, so baseline status stays `unknown`
+  unless explicit pane metadata publishes state. Add provider-scoped pane-output
+  status only after current footer/status shapes are captured.
 
 GitHub Copilot CLI:
 

@@ -88,6 +88,7 @@ fn title_activity_should_stay_empty(
     title_analysis: &TitleAnalysis<'_>,
 ) -> bool {
     (matches!(provider, Some(Provider::Pi)) && title_analysis.stripped.starts_with("π - "))
+        || matches!(provider, Some(Provider::Antigravity))
         || matches!(provider, Some(Provider::Hermes))
         || (matches!(provider, Some(Provider::Opencode))
             && (title_analysis.opencode_label.is_some() || title_analysis.stripped == "OpenCode"))

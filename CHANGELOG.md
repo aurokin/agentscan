@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+
+- Added Antigravity CLI provider identity detection for exact `agy` command
+  panes, with status kept conservative until direct state evidence is available.
+
 ## 0.2.6 - 2026-05-13
 
 ### Safety

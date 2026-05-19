@@ -9,6 +9,8 @@ pub(crate) enum Provider {
     Codex,
     Claude,
     Gemini,
+    #[value(alias = "agy", alias = "google-antigravity")]
+    Antigravity,
     Opencode,
     #[value(alias = "github-copilot")]
     Copilot,
@@ -80,6 +82,16 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
         title_prefixes: &[],
         title_aliases: &[],
         generic_display_labels: &[],
+    },
+    ProviderInfo {
+        provider: Provider::Antigravity,
+        canonical_name: "antigravity",
+        display_marker: "A",
+        metadata_aliases: &["antigravity", "agy", "google antigravity"],
+        command_aliases: &[ProviderCommandAlias::new("agy", false)],
+        title_prefixes: &[],
+        title_aliases: &[],
+        generic_display_labels: &["Antigravity", "Antigravity CLI", "agy"],
     },
     ProviderInfo {
         provider: Provider::Opencode,

@@ -139,6 +139,9 @@ It can:
   thinking, and trust-prompt shapes only after provider identity is already
   established
 - resolve unresolved Claude Code launcher panes from targeted process evidence, including Claude Code CLI paths and tmux teammate-spawn argv/env markers
+- classify Antigravity CLI panes from the exact native `agy` command while
+  keeping status unknown until wrapper metadata or a future provider-scoped
+  output fallback supplies direct state
 - classify Pi coding agent panes from upstream-observed Greek terminal titles,
   Linux `PI_CODING_AGENT=true` process evidence, and targeted package or shim
   path evidence while keeping bare `pi` commands conservative

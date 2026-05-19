@@ -73,10 +73,10 @@ Launch wrappers may publish explicit pane-local tmux user options:
 Field semantics:
 
 - `provider`: normalized provider identity. Canonical values are `codex`,
-  `claude`, `gemini`, `opencode`, `copilot`, `cursor_cli`, and `pi`. The
-  metadata helper also accepts useful aliases such as `github-copilot`,
-  `cursor-cli`, `cursor-agent`, and `pi-coding-agent`, then writes the
-  canonical value.
+  `claude`, `gemini`, `antigravity`, `opencode`, `copilot`, `cursor_cli`, and
+  `pi`. The metadata helper also accepts useful aliases such as `agy`,
+  `github-copilot`, `cursor-cli`, `cursor-agent`, and `pi-coding-agent`, then
+  writes the canonical value.
 - `label`: short user-facing display text for list and TUI surfaces. It
   should describe the task or conversation only when the wrapper has that
   information directly. Do not derive richer labels from paths, generic tmux

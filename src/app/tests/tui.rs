@@ -68,6 +68,10 @@ fn provider_display_marker_uses_compact_markers_for_codex_and_claude() {
         "\u{e7f0}"
     );
     assert_eq!(
+        super::provider_display_marker(Some(Provider::Antigravity)),
+        "A"
+    );
+    assert_eq!(
         super::provider_display_marker(Some(Provider::Copilot)),
         "\u{ec1e}"
     );

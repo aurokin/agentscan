@@ -33,6 +33,19 @@ fn classifies_from_command() {
         super::ClassificationConfidence::Medium,
         "suffixed gemini binary should stay medium confidence"
     );
+
+    let agy = classify::classify_provider(None, "agy", "koopa.home.arpa")
+        .expect("agy should classify as Antigravity");
+    assert_eq!(agy.provider, Provider::Antigravity);
+    assert_eq!(
+        agy.matched_by,
+        super::ClassificationMatchKind::PaneCurrentCommand
+    );
+    assert_eq!(
+        agy.confidence,
+        super::ClassificationConfidence::High,
+        "exact agy binary match should be high confidence"
+    );
 }
 
 #[test]
@@ -48,6 +61,10 @@ fn rejects_suffixed_binaries_for_generic_word_providers() {
     assert!(
         classify::classify_provider(None, "pi-coding-agent-foo", "").is_none(),
         "pi-coding-agent suffix should not classify as Pi"
+    );
+    assert!(
+        classify::classify_provider(None, "agy-beta", "").is_none(),
+        "agy suffix should not classify as Antigravity"
     );
 }
 
@@ -303,6 +320,9 @@ fn provider_metadata_table_covers_aliases_commands_and_summary_order() {
         ("codex", Provider::Codex),
         ("claude", Provider::Claude),
         ("gemini", Provider::Gemini),
+        ("antigravity", Provider::Antigravity),
+        ("agy", Provider::Antigravity),
+        ("google antigravity", Provider::Antigravity),
         ("opencode", Provider::Opencode),
         ("github copilot", Provider::Copilot),
         ("cursor-cli", Provider::CursorCli),
@@ -322,6 +342,15 @@ fn provider_metadata_table_covers_aliases_commands_and_summary_order() {
 
     assert_eq!(super::provider_from_metadata(Some(" unknown ")), None);
     assert_eq!(super::provider_from_command("codex-exec"), Some((Provider::Codex, false)));
+    assert_eq!(
+        super::provider_from_command("agy"),
+        Some((Provider::Antigravity, true))
+    );
+    assert_eq!(
+        super::provider_from_command("agy-beta"),
+        None,
+        "agy should not accept suffixed binaries"
+    );
     assert_eq!(
         super::provider_from_command("hermes"),
         Some((Provider::Hermes, true))
@@ -354,6 +383,7 @@ fn provider_metadata_table_covers_aliases_commands_and_summary_order() {
             Provider::Codex,
             Provider::Claude,
             Provider::Gemini,
+            Provider::Antigravity,
             Provider::Opencode,
             Provider::Copilot,
             Provider::CursorCli,

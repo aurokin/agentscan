@@ -268,6 +268,8 @@ fn tmux_set_metadata_accepts_provider_aliases() {
         ("cursor-agent", Provider::CursorCli),
         ("copilot", Provider::Copilot),
         ("github-copilot", Provider::Copilot),
+        ("antigravity", Provider::Antigravity),
+        ("agy", Provider::Antigravity),
         ("pi", Provider::Pi),
         ("pi-coding-agent", Provider::Pi),
         ("grok", Provider::Grok),
