@@ -2175,6 +2175,7 @@ fn daemon_run_with_socket_path_and_startup(
 
     let mut snapshot = pending_snapshot.snapshot.clone();
     let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
+    let tmux_reads = TmuxCommandReadProvider;
     socket_state.publish_prepared_snapshot(pending_snapshot);
     let mut closing_guard = DaemonClosingGuard::new(socket_state.clone());
     let stdout_reader = tmux_client
@@ -2220,6 +2221,7 @@ fn daemon_run_with_socket_path_and_startup(
             let publish_context = SnapshotPublishContext::new("reconcile").with_detail("interval");
             reconcile_full_snapshot(
                 &mut snapshot,
+                &tmux_reads,
                 tmux_version.as_deref(),
                 &mut pane_output_cache,
             )?;
@@ -2234,7 +2236,13 @@ fn daemon_run_with_socket_path_and_startup(
                 let event = control_event_from_line(&line);
                 let should_exit = event == ControlEvent::Exit;
                 let publish_context = event.publish_context();
-                if apply_control_event(&mut snapshot, &line, &event, &mut pane_output_cache)? {
+                if apply_control_event(
+                    &mut snapshot,
+                    &tmux_reads,
+                    &line,
+                    &event,
+                    &mut pane_output_cache,
+                )? {
                     socket_state.publish_later_snapshot_with_context(
                         snapshot.clone(),
                         publish_context.unwrap_or_else(|| {
@@ -2252,6 +2260,7 @@ fn daemon_run_with_socket_path_and_startup(
                     SnapshotPublishContext::new("reconcile").with_detail("timeout");
                 reconcile_full_snapshot(
                     &mut snapshot,
+                    &tmux_reads,
                     tmux_version.as_deref(),
                     &mut pane_output_cache,
                 )?;
@@ -2293,6 +2302,29 @@ impl StartupActions for DaemonStartup {
 
     fn start_tmux_control_mode_client(&self) -> Result<StartedTmuxControlModeClient> {
         start_tmux_control_mode_client().map(StartedTmuxControlModeClient::from_real)
+    }
+}
+
+pub(crate) trait TmuxReadProvider {
+    fn list_all_panes(&self) -> Result<Vec<TmuxPaneRow>>;
+    fn list_target_panes(&self, target: &str) -> Result<Option<Vec<TmuxPaneRow>>>;
+    fn list_pane(&self, pane_id: &str) -> Result<Option<TmuxPaneRow>>;
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TmuxCommandReadProvider;
+
+impl TmuxReadProvider for TmuxCommandReadProvider {
+    fn list_all_panes(&self) -> Result<Vec<TmuxPaneRow>> {
+        tmux::tmux_list_panes()
+    }
+
+    fn list_target_panes(&self, target: &str) -> Result<Option<Vec<TmuxPaneRow>>> {
+        tmux::tmux_list_panes_target(target)
+    }
+
+    fn list_pane(&self, pane_id: &str) -> Result<Option<TmuxPaneRow>> {
+        tmux::tmux_list_pane(pane_id)
     }
 }
 
@@ -3676,18 +3708,20 @@ fn control_event_from_line(line: &str) -> ControlEvent {
 
 fn apply_control_event(
     snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &impl TmuxReadProvider,
     line: &str,
     event: &ControlEvent,
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
 ) -> Result<bool> {
     match event {
         ControlEvent::PaneChanged(pane_id) => {
-            refresh_snapshot_pane(snapshot, pane_id, pane_output_cache)?;
+            refresh_snapshot_pane(snapshot, tmux_reads, pane_id, pane_output_cache)?;
             Ok(true)
         }
         ControlEvent::TitleChanged { pane_id, title } => {
             refresh_snapshot_pane_with_title(
                 snapshot,
+                tmux_reads,
                 pane_id,
                 Some(title.as_str()),
                 pane_output_cache,
@@ -3695,20 +3729,41 @@ fn apply_control_event(
             Ok(true)
         }
         ControlEvent::WindowChanged(window_id) => {
-            refresh_snapshot_window(snapshot, window_id, pane_output_cache).or_else(|error| {
-                fallback_to_full_resnapshot(snapshot, line, error, pane_output_cache)
-            })?;
+            refresh_snapshot_window(snapshot, tmux_reads, window_id, pane_output_cache).or_else(
+                |error| {
+                    fallback_to_full_resnapshot(
+                        snapshot,
+                        tmux_reads,
+                        line,
+                        error,
+                        pane_output_cache,
+                    )
+                },
+            )?;
             Ok(true)
         }
         ControlEvent::SessionChanged(session_id) => {
-            refresh_snapshot_session(snapshot, session_id, pane_output_cache).or_else(|error| {
-                fallback_to_full_resnapshot(snapshot, line, error, pane_output_cache)
-            })?;
+            refresh_snapshot_session(snapshot, tmux_reads, session_id, pane_output_cache).or_else(
+                |error| {
+                    fallback_to_full_resnapshot(
+                        snapshot,
+                        tmux_reads,
+                        line,
+                        error,
+                        pane_output_cache,
+                    )
+                },
+            )?;
             Ok(true)
         }
         ControlEvent::Resnapshot => {
             let tmux_version = snapshot.source.tmux_version.clone();
-            reconcile_full_snapshot(snapshot, tmux_version.as_deref(), pane_output_cache)?;
+            reconcile_full_snapshot(
+                snapshot,
+                tmux_reads,
+                tmux_version.as_deref(),
+                pane_output_cache,
+            )?;
             Ok(true)
         }
         ControlEvent::Exit | ControlEvent::Ignored => Ok(false),
@@ -3876,19 +3931,21 @@ fn terminal_title_from_decoded_output(output: &str) -> Option<String> {
 
 fn refresh_snapshot_pane(
     snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &impl TmuxReadProvider,
     pane_id: &str,
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
 ) -> Result<()> {
-    refresh_snapshot_pane_with_title(snapshot, pane_id, None, pane_output_cache)
+    refresh_snapshot_pane_with_title(snapshot, tmux_reads, pane_id, None, pane_output_cache)
 }
 
 fn refresh_snapshot_pane_with_title(
     snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &impl TmuxReadProvider,
     pane_id: &str,
     title_override: Option<&str>,
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
 ) -> Result<()> {
-    let pane = tmux::tmux_list_pane(pane_id)?.map(|mut row| {
+    let pane = tmux_reads.list_pane(pane_id)?.map(|mut row| {
         if let Some(title) = title_override {
             row.pane_title_raw = title.to_string();
         }
@@ -3924,19 +3981,28 @@ fn refresh_snapshot_pane_with_title(
 
 fn refresh_snapshot_window(
     snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &impl TmuxReadProvider,
     window_id: &str,
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
 ) -> Result<()> {
-    refresh_snapshot_scope(snapshot, TargetScope::Window, window_id, pane_output_cache)
+    refresh_snapshot_scope(
+        snapshot,
+        tmux_reads,
+        TargetScope::Window,
+        window_id,
+        pane_output_cache,
+    )
 }
 
 fn refresh_snapshot_session(
     snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &impl TmuxReadProvider,
     session_id: &str,
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
 ) -> Result<()> {
     refresh_snapshot_scope(
         snapshot,
+        tmux_reads,
         TargetScope::Session,
         session_id,
         pane_output_cache,
@@ -3945,11 +4011,12 @@ fn refresh_snapshot_session(
 
 fn refresh_snapshot_scope(
     snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &impl TmuxReadProvider,
     scope: TargetScope,
     target_id: &str,
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
 ) -> Result<()> {
-    let rows = tmux::tmux_list_panes_target(target_id)?;
+    let rows = tmux_reads.list_target_panes(target_id)?;
 
     snapshot
         .panes
@@ -3975,6 +4042,7 @@ fn refresh_snapshot_scope(
 
 fn fallback_to_full_resnapshot(
     snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &impl TmuxReadProvider,
     line: &str,
     error: anyhow::Error,
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
@@ -3984,20 +4052,113 @@ fn fallback_to_full_resnapshot(
         line
     );
     let tmux_version = snapshot.source.tmux_version.clone();
-    reconcile_full_snapshot(snapshot, tmux_version.as_deref(), pane_output_cache)
+    reconcile_full_snapshot(
+        snapshot,
+        tmux_reads,
+        tmux_version.as_deref(),
+        pane_output_cache,
+    )
 }
 
 fn reconcile_full_snapshot(
     snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &impl TmuxReadProvider,
     tmux_version: Option<&str>,
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
 ) -> Result<()> {
-    *snapshot = snapshot::daemon_snapshot_from_tmux_with_pane_output_cache(
+    *snapshot = daemon_snapshot_from_tmux_with_provider(
+        tmux_reads,
         tmux_version,
         pane_output_cache,
         Instant::now(),
     )?;
     Ok(())
+}
+
+fn daemon_snapshot_from_tmux_with_provider(
+    tmux_reads: &impl TmuxReadProvider,
+    tmux_version: Option<&str>,
+    pane_output_cache: &mut scanner::PaneOutputStatusCache,
+    now: Instant,
+) -> Result<SnapshotEnvelope> {
+    let rows = tmux_reads.list_all_panes()?;
+    let proc_inspector = proc::ProcProcessInspector;
+    let mut panes = classify::panes_from_rows_with_proc_fallback(rows, &proc_inspector);
+    scanner::apply_pane_output_status_fallbacks_with_cache(&mut panes, pane_output_cache, now);
+
+    let mut snapshot = SnapshotEnvelope {
+        schema_version: CACHE_SCHEMA_VERSION,
+        generated_at: snapshot::now_rfc3339()?,
+        source: SnapshotSource {
+            kind: SourceKind::Snapshot,
+            tmux_version: tmux_version.map(str::to_string),
+            daemon_generated_at: None,
+        },
+        panes,
+    };
+    snapshot::sort_snapshot_panes(&mut snapshot);
+    for pane in &mut snapshot.panes {
+        pane.diagnostics.cache_origin = "daemon_snapshot".to_string();
+    }
+    snapshot::mark_snapshot_as_daemon(&mut snapshot)?;
+    Ok(snapshot)
+}
+
+#[cfg(test)]
+pub(crate) fn test_refresh_snapshot_pane_with_provider(
+    snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &impl TmuxReadProvider,
+    pane_id: &str,
+) -> Result<()> {
+    let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
+    refresh_snapshot_pane(snapshot, tmux_reads, pane_id, &mut pane_output_cache)
+}
+
+#[cfg(test)]
+pub(crate) fn test_refresh_snapshot_pane_title_with_provider(
+    snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &impl TmuxReadProvider,
+    pane_id: &str,
+    title_override: &str,
+) -> Result<()> {
+    let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
+    refresh_snapshot_pane_with_title(
+        snapshot,
+        tmux_reads,
+        pane_id,
+        Some(title_override),
+        &mut pane_output_cache,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn test_refresh_snapshot_window_with_provider(
+    snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &impl TmuxReadProvider,
+    window_id: &str,
+) -> Result<()> {
+    let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
+    refresh_snapshot_window(snapshot, tmux_reads, window_id, &mut pane_output_cache)
+}
+
+#[cfg(test)]
+pub(crate) fn test_refresh_snapshot_session_with_provider(
+    snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &impl TmuxReadProvider,
+    session_id: &str,
+) -> Result<()> {
+    let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
+    refresh_snapshot_session(snapshot, tmux_reads, session_id, &mut pane_output_cache)
+}
+
+#[cfg(test)]
+pub(crate) fn test_reconcile_full_snapshot_with_provider(
+    snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &impl TmuxReadProvider,
+    tmux_version: Option<&str>,
+) -> Result<()> {
+    let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
+    reconcile_full_snapshot(snapshot, tmux_reads, tmux_version, &mut pane_output_cache)
 }
 
 pub(crate) fn window_notification_target(line: &str) -> Option<&str> {
