@@ -34,7 +34,7 @@ When pane output supplies state, JSON should expose that provenance as
 
 ## Pi Coding Agent Plan
 
-Upstream analyzed: `~/code/upstream/pi-mono`, package
+Upstream analyzed: `~/code/upstream/pi-mono` commit `385a11bf`, package
 `@mariozechner/pi-coding-agent`.
 
 Current upstream signals:
@@ -47,6 +47,14 @@ Current upstream signals:
 - Default terminal title does not encode ready/busy state.
 - Optional terminal progress uses OSC `9;4`, but `showTerminalProgress` defaults
   false and is not yet part of agentscan's tmux evidence model.
+- Interactive mode renders chat, status, widgets, editor, then footer. The
+  empty editor from `packages/tui/src/components/editor.ts` renders horizontal
+  border lines, and the footer from
+  `packages/coding-agent/src/modes/interactive/components/footer.ts` includes a
+  context token such as `0.0%/200k` or `?/200k`.
+- Current busy UI is explicit in source: `interactive-mode.ts` renders
+  `Working...` with an interrupt hint, retry and compaction loaders with cancel
+  hints, and bash execution renders `Running...` with a cancel hint.
 
 Implementation behavior:
 
@@ -62,6 +70,12 @@ Implementation behavior:
     package or build output
 - Keep Pi status `unknown` unless there is direct state evidence. Default Pi
   titles should not be interpreted as idle or busy.
+- Use provider-scoped pane output status fallback only after Pi identity is
+  already established. Mark idle from the current empty editor frame when it is
+  near the current footer context token. Mark busy from current Pi loader text
+  such as `Working...`, retry, compaction, or bash `Running...` cancel lines.
+  Preserve `unknown` for stale editor frames, generic text, errors, warnings,
+  or weak historical output.
 - Treat default Greek Pi title text as context for display labels, not as an
   activity label.
 - Use `inspect` diagnostics to expose which Pi signal won.

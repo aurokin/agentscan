@@ -2566,6 +2566,112 @@ fn gemini_pane_output_does_not_infer_idle_from_stale_prompt() {
 }
 
 #[test]
+fn pi_pane_output_marks_current_editor_footer_idle_only_after_provider_is_known() {
+    let mut pi = pane_output_status_pane(787, Provider::Pi, "π - agentscan");
+
+    classify::apply_pane_output_status_fallback(
+        &mut pi,
+        "Completed prior turn.\n\
+         ────────────────────────────────\n\
+                                         \n\
+         ────────────────────────────────\n\
+         ~/code/app\n\
+         0.0%/200k                                      claude-sonnet\n",
+    );
+
+    assert_eq!(pi.status.kind, StatusKind::Idle);
+    assert_eq!(pi.status.source, super::StatusSource::PaneOutput);
+
+    let mut unknown = proc_fallback_pane(788, "zsh", "custom title");
+    classify::apply_pane_output_status_fallback(
+        &mut unknown,
+        "Completed prior turn.\n\
+         ────────────────────────────────\n\
+                                         \n\
+         ────────────────────────────────\n\
+         ~/code/app\n\
+         0.0%/200k                                      claude-sonnet\n",
+    );
+
+    assert_eq!(unknown.status.kind, StatusKind::Unknown);
+    assert_eq!(unknown.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn pi_pane_output_marks_current_working_loader_busy() {
+    let mut pi = pane_output_status_pane(789, Provider::Pi, "π - agentscan");
+
+    classify::apply_pane_output_status_fallback(
+        &mut pi,
+        "⠋ Working... (ctrl+c to interrupt)\n\
+         ────────────────────────────────\n\
+                                        \n\
+         ────────────────────────────────\n\
+         ~/code/app\n\
+         0.0%/200k                                      claude-sonnet\n",
+    );
+
+    assert_eq!(pi.status.kind, StatusKind::Busy);
+    assert_eq!(pi.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn pi_pane_output_marks_current_retry_loader_busy() {
+    let mut pi = pane_output_status_pane(790, Provider::Pi, "π - agentscan");
+
+    classify::apply_pane_output_status_fallback(
+        &mut pi,
+        "Retrying (2/3) in 4s... (ctrl+c to cancel)\n",
+    );
+
+    assert_eq!(pi.status.kind, StatusKind::Busy);
+    assert_eq!(pi.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn pi_pane_output_uses_current_idle_footer_over_stale_busy_loader() {
+    let mut pi = pane_output_status_pane(791, Provider::Pi, "π - agentscan");
+
+    classify::apply_pane_output_status_fallback(
+        &mut pi,
+        "⠋ Working... (ctrl+c to interrupt)\n\
+         Finished.\n\
+         ────────────────────────────────\n\
+                                         \n\
+         ────────────────────────────────\n\
+         ~/code/app\n\
+         ?/200k                                      claude-sonnet\n",
+    );
+
+    assert_eq!(pi.status.kind, StatusKind::Idle);
+    assert_eq!(pi.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn pi_pane_output_does_not_infer_idle_from_stale_editor_frame() {
+    let mut pi = pane_output_status_pane(792, Provider::Pi, "π - agentscan");
+
+    classify::apply_pane_output_status_fallback(
+        &mut pi,
+        "────────────────────────────────\n\
+                                        \n\
+         ────────────────────────────────\n\
+         ~/code/app\n\
+         0.0%/200k                                      claude-sonnet\n\
+         \n\
+         Planning edits\n\
+         Reading files\n\
+         Updating code\n\
+         Running tests\n\
+         Collecting output\n\
+         Current line\n",
+    );
+
+    assert_eq!(pi.status.kind, StatusKind::Unknown);
+    assert_eq!(pi.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
 fn opencode_pane_output_marks_current_tui_prompt_idle_only_after_provider_is_known() {
     let mut opencode = pane_output_status_pane(780, Provider::Opencode, "OpenCode");
 

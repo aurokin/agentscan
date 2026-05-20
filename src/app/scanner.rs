@@ -270,6 +270,14 @@ mod tests {
          ~/code/app                                                    /status\n"
     }
 
+    fn pi_idle_output() -> &'static str {
+        "────────────────────────────────\n\
+                                        \n\
+         ────────────────────────────────\n\
+         ~/code/app\n\
+         0.0%/200k                                      claude-sonnet\n"
+    }
+
     #[test]
     fn pane_output_capture_runs_only_for_supported_unknown_status_candidates() {
         let mut panes = vec![
@@ -288,11 +296,13 @@ mod tests {
             ),
             pane("%6", Some(Provider::Gemini), PaneStatus::not_checked()),
             pane("%7", Some(Provider::Opencode), PaneStatus::not_checked()),
+            pane("%8", Some(Provider::Pi), PaneStatus::not_checked()),
         ];
         let mut capture = FakePaneOutputCapture::default()
             .with_output("%4", copilot_busy_output())
             .with_output("%6", gemini_idle_output())
-            .with_output("%7", opencode_idle_output());
+            .with_output("%7", opencode_idle_output())
+            .with_output("%8", pi_idle_output());
 
         apply_pane_output_status_fallbacks_with_capture(&mut panes, &mut capture);
 
@@ -301,12 +311,14 @@ mod tests {
             vec![
                 ("%4".to_string(), PANE_OUTPUT_STATUS_LINES),
                 ("%6".to_string(), PANE_OUTPUT_STATUS_LINES),
-                ("%7".to_string(), PANE_OUTPUT_STATUS_LINES)
+                ("%7".to_string(), PANE_OUTPUT_STATUS_LINES),
+                ("%8".to_string(), PANE_OUTPUT_STATUS_LINES)
             ]
         );
         assert_eq!(panes[3].status, PaneStatus::pane_output(StatusKind::Busy));
         assert_eq!(panes[5].status, PaneStatus::pane_output(StatusKind::Idle));
         assert_eq!(panes[6].status, PaneStatus::pane_output(StatusKind::Idle));
+        assert_eq!(panes[7].status, PaneStatus::pane_output(StatusKind::Idle));
     }
 
     #[test]
