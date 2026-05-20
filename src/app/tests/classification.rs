@@ -2470,6 +2470,102 @@ fn hermes_pane_output_uses_current_prompt_over_stale_busy_footer() {
 }
 
 #[test]
+fn gemini_pane_output_marks_current_prompt_idle_only_after_provider_is_known() {
+    let mut gemini = pane_output_status_pane(775, Provider::Gemini, "Gemini CLI");
+
+    classify::apply_pane_output_status_fallback(
+        &mut gemini,
+        "Welcome to Gemini CLI\n\
+         \n\
+         >   Type your message or @path/to/file\n\
+         Workspace   Sandbox    Model\n\
+         ~/code/app  no sandbox gemini-2.5-pro\n",
+    );
+
+    assert_eq!(gemini.status.kind, StatusKind::Idle);
+    assert_eq!(gemini.status.source, super::StatusSource::PaneOutput);
+
+    let mut unknown = proc_fallback_pane(776, "zsh", "custom title");
+    classify::apply_pane_output_status_fallback(
+        &mut unknown,
+        "Welcome to Gemini CLI\n\
+         \n\
+         >   Type your message or @path/to/file\n\
+         Workspace   Sandbox    Model\n\
+         ~/code/app  no sandbox gemini-2.5-pro\n",
+    );
+
+    assert_eq!(unknown.status.kind, StatusKind::Unknown);
+    assert_eq!(unknown.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn gemini_pane_output_marks_action_required_busy() {
+    let mut gemini = pane_output_status_pane(777, Provider::Gemini, "Gemini CLI");
+
+    classify::apply_pane_output_status_fallback(
+        &mut gemini,
+        "╭──────────────────────────────────────────────────────────────────────────────╮\n\
+         │ Action Required                                                             │\n\
+         │ ?  ls list directory                                                        │\n\
+         │ Allow execution of [ls]?                                                    │\n\
+         │   1. Yes                                                                    │\n\
+         │   2. No, suggest changes (esc)                                              │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯\n",
+    );
+
+    assert_eq!(gemini.status.kind, StatusKind::Busy);
+    assert_eq!(gemini.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn gemini_pane_output_uses_current_busy_marker_over_stale_idle_prompt() {
+    let mut gemini = pane_output_status_pane(778, Provider::Gemini, "Gemini CLI");
+
+    classify::apply_pane_output_status_fallback(
+        &mut gemini,
+        ">   Type your message or @path/to/file\n\
+         Workspace   Sandbox    Model\n\
+         ~/code/app  no sandbox gemini-2.5-pro\n\
+         \n\
+         ╭──────────────────────────────────────────────────────────────────────────────╮\n\
+         │ Action Required                                                             │\n\
+         │ Apply this change?                                                          │\n\
+         │   1. Yes                                                                    │\n\
+         │   2. No, suggest changes (esc)                                              │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯\n",
+    );
+
+    assert_eq!(gemini.status.kind, StatusKind::Busy);
+    assert_eq!(gemini.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn gemini_pane_output_does_not_infer_idle_from_stale_prompt() {
+    let mut gemini = pane_output_status_pane(779, Provider::Gemini, "Gemini CLI");
+
+    classify::apply_pane_output_status_fallback(
+        &mut gemini,
+        ">   Type your message or @path/to/file\n\
+         Workspace   Sandbox    Model\n\
+         ~/code/app  no sandbox gemini-2.5-pro\n\
+         \n\
+         ✦ Working on the latest request\n\
+         Reading files\n\
+         Preparing answer\n\
+         Updating edits\n\
+         Running tests\n\
+         Collecting output\n\
+         Still working\n\
+         More output\n\
+         Current line\n",
+    );
+
+    assert_eq!(gemini.status.kind, StatusKind::Unknown);
+    assert_eq!(gemini.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
 fn opencode_display_metadata_uses_title_without_activity_state() {
     let opencode = classify::display_metadata(
         Some(Provider::Opencode),

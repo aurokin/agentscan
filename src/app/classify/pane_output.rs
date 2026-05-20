@@ -5,6 +5,7 @@ pub(crate) fn pane_output_status_fallback_candidate(pane: &PaneRecord) -> bool {
         pane.provider,
         Some(Provider::Copilot)
             | Some(Provider::CursorCli)
+            | Some(Provider::Gemini)
             | Some(Provider::Grok)
             | Some(Provider::Hermes)
     ) && pane.status.kind == StatusKind::Unknown
@@ -19,6 +20,7 @@ pub(crate) fn apply_pane_output_status_fallback(pane: &mut PaneRecord, output: &
     let status = match pane.provider {
         Some(Provider::Copilot) => copilot_pane_output_status(output),
         Some(Provider::CursorCli) => cursor_cli_pane_output_status(output),
+        Some(Provider::Gemini) => gemini_pane_output_status(output),
         Some(Provider::Grok) => grok_pane_output_status(output),
         Some(Provider::Hermes) => hermes_pane_output_status(output),
         _ => None,
@@ -152,6 +154,44 @@ fn cursor_cli_footer_indicates_idle(line: &str) -> bool {
 
 fn cursor_cli_footer_top_border(line: &str) -> bool {
     line.trim_start().starts_with("▄▄▄▄▄▄")
+}
+
+fn gemini_pane_output_status(output: &str) -> Option<StatusKind> {
+    let lines: Vec<&str> = output.lines().collect();
+    let idle_index = lines
+        .iter()
+        .rposition(|line| gemini_idle_input_prompt_line(line));
+    let busy_index = lines
+        .iter()
+        .rposition(|line| gemini_current_busy_marker_line(line));
+
+    if let Some(index) = busy_index
+        && idle_index.is_none_or(|idle_index| idle_index < index)
+    {
+        return Some(StatusKind::Busy);
+    }
+
+    idle_index
+        .is_some_and(|index| gemini_prompt_is_near_current_footer(&lines, index))
+        .then_some(StatusKind::Idle)
+}
+
+fn gemini_idle_input_prompt_line(line: &str) -> bool {
+    let line = line.trim_start();
+    line.starts_with('>') && line.contains("Type your message")
+}
+
+fn gemini_current_busy_marker_line(line: &str) -> bool {
+    let line = line.trim();
+    line.contains("Action Required")
+        || line.contains("Apply this change?")
+        || line.contains("Allow execution of")
+        || (line.contains("Running Agent") && line.contains("ctrl+o to collapse"))
+}
+
+fn gemini_prompt_is_near_current_footer(lines: &[&str], prompt_index: usize) -> bool {
+    let tail_len = lines.len().saturating_sub(prompt_index);
+    tail_len <= 8
 }
 
 fn grok_pane_output_status(output: &str) -> Option<StatusKind> {

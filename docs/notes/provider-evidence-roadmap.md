@@ -99,6 +99,19 @@ Each analysis should record:
 
 Completed source-analysis baselines:
 
+- Gemini CLI: source analysis at `~/code/upstream/gemini-cli` commit
+  `dc47aaa2d` found the current idle prompt in
+  `packages/cli/src/ui/components/InputPrompt.tsx`: the prompt prefix renders as
+  `>` and the default placeholder renders as `Type your message or
+  @path/to/file`. The footer is separately rendered by
+  `packages/cli/src/ui/components/Footer.tsx` and commonly places workspace,
+  sandbox, and model context directly below the prompt. Pane-output status
+  fallback should therefore only mark Gemini idle when that current prompt
+  placeholder appears near the bottom of the captured pane. Action/confirmation
+  snapshots expose explicit current markers such as `Action Required`, `Apply
+  this change?`, and `Allow execution of [...]`; those may be treated as busy.
+  Generic mentions of Gemini, historical prompts, or arbitrary `>` lines should
+  remain `unknown`.
 - opencode: source analysis found `OpenCode` / `OC | ...` title shapes,
   package and platform binary paths, and Linux `OPENCODE` process markers.
   Default opencode titles do not carry run state; richer status should remain a

@@ -258,6 +258,12 @@ mod tests {
          / commands · ? help\n"
     }
 
+    fn gemini_idle_output() -> &'static str {
+        ">   Type your message or @path/to/file\n\
+         Workspace   Sandbox    Model\n\
+         ~/code/app  no sandbox gemini-2.5-pro\n"
+    }
+
     #[test]
     fn pane_output_capture_runs_only_for_supported_unknown_status_candidates() {
         let mut panes = vec![
@@ -269,16 +275,28 @@ mod tests {
                 PaneStatus::title(StatusKind::Busy),
             ),
             pane("%4", Some(Provider::Copilot), PaneStatus::not_checked()),
+            pane(
+                "%5",
+                Some(Provider::Gemini),
+                PaneStatus::title(StatusKind::Idle),
+            ),
+            pane("%6", Some(Provider::Gemini), PaneStatus::not_checked()),
         ];
-        let mut capture = FakePaneOutputCapture::default().with_output("%4", copilot_busy_output());
+        let mut capture = FakePaneOutputCapture::default()
+            .with_output("%4", copilot_busy_output())
+            .with_output("%6", gemini_idle_output());
 
         apply_pane_output_status_fallbacks_with_capture(&mut panes, &mut capture);
 
         assert_eq!(
             capture.calls,
-            vec![("%4".to_string(), PANE_OUTPUT_STATUS_LINES)]
+            vec![
+                ("%4".to_string(), PANE_OUTPUT_STATUS_LINES),
+                ("%6".to_string(), PANE_OUTPUT_STATUS_LINES)
+            ]
         );
         assert_eq!(panes[3].status, PaneStatus::pane_output(StatusKind::Busy));
+        assert_eq!(panes[5].status, PaneStatus::pane_output(StatusKind::Idle));
     }
 
     #[test]
