@@ -137,11 +137,18 @@ pub(crate) enum DaemonCommands {
     /// Run the long-lived daemon loop.
     Run,
     /// Report daemon lifecycle status.
-    Status,
+    Status(DaemonStatusArgs),
     /// Stop the daemon if it is running.
     Stop,
     /// Restart the daemon.
     Restart,
+}
+
+#[derive(Args, Clone, Copy, Debug)]
+pub(crate) struct DaemonStatusArgs {
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    pub(crate) format: OutputFormat,
 }
 
 #[derive(Subcommand, Debug)]

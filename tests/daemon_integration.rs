@@ -269,6 +269,39 @@ fn daemon_lifecycle_start_status_stop() -> Result<()> {
         "expected snapshot update telemetry in status, got:\n{status_output}"
     );
 
+    let status_json_output = harness.agentscan_output(["daemon", "status", "--format", "json"])?;
+    let status_json: Value =
+        serde_json::from_str(&status_json_output).context("daemon status JSON should parse")?;
+    assert_eq!(status_json["daemon_state"], "ready");
+    assert!(
+        status_json["pid"].as_u64().is_some_and(|pid| pid > 0),
+        "expected live identity pid in status JSON, got:\n{status_json_output}"
+    );
+    assert_eq!(
+        status_json["socket_path"],
+        harness.agentscan_socket_path.display().to_string()
+    );
+    assert!(
+        status_json["protocol_version"]
+            .as_u64()
+            .is_some_and(|version| version > 0)
+    );
+    assert!(
+        status_json["snapshot_schema_version"]
+            .as_u64()
+            .is_some_and(|version| version > 0)
+    );
+    assert!(
+        status_json["latest_snapshot_pane_count"].as_u64().is_some(),
+        "expected snapshot details in status JSON, got:\n{status_json_output}"
+    );
+    assert!(
+        status_json["latest_snapshot_update_source"]
+            .as_str()
+            .is_some_and(|source| !source.is_empty()),
+        "expected snapshot update telemetry in status JSON, got:\n{status_json_output}"
+    );
+
     let scan_output = harness.agentscan_output(["scan", "--all", "--format", "json"])?;
     assert!(
         scan_output.contains(&pane_id),

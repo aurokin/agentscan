@@ -251,10 +251,10 @@ fn command_focus(args: &FocusArgs) -> Result<()> {
 }
 
 fn command_daemon(args: &DaemonArgs) -> Result<()> {
-    match args.command {
+    match &args.command {
         DaemonCommands::Start => daemon::daemon_start(),
         DaemonCommands::Run => daemon::daemon_run(),
-        DaemonCommands::Status => daemon::daemon_status(),
+        DaemonCommands::Status(args) => daemon::daemon_status(args.format),
         DaemonCommands::Stop => daemon::daemon_stop(),
         DaemonCommands::Restart => daemon::daemon_restart(),
     }

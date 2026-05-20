@@ -89,6 +89,22 @@ fn root_list_args_merge_into_other_refresh_capable_commands() {
 }
 
 #[test]
+fn daemon_status_accepts_local_format() {
+    let cli =
+        <Cli as clap::Parser>::parse_from(["agentscan", "daemon", "status", "--format", "json"]);
+
+    match cli.command {
+        Some(super::Commands::Daemon(args)) => match args.command {
+            super::DaemonCommands::Status(status_args) => {
+                assert_eq!(status_args.format, OutputFormat::Json);
+            }
+            other => panic!("expected daemon status command, got {other:?}"),
+        },
+        other => panic!("expected daemon command, got {other:?}"),
+    }
+}
+
+#[test]
 fn unsupported_root_list_args_are_rejected_for_other_commands() {
     let cli = <Cli as clap::Parser>::parse_from(["agentscan", "--all", "daemon", "status"]);
     assert!(cli.list_args.all);

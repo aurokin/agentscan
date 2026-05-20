@@ -203,6 +203,7 @@ Use:
 - `agentscan list --format json` for the supported JSON automation surface
 - `agentscan list --all --format json` if the consumer previously depended on interactive `--all`
 - `agentscan snapshot --format json` only when the consumer intentionally needs the raw snapshot envelope
+- `agentscan daemon status --format json` for daemon lifecycle and readiness checks
 - `agentscan scan` or supported `--refresh` flags when a script intentionally
   needs direct tmux state instead of daemon state
 

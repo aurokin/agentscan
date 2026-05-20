@@ -560,7 +560,7 @@ fn daemon_lifecycle_query_rejects_incompatible_hello_ack() {
         ],
     );
 
-    let error = daemon::daemon_status_with_socket_path(&socket_path)
+    let error = daemon::daemon_status_with_socket_path(&socket_path, OutputFormat::Text)
         .expect_err("incompatible lifecycle ack should fail");
 
     assert!(error.to_string().contains("incompatible lifecycle handshake"));

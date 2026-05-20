@@ -164,6 +164,7 @@ Current lifecycle policy:
 - The TUI remains interactive-only and not a machine-readable contract.
 - Normal automation should use `agentscan list --format json`; raw snapshot
   consumers should use `agentscan snapshot --format json`.
+- Daemon health automation should use `agentscan daemon status --format json`.
 - Keep shell wrappers thin; discovery and classification belong in Rust.
 - Prefer honest labels from tmux metadata over richer weak inference.
 - Treat pane inspection as a narrow fallback, not a primary detection strategy.

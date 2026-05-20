@@ -1158,6 +1158,121 @@ fn print_lifecycle_not_running(socket_path: &Path, paths: &LifecyclePaths, reaso
     println!("reason: {reason}");
 }
 
+#[derive(Serialize)]
+struct DaemonStatusJson {
+    daemon_state: String,
+    socket_path: String,
+    lock_path: String,
+    start_lock_path: String,
+    log_path: String,
+    reason: Option<String>,
+    pid: Option<u32>,
+    daemon_start_time: Option<String>,
+    executable: Option<String>,
+    executable_canonical: Option<String>,
+    protocol_version: Option<u32>,
+    snapshot_schema_version: Option<u32>,
+    subscriber_count: Option<usize>,
+    latest_snapshot_generated_at: Option<String>,
+    latest_snapshot_pane_count: Option<usize>,
+    latest_snapshot_update_source: Option<String>,
+    latest_snapshot_update_detail: Option<String>,
+    latest_snapshot_update_duration_ms: Option<u64>,
+    unavailable_reason: Option<String>,
+    message: Option<String>,
+}
+
+fn lifecycle_not_running_json(
+    socket_path: &Path,
+    paths: &LifecyclePaths,
+    reason: &str,
+) -> DaemonStatusJson {
+    DaemonStatusJson {
+        daemon_state: "not_running".to_string(),
+        socket_path: socket_path.display().to_string(),
+        lock_path: paths.lock_path.display().to_string(),
+        start_lock_path: paths.start_lock_path.display().to_string(),
+        log_path: paths.log_path.display().to_string(),
+        reason: Some(reason.to_string()),
+        pid: None,
+        daemon_start_time: None,
+        executable: None,
+        executable_canonical: None,
+        protocol_version: None,
+        snapshot_schema_version: None,
+        subscriber_count: None,
+        latest_snapshot_generated_at: None,
+        latest_snapshot_pane_count: None,
+        latest_snapshot_update_source: None,
+        latest_snapshot_update_detail: None,
+        latest_snapshot_update_duration_ms: None,
+        unavailable_reason: None,
+        message: None,
+    }
+}
+
+fn lifecycle_status_json(
+    paths: &LifecyclePaths,
+    status: &ipc::LifecycleStatusFrame,
+) -> DaemonStatusJson {
+    DaemonStatusJson {
+        daemon_state: lifecycle_state_label(status.state).to_string(),
+        socket_path: status.identity.socket_path.clone(),
+        lock_path: paths.lock_path.display().to_string(),
+        start_lock_path: paths.start_lock_path.display().to_string(),
+        log_path: paths.log_path.display().to_string(),
+        reason: None,
+        pid: Some(status.identity.pid),
+        daemon_start_time: Some(status.identity.daemon_start_time.clone()),
+        executable: Some(status.identity.executable.clone()),
+        executable_canonical: status.identity.executable_canonical.clone(),
+        protocol_version: Some(status.identity.protocol_version),
+        snapshot_schema_version: Some(status.identity.snapshot_schema_version),
+        subscriber_count: Some(status.subscriber_count),
+        latest_snapshot_generated_at: status.latest_snapshot_generated_at.clone(),
+        latest_snapshot_pane_count: status.latest_snapshot_pane_count,
+        latest_snapshot_update_source: status.latest_snapshot_update_source.clone(),
+        latest_snapshot_update_detail: status.latest_snapshot_update_detail.clone(),
+        latest_snapshot_update_duration_ms: status.latest_snapshot_update_duration_ms,
+        unavailable_reason: status
+            .unavailable_reason
+            .map(unavailable_reason_label)
+            .map(str::to_string),
+        message: status.message.clone(),
+    }
+}
+
+fn emit_lifecycle_not_running(
+    socket_path: &Path,
+    paths: &LifecyclePaths,
+    reason: &str,
+    format: OutputFormat,
+) -> Result<()> {
+    match format {
+        OutputFormat::Text => {
+            print_lifecycle_not_running(socket_path, paths, reason);
+            Ok(())
+        }
+        OutputFormat::Json => {
+            output::print_json(&lifecycle_not_running_json(socket_path, paths, reason))
+        }
+    }
+}
+
+fn emit_lifecycle_status(
+    paths: &LifecyclePaths,
+    status: &ipc::LifecycleStatusFrame,
+    format: OutputFormat,
+) -> Result<()> {
+    match format {
+        OutputFormat::Text => {
+            print_lifecycle_status(paths, status);
+            Ok(())
+        }
+        OutputFormat::Json => output::print_json(&lifecycle_status_json(paths, status)),
+    }
+}
+
 fn incompatible_daemon_guidance(message: &str) -> String {
     format!(
         "{message}; stop the incompatible daemon manually, remove the socket only if it is stale, then run `agentscan daemon start`"
@@ -1502,22 +1617,21 @@ pub(super) fn daemon_run() -> Result<()> {
     daemon_run_with_socket_path_and_startup(&socket_path, DaemonStartup)
 }
 
-pub(super) fn daemon_status() -> Result<()> {
+pub(super) fn daemon_status(format: OutputFormat) -> Result<()> {
     let socket_path = ipc::resolve_socket_path()?;
-    daemon_status_with_socket_path(&socket_path)
+    daemon_status_with_socket_path(&socket_path, format)
 }
 
-pub(crate) fn daemon_status_with_socket_path(socket_path: &Path) -> Result<()> {
+pub(crate) fn daemon_status_with_socket_path(
+    socket_path: &Path,
+    format: OutputFormat,
+) -> Result<()> {
     let paths = LifecyclePaths::from_socket_path(socket_path);
     match lifecycle_status_from_socket(socket_path, LIFECYCLE_CONNECT_TIMEOUT)? {
         LifecycleQuery::NotRunning(reason) => {
-            print_lifecycle_not_running(socket_path, &paths, &reason);
-            Ok(())
+            emit_lifecycle_not_running(socket_path, &paths, &reason, format)
         }
-        LifecycleQuery::Status(status) => {
-            print_lifecycle_status(&paths, &status);
-            Ok(())
-        }
+        LifecycleQuery::Status(status) => emit_lifecycle_status(&paths, &status, format),
         LifecycleQuery::Incompatible(message) => {
             bail!("{}", incompatible_daemon_guidance(&message))
         }
