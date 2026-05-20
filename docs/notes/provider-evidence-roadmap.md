@@ -112,10 +112,24 @@ Completed source-analysis baselines:
   this change?`, and `Allow execution of [...]`; those may be treated as busy.
   Generic mentions of Gemini, historical prompts, or arbitrary `>` lines should
   remain `unknown`.
-- opencode: source analysis found `OpenCode` / `OC | ...` title shapes,
-  package and platform binary paths, and Linux `OPENCODE` process markers.
-  Default opencode titles do not carry run state; richer status should remain a
-  later optional plugin/metadata path.
+- opencode: source analysis at `~/code/upstream/opencode` commit `0e118d196`
+  found `OpenCode` / `OC | ...` title shapes, package and platform binary
+  paths, and Linux `OPENCODE` process markers. Default opencode titles do not
+  carry run state. Current TUI input in
+  `packages/opencode/src/cli/cmd/tui/component/prompt/index.tsx` renders idle
+  placeholders as `Ask anything... "..."` or shell mode `Run a command...
+  "..."`; the session footer in
+  `packages/opencode/src/cli/cmd/tui/routes/session/footer.tsx` can expose
+  `/status`, LSP/MCP counts, and pending permission counts. Direct interactive
+  split-footer mode in `packages/opencode/src/cli/cmd/run/footer.prompt.tsx`
+  uses the same `Run a command... "git status"` shell placeholder and the first
+  idle prompt `Ask anything... "Fix a TODO in the codebase"`. Pane-output
+  fallback should therefore remain provider-scoped, only mark idle when a
+  current prompt placeholder appears near the bottom of the capture, and treat
+  explicit current markers such as `esc interrupt`, `Permission required`,
+  `Allow once`, `Allow always`, `Reject permission`, and question prompts as
+  busy. Historical prompt text, generic opencode mentions, and weak footer text
+  should remain `unknown`.
 - Hermes Agent: source analysis found package `hermes-agent`, console scripts
   `hermes`, `hermes-agent`, and `hermes-acp`, and a checked-in `hermes`
   wrapper that dispatches to `hermes_cli.main:main`. Upstream does not appear

@@ -264,6 +264,12 @@ mod tests {
          ~/code/app  no sandbox gemini-2.5-pro\n"
     }
 
+    fn opencode_idle_output() -> &'static str {
+        "╹  Ask anything... \"Fix a TODO in the codebase\"\n\
+         Build · gpt-5.1 OpenAI\n\
+         ~/code/app                                                    /status\n"
+    }
+
     #[test]
     fn pane_output_capture_runs_only_for_supported_unknown_status_candidates() {
         let mut panes = vec![
@@ -281,10 +287,12 @@ mod tests {
                 PaneStatus::title(StatusKind::Idle),
             ),
             pane("%6", Some(Provider::Gemini), PaneStatus::not_checked()),
+            pane("%7", Some(Provider::Opencode), PaneStatus::not_checked()),
         ];
         let mut capture = FakePaneOutputCapture::default()
             .with_output("%4", copilot_busy_output())
-            .with_output("%6", gemini_idle_output());
+            .with_output("%6", gemini_idle_output())
+            .with_output("%7", opencode_idle_output());
 
         apply_pane_output_status_fallbacks_with_capture(&mut panes, &mut capture);
 
@@ -292,11 +300,13 @@ mod tests {
             capture.calls,
             vec![
                 ("%4".to_string(), PANE_OUTPUT_STATUS_LINES),
-                ("%6".to_string(), PANE_OUTPUT_STATUS_LINES)
+                ("%6".to_string(), PANE_OUTPUT_STATUS_LINES),
+                ("%7".to_string(), PANE_OUTPUT_STATUS_LINES)
             ]
         );
         assert_eq!(panes[3].status, PaneStatus::pane_output(StatusKind::Busy));
         assert_eq!(panes[5].status, PaneStatus::pane_output(StatusKind::Idle));
+        assert_eq!(panes[6].status, PaneStatus::pane_output(StatusKind::Idle));
     }
 
     #[test]

@@ -8,6 +8,7 @@ pub(crate) fn pane_output_status_fallback_candidate(pane: &PaneRecord) -> bool {
             | Some(Provider::Gemini)
             | Some(Provider::Grok)
             | Some(Provider::Hermes)
+            | Some(Provider::Opencode)
     ) && pane.status.kind == StatusKind::Unknown
         && pane.status.source == StatusSource::NotChecked
 }
@@ -23,6 +24,7 @@ pub(crate) fn apply_pane_output_status_fallback(pane: &mut PaneRecord, output: &
         Some(Provider::Gemini) => gemini_pane_output_status(output),
         Some(Provider::Grok) => grok_pane_output_status(output),
         Some(Provider::Hermes) => hermes_pane_output_status(output),
+        Some(Provider::Opencode) => opencode_pane_output_status(output),
         _ => None,
     };
 
@@ -297,4 +299,59 @@ fn hermes_busy_prompt_line(line: &str) -> bool {
         && line.contains("msg=interrupt")
         && line.contains("/queue")
         && line.contains("Ctrl+C cancel")
+}
+
+fn opencode_pane_output_status(output: &str) -> Option<StatusKind> {
+    let lines: Vec<&str> = output.lines().collect();
+    let idle_index = lines
+        .iter()
+        .rposition(|line| opencode_idle_prompt_line(line));
+    let busy_index = lines
+        .iter()
+        .rposition(|line| opencode_current_busy_marker_line(line));
+
+    if let Some(index) = busy_index
+        && idle_index.is_none_or(|idle_index| idle_index < index)
+    {
+        return Some(StatusKind::Busy);
+    }
+
+    idle_index
+        .is_some_and(|index| opencode_prompt_is_near_current_footer(&lines, index))
+        .then_some(StatusKind::Idle)
+}
+
+fn opencode_idle_prompt_line(line: &str) -> bool {
+    let line = line.trim_start();
+    line.contains("Ask anything... \"") || line.contains("Run a command... \"")
+}
+
+fn opencode_current_busy_marker_line(line: &str) -> bool {
+    let line = line.trim();
+    opencode_interrupt_hint_line(line)
+        || opencode_permission_prompt_line(line)
+        || opencode_question_prompt_line(line)
+}
+
+fn opencode_interrupt_hint_line(line: &str) -> bool {
+    line.contains("esc") && line.contains("interrupt")
+}
+
+fn opencode_permission_prompt_line(line: &str) -> bool {
+    line.contains("Permission required")
+        || line.contains("Reject permission")
+        || line.contains("Allow once")
+        || line.contains("Allow always")
+        || (line.contains('△') && line.contains("Permission"))
+}
+
+fn opencode_question_prompt_line(line: &str) -> bool {
+    line.contains("Reject question")
+        || line.contains("Waiting for question event")
+        || line.contains("# Questions")
+}
+
+fn opencode_prompt_is_near_current_footer(lines: &[&str], prompt_index: usize) -> bool {
+    let tail_len = lines.len().saturating_sub(prompt_index);
+    tail_len <= 8
 }

@@ -2566,6 +2566,124 @@ fn gemini_pane_output_does_not_infer_idle_from_stale_prompt() {
 }
 
 #[test]
+fn opencode_pane_output_marks_current_tui_prompt_idle_only_after_provider_is_known() {
+    let mut opencode = pane_output_status_pane(780, Provider::Opencode, "OpenCode");
+
+    classify::apply_pane_output_status_fallback(
+        &mut opencode,
+        "│ Build finished\n\
+         ╹  Ask anything... \"Fix a TODO in the codebase\"\n\
+            Build · gpt-5.1 OpenAI\n\
+         ~/code/app                                                    /status\n",
+    );
+
+    assert_eq!(opencode.status.kind, StatusKind::Idle);
+    assert_eq!(opencode.status.source, super::StatusSource::PaneOutput);
+
+    let mut unknown = proc_fallback_pane(781, "zsh", "custom title");
+    classify::apply_pane_output_status_fallback(
+        &mut unknown,
+        "│ Build finished\n\
+         ╹  Ask anything... \"Fix a TODO in the codebase\"\n\
+            Build · gpt-5.1 OpenAI\n\
+         ~/code/app                                                    /status\n",
+    );
+
+    assert_eq!(unknown.status.kind, StatusKind::Unknown);
+    assert_eq!(unknown.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn opencode_pane_output_marks_shell_prompt_idle() {
+    let mut opencode = pane_output_status_pane(782, Provider::Opencode, "OC | Shell");
+
+    classify::apply_pane_output_status_fallback(
+        &mut opencode,
+        "╹  Run a command... \"git status\"\n\
+            Shell\n\
+         ~/code/app                                                    /status\n",
+    );
+
+    assert_eq!(opencode.status.kind, StatusKind::Idle);
+    assert_eq!(opencode.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn opencode_pane_output_marks_running_prompt_busy() {
+    let mut opencode = pane_output_status_pane(783, Provider::Opencode, "OC | Working");
+
+    classify::apply_pane_output_status_fallback(
+        &mut opencode,
+        "╹  Ask anything... \"Fix a TODO in the codebase\"\n\
+            Build · gpt-5.1 OpenAI\n\
+         ⠹ Reading files\n\
+         esc interrupt\n",
+    );
+
+    assert_eq!(opencode.status.kind, StatusKind::Busy);
+    assert_eq!(opencode.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn opencode_pane_output_marks_permission_prompt_busy() {
+    let mut opencode = pane_output_status_pane(784, Provider::Opencode, "OC | Permission");
+
+    classify::apply_pane_output_status_fallback(
+        &mut opencode,
+        "Permission required\n\
+         → Edit src/app.rs\n\
+         Allow once   Allow always   Reject\n\
+         esc reject\n",
+    );
+
+    assert_eq!(opencode.status.kind, StatusKind::Busy);
+    assert_eq!(opencode.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn opencode_pane_output_uses_current_busy_marker_over_stale_idle_prompt() {
+    let mut opencode = pane_output_status_pane(785, Provider::Opencode, "OC | Working");
+
+    classify::apply_pane_output_status_fallback(
+        &mut opencode,
+        "╹  Ask anything... \"Fix a TODO in the codebase\"\n\
+            Build · gpt-5.1 OpenAI\n\
+         ~/code/app                                                    /status\n\
+         \n\
+         Permission required\n\
+         → Bash sleep 10\n\
+         Allow once   Allow always   Reject\n",
+    );
+
+    assert_eq!(opencode.status.kind, StatusKind::Busy);
+    assert_eq!(opencode.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn opencode_pane_output_does_not_infer_idle_from_stale_prompt() {
+    let mut opencode = pane_output_status_pane(786, Provider::Opencode, "OC | Working");
+
+    classify::apply_pane_output_status_fallback(
+        &mut opencode,
+        "╹  Ask anything... \"Fix a TODO in the codebase\"\n\
+            Build · gpt-5.1 OpenAI\n\
+         ~/code/app                                                    /status\n\
+         \n\
+         Planning edits\n\
+         Reading files\n\
+         Updating code\n\
+         Running tests\n\
+         Collecting results\n\
+         Preparing response\n\
+         Still working\n\
+         Current line\n",
+    );
+
+    assert_eq!(opencode.status.kind, StatusKind::Unknown);
+    assert_eq!(opencode.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
 fn opencode_display_metadata_uses_title_without_activity_state() {
     let opencode = classify::display_metadata(
         Some(Provider::Opencode),
