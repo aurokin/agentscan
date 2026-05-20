@@ -113,9 +113,29 @@ Completed source-analysis baselines:
   Generic mentions of Gemini, historical prompts, or arbitrary `>` lines should
   remain `unknown`.
 - opencode: source analysis at `~/code/upstream/opencode` commit `0e118d196`
-  found `OpenCode` / `OC | ...` title shapes, package and platform binary
-  paths, and Linux `OPENCODE` process markers. Default opencode titles do not
-  carry run state. Current TUI input in
+  found a strong plug-and-play baseline without requiring hooks or wrappers.
+  `packages/opencode/package.json` publishes the `opencode` bin at
+  `./bin/opencode`. That launcher resolves a platform package named
+  `opencode-{darwin,linux,windows}-{arm64,x64}` with baseline and musl variants
+  where relevant, then runs `bin/opencode`; source/dev runs enter through
+  `packages/opencode/src/index.ts`. agentscan should continue treating
+  package-manager shims, platform package binaries, and source entrypoints as
+  strong process evidence only when the path shape is exact.
+- opencode startup in `packages/opencode/src/index.ts` sets `AGENT=1`,
+  `OPENCODE=1`, and `OPENCODE_PID=<pid>`. These are strong Linux process-env
+  markers when correlated with the live process tree, but generic argv or text
+  mentions of `OPENCODE` should not classify a pane. Worker processes set
+  internal `OPENCODE_PROCESS_ROLE` / `OPENCODE_RUN_ID` values, which are useful
+  corroborating context but not standalone provider evidence.
+- opencode TUI title behavior in
+  `packages/opencode/src/cli/cmd/tui/app.tsx` is explicit: the home route sets
+  `OpenCode`; session routes set `OpenCode` for default session titles or
+  `OC | <session title>` for non-default titles; plugin routes set
+  `OC | <plugin id>`. Title updates are optional and can be disabled by
+  `OPENCODE_DISABLE_TERMINAL_TITLE`, so title evidence is strong when present
+  but process evidence remains necessary for disabled-title and custom-title
+  cases. Default opencode titles do not carry run state.
+- Current TUI input in
   `packages/opencode/src/cli/cmd/tui/component/prompt/index.tsx` renders idle
   placeholders as `Ask anything... "..."` or shell mode `Run a command...
   "..."`; the session footer in
@@ -130,6 +150,14 @@ Completed source-analysis baselines:
   `Allow once`, `Allow always`, `Reject permission`, and question prompts as
   busy. Historical prompt text, generic opencode mentions, and weak footer text
   should remain `unknown`.
+- opencode has server and TUI plugin surfaces. Server plugins are loaded through
+  `packages/opencode/src/plugin/index.ts` and can observe config, event, tool,
+  prompt, and message hooks; TUI plugins are loaded through
+  `packages/opencode/src/cli/cmd/tui/plugin/runtime.ts`, and upstream tips
+  describe `.opencode/plugins/*.ts` files as event hooks. These surfaces are
+  useful future enrichment points for explicit tmux metadata, but they should
+  remain optional and deferred because plug-and-play detection already has
+  strong title, process, env, and pane-output evidence.
 - Hermes Agent: source analysis found package `hermes-agent`, console scripts
   `hermes`, `hermes-agent`, and `hermes-acp`, and a checked-in `hermes`
   wrapper that dispatches to `hermes_cli.main:main`. Upstream does not appear
