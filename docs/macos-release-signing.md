@@ -16,7 +16,8 @@ Ad-hoc or local development builds should use foreground `agentscan daemon run`
 instead of detached background startup. This boundary exists because this host
 observed repeated kernel panics naming `agentscan` as the panicked task while
 the kernel backtrace was in `AppleSystemPolicy` during process launch or
-assessment. See `docs/notes/macos-daemon-autostart-adr.md` for the incident
+assessment. See
+`docs/adr/macos-daemon-autostart-and-executable-assessment.md` for the incident
 record and product policy.
 
 ## Local Signing

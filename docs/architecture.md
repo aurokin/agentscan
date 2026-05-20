@@ -152,7 +152,7 @@ Current lifecycle policy:
 - on macOS, explicit detached `agentscan daemon start` requires a non-ad-hoc,
   validly signed executable because detached self-exec can enter
   AppleSystemPolicy before application guards run; see
-  `docs/notes/macos-daemon-autostart-adr.md`
+  `docs/adr/macos-daemon-autostart-and-executable-assessment.md`
 - `--no-auto-start` and `AGENTSCAN_NO_AUTO_START=1` for scripts and CI
 - `--refresh` for one-shot recovery or forced tmux snapshots
 - fail clearly when tmux disappears or the daemon protocol is incompatible

@@ -19,11 +19,14 @@ This repo uses progressively disclosed documentation.
 - `docs/macos-release-signing.md`
   Local and GitHub Actions Developer ID signing/notarization workflow for
   macOS release binaries.
-- `docs/notes/`
-  Narrow follow-up or historical notes that are too specific for the primary docs but still worth keeping in the repo.
-  - `docs/notes/macos-daemon-autostart-adr.md`
+- `docs/adr/`
+  Architecture decision records for durable product and implementation
+  decisions.
+  - `docs/adr/macos-daemon-autostart-and-executable-assessment.md`
     ADR for macOS daemon auto-start, executable assessment, observed
     AppleSystemPolicy panics, and the signed-versus-ad-hoc lifecycle boundary.
+- `docs/notes/`
+  Narrow follow-up or historical notes that are too specific for the primary docs but still worth keeping in the repo.
   - `docs/notes/provider-evidence-roadmap.md`
     Provider-specific evidence plans, plug-and-play detection policy, and the
     deep-roadmap hook/extension direction.
