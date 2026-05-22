@@ -258,6 +258,12 @@ mod tests {
          / commands · ? help\n"
     }
 
+    fn codex_idle_output() -> &'static str {
+        "› Ask Codex to do anything\n\
+         \n\
+           tab to queue message                                       100% context left\n"
+    }
+
     fn gemini_idle_output() -> &'static str {
         ">   Type your message or @path/to/file\n\
          Workspace   Sandbox    Model\n\
@@ -299,6 +305,7 @@ mod tests {
             pane("%8", Some(Provider::Pi), PaneStatus::not_checked()),
         ];
         let mut capture = FakePaneOutputCapture::default()
+            .with_output("%2", codex_idle_output())
             .with_output("%4", copilot_busy_output())
             .with_output("%6", gemini_idle_output())
             .with_output("%7", opencode_idle_output())
@@ -309,12 +316,14 @@ mod tests {
         assert_eq!(
             capture.calls,
             vec![
+                ("%2".to_string(), PANE_OUTPUT_STATUS_LINES),
                 ("%4".to_string(), PANE_OUTPUT_STATUS_LINES),
                 ("%6".to_string(), PANE_OUTPUT_STATUS_LINES),
                 ("%7".to_string(), PANE_OUTPUT_STATUS_LINES),
                 ("%8".to_string(), PANE_OUTPUT_STATUS_LINES)
             ]
         );
+        assert_eq!(panes[1].status, PaneStatus::pane_output(StatusKind::Idle));
         assert_eq!(panes[3].status, PaneStatus::pane_output(StatusKind::Busy));
         assert_eq!(panes[5].status, PaneStatus::pane_output(StatusKind::Idle));
         assert_eq!(panes[6].status, PaneStatus::pane_output(StatusKind::Idle));

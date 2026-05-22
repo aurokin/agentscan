@@ -2031,10 +2031,10 @@ fn copilot_pane_output_marks_busy_only_after_provider_is_known() {
 
 #[test]
 fn pane_output_status_fallback_is_limited_to_supported_providers() {
-    let mut codex = pane_output_status_pane(747, Provider::Codex, "codex");
+    let mut claude = pane_output_status_pane(747, Provider::Claude, "Claude Code");
 
     classify::apply_pane_output_status_fallback(
-        &mut codex,
+        &mut claude,
         "❯ Review patch\n\n\
          ● Thinking (Esc to cancel · 616 B)\n\
          /tmp/probe [main]\n\
@@ -2042,6 +2042,196 @@ fn pane_output_status_fallback_is_limited_to_supported_providers() {
          ❯\n\
          ────────────────────\n\
          / commands · ? help\n",
+    );
+
+    assert_eq!(claude.status.kind, StatusKind::Unknown);
+    assert_eq!(claude.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn codex_pane_output_marks_current_prompt_idle_only_after_provider_is_known() {
+    let mut codex = pane_output_status_pane(793, Provider::Codex, "codex");
+
+    classify::apply_pane_output_status_fallback(
+        &mut codex,
+        "› Ask Codex to do anything\n\
+         \n\
+           tab to queue message                                       100% context left\n",
+    );
+
+    assert_eq!(codex.status.kind, StatusKind::Idle);
+    assert_eq!(codex.status.source, super::StatusSource::PaneOutput);
+
+    let mut unknown = proc_fallback_pane(794, "zsh", "custom title");
+    classify::apply_pane_output_status_fallback(
+        &mut unknown,
+        "› Ask Codex to do anything\n\
+         \n\
+           tab to queue message                                       100% context left\n",
+    );
+
+    assert_eq!(unknown.status.kind, StatusKind::Unknown);
+    assert_eq!(unknown.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn codex_pane_output_marks_fast_mode_footer_idle() {
+    let mut codex = pane_output_status_pane(795, Provider::Codex, "codex");
+
+    classify::apply_pane_output_status_fallback(
+        &mut codex,
+        "› Ask Codex to do anything\n\
+         \n\
+           Fast on\n",
+    );
+
+    assert_eq!(codex.status.kind, StatusKind::Idle);
+    assert_eq!(codex.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn codex_pane_output_marks_model_path_footer_idle() {
+    let mut codex = pane_output_status_pane(800, Provider::Codex, "codex");
+
+    classify::apply_pane_output_status_fallback(
+        &mut codex,
+        "› Ask Codex to do anything\n\
+         \n\
+           gpt-5.5 default · /tmp/project\n",
+    );
+
+    assert_eq!(codex.status.kind, StatusKind::Idle);
+    assert_eq!(codex.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn codex_pane_output_marks_current_status_indicator_busy() {
+    let mut codex = pane_output_status_pane(796, Provider::Codex, "codex");
+
+    classify::apply_pane_output_status_fallback(
+        &mut codex,
+        "• Investigating rendering code (0s • esc to interrupt)\n\
+         \n\
+         \n\
+         › Ask Codex to do anything\n\
+         \n\
+           tab to queue message                                       100% context left\n",
+    );
+
+    assert_eq!(codex.status.kind, StatusKind::Busy);
+    assert_eq!(codex.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn codex_pane_output_marks_status_indicator_busy_with_model_path_footer() {
+    let mut codex = pane_output_status_pane(801, Provider::Codex, "codex");
+
+    classify::apply_pane_output_status_fallback(
+        &mut codex,
+        "• Working (0s • esc to interrupt)\n\
+         \n\
+         › Ask Codex to do anything\n\
+         \n\
+           gpt-5.5 default · /tmp/project\n",
+    );
+
+    assert_eq!(codex.status.kind, StatusKind::Busy);
+    assert_eq!(codex.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn codex_pane_output_marks_status_indicator_with_details_busy() {
+    let mut codex = pane_output_status_pane(803, Provider::Codex, "codex");
+
+    classify::apply_pane_output_status_fallback(
+        &mut codex,
+        "• Working (0s • esc to interrupt)\n\
+           └ cargo test -p codex-core -- --exact\n\
+         \n\
+         › Ask Codex to do anything\n\
+         \n\
+           gpt-5.5 default · /tmp/project\n",
+    );
+
+    assert_eq!(codex.status.kind, StatusKind::Busy);
+    assert_eq!(codex.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn codex_pane_output_marks_current_approval_prompt_busy() {
+    let mut codex = pane_output_status_pane(797, Provider::Codex, "codex");
+
+    classify::apply_pane_output_status_fallback(
+        &mut codex,
+        "╭──────────────────────────────────────────────────────────────────────────────╮\n\
+         │ Run command?                                                                  │\n\
+         │                                                                              │\n\
+         │ › 1. Yes, proceed (y)                                                        │\n\
+         │   2. No, and tell Codex what to do differently                               │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯\n\
+           Press enter to confirm or esc to cancel\n",
+    );
+
+    assert_eq!(codex.status.kind, StatusKind::Busy);
+    assert_eq!(codex.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn codex_pane_output_uses_current_idle_footer_over_stale_busy_status() {
+    let mut codex = pane_output_status_pane(798, Provider::Codex, "codex");
+
+    classify::apply_pane_output_status_fallback(
+        &mut codex,
+        "• Working (0s • esc to interrupt)\n\
+         Done.\n\
+         \n\
+         › Ask Codex to do anything\n\
+         \n\
+           gpt-5.4 high fast · ~/code/agentscan · Context 0% used\n",
+    );
+
+    assert_eq!(codex.status.kind, StatusKind::Idle);
+    assert_eq!(codex.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn codex_pane_output_does_not_infer_idle_from_stale_model_path_footer() {
+    let mut codex = pane_output_status_pane(802, Provider::Codex, "codex");
+
+    classify::apply_pane_output_status_fallback(
+        &mut codex,
+        "› Ask Codex to do anything\n\
+         \n\
+           gpt-5.5 default · /tmp/project\n\
+         \n\
+         Planning edits\n\
+         Reading files\n\
+         Updating code\n\
+         Running tests\n\
+         Collecting output\n\
+         Current line\n",
+    );
+
+    assert_eq!(codex.status.kind, StatusKind::Unknown);
+    assert_eq!(codex.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn codex_pane_output_does_not_infer_idle_from_stale_prompt() {
+    let mut codex = pane_output_status_pane(799, Provider::Codex, "codex");
+
+    classify::apply_pane_output_status_fallback(
+        &mut codex,
+        "› Ask Codex to do anything\n\
+         \n\
+           tab to queue message                                       100% context left\n\
+         \n\
+         Planning edits\n\
+         Reading files\n\
+         Updating code\n\
+         Running tests\n\
+         Collecting output\n\
+         Current line\n",
     );
 
     assert_eq!(codex.status.kind, StatusKind::Unknown);

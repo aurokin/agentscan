@@ -113,6 +113,20 @@ Each analysis should record:
 
 Completed source-analysis baselines:
 
+- Codex: source analysis at `~/code/upstream/codex` commit
+  `a27d3847b5` found the current idle composer and busy status shapes in the
+  Rust TUI. `codex-rs/tui/src/keymap_setup.rs` configures the default composer
+  placeholder as `Ask Codex to do anything`; snapshots in
+  `codex-rs/tui/src/chatwidget/snapshots/` show that rendered as
+  `› Ask Codex to do anything` near footer/status text such as `100% context
+  left`, `Context 0% used`, or `Fast on`. `codex-rs/tui/src/status_indicator_widget.rs`
+  renders current busy rows with headers such as `Working` followed by elapsed
+  time and `esc to interrupt`; approval snapshots expose current action prompts
+  such as `Yes, proceed` and `Press enter to confirm or esc to cancel`.
+  Pane-output status fallback should therefore mark Codex idle only from the
+  current placeholder composer near footer text, mark busy from current status
+  or approval rows, and preserve `unknown` for stale prompts, generic Codex
+  mentions, or historical output.
 - Gemini CLI: source analysis at `~/code/upstream/gemini-cli` commit
   `dc47aaa2d` found the current idle prompt in
   `packages/cli/src/ui/components/InputPrompt.tsx`: the prompt prefix renders as
