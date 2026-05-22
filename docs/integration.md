@@ -75,10 +75,11 @@ Launch wrappers may publish explicit pane-local tmux user options:
 Field semantics:
 
 - `provider`: normalized provider identity. Canonical values are `codex`,
-  `claude`, `gemini`, `antigravity`, `opencode`, `copilot`, `cursor_cli`, and
-  `pi`. The metadata helper also accepts useful aliases such as `agy`,
-  `github-copilot`, `cursor-cli`, `cursor-agent`, and `pi-coding-agent`, then
-  writes the canonical value.
+  `claude`, `gemini`, `antigravity`, `opencode`, `copilot`, `cursor_cli`,
+  `pi`, `grok`, `hermes`, and `droid`. The metadata helper also accepts useful
+  aliases such as `agy`, `github-copilot`, `cursor-cli`, `cursor-agent`,
+  `pi-coding-agent`, `hermes-agent`, and `factory-droid`, then writes the
+  canonical value.
 - `label`: short user-facing display text for list and TUI surfaces. It
   should describe the task or conversation only when the wrapper has that
   information directly. Do not derive richer labels from paths, generic tmux
@@ -190,6 +191,12 @@ Provider-specific guidance should stay narrow and correctness-driven:
   shapes can report idle, and current thinking or folder-trust prompts can
   report busy with `status.source="pane_output"`. Record command, title, argv,
   env, and state snapshots before adding or changing heuristics.
+- Factory Droid CLI support is based on local empirical probing. The exact
+  `droid` command is provider identity; `⛬ ...` titles are display labels only
+  after identity is known. Baseline status can fall back to provider-scoped
+  pane output after identity is known: the current boxed prompt can report
+  idle, and current streaming/steering prompt shapes can report busy with
+  `status.source="pane_output"`.
 - Wrapper-shaped panes with generic shell commands should publish metadata
   rather than relying on path, window name, or title inference. The ambiguity
   corpus in `docs/notes/ambiguity-corpus.md` records examples where weak tmux

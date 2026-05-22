@@ -21,6 +21,8 @@ pub(crate) enum Provider {
     Grok,
     #[value(alias = "hermes-agent")]
     Hermes,
+    #[value(alias = "factory-droid")]
+    Droid,
 }
 
 impl fmt::Display for Provider {
@@ -161,6 +163,16 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
         title_prefixes: &[],
         title_aliases: &[],
         generic_display_labels: &["Hermes", "Hermes Agent", "hermes", "hermes-agent"],
+    },
+    ProviderInfo {
+        provider: Provider::Droid,
+        canonical_name: "droid",
+        display_marker: "⛬",
+        metadata_aliases: &["droid", "factory-droid", "factory droid"],
+        command_aliases: &[ProviderCommandAlias::new("droid", false)],
+        title_prefixes: &["⛬ "],
+        title_aliases: &[],
+        generic_display_labels: &["Droid", "New Session"],
     },
 ];
 

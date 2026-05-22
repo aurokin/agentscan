@@ -33,6 +33,9 @@ This repo uses progressively disclosed documentation.
   - `docs/notes/copilot-cursor-closed-source-probing.md`
     Closed-source Copilot and Cursor probing checklist, evidence matrix, and
     accepted versus rejected classifier signals.
+  - `docs/notes/droid-cli-support.md`
+    Factory Droid CLI probing evidence, accepted signals, and baseline
+    detection/status behavior.
   - `docs/notes/daemon-redesign-brief.md`
     Prepared target shape, migration slices, and harness risks for the future
     daemon redesign.

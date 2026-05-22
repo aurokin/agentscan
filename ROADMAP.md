@@ -238,6 +238,9 @@ Delivered baseline:
 - provider-specific pane-output status fallback for already-identified GitHub
   Copilot and Cursor CLI panes, including current idle and busy prompt/footer
   shapes while ignoring stale output
+- provider-specific plug-and-play support for Factory Droid CLI from local
+  probing, exact command evidence, supporting title labels, and current
+  prompt/footer status fallback after identity is known
 - inspect provenance for provider, status, classification, and fallback
   decisions
 

@@ -130,14 +130,18 @@ It can:
 - use targeted live process evidence, including pane TTY foreground process
   groups, only for unresolved ambiguous panes
 - use tightly scoped provider-specific pane output parsing as a final status
-  fallback for already-identified Copilot and Cursor CLI panes. When this path
-  wins, JSON reports `status.source="pane_output"`.
+  fallback for already-identified Copilot, Cursor CLI, and Droid panes. When
+  this path wins, JSON reports `status.source="pane_output"`.
 - treat Cursor CLI as metadata-first: command detection is enough to identify the provider, but generic tmux titles fall back to conservative pane labels until wrappers publish stronger metadata
 - infer Cursor CLI busy/idle status from the current Cursor footer only after
   provider identity is already established
 - infer GitHub Copilot busy/idle status from current Copilot prompt, footer,
   thinking, and trust-prompt shapes only after provider identity is already
   established
+- classify Factory Droid CLI panes from the exact `droid` command or explicit
+  metadata aliases, treat `⛬ ...` titles as display labels only after provider
+  identity is known, and infer busy/idle from the current Droid prompt/footer
+  only after identity is established
 - resolve unresolved Claude Code launcher panes from targeted process evidence, including Claude Code CLI paths and tmux teammate-spawn argv/env markers
 - classify Antigravity CLI panes from the exact native `agy` command while
   keeping status unknown until wrapper metadata or a future provider-scoped

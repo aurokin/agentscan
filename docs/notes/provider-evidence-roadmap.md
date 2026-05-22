@@ -43,6 +43,9 @@ The near-term provider evidence pass is complete:
 - GitHub Copilot and Cursor CLI support shipped from empirical local probing,
   with title branding treated as supporting context rather than standalone
   provider identity.
+- Factory Droid CLI support shipped from empirical local probing, exact command
+  evidence, supporting title labels, and provider-scoped pane-output status
+  fallback.
 
 The remaining provider-side integration issues are intentionally deep-roadmap:
 
@@ -269,6 +272,8 @@ Closed-source queue:
   `docs/notes/copilot-cursor-closed-source-probing.md`.
 - Cursor CLI: probed locally through `cursor-agent` and documented in
   `docs/notes/copilot-cursor-closed-source-probing.md`.
+- Factory Droid CLI: probed locally through `droid` and documented in
+  `docs/notes/droid-cli-support.md`.
 
 Closed-source probing should produce a written evidence matrix before code
 changes. If a signal is weak, agentscan should prefer `unknown` over a richer

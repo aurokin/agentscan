@@ -12,6 +12,7 @@ pub(crate) fn pane_output_status_fallback_candidate(pane: &PaneRecord) -> bool {
             | Some(Provider::Hermes)
             | Some(Provider::Opencode)
             | Some(Provider::Pi)
+            | Some(Provider::Droid)
     ) && pane.status.kind == StatusKind::Unknown
         && pane.status.source == StatusSource::NotChecked
 }
@@ -31,6 +32,7 @@ pub(crate) fn apply_pane_output_status_fallback(pane: &mut PaneRecord, output: &
         Some(Provider::Hermes) => hermes_pane_output_status(output),
         Some(Provider::Opencode) => opencode_pane_output_status(output),
         Some(Provider::Pi) => pi_pane_output_status(output),
+        Some(Provider::Droid) => droid_pane_output_status(output),
         _ => None,
     };
 
@@ -357,6 +359,54 @@ fn cursor_cli_footer_indicates_idle(line: &str) -> bool {
 
 fn cursor_cli_footer_top_border(line: &str) -> bool {
     line.trim_start().starts_with("▄▄▄▄▄▄")
+}
+
+fn droid_pane_output_status(output: &str) -> Option<StatusKind> {
+    let lines: Vec<&str> = output.lines().collect();
+    let footer_index = lines
+        .iter()
+        .rposition(|line| droid_current_footer_line(line))?;
+    let prompt_window_start = footer_index.saturating_sub(8);
+    let current_prompt_lines = &lines[prompt_window_start..=footer_index];
+
+    if current_prompt_lines
+        .iter()
+        .any(|line| droid_current_busy_prompt_line(line))
+    {
+        return Some(StatusKind::Busy);
+    }
+
+    if current_prompt_lines
+        .iter()
+        .any(|line| droid_current_idle_prompt_line(line))
+    {
+        return Some(StatusKind::Idle);
+    }
+
+    current_prompt_lines
+        .iter()
+        .any(|line| droid_current_streaming_line(line))
+        .then_some(StatusKind::Busy)
+}
+
+fn droid_current_footer_line(line: &str) -> bool {
+    let line = line.trim();
+    line.contains("? for help") && line.contains("IDE")
+}
+
+fn droid_current_busy_prompt_line(line: &str) -> bool {
+    let line = line.trim();
+    line.contains("> Enter to steer")
+}
+
+fn droid_current_streaming_line(line: &str) -> bool {
+    let line = line.trim();
+    line.contains("Streaming...") && line.contains("Press ESC to stop")
+}
+
+fn droid_current_idle_prompt_line(line: &str) -> bool {
+    let line = line.trim();
+    line.starts_with("│ >") && !line.contains("Enter to steer")
 }
 
 fn gemini_pane_output_status(output: &str) -> Option<StatusKind> {

@@ -1622,6 +1622,10 @@ fn title_normalization_strips_claude_and_opencode_prefixes() {
         "Query planner"
     );
     assert_eq!(
+        classify::normalize_title_for_display(Some(Provider::Droid), "⛬ Basic Math Question"),
+        "Basic Math Question"
+    );
+    assert_eq!(
         classify::normalize_title_for_display(Some(Provider::Pi), "π - refactor - agentscan"),
         "refactor - agentscan"
     );
@@ -1908,6 +1912,24 @@ fn display_metadata_extracts_activity_labels_from_titles() {
 }
 
 #[test]
+fn droid_display_metadata_uses_title_after_provider_identity() {
+    let droid = classify::display_metadata(
+        Some(Provider::Droid),
+        Some(super::ClassificationMatchKind::PaneCurrentCommand),
+        None,
+        "⛬ Basic Math Question",
+        "droid",
+        "ai",
+    );
+
+    assert_eq!(droid.label, "Basic Math Question");
+    assert_eq!(
+        droid.activity_label.as_deref(),
+        Some("Basic Math Question")
+    );
+}
+
+#[test]
 fn grok_display_metadata_strips_title_suffix() {
     let grok = classify::display_metadata(
         Some(Provider::Grok),
@@ -2046,6 +2068,74 @@ fn pane_output_status_fallback_is_limited_to_supported_providers() {
 
     assert_eq!(antigravity.status.kind, StatusKind::Unknown);
     assert_eq!(antigravity.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn droid_pane_output_marks_current_prompt_idle_only_after_provider_is_known() {
+    let mut droid = pane_output_status_pane(810, Provider::Droid, "⛬ New Session");
+
+    classify::apply_pane_output_status_fallback(
+        &mut droid,
+        " Auto (High) - allow all commands            Droid Core (DeepSeek V4 Pro) (Max)\n\
+         ╭──────────────────────────────────────────────────────────────────────────────╮\n\
+         │ >                                                                            │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯\n\
+         [⏱ 5s] ? for help                                                          IDE ◌\n",
+    );
+
+    assert_eq!(droid.status.kind, StatusKind::Idle);
+    assert_eq!(droid.status.source, super::StatusSource::PaneOutput);
+
+    let mut unknown = proc_fallback_pane(811, "zsh", "custom title");
+    classify::apply_pane_output_status_fallback(
+        &mut unknown,
+        " Auto (High) - allow all commands            Droid Core (DeepSeek V4 Pro) (Max)\n\
+         ╭──────────────────────────────────────────────────────────────────────────────╮\n\
+         │ >                                                                            │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯\n\
+         [⏱ 5s] ? for help                                                          IDE ◌\n",
+    );
+
+    assert_eq!(unknown.status.kind, StatusKind::Unknown);
+    assert_eq!(unknown.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn droid_pane_output_marks_current_streaming_prompt_busy() {
+    let mut droid = pane_output_status_pane(812, Provider::Droid, "⛬ New Session");
+
+    classify::apply_pane_output_status_fallback(
+        &mut droid,
+        "   What is 1+1? Answer briefly.\n\n\
+         ⠄ Streaming...  (Press ESC to stop)\n\n\
+         Auto (High) - allow all commands            Droid Core (DeepSeek V4 Pro) (Max)\n\
+         ╭──────────────────────────────────────────────────────────────────────────────╮\n\
+         │ > Enter to steer                                                             │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯\n\
+         [⏱ 2s] ? for help                                                          IDE ◌\n",
+    );
+
+    assert_eq!(droid.status.kind, StatusKind::Busy);
+    assert_eq!(droid.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn droid_pane_output_ignores_stale_streaming_above_current_prompt() {
+    let mut droid = pane_output_status_pane(813, Provider::Droid, "⛬ Basic Math Question");
+
+    classify::apply_pane_output_status_fallback(
+        &mut droid,
+        " ⠄ Streaming...  (Press ESC to stop)\n\n\
+         ⛬  2.\n\n\
+         Auto (High) - allow all commands            Droid Core (DeepSeek V4 Pro) (Max)\n\
+         ╭──────────────────────────────────────────────────────────────────────────────╮\n\
+         │ >                                                                            │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯\n\
+         [⏱ 5s] ? for help                                                          IDE ◌\n",
+    );
+
+    assert_eq!(droid.status.kind, StatusKind::Idle);
+    assert_eq!(droid.status.source, super::StatusSource::PaneOutput);
 }
 
 #[test]

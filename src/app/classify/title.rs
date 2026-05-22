@@ -31,6 +31,7 @@ pub(super) struct TitleAnalysis<'a> {
     pub(super) cursor_label: Option<&'a str>,
     pub(super) pi_label: Option<&'a str>,
     pub(super) grok_label: Option<&'a str>,
+    pub(super) droid_label: Option<&'a str>,
     pub(super) cursor_title_shaped: bool,
     provider_hint: Option<TitleProviderHint>,
     pub(super) codex_status_title: String,
@@ -65,7 +66,10 @@ impl<'a> TitleAnalysis<'a> {
         self.provider_hint.is_some_and(|hint| {
             hint.kind == TitleProviderHintKind::Explicit
                 && (hint.strength == TitleHintStrength::Strong
-                    || matches!(hint.provider, Provider::Copilot | Provider::CursorCli))
+                    || matches!(
+                        hint.provider,
+                        Provider::Copilot | Provider::CursorCli | Provider::Droid
+                    ))
                 && !matches!(provider, Some(resolved_provider) if resolved_provider == hint.provider)
         })
     }
@@ -98,6 +102,11 @@ impl<'a> TitleAnalysis<'a> {
         }
         if matches!(provider, Some(Provider::Grok))
             && let Some(stripped) = self.grok_label
+        {
+            return Some(stripped.to_string());
+        }
+        if matches!(provider, Some(Provider::Droid))
+            && let Some(stripped) = self.droid_label
         {
             return Some(stripped.to_string());
         }
@@ -135,6 +144,7 @@ pub(super) fn analyze_title(raw_title: &str) -> TitleAnalysis<'_> {
         .then_some(())
         .and_then(|_| provider_prefixed_title_label(Provider::Pi, stripped));
     let grok_label = grok_title_label(stripped);
+    let droid_label = provider_prefixed_title_label(Provider::Droid, stripped);
     let gemini_title = parse_gemini_terminal_title(stripped);
 
     let provider_hint = if claude_label.is_some() || title_matches_alias(Provider::Claude, stripped)
@@ -184,6 +194,12 @@ pub(super) fn analyze_title(raw_title: &str) -> TitleAnalysis<'_> {
             strength: TitleHintStrength::Strong,
             kind: TitleProviderHintKind::Explicit,
         })
+    } else if droid_label.is_some() {
+        Some(TitleProviderHint {
+            provider: Provider::Droid,
+            strength: TitleHintStrength::Weak,
+            kind: TitleProviderHintKind::Explicit,
+        })
     } else if gemini_title
         .as_ref()
         .is_some_and(|title| title.strong_provider_signal)
@@ -217,6 +233,7 @@ pub(super) fn analyze_title(raw_title: &str) -> TitleAnalysis<'_> {
         cursor_label,
         pi_label,
         grok_label,
+        droid_label,
         cursor_title_shaped,
         provider_hint,
         codex_status_title,

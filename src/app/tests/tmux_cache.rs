@@ -66,6 +66,10 @@ fn rejects_suffixed_binaries_for_generic_word_providers() {
         classify::classify_provider(None, "agy-beta", "").is_none(),
         "agy suffix should not classify as Antigravity"
     );
+    assert!(
+        classify::classify_provider(None, "droid-helper", "").is_none(),
+        "droid suffix should not classify as Droid"
+    );
 }
 
 #[test]
@@ -98,6 +102,31 @@ fn classifies_copilot_and_cursor_cli_from_command() {
         plain_cursor.is_none(),
         "plain cursor launcher should not match cursor cli"
     );
+}
+
+#[test]
+fn classifies_droid_from_command_and_metadata_aliases() {
+    let command = classify::classify_provider(None, "droid", "").expect("should match droid");
+    assert_eq!(command.provider, Provider::Droid);
+    assert_eq!(
+        command.matched_by,
+        super::ClassificationMatchKind::PaneCurrentCommand
+    );
+    assert_eq!(command.confidence, super::ClassificationConfidence::High);
+
+    let metadata = classify::classify_provider(Some("factory-droid"), "zsh", "custom title")
+        .expect("metadata should match droid");
+    assert_eq!(metadata.provider, Provider::Droid);
+    assert_eq!(
+        metadata.matched_by,
+        super::ClassificationMatchKind::PaneMetadata
+    );
+}
+
+#[test]
+fn droid_title_text_alone_does_not_classify_provider() {
+    assert!(classify::classify_provider(None, "zsh", "⛬ New Session").is_none());
+    assert!(classify::classify_provider(None, "zsh", "Droid").is_none());
 }
 
 #[test]
@@ -353,6 +382,9 @@ fn provider_metadata_table_covers_aliases_commands_and_summary_order() {
         ("grok build", Provider::Grok),
         ("hermes-agent", Provider::Hermes),
         ("hermes agent", Provider::Hermes),
+        ("droid", Provider::Droid),
+        ("factory-droid", Provider::Droid),
+        ("factory droid", Provider::Droid),
     ] {
         assert_eq!(
             super::provider_from_metadata(Some(alias)),
@@ -411,6 +443,7 @@ fn provider_metadata_table_covers_aliases_commands_and_summary_order() {
             Provider::Pi,
             Provider::Grok,
             Provider::Hermes,
+            Provider::Droid,
         ]
     );
 }

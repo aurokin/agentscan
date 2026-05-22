@@ -177,7 +177,8 @@ fn infer_activity_label(provider: Option<Provider>, label: &str) -> Option<Strin
         | Some(Provider::CursorCli)
         | Some(Provider::Pi)
         | Some(Provider::Grok)
-        | Some(Provider::Hermes) => Some(label.to_string()),
+        | Some(Provider::Hermes)
+        | Some(Provider::Droid) => Some(label.to_string()),
         _ => None,
     }
 }

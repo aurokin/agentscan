@@ -291,6 +291,8 @@ fn tmux_set_metadata_accepts_provider_aliases() {
         ("grok", Provider::Grok),
         ("hermes", Provider::Hermes),
         ("hermes-agent", Provider::Hermes),
+        ("droid", Provider::Droid),
+        ("factory-droid", Provider::Droid),
     ] {
         let cli = <Cli as clap::Parser>::parse_from([
             "agentscan",
