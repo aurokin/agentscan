@@ -113,6 +113,25 @@ Each analysis should record:
 
 Completed source-analysis baselines:
 
+- Claude Code: source analysis at `~/code/upstream/claude-code` commit
+  `611aee9d3` found the current prompt/footer surface in the React/Ink TUI.
+  The checkout has no configured Git remote, so this is local source evidence.
+  `src/components/PromptInput/PromptInputModeIndicator.tsx` renders the main
+  prompt marker as `❯`, while
+  `src/components/PromptInput/PromptInput.tsx` renders the prompt input inside
+  a bottom-bordered container and
+  `src/components/PromptInput/PromptInputFooterLeftSide.tsx` renders footer
+  hints such as `? for shortcuts`, permission-mode hints, and loading hints
+  from `getSpinnerHintParts`. Current loading surfaces include an `esc to
+  interrupt` hint; suppressed permission dialogs can also leave a current
+  `Waiting for permission…` row above the prompt. The placeholder itself is
+  not stable because `usePromptInputPlaceholder.ts` can render onboarding
+  examples, queue hints, teammate messages, or no placeholder. Pane-output
+  status fallback should therefore remain provider-scoped, require the current
+  `❯` prompt to be near Claude footer/status text, mark busy from current
+  interrupt or permission-wait markers, and preserve `unknown` for stale
+  prompts, generic Claude mentions, or prompt lines without current footer
+  context.
 - Codex: source analysis at `~/code/upstream/codex` commit
   `a27d3847b5` found the current idle composer and busy status shapes in the
   Rust TUI. `codex-rs/tui/src/keymap_setup.rs` configures the default composer

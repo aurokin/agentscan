@@ -264,6 +264,13 @@ mod tests {
            tab to queue message                                       100% context left\n"
     }
 
+    fn claude_idle_output() -> &'static str {
+        "╭────────────────────────────────────────╮\n\
+         ❯ Try \"fix the failing test\"\n\
+         ╰────────────────────────────────────────╯\n\
+         ? for shortcuts\n"
+    }
+
     fn gemini_idle_output() -> &'static str {
         ">   Type your message or @path/to/file\n\
          Workspace   Sandbox    Model\n\
@@ -303,13 +310,20 @@ mod tests {
             pane("%6", Some(Provider::Gemini), PaneStatus::not_checked()),
             pane("%7", Some(Provider::Opencode), PaneStatus::not_checked()),
             pane("%8", Some(Provider::Pi), PaneStatus::not_checked()),
+            pane("%9", Some(Provider::Claude), PaneStatus::not_checked()),
+            pane(
+                "%10",
+                Some(Provider::Claude),
+                PaneStatus::title(StatusKind::Busy),
+            ),
         ];
         let mut capture = FakePaneOutputCapture::default()
             .with_output("%2", codex_idle_output())
             .with_output("%4", copilot_busy_output())
             .with_output("%6", gemini_idle_output())
             .with_output("%7", opencode_idle_output())
-            .with_output("%8", pi_idle_output());
+            .with_output("%8", pi_idle_output())
+            .with_output("%9", claude_idle_output());
 
         apply_pane_output_status_fallbacks_with_capture(&mut panes, &mut capture);
 
@@ -320,7 +334,8 @@ mod tests {
                 ("%4".to_string(), PANE_OUTPUT_STATUS_LINES),
                 ("%6".to_string(), PANE_OUTPUT_STATUS_LINES),
                 ("%7".to_string(), PANE_OUTPUT_STATUS_LINES),
-                ("%8".to_string(), PANE_OUTPUT_STATUS_LINES)
+                ("%8".to_string(), PANE_OUTPUT_STATUS_LINES),
+                ("%9".to_string(), PANE_OUTPUT_STATUS_LINES)
             ]
         );
         assert_eq!(panes[1].status, PaneStatus::pane_output(StatusKind::Idle));
@@ -328,6 +343,7 @@ mod tests {
         assert_eq!(panes[5].status, PaneStatus::pane_output(StatusKind::Idle));
         assert_eq!(panes[6].status, PaneStatus::pane_output(StatusKind::Idle));
         assert_eq!(panes[7].status, PaneStatus::pane_output(StatusKind::Idle));
+        assert_eq!(panes[8].status, PaneStatus::pane_output(StatusKind::Idle));
     }
 
     #[test]

@@ -2031,10 +2031,10 @@ fn copilot_pane_output_marks_busy_only_after_provider_is_known() {
 
 #[test]
 fn pane_output_status_fallback_is_limited_to_supported_providers() {
-    let mut claude = pane_output_status_pane(747, Provider::Claude, "Claude Code");
+    let mut antigravity = pane_output_status_pane(747, Provider::Antigravity, "Antigravity");
 
     classify::apply_pane_output_status_fallback(
-        &mut claude,
+        &mut antigravity,
         "❯ Review patch\n\n\
          ● Thinking (Esc to cancel · 616 B)\n\
          /tmp/probe [main]\n\
@@ -2042,6 +2042,101 @@ fn pane_output_status_fallback_is_limited_to_supported_providers() {
          ❯\n\
          ────────────────────\n\
          / commands · ? help\n",
+    );
+
+    assert_eq!(antigravity.status.kind, StatusKind::Unknown);
+    assert_eq!(antigravity.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn claude_pane_output_marks_current_prompt_idle_only_after_provider_is_known() {
+    let mut claude = pane_output_status_pane(804, Provider::Claude, "Claude Code");
+
+    classify::apply_pane_output_status_fallback(
+        &mut claude,
+        "╭────────────────────────────────────────╮\n\
+         ❯ Try \"fix the failing test\"\n\
+         ╰────────────────────────────────────────╯\n\
+         ? for shortcuts\n",
+    );
+
+    assert_eq!(claude.status.kind, StatusKind::Idle);
+    assert_eq!(claude.status.source, super::StatusSource::PaneOutput);
+
+    let mut unknown = proc_fallback_pane(805, "zsh", "custom title");
+    classify::apply_pane_output_status_fallback(
+        &mut unknown,
+        "╭────────────────────────────────────────╮\n\
+         ❯ Try \"fix the failing test\"\n\
+         ╰────────────────────────────────────────╯\n\
+         ? for shortcuts\n",
+    );
+
+    assert_eq!(unknown.status.kind, StatusKind::Unknown);
+    assert_eq!(unknown.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn claude_pane_output_marks_current_interrupt_hint_busy() {
+    let mut claude = pane_output_status_pane(806, Provider::Claude, "Claude Code");
+
+    classify::apply_pane_output_status_fallback(
+        &mut claude,
+        "╭────────────────────────────────────────╮\n\
+         ❯ \n\
+         ╰────────────────────────────────────────╯\n\
+         esc to interrupt\n",
+    );
+
+    assert_eq!(claude.status.kind, StatusKind::Busy);
+    assert_eq!(claude.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn claude_pane_output_marks_current_permission_wait_busy() {
+    let mut claude = pane_output_status_pane(807, Provider::Claude, "Claude Code");
+
+    classify::apply_pane_output_status_fallback(
+        &mut claude,
+        "Waiting for permission…\n\
+         \n\
+         ╭────────────────────────────────────────╮\n\
+         ❯ \n\
+         ╰────────────────────────────────────────╯\n\
+         ? for shortcuts\n",
+    );
+
+    assert_eq!(claude.status.kind, StatusKind::Busy);
+    assert_eq!(claude.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn claude_pane_output_ignores_stale_prompt_without_current_footer() {
+    let mut claude = pane_output_status_pane(808, Provider::Claude, "Claude Code");
+
+    classify::apply_pane_output_status_fallback(
+        &mut claude,
+        "╭────────────────────────────────────────╮\n\
+         ❯ Try \"fix the failing test\"\n\
+         ╰────────────────────────────────────────╯\n\
+         older transcript output\n\
+         command result\n\
+         done\n\
+         shell prompt\n",
+    );
+
+    assert_eq!(claude.status.kind, StatusKind::Unknown);
+    assert_eq!(claude.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn claude_pane_output_ignores_ascii_angle_output_near_footer() {
+    let mut claude = pane_output_status_pane(809, Provider::Claude, "Claude Code");
+
+    classify::apply_pane_output_status_fallback(
+        &mut claude,
+        "> quoted transcript output\n\
+         ? for shortcuts\n",
     );
 
     assert_eq!(claude.status.kind, StatusKind::Unknown);
