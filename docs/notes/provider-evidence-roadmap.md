@@ -32,6 +32,29 @@ foreground/root/descendant process evidence, and tightly scoped pane output.
 When pane output supplies state, JSON should expose that provenance as
 `status.source="pane_output"`.
 
+## Coordination Status
+
+The near-term provider evidence pass is complete:
+
+- Pi plug-and-play support shipped from upstream source evidence. Pi remains
+  conservative around ASCII titles and default title-derived status.
+- opencode support shipped from upstream source analysis, exact title shapes,
+  process/package evidence, and provider-scoped pane-output status fallback.
+- GitHub Copilot and Cursor CLI support shipped from empirical local probing,
+  with title branding treated as supporting context rather than standalone
+  provider identity.
+
+The remaining provider-side integration issues are intentionally deep-roadmap:
+
+- Codex and Claude Code hooks may later publish explicit tmux metadata, but
+  baseline detection must not depend on them.
+- Pi extension metadata may later enrich state, labels, and session identity,
+  but default Pi detection must keep working without it.
+
+New provider work should continue to start with source analysis for
+open-source agents or empirical probing for closed-source agents, then encode
+only the strongest low-risk signals in the baseline scanner.
+
 ## Pi Coding Agent Plan
 
 Upstream analyzed: `~/code/upstream/pi-mono` commit `385a11bf`, package
@@ -242,9 +265,10 @@ Closed-source queue:
 
 - Antigravity CLI: available through local `agy`; the IDE cask launcher and
   terminal-first CLI share the command name but expose different behavior.
-- GitHub Copilot CLI: available now because a Copilot subscription is available.
-- Cursor CLI: available now through local `cursor-agent` installation and
-  empirical tmux probing.
+- GitHub Copilot CLI: probed locally and documented in
+  `docs/notes/copilot-cursor-closed-source-probing.md`.
+- Cursor CLI: probed locally through `cursor-agent` and documented in
+  `docs/notes/copilot-cursor-closed-source-probing.md`.
 
 Closed-source probing should produce a written evidence matrix before code
 changes. If a signal is weak, agentscan should prefer `unknown` over a richer
