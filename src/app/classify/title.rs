@@ -64,7 +64,8 @@ impl<'a> TitleAnalysis<'a> {
 
         self.provider_hint.is_some_and(|hint| {
             hint.kind == TitleProviderHintKind::Explicit
-                && hint.strength == TitleHintStrength::Strong
+                && (hint.strength == TitleHintStrength::Strong
+                    || matches!(hint.provider, Provider::Copilot | Provider::CursorCli))
                 && !matches!(provider, Some(resolved_provider) if resolved_provider == hint.provider)
         })
     }
@@ -158,13 +159,13 @@ pub(super) fn analyze_title(raw_title: &str) -> TitleAnalysis<'_> {
     } else if copilot_label.is_some() || title_matches_alias(Provider::Copilot, stripped) {
         Some(TitleProviderHint {
             provider: Provider::Copilot,
-            strength: TitleHintStrength::Strong,
+            strength: TitleHintStrength::Weak,
             kind: TitleProviderHintKind::Explicit,
         })
     } else if cursor_title_shaped {
         Some(TitleProviderHint {
             provider: Provider::CursorCli,
-            strength: TitleHintStrength::Strong,
+            strength: TitleHintStrength::Weak,
             kind: TitleProviderHintKind::Explicit,
         })
     } else if pi_label.is_some() {

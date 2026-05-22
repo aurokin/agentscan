@@ -162,23 +162,44 @@ fn classifies_from_title_when_command_is_generic() {
         super::ClassificationMatchKind::PaneTitle
     );
 
-    let copilot_default = classify::classify_provider(None, "zsh", "GitHub Copilot")
-        .expect("should match default GitHub Copilot title");
-    assert_eq!(copilot_default.provider, Provider::Copilot);
-    assert_eq!(
-        copilot_default.matched_by,
-        super::ClassificationMatchKind::PaneTitle
+    assert!(
+        classify::classify_provider(None, "zsh", "GitHub Copilot").is_none(),
+        "Copilot title text alone should not classify closed-source panes"
     );
 }
 
 #[test]
-fn classifies_cursor_agent_from_bare_title_when_command_is_generic() {
-    let matched =
-        classify::classify_provider(None, "zsh", "Cursor Agent").expect("should match cursor cli");
-    assert_eq!(matched.provider, Provider::CursorCli);
+fn closed_source_branding_titles_do_not_classify_when_command_is_generic() {
+    for title in [
+        "GitHub Copilot",
+        "Copilot | Working",
+        "Cursor Agent",
+        "Cursor CLI",
+        "Cursor | Query planner",
+    ] {
+        assert!(
+            classify::classify_provider(None, "zsh", title).is_none(),
+            "closed-source title text alone should not classify: {title}"
+        );
+    }
+}
+
+#[test]
+fn closed_source_titles_remain_labels_after_strong_provider_identity() {
+    let copilot =
+        classify::classify_provider(None, "copilot", "Copilot | Working").expect("command matches");
+    assert_eq!(copilot.provider, Provider::Copilot);
     assert_eq!(
-        matched.matched_by,
-        super::ClassificationMatchKind::PaneTitle
+        copilot.matched_by,
+        super::ClassificationMatchKind::PaneCurrentCommand
+    );
+
+    let cursor = classify::classify_provider(None, "cursor-agent", "Cursor CLI | Query planner")
+        .expect("command matches");
+    assert_eq!(cursor.provider, Provider::CursorCli);
+    assert_eq!(
+        cursor.matched_by,
+        super::ClassificationMatchKind::PaneCurrentCommand
     );
 }
 
@@ -1114,7 +1135,7 @@ fn cursor_cli_generic_titles_fall_back_to_window_name_for_display() {
 }
 
 #[test]
-fn cursor_cli_title_only_panes_classify_from_bare_cursor_titles() {
+fn cursor_cli_title_only_panes_stay_unknown_from_bare_cursor_titles() {
     for title in ["Cursor Agent", "Cursor CLI", "Cursor"] {
         let pane = classify::pane_from_row(super::TmuxPaneRow {
             session_name: "cursorprobe".to_string(),
@@ -1136,13 +1157,13 @@ fn cursor_cli_title_only_panes_classify_from_bare_cursor_titles() {
             agent_session_id: None,
         });
 
-        assert_eq!(pane.provider, Some(Provider::CursorCli), "title: {title}");
-        assert_eq!(pane.display.label, title, "title: {title}");
+        assert_eq!(pane.provider, None, "title: {title}");
+        assert_eq!(pane.display.label, "ai", "title: {title}");
         assert_eq!(pane.display.activity_label, None, "title: {title}");
         assert_eq!(pane.status.kind, StatusKind::Unknown, "title: {title}");
         assert_eq!(
             pane.classification.matched_by,
-            Some(super::ClassificationMatchKind::PaneTitle),
+            None,
             "title: {title}"
         );
     }

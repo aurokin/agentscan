@@ -30,6 +30,9 @@ This repo uses progressively disclosed documentation.
   - `docs/notes/provider-evidence-roadmap.md`
     Provider-specific evidence plans, plug-and-play detection policy, and the
     deep-roadmap hook/extension direction.
+  - `docs/notes/copilot-cursor-closed-source-probing.md`
+    Closed-source Copilot and Cursor probing checklist, evidence matrix, and
+    accepted versus rejected classifier signals.
   - `docs/notes/daemon-redesign-brief.md`
     Prepared target shape, migration slices, and harness risks for the future
     daemon redesign.

@@ -274,7 +274,7 @@ fn assert_fixture_copilot_case(panes: &[PaneRecord]) {
     assert_eq!(copilot_idle.display.activity_label, None);
     assert_eq!(
         copilot_idle.classification.matched_by,
-        Some(super::ClassificationMatchKind::PaneTitle)
+        Some(super::ClassificationMatchKind::PaneCurrentCommand)
     );
 
     let copilot_task = pane_by_id(panes, "%311");
