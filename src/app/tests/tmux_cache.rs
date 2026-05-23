@@ -450,7 +450,7 @@ fn provider_metadata_table_covers_aliases_commands_and_summary_order() {
 
 #[test]
 fn provider_summaries_expose_display_markers_and_aliases() {
-    let summaries = super::provider_summaries();
+    let summaries = super::provider_summaries(IconMode::Emoji);
 
     assert_eq!(summaries.len(), super::provider_summary_order().count());
     let codex = summaries
@@ -460,6 +460,9 @@ fn provider_summaries_expose_display_markers_and_aliases() {
     assert_eq!(codex.name, "codex");
     assert_eq!(codex.display_marker, "\u{f07b5}");
     assert_eq!(codex.display_marker_codepoints, ["U+F07B5"]);
+    assert_eq!(codex.active_icon_mode, IconMode::Emoji);
+    assert_eq!(codex.active_marker, "🤖");
+    assert_eq!(codex.active_marker_codepoints, ["U+1F916"]);
     assert_eq!(codex.icons.emoji.marker, "🤖");
     assert_eq!(codex.icons.emoji.codepoints, ["U+1F916"]);
     assert_eq!(codex.icons.nerd_font.marker, "\u{f07b5}");
@@ -480,6 +483,9 @@ fn provider_summaries_expose_display_markers_and_aliases() {
         .expect("droid summary should be present");
     assert_eq!(droid.display_marker, "⛬");
     assert_eq!(droid.display_marker_codepoints, ["U+26EC"]);
+    assert_eq!(droid.active_icon_mode, IconMode::Emoji);
+    assert_eq!(droid.active_marker, "🏭");
+    assert_eq!(droid.active_marker_codepoints, ["U+1F3ED"]);
     assert_eq!(droid.icons.emoji.marker, "🏭");
     assert_eq!(droid.icons.emoji.codepoints, ["U+1F3ED"]);
     assert_eq!(droid.icons.nerd_font.marker, "⛬");

@@ -50,6 +50,9 @@ pub(crate) struct ProviderSummary {
     pub(crate) name: &'static str,
     pub(crate) display_marker: &'static str,
     pub(crate) display_marker_codepoints: Vec<String>,
+    pub(crate) active_icon_mode: IconMode,
+    pub(crate) active_marker: &'static str,
+    pub(crate) active_marker_codepoints: Vec<String>,
     pub(crate) icons: ProviderIconSummary,
     pub(crate) metadata_aliases: &'static [&'static str],
     pub(crate) command_aliases: Vec<ProviderCommandAliasSummary>,
@@ -249,7 +252,7 @@ pub(crate) fn provider_summary_order() -> impl Iterator<Item = Provider> {
     PROVIDER_INFOS.iter().map(|info| info.provider)
 }
 
-pub(crate) fn provider_summaries() -> Vec<ProviderSummary> {
+pub(crate) fn provider_summaries(icon_mode: IconMode) -> Vec<ProviderSummary> {
     PROVIDER_INFOS
         .iter()
         .map(|info| ProviderSummary {
@@ -257,6 +260,9 @@ pub(crate) fn provider_summaries() -> Vec<ProviderSummary> {
             name: info.canonical_name,
             display_marker: info.icons.nerd_font,
             display_marker_codepoints: marker_codepoints(info.icons.nerd_font),
+            active_icon_mode: icon_mode,
+            active_marker: info.icons.marker(icon_mode),
+            active_marker_codepoints: marker_codepoints(info.icons.marker(icon_mode)),
             icons: icon_summary(info.icons),
             metadata_aliases: info.metadata_aliases,
             command_aliases: info

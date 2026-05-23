@@ -246,8 +246,8 @@ fn emit_filtered_snapshot(
 }
 
 fn command_providers(args: &ProvidersArgs) -> Result<()> {
-    let icon_mode = resolve_text_icon_mode(args.format, args.icons)?;
-    output::emit_providers(&provider_summaries(), args.format, icon_mode)
+    let config = resolve_command_config(args.icons)?;
+    output::emit_providers(&provider_summaries(config.icons), args.format, config.icons)
 }
 
 fn command_tui(args: &TuiArgs) -> Result<()> {
