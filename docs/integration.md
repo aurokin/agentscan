@@ -169,6 +169,18 @@ lifecycle, global hotkeys, rendering, and retry policy. The remote host owns
 tmux, the daemon, discovery, classification, picker rows, and focus actions.
 There is no desktop-specific scanner path.
 
+The macOS desktop MVP registers an app-global `CommandOrControl+Shift+A`
+shortcut through Tauri's global shortcut plugin. This is a desktop lifecycle
+concern: it toggles the desktop picker window, then the picker consumes the
+same command contract below. Tmux-prefix-originated launch remains a separate
+future integration path for terminal workflows and should not be conflated with
+the app-global shortcut.
+
+The shortcut plugin is app-global and does not require a terminal or tmux
+context to register. If macOS privacy behavior changes around global keyboard
+shortcuts, treat Accessibility/Input Monitoring prompts as desktop packaging
+and signing concerns; do not move shortcut handling into tmux or scanner code.
+
 For a local target, the desktop command runner executes commands directly:
 
 ```bash

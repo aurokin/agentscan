@@ -1,5 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
+
+const PICKER_HOTKEY = "CommandOrControl+Shift+A";
+
+let hotkeyOperationQueue = Promise.resolve();
+let windowOperationQueue = Promise.resolve();
 
 type DesktopProfile = {
   id: string;
@@ -107,6 +114,59 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    let disposed = false;
+    let registered = false;
+
+    function enqueueHotkeyOperation(operation: () => Promise<void>) {
+      hotkeyOperationQueue = hotkeyOperationQueue.then(operation, operation);
+      return hotkeyOperationQueue;
+    }
+
+    function registerPickerHotkey() {
+      return enqueueHotkeyOperation(async () => {
+        if (disposed) {
+          return;
+        }
+
+      try {
+        await register(PICKER_HOTKEY, (event) => {
+          if (event.state === "Pressed") {
+            void togglePickerWindow(() => setIsPickerVisible(true));
+          }
+        });
+        registered = true;
+
+        if (disposed) {
+          await unregister(PICKER_HOTKEY);
+          registered = false;
+        }
+      } catch (error) {
+        if (disposed) {
+          return;
+        }
+
+        setActivation({
+          status: "failed",
+          message: `Unable to register ${PICKER_HOTKEY}: ${errorMessage(error)}`,
+        });
+      }
+      });
+    }
+
+    void registerPickerHotkey();
+
+    return () => {
+      disposed = true;
+      void enqueueHotkeyOperation(async () => {
+        if (registered) {
+          await unregister(PICKER_HOTKEY);
+          registered = false;
+        }
+      });
+    };
+  }, []);
+
   const statusText = useMemo(() => {
     if (state.status === "loading") {
       return "Checking local CLI";
@@ -167,6 +227,7 @@ function App() {
     try {
       await invoke("focus_picker_row", { paneId: row.pane_id });
       setActivation({ status: "idle" });
+      await hidePickerWindow();
     } catch (error) {
       setActivation({ status: "failed", message: errorMessage(error) });
       await refreshPickerRows();
@@ -211,6 +272,7 @@ function App() {
     } else if (event.key === "Escape") {
       event.preventDefault();
       setIsPickerVisible(false);
+      void hidePickerWindow();
     }
   }
 
@@ -308,6 +370,32 @@ function App() {
       )}
     </main>
   );
+}
+
+async function togglePickerWindow(beforeShow: () => void) {
+  await enqueueWindowOperation(async () => {
+    const appWindow = getCurrentWindow();
+
+    if (await appWindow.isVisible()) {
+      await appWindow.hide();
+      return;
+    }
+
+    beforeShow();
+    await appWindow.show();
+    await appWindow.setFocus();
+  });
+}
+
+async function hidePickerWindow() {
+  await enqueueWindowOperation(async () => {
+    await getCurrentWindow().hide();
+  });
+}
+
+function enqueueWindowOperation(operation: () => Promise<void>) {
+  windowOperationQueue = windowOperationQueue.then(operation, operation);
+  return windowOperationQueue;
 }
 
 function PickerRows({
