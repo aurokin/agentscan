@@ -2,12 +2,32 @@
 
 ## Unreleased
 
+## 0.2.7 - 2026-05-23
+
 ### Added
 
 - Added Antigravity CLI provider identity detection for exact `agy` command
   panes, with status kept conservative until direct state evidence is available.
 - Added `agentscan daemon status --format json` for machine-readable daemon
   lifecycle and readiness checks.
+- Added Droid CLI provider support across provider metadata, display labels,
+  pane-output fallback, tests, and documentation.
+
+### Changed
+
+- Refactored daemon internals into explicit lifecycle, socket server,
+  snapshot store, and control-mode broker modules.
+- Moved steady-state daemon refresh reads onto the long-lived tmux control-mode
+  broker, with short-lived tmux reads retained for startup and fallback paths.
+- Enabled signed-only macOS daemon auto-start for daemon-backed consumers and
+  TUI bootstrap. macOS detached starts now share parent-side executable trust
+  preflight; ad-hoc, unsigned, or invalidly signed binaries remain blocked
+  before spawning.
+
+### Safety
+
+- Kept `--no-auto-start` and `AGENTSCAN_NO_AUTO_START=1` as hard opt-outs before
+  any platform-specific daemon start policy runs.
 
 ## 0.2.6 - 2026-05-13
 
