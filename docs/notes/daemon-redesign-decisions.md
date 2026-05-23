@@ -118,6 +118,7 @@ slices so they can be reviewed together at the end of the work.
 
 - `SnapshotStore` moved out of the monolithic daemon module into
   `src/app/daemon/snapshot_store.rs`.
-- The broker code remains in `daemon.rs` for now because it still touches the
-  control-mode runtime, event loop, and refresh provider boundary. Splitting it
-  should come after recovery behavior settles.
+- The control-mode runtime, brokered read provider, command-frame parser, and
+  broker transcript harness moved into `src/app/daemon/control_mode.rs`.
+- The daemon loop still owns when to refresh, recover, publish, and reconcile;
+  the control-mode module owns how brokered tmux reads and reconnect state work.
