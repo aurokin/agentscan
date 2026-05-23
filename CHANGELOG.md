@@ -11,6 +11,11 @@
   subscription stream for terminal-adjacent tools and future local/SSH desktop
   clients.
 
+### Changed
+
+- Extracted the live client subscription event model so the terminal TUI and
+  JSON Lines subscription stream share the same event vocabulary.
+
 ## 0.2.9 - 2026-05-23
 
 ### Added

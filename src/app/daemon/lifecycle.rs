@@ -343,16 +343,6 @@ impl std::fmt::Display for DaemonSnapshotError {
 
 impl std::error::Error for DaemonSnapshotError {}
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub(crate) enum DaemonSubscriptionEvent {
-    Connecting { message: String },
-    Snapshot { snapshot: SnapshotEnvelope },
-    Offline { message: String, retrying: bool },
-    Shutdown { message: String },
-    Fatal { message: String },
-}
-
 enum SubscriptionConnect {
     Subscribed {
         reader: BufReader<std::os::unix::net::UnixStream>,
@@ -381,8 +371,8 @@ impl SubscriptionState {
         }
     }
 
-    fn connecting_event(&self, socket_path: &Path) -> DaemonSubscriptionEvent {
-        DaemonSubscriptionEvent::Connecting {
+    fn connecting_event(&self, socket_path: &Path) -> LiveClientEvent {
+        LiveClientEvent::Connecting {
             message: if self.bootstrapped {
                 format!("reconnecting to daemon at {}", socket_path.display())
             } else {
@@ -413,42 +403,42 @@ impl SubscriptionState {
         self.attempted_start = false;
     }
 
-    fn auto_start_disabled_event(&self, reason: String) -> DaemonSubscriptionEvent {
+    fn auto_start_disabled_event(&self, reason: String) -> LiveClientEvent {
         let message = format!("daemon auto-start is disabled: {reason}");
         if self.bootstrapped {
-            DaemonSubscriptionEvent::Offline {
+            LiveClientEvent::Offline {
                 message,
                 retrying: false,
             }
         } else {
-            DaemonSubscriptionEvent::Fatal { message }
+            LiveClientEvent::Fatal { message }
         }
     }
 
-    fn post_bootstrap_auto_start_refusal_event(&self, reason: String) -> DaemonSubscriptionEvent {
+    fn post_bootstrap_auto_start_refusal_event(&self, reason: String) -> LiveClientEvent {
         let message = format!("daemon auto-start is disabled: {reason}");
         if self.bootstrapped {
-            DaemonSubscriptionEvent::Offline {
+            LiveClientEvent::Offline {
                 message,
                 retrying: true,
             }
         } else {
-            DaemonSubscriptionEvent::Fatal { message }
+            LiveClientEvent::Fatal { message }
         }
     }
 
-    fn offline_retrying_event(message: String) -> DaemonSubscriptionEvent {
-        DaemonSubscriptionEvent::Offline {
+    fn offline_retrying_event(message: String) -> LiveClientEvent {
+        LiveClientEvent::Offline {
             message,
             retrying: true,
         }
     }
 
-    fn unexpected_event(&self, message: String) -> DaemonSubscriptionEvent {
+    fn unexpected_event(&self, message: String) -> LiveClientEvent {
         if self.bootstrapped {
             Self::offline_retrying_event(message)
         } else {
-            DaemonSubscriptionEvent::Fatal { message }
+            LiveClientEvent::Fatal { message }
         }
     }
 
@@ -470,22 +460,18 @@ impl SubscriptionState {
 mod subscription_state_tests {
     use super::*;
 
-    fn assert_fatal(event: DaemonSubscriptionEvent, expected_message: &str) {
+    fn assert_fatal(event: LiveClientEvent, expected_message: &str) {
         match event {
-            DaemonSubscriptionEvent::Fatal { message } => {
+            LiveClientEvent::Fatal { message } => {
                 assert!(message.contains(expected_message), "{message}");
             }
             other => panic!("expected fatal event, got {other:?}"),
         }
     }
 
-    fn assert_offline(
-        event: DaemonSubscriptionEvent,
-        expected_message: &str,
-        expected_retrying: bool,
-    ) {
+    fn assert_offline(event: LiveClientEvent, expected_message: &str, expected_retrying: bool) {
         match event {
-            DaemonSubscriptionEvent::Offline { message, retrying } => {
+            LiveClientEvent::Offline { message, retrying } => {
                 assert!(message.contains(expected_message), "{message}");
                 assert_eq!(retrying, expected_retrying);
             }
@@ -854,13 +840,13 @@ fn snapshot_once_from_socket(socket_path: &Path) -> Result<SnapshotQuery> {
 
 pub(crate) fn spawn_subscription_worker(
     policy: AutoStartPolicy,
-    events: mpsc::Sender<DaemonSubscriptionEvent>,
+    events: mpsc::Sender<LiveClientEvent>,
     cancel: Arc<AtomicBool>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let result = subscription_worker_loop(policy, &events, &cancel);
         if let Err(error) = result {
-            let _ = events.send(DaemonSubscriptionEvent::Fatal {
+            let _ = events.send(LiveClientEvent::Fatal {
                 message: error.to_string(),
             });
         }
@@ -892,7 +878,7 @@ enum SubscriptionStreamCompletion {
 }
 
 fn write_subscription_events_json(
-    events: mpsc::Receiver<DaemonSubscriptionEvent>,
+    events: mpsc::Receiver<LiveClientEvent>,
     cancel: &AtomicBool,
 ) -> std::result::Result<SubscriptionStreamCompletion, DaemonSnapshotError> {
     let stdout = std::io::stdout();
@@ -904,15 +890,15 @@ fn write_subscription_events_json(
         }
 
         match event {
-            DaemonSubscriptionEvent::Fatal { message } => {
+            LiveClientEvent::Fatal { message } => {
                 return Err(DaemonSnapshotError::UnexpectedFrame { message });
             }
-            DaemonSubscriptionEvent::Shutdown { .. } => {
+            LiveClientEvent::Shutdown { .. } => {
                 return Ok(SubscriptionStreamCompletion::WorkerFinished);
             }
-            DaemonSubscriptionEvent::Connecting { .. }
-            | DaemonSubscriptionEvent::Snapshot { .. }
-            | DaemonSubscriptionEvent::Offline { .. } => {}
+            LiveClientEvent::Connecting { .. }
+            | LiveClientEvent::Snapshot { .. }
+            | LiveClientEvent::Offline { .. } => {}
         }
     }
 
@@ -921,7 +907,7 @@ fn write_subscription_events_json(
 
 fn write_subscription_event_json_line(
     writer: &mut impl Write,
-    event: &DaemonSubscriptionEvent,
+    event: &LiveClientEvent,
     cancel: &AtomicBool,
 ) -> std::result::Result<bool, DaemonSnapshotError> {
     if let Err(error) = serde_json::to_writer(&mut *writer, event) {
@@ -950,7 +936,7 @@ fn write_subscription_event_json_line(
 
 fn subscription_worker_loop(
     policy: AutoStartPolicy,
-    events: &mpsc::Sender<DaemonSubscriptionEvent>,
+    events: &mpsc::Sender<LiveClientEvent>,
     cancel: &Arc<AtomicBool>,
 ) -> Result<()> {
     let socket_path = ipc::resolve_socket_path()?;
@@ -968,7 +954,7 @@ fn subscription_worker_loop(
                 state.mark_subscribed();
                 send_subscription_event(
                     events,
-                    DaemonSubscriptionEvent::Snapshot {
+                    LiveClientEvent::Snapshot {
                         snapshot: bootstrap,
                     },
                 )?;
@@ -979,17 +965,14 @@ fn subscription_worker_loop(
                         }
                         send_subscription_event(
                             events,
-                            DaemonSubscriptionEvent::Offline {
+                            LiveClientEvent::Offline {
                                 message,
                                 retrying: true,
                             },
                         )?;
                     }
                     SubscriptionReadResult::Shutdown(message) => {
-                        send_subscription_event(
-                            events,
-                            DaemonSubscriptionEvent::Shutdown { message },
-                        )?;
+                        send_subscription_event(events, LiveClientEvent::Shutdown { message })?;
                         break;
                     }
                     SubscriptionReadResult::Cancelled => break,
@@ -1003,7 +986,7 @@ fn subscription_worker_loop(
                 state.mark_start_attempted();
                 send_subscription_event(
                     events,
-                    DaemonSubscriptionEvent::Connecting {
+                    LiveClientEvent::Connecting {
                         message: format!("starting daemon after {reason}"),
                     },
                 )?;
@@ -1027,7 +1010,7 @@ fn subscription_worker_loop(
                     Err(error) => {
                         send_subscription_event(
                             events,
-                            DaemonSubscriptionEvent::Fatal {
+                            LiveClientEvent::Fatal {
                                 message: error.to_string(),
                             },
                         )?;
@@ -1049,7 +1032,7 @@ fn subscription_worker_loop(
             SubscriptionConnect::StartupFailed(message) => {
                 send_subscription_event(
                     events,
-                    DaemonSubscriptionEvent::Fatal {
+                    LiveClientEvent::Fatal {
                         message: format!(
                             "daemon startup failed: {message}; see log {}",
                             paths.log_path.display()
@@ -1059,13 +1042,13 @@ fn subscription_worker_loop(
                 break;
             }
             SubscriptionConnect::ServerClosing(message) => {
-                send_subscription_event(events, DaemonSubscriptionEvent::Shutdown { message })?;
+                send_subscription_event(events, LiveClientEvent::Shutdown { message })?;
                 break;
             }
             SubscriptionConnect::Incompatible(message) => {
                 send_subscription_event(
                     events,
-                    DaemonSubscriptionEvent::Fatal {
+                    LiveClientEvent::Fatal {
                         message: incompatible_daemon_guidance(&message),
                     },
                 )?;
@@ -1231,7 +1214,7 @@ enum SubscriptionReadResult {
 
 fn read_subscription_frames(
     reader: &mut BufReader<std::os::unix::net::UnixStream>,
-    events: &mpsc::Sender<DaemonSubscriptionEvent>,
+    events: &mpsc::Sender<LiveClientEvent>,
     cancel: &Arc<AtomicBool>,
 ) -> SubscriptionReadResult {
     loop {
@@ -1246,8 +1229,7 @@ fn read_subscription_frames(
                         "invalid daemon snapshot: {error:#}"
                     ));
                 }
-                if send_subscription_event(events, DaemonSubscriptionEvent::Snapshot { snapshot })
-                    .is_err()
+                if send_subscription_event(events, LiveClientEvent::Snapshot { snapshot }).is_err()
                 {
                     return SubscriptionReadResult::Cancelled;
                 }
@@ -1285,9 +1267,9 @@ fn read_subscription_frames(
 }
 
 fn send_subscription_event(
-    events: &mpsc::Sender<DaemonSubscriptionEvent>,
-    event: DaemonSubscriptionEvent,
-) -> std::result::Result<(), mpsc::SendError<DaemonSubscriptionEvent>> {
+    events: &mpsc::Sender<LiveClientEvent>,
+    event: LiveClientEvent,
+) -> std::result::Result<(), mpsc::SendError<LiveClientEvent>> {
     events.send(event)
 }
 

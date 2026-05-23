@@ -148,6 +148,8 @@ snapshot payloads, provider classification, or socket protocol state.
 The Rust implementation keeps high-churn behavior behind small concern-focused
 modules:
 
+- live client subscription events live outside daemon and TUI modules so
+  terminal and JSONL stream consumers share one event vocabulary
 - provider-specific process evidence lives under `classify::proc_evidence`
   instead of the fallback orchestration path
 - tmux command execution, parsing, focus/client handling, and pane metadata

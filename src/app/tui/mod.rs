@@ -33,7 +33,7 @@ const TUI_DONE_PATH_ENV: &str = "AGENTSCAN_TUI_DONE_PATH";
 
 enum TuiEvent {
     Terminal(Event),
-    Subscription(daemon::DaemonSubscriptionEvent),
+    Subscription(LiveClientEvent),
     InputFatal(String),
 }
 
@@ -142,29 +142,29 @@ fn handle_tui_event(
 }
 
 fn handle_subscription_event(
-    event: daemon::DaemonSubscriptionEvent,
+    event: LiveClientEvent,
     state: &mut TuiState,
     include_all: bool,
 ) -> Result<TuiLoopAction> {
     match event {
-        daemon::DaemonSubscriptionEvent::Connecting { message } => {
+        LiveClientEvent::Connecting { message } => {
             state.set_connecting(message);
             Ok(TuiLoopAction::Redraw)
         }
-        daemon::DaemonSubscriptionEvent::Snapshot { mut snapshot } => {
+        LiveClientEvent::Snapshot { mut snapshot } => {
             snapshot::filter_snapshot(&mut snapshot, include_all);
             state.replace_panes(snapshot.panes);
             Ok(TuiLoopAction::Redraw)
         }
-        daemon::DaemonSubscriptionEvent::Offline { message, retrying } => {
+        LiveClientEvent::Offline { message, retrying } => {
             state.set_offline(message, retrying);
             Ok(TuiLoopAction::Redraw)
         }
-        daemon::DaemonSubscriptionEvent::Shutdown { message } => {
+        LiveClientEvent::Shutdown { message } => {
             state.set_shutdown(message);
             Ok(TuiLoopAction::Redraw)
         }
-        daemon::DaemonSubscriptionEvent::Fatal { message } => {
+        LiveClientEvent::Fatal { message } => {
             state.set_unavailable(message);
             Ok(TuiLoopAction::Redraw)
         }
