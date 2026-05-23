@@ -123,6 +123,10 @@ slices so they can be reviewed together at the end of the work.
 - The daemon socket server, socket state machine, subscriber mailboxes, snapshot
   publication telemetry, and socket client handler moved into
   `src/app/daemon/socket_server.rs`.
+- Daemon lifecycle commands, status/query helpers, snapshot/subscription socket
+  clients, start locking/readiness, stop signaling, macOS start preflight, and
+  auto-start opt-out handling moved into `src/app/daemon/lifecycle.rs`.
 - The daemon loop still owns when to refresh, recover, publish, and reconcile;
   the control-mode module owns how brokered tmux reads and reconnect state work,
-  and the socket module owns how daemon snapshots are published to clients.
+  the socket module owns how daemon snapshots are published to clients, and the
+  lifecycle module owns whether and how the daemon process is started/stopped.
