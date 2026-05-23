@@ -13,6 +13,7 @@ name = "agentscan-desktop"
 version = "0.2.9"
 dependencies = [
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
 ]

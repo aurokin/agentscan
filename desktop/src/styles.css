@@ -51,6 +51,7 @@ select {
 
 h1,
 h2,
+h3,
 p {
   margin-top: 0;
 }
@@ -66,6 +67,29 @@ h2 {
   margin-bottom: 16px;
   font-size: 15px;
   line-height: 1.3;
+}
+
+h3 {
+  margin-bottom: 8px;
+  font-size: 14px;
+}
+
+button {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid #1f6b53;
+  border-radius: 6px;
+  color: #ffffff;
+  background: #1f6b53;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+button:disabled {
+  cursor: wait;
+  color: #62685c;
+  border-color: #c5c9bf;
+  background: #e5e8df;
 }
 
 .status-pill {
@@ -154,6 +178,110 @@ h2 {
   font-size: 13px;
 }
 
+.picker-panel {
+  min-width: 0;
+  margin-top: 16px;
+  padding: 18px;
+  border: 1px solid #d6d9d0;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.panel-heading h2 {
+  margin-bottom: 0;
+}
+
+.muted {
+  margin-bottom: 0;
+  color: #62685c;
+}
+
+.error-state {
+  padding: 12px;
+  border: 1px solid #b94a48;
+  border-radius: 6px;
+  color: #6f2422;
+  background: #fff1f0;
+}
+
+.error-state p {
+  margin-bottom: 0;
+  overflow-wrap: anywhere;
+}
+
+.picker-list {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.picker-list li {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) minmax(110px, auto);
+  align-items: center;
+  gap: 12px;
+  min-height: 54px;
+  padding: 10px 12px;
+  border: 1px solid #e1e4dc;
+  border-radius: 6px;
+  background: #fbfcfa;
+}
+
+kbd {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid #c5c9bf;
+  border-radius: 5px;
+  color: #1f312b;
+  background: #eef1ea;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.picker-row-main,
+.picker-row-meta {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.picker-row-main span,
+.picker-row-main small,
+.picker-row-meta span,
+.picker-row-meta small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-row-main span,
+.picker-row-meta span {
+  font-weight: 700;
+}
+
+.picker-row-main small,
+.picker-row-meta small {
+  color: #62685c;
+  font-size: 12px;
+}
+
+.picker-row-meta {
+  text-align: right;
+}
+
 @media (max-width: 720px) {
   .app-shell {
     padding: 20px;
@@ -171,5 +299,14 @@ h2 {
   .status-pill {
     max-width: none;
     justify-self: start;
+  }
+
+  .picker-list li {
+    grid-template-columns: 36px minmax(0, 1fr);
+  }
+
+  .picker-row-meta {
+    grid-column: 2;
+    text-align: left;
   }
 }

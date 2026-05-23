@@ -7,6 +7,9 @@
 - Added a Mac-first Tauri desktop shell scaffold with a minimal local profile,
   frontend/backend IPC, and an `agentscan --version` preflight boundary that
   avoids linking scanner internals into the desktop app.
+- Added local desktop picker-row loading through `agentscan hotkeys --format json`,
+  including manual refresh and explicit error states for command, JSON, and
+  incompatible-output failures.
 - Added an ADR choosing Tauri 2 with a Rust backend and React/TypeScript UI for
   the macOS-first desktop shell, while preserving the shared CLI client contract
   for terminal and desktop consumers.
