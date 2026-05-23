@@ -157,3 +157,16 @@ slices so they can be reviewed together at the end of the work.
   handling stay centralized in `start_daemon`.
 - `--no-auto-start` and `AGENTSCAN_NO_AUTO_START=1` remain hard opt-outs before
   any platform-specific start policy runs.
+
+## Slice 13: Daemon Runtime Owner
+
+- The running daemon loop now has an explicit `DaemonRuntime` owner for
+  in-memory snapshot state, pane-output status cache, control-mode broker
+  client, reconcile scheduling, and socket publication after startup.
+- CLI lifecycle startup still owns process setup, socket binding, lifecycle
+  locks, and initial startup failure reporting. Once startup succeeds, runtime
+  methods own interval reconciles, control-mode event application, broker
+  recovery reconciles, publish context selection, and control-mode shutdown.
+- This is behavior-preserving. The extraction creates a clearer boundary for
+  future daemon supervisor work without changing the socket protocol, refresh
+  pipeline, or macOS lifecycle policy.

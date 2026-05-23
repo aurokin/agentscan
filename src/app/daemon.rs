@@ -181,136 +181,157 @@ fn daemon_run_with_socket_path_and_startup(
         }
     };
 
-    let mut snapshot = pending_snapshot.snapshot.clone();
-    let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
-    socket_state.publish_prepared_snapshot(pending_snapshot);
     let mut closing_guard = DaemonClosingGuard::new(socket_state.clone());
-    let mut control_mode = RunningTmuxControlModeClient::from_started(tmux_client)?;
-
-    let mut next_reconcile_at = Instant::now() + RECONCILE_INTERVAL;
-    socket_state.update_control_mode_broker_status(control_mode.broker_status_frame());
-
-    loop {
-        if DAEMON_SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-            break;
-        }
-        let now = Instant::now();
-        if now >= next_reconcile_at {
-            let publish_context = SnapshotPublishContext::new("reconcile").with_detail("interval");
-            let mut reconcile_tmux_reads = control_mode.read_provider();
-            reconcile_full_snapshot(
-                &mut snapshot,
-                &mut reconcile_tmux_reads,
-                tmux_version.as_deref(),
-                &mut pane_output_cache,
-            )?;
-            recover_broker_and_reconcile_if_needed(
-                &mut control_mode,
-                &startup,
-                &socket_state,
-                &mut snapshot,
-                &mut pane_output_cache,
-            )?;
-            socket_state.update_control_mode_broker_status(control_mode.broker_status_frame());
-            socket_state.publish_later_snapshot_with_context(snapshot.clone(), publish_context);
-            next_reconcile_at = Instant::now() + RECONCILE_INTERVAL;
-        }
-
-        let timeout = next_reconcile_at.saturating_duration_since(Instant::now());
-        match control_mode.recv_timeout(timeout) {
-            Ok(line) => {
-                let line = line?;
-                let event = control_event_from_line(&line);
-                let should_exit = event == ControlEvent::Exit;
-                let publish_context = event.publish_context();
-                let mut event_tmux_reads = control_mode.read_provider();
-                if apply_control_event(
-                    &mut snapshot,
-                    &mut event_tmux_reads,
-                    &line,
-                    &event,
-                    &mut pane_output_cache,
-                )? {
-                    let reconnected = recover_broker_and_reconcile_if_needed(
-                        &mut control_mode,
-                        &startup,
-                        &socket_state,
-                        &mut snapshot,
-                        &mut pane_output_cache,
-                    )?;
-                    socket_state
-                        .update_control_mode_broker_status(control_mode.broker_status_frame());
-                    socket_state.publish_later_snapshot_with_context(
-                        snapshot.clone(),
-                        if reconnected {
-                            SnapshotPublishContext::new("reconcile").with_detail("broker_reconnect")
-                        } else {
-                            publish_context.unwrap_or_else(|| {
-                                SnapshotPublishContext::new("control_event").with_detail("unknown")
-                            })
-                        },
-                    );
-                }
-
-                if should_exit {
-                    break;
-                }
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                let publish_context =
-                    SnapshotPublishContext::new("reconcile").with_detail("timeout");
-                let mut reconcile_tmux_reads = control_mode.read_provider();
-                reconcile_full_snapshot(
-                    &mut snapshot,
-                    &mut reconcile_tmux_reads,
-                    tmux_version.as_deref(),
-                    &mut pane_output_cache,
-                )?;
-                recover_broker_and_reconcile_if_needed(
-                    &mut control_mode,
-                    &startup,
-                    &socket_state,
-                    &mut snapshot,
-                    &mut pane_output_cache,
-                )?;
-                socket_state.update_control_mode_broker_status(control_mode.broker_status_frame());
-                socket_state.publish_later_snapshot_with_context(snapshot.clone(), publish_context);
-                next_reconcile_at = Instant::now() + RECONCILE_INTERVAL;
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-        }
-    }
+    let mut runtime = DaemonRuntime::from_started(
+        startup,
+        socket_state,
+        tmux_version,
+        pending_snapshot,
+        tmux_client,
+    )?;
+    runtime.run()?;
 
     closing_guard.mark_closing();
-
-    if DAEMON_SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-        control_mode.terminate();
-    } else {
-        control_mode.wait_for_exit()?;
-    }
+    runtime.shutdown_control_mode()?;
 
     Ok(())
 }
 
-fn recover_broker_and_reconcile_if_needed(
-    control_mode: &mut RunningTmuxControlModeClient,
-    startup: &impl StartupActions,
-    socket_state: &DaemonSocketState,
-    snapshot: &mut SnapshotEnvelope,
-    pane_output_cache: &mut scanner::PaneOutputStatusCache,
-) -> Result<bool> {
-    let reconnected = control_mode.recover_broker_if_disabled(startup, socket_state);
-    if reconnected {
-        let tmux_version = snapshot.source.tmux_version.clone();
-        let mut reconnect_tmux_reads = control_mode.read_provider();
-        reconcile_full_snapshot(
+struct DaemonRuntime<S> {
+    startup: S,
+    socket_state: DaemonSocketState,
+    tmux_version: Option<String>,
+    snapshot: SnapshotEnvelope,
+    pane_output_cache: scanner::PaneOutputStatusCache,
+    control_mode: RunningTmuxControlModeClient,
+    next_reconcile_at: Instant,
+}
+
+impl<S: StartupActions> DaemonRuntime<S> {
+    fn from_started(
+        startup: S,
+        socket_state: DaemonSocketState,
+        tmux_version: Option<String>,
+        pending_snapshot: PreparedSnapshot,
+        tmux_client: StartedTmuxControlModeClient,
+    ) -> Result<Self> {
+        let snapshot = pending_snapshot.snapshot.clone();
+        socket_state.publish_prepared_snapshot(pending_snapshot);
+        let control_mode = RunningTmuxControlModeClient::from_started(tmux_client)?;
+        socket_state.update_control_mode_broker_status(control_mode.broker_status_frame());
+        Ok(Self {
+            startup,
+            socket_state,
+            tmux_version,
             snapshot,
-            &mut reconnect_tmux_reads,
-            tmux_version.as_deref(),
-            pane_output_cache,
-        )?;
+            pane_output_cache: scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL),
+            control_mode,
+            next_reconcile_at: Instant::now() + RECONCILE_INTERVAL,
+        })
     }
-    Ok(reconnected)
+
+    fn run(&mut self) -> Result<()> {
+        loop {
+            if DAEMON_SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
+                break;
+            }
+            if Instant::now() >= self.next_reconcile_at {
+                self.reconcile_and_publish(
+                    SnapshotPublishContext::new("reconcile").with_detail("interval"),
+                )?;
+            }
+
+            let timeout = self
+                .next_reconcile_at
+                .saturating_duration_since(Instant::now());
+            match self.control_mode.recv_timeout(timeout) {
+                Ok(line) => {
+                    let line = line?;
+                    if self.handle_control_mode_line(&line)? {
+                        break;
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    self.reconcile_and_publish(
+                        SnapshotPublishContext::new("reconcile").with_detail("timeout"),
+                    )?;
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_control_mode_line(&mut self, line: &str) -> Result<bool> {
+        let event = control_event_from_line(line);
+        let should_exit = event == ControlEvent::Exit;
+        let publish_context = event.publish_context();
+        let mut event_tmux_reads = self.control_mode.read_provider();
+        if apply_control_event(
+            &mut self.snapshot,
+            &mut event_tmux_reads,
+            line,
+            &event,
+            &mut self.pane_output_cache,
+        )? {
+            let reconnected = self.recover_broker_and_reconcile_if_needed()?;
+            self.publish_current_snapshot(if reconnected {
+                SnapshotPublishContext::new("reconcile").with_detail("broker_reconnect")
+            } else {
+                publish_context.unwrap_or_else(|| {
+                    SnapshotPublishContext::new("control_event").with_detail("unknown")
+                })
+            });
+        }
+        Ok(should_exit)
+    }
+
+    fn reconcile_and_publish(&mut self, publish_context: SnapshotPublishContext) -> Result<()> {
+        let mut reconcile_tmux_reads = self.control_mode.read_provider();
+        reconcile_full_snapshot(
+            &mut self.snapshot,
+            &mut reconcile_tmux_reads,
+            self.tmux_version.as_deref(),
+            &mut self.pane_output_cache,
+        )?;
+        self.recover_broker_and_reconcile_if_needed()?;
+        self.publish_current_snapshot(publish_context);
+        self.next_reconcile_at = Instant::now() + RECONCILE_INTERVAL;
+        Ok(())
+    }
+
+    fn recover_broker_and_reconcile_if_needed(&mut self) -> Result<bool> {
+        let reconnected = self
+            .control_mode
+            .recover_broker_if_disabled(&self.startup, &self.socket_state);
+        if reconnected {
+            let tmux_version = self.snapshot.source.tmux_version.clone();
+            let mut reconnect_tmux_reads = self.control_mode.read_provider();
+            reconcile_full_snapshot(
+                &mut self.snapshot,
+                &mut reconnect_tmux_reads,
+                tmux_version.as_deref(),
+                &mut self.pane_output_cache,
+            )?;
+        }
+        Ok(reconnected)
+    }
+
+    fn publish_current_snapshot(&self, publish_context: SnapshotPublishContext) {
+        self.socket_state
+            .update_control_mode_broker_status(self.control_mode.broker_status_frame());
+        self.socket_state
+            .publish_later_snapshot_with_context(self.snapshot.clone(), publish_context);
+    }
+
+    fn shutdown_control_mode(mut self) -> Result<()> {
+        if DAEMON_SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
+            self.control_mode.terminate();
+        } else {
+            self.control_mode.wait_for_exit()?;
+        }
+        Ok(())
+    }
 }
 
 pub(crate) trait StartupActions {
