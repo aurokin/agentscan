@@ -217,14 +217,15 @@ snapshot visible while reconnecting and uses
 
 The local profile can override the `agentscan` binary path and provide
 additional environment variables for every local command and the live
-subscription process. The desktop debug log records command names, outcomes,
-errors, and stream events, but it should show environment variable names/counts
-rather than dumping values into routine diagnostics.
+subscription process. SSH profiles add a host field and wrap the same
+`agentscan` command arguments in the user's normal SSH configuration. Remote
+environment variables are exported inside the remote shell command before
+`agentscan` starts; they are intended for scoped values such as
+`AGENTSCAN_TMUX_SOCKET` and `AGENTSCAN_SOCKET_PATH`.
 
-Desktop profile storage is intentionally transport-shaped before SSH execution
-lands. The active local profile owns its runner settings now; future SSH
-profiles should add transport fields around the same command contract instead
-of adding desktop-specific scanner or tmux parsing paths.
+The desktop debug log records command names, outcomes, errors, and stream
+events, but it should show environment variable names/counts rather than
+dumping values into routine diagnostics.
 
 Remote commands target the remote default tmux server and daemon socket unless
 the runner supplies an isolated context. For non-default tmux servers, desktop

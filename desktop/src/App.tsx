@@ -35,6 +35,10 @@ type RunnerSettings = {
   env: EnvironmentVariable[];
 };
 
+type DesktopRunnerSettings =
+  | ({ kind: "local" } & RunnerSettings)
+  | ({ kind: "ssh"; host: string } & RunnerSettings);
+
 type ProfileState = {
   activeProfileId: string;
   profiles: DesktopProfileConfig[];
@@ -55,7 +59,7 @@ type SshProfileConfig = {
   kind: "ssh";
   host: string;
   runner: RunnerSettings;
-  enabled: false;
+  enabled: boolean;
 };
 
 type EnvironmentVariable = {
@@ -126,10 +130,14 @@ function App() {
   const [state, setState] = useState<LoadState>({ status: "loading" });
   const [profileState, setProfileState] = useState<ProfileState>(() => loadStoredProfiles());
   const activeProfile = useMemo(() => getActiveProfile(profileState), [profileState]);
-  const runnerSettings = activeProfile.runner;
+  const runnerSettings = useMemo(() => runnerSettingsForProfile(activeProfile), [activeProfile]);
   const [settingsDraft, setSettingsDraft] = useState<RunnerSettings>(() =>
     getActiveProfile(loadStoredProfiles()).runner,
   );
+  const [sshHostDraft, setSshHostDraft] = useState(() => {
+    const profile = getActiveProfile(loadStoredProfiles());
+    return profile.kind === "ssh" ? profile.host : "";
+  });
   const [debugEntries, setDebugEntries] = useState<DebugEntry[]>([]);
   const [liveState, setLiveState] = useState<LiveConnectionState>({
     status: "connecting",
@@ -154,7 +162,7 @@ function App() {
         const [profiles, preflight] = await Promise.all([
           Promise.resolve(profileState.profiles.map(profileSummary)),
           runCommand<AgentscanPreflight>(
-            "agentscan --version",
+            `${commandPrefix(activeProfile)} --version`,
             () =>
               invoke<AgentscanPreflight>("preflight_agentscan", {
                 settings: runnerSettings,
@@ -233,7 +241,7 @@ function App() {
         await enqueueLiveOperation(async () => {
           if (!disposed) {
             await runCommand(
-              "agentscan subscribe --format json",
+              `${commandPrefix(activeProfile)} subscribe --format json`,
               () => invoke("start_live_picker", { settings: runnerSettings }),
               appendDebugEntry,
             );
@@ -257,7 +265,7 @@ function App() {
         await runCommand("stop live picker", () => invoke("stop_live_picker"), appendDebugEntry);
       });
     };
-  }, [runnerSettings, state.status]);
+  }, [activeProfile, runnerSettings, state.status]);
 
   useEffect(() => {
     let disposed = false;
@@ -314,15 +322,17 @@ function App() {
 
   const statusText = useMemo(() => {
     if (state.status === "loading") {
-      return "Checking local CLI";
+      return `Checking ${profileKindLabel(activeProfile)} CLI`;
     }
 
     if (state.status === "failed") {
       return "IPC failed";
     }
 
-    return state.preflight.ok ? "Local CLI ready" : "Local CLI unavailable";
-  }, [state]);
+    return state.preflight.ok
+      ? `${profileKindLabel(activeProfile)} CLI ready`
+      : `${profileKindLabel(activeProfile)} CLI unavailable`;
+  }, [activeProfile, state]);
 
   async function refreshPickerRows() {
     if (state.status !== "ready") {
@@ -334,7 +344,7 @@ function App() {
 
     try {
       const rows = await runCommand<PickerRow[]>(
-        "agentscan hotkeys --format json",
+        `${commandPrefix(activeProfile)} hotkeys --format json`,
         () => invoke<PickerRow[]>("load_picker_rows", { settings: runnerSettings }),
         appendDebugEntry,
       );
@@ -368,7 +378,8 @@ function App() {
 
   useEffect(() => {
     setSettingsDraft(activeProfile.runner);
-  }, [activeProfile.id, activeProfile.runner]);
+    setSshHostDraft(activeProfile.kind === "ssh" ? activeProfile.host : "");
+  }, [activeProfile]);
 
   async function activateSelectedRow(row = selectedRow) {
     if (!row || activation.status === "running") {
@@ -379,7 +390,7 @@ function App() {
 
     try {
       await runCommand(
-        `agentscan focus ${row.pane_id}`,
+        `${commandPrefix(activeProfile)} focus ${row.pane_id}`,
         () => invoke("focus_picker_row", { paneId: row.pane_id, settings: runnerSettings }),
         appendDebugEntry,
       );
@@ -437,7 +448,7 @@ function App() {
     const normalized = normalizeRunnerSettings(settingsDraft);
     setSettingsDraft(normalized);
     setProfileState((current) => {
-      const next = updateActiveProfileRunner(current, normalized);
+      const next = updateActiveProfileSettings(current, normalized, sshHostDraft);
       storeProfiles(next);
       return next;
     });
@@ -445,6 +456,38 @@ function App() {
       kind: "settings",
       label: `${activeProfile.name} settings applied`,
       detail: `${runnerSummary(normalized)} · ${normalized.env.length} env ${normalized.env.length === 1 ? "name" : "names"}`,
+    });
+  }
+
+  function selectProfile(id: string) {
+    setProfileState((current) => {
+      const profile = current.profiles.find((candidate) => candidate.id === id);
+      if (!profile || !isRunnableProfile(profile)) {
+        return current;
+      }
+
+      const next = { ...current, activeProfileId: id };
+      storeProfiles(next);
+      return next;
+    });
+  }
+
+  function addSshProfile() {
+    setProfileState((current) => {
+      const profile: SshProfileConfig = {
+        id: `ssh-${Date.now()}`,
+        name: "Remote",
+        kind: "ssh",
+        host: "",
+        runner: emptyRunnerSettings(),
+        enabled: true,
+      };
+      const next = {
+        activeProfileId: profile.id,
+        profiles: [...current.profiles, profile],
+      };
+      storeProfiles(next);
+      return next;
     });
   }
 
@@ -480,15 +523,21 @@ function App() {
         <>
           <section className="content-grid" aria-label="Desktop shell state">
             <div className="panel">
-              <h2>Profiles</h2>
+              <div className="panel-heading compact">
+                <h2>Profiles</h2>
+                <button type="button" onClick={addSshProfile}>
+                  Add SSH
+                </button>
+              </div>
               <ul className="profile-list">
                 {state.profiles.map((profile) => (
                   <li
                     className={profile.id === activeProfile.id ? "active" : undefined}
                     key={profile.id}
+                    onClick={() => selectProfile(profile.id)}
                   >
                     <span>{profile.name}</span>
-                    <small>{profile.kind === "ssh" ? "ssh planned" : profile.kind}</small>
+                    <small>{profile.kind === "ssh" ? "ssh" : profile.kind}</small>
                   </li>
                 ))}
               </ul>
@@ -523,6 +572,16 @@ function App() {
               </button>
             </div>
             <div className="settings-grid">
+              {activeProfile.kind === "ssh" ? (
+                <label>
+                  <span>ssh host</span>
+                  <input
+                    value={sshHostDraft}
+                    onChange={(event) => setSshHostDraft(event.target.value)}
+                    placeholder="user@host"
+                  />
+                </label>
+              ) : null}
               <label>
                 <span>agentscan binary</span>
                 <input
@@ -840,7 +899,7 @@ function normalizeProfile(value: unknown): DesktopProfileConfig | null {
       kind: "ssh",
       host: typeof profile.host === "string" ? profile.host.trim() : "",
       runner,
-      enabled: false,
+      enabled: profile.enabled === true,
     };
   }
 
@@ -861,15 +920,38 @@ function isRunnableProfile(profile: DesktopProfileConfig): boolean {
   return profile.kind === "local" || profile.enabled;
 }
 
-function updateActiveProfileRunner(state: ProfileState, runner: RunnerSettings): ProfileState {
+function updateActiveProfileSettings(
+  state: ProfileState,
+  runner: RunnerSettings,
+  sshHost: string,
+): ProfileState {
   return {
     ...state,
     profiles: state.profiles.map((profile) =>
       profile.id === state.activeProfileId
-        ? { ...profile, runner: normalizeRunnerSettings(runner) }
+        ? updateProfileSettings(profile, runner, sshHost)
         : profile,
     ),
   };
+}
+
+function updateProfileSettings(
+  profile: DesktopProfileConfig,
+  runner: RunnerSettings,
+  sshHost: string,
+): DesktopProfileConfig {
+  const normalizedRunner = normalizeRunnerSettings(runner);
+
+  if (profile.kind === "ssh") {
+    return {
+      ...profile,
+      host: sshHost.trim(),
+      runner: normalizedRunner,
+      enabled: true,
+    };
+  }
+
+  return { ...profile, runner: normalizedRunner };
 }
 
 function profileSummary(profile: DesktopProfileConfig): DesktopProfile {
@@ -882,6 +964,35 @@ function profileSummary(profile: DesktopProfileConfig): DesktopProfile {
 
 function runnerSummary(settings: RunnerSettings) {
   return settings.binaryPath.trim() || "auto-detected agentscan";
+}
+
+function runnerSettingsForProfile(profile: DesktopProfileConfig): DesktopRunnerSettings {
+  if (profile.kind === "ssh") {
+    return {
+      kind: "ssh",
+      host: profile.host,
+      ...profile.runner,
+    };
+  }
+
+  return {
+    kind: "local",
+    ...profile.runner,
+  };
+}
+
+function commandPrefix(profile: DesktopProfileConfig) {
+  const binary = profile.runner.binaryPath.trim() || "agentscan";
+
+  if (profile.kind === "ssh") {
+    return `ssh ${profile.host || "<host>"} -- ${binary}`;
+  }
+
+  return binary;
+}
+
+function profileKindLabel(profile: DesktopProfileConfig) {
+  return profile.kind === "ssh" ? "SSH" : "Local";
 }
 
 function normalizeRunnerSettings(settings: Partial<RunnerSettings>): RunnerSettings {

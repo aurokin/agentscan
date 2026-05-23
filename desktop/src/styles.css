@@ -138,6 +138,7 @@ button:disabled {
   padding: 10px 12px;
   border-radius: 6px;
   background: #f1f4ef;
+  cursor: default;
 }
 
 .profile-list li.active {
@@ -212,6 +213,15 @@ button:disabled {
 
 .panel-heading h2 {
   margin-bottom: 0;
+}
+
+.panel-heading.compact {
+  margin-bottom: 12px;
+}
+
+.panel-heading.compact button {
+  min-height: 30px;
+  padding: 0 10px;
 }
 
 .panel-actions {

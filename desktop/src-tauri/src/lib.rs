@@ -53,6 +53,35 @@ struct LocalEnvironmentVariable {
     value: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+enum DesktopRunnerSettings {
+    Local {
+        binary_path: Option<String>,
+        #[serde(default)]
+        env: Vec<LocalEnvironmentVariable>,
+    },
+    Ssh {
+        host: String,
+        binary_path: Option<String>,
+        #[serde(default)]
+        env: Vec<LocalEnvironmentVariable>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum AgentscanRunner {
+    Local(LocalRunnerSettings),
+    Ssh(SshRunnerSettings),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SshRunnerSettings {
+    host: String,
+    binary_path: Option<String>,
+    env: Vec<LocalEnvironmentVariable>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CommandOutput {
     status: ExitStatus,
@@ -150,30 +179,30 @@ fn local_profiles() -> Vec<DesktopProfile> {
 }
 
 #[tauri::command]
-fn preflight_agentscan(settings: Option<LocalRunnerSettings>) -> AgentscanPreflight {
-    let settings = settings.unwrap_or_default();
-    run_agentscan_preflight_with_settings(&settings)
+fn preflight_agentscan(settings: Option<DesktopRunnerSettings>) -> AgentscanPreflight {
+    let runner = AgentscanRunner::from_settings(settings);
+    run_agentscan_preflight_with_runner(&runner)
 }
 
 #[tauri::command]
-fn load_picker_rows(settings: Option<LocalRunnerSettings>) -> Result<Vec<PickerRow>, String> {
-    let settings = settings.unwrap_or_default();
-    load_picker_rows_with_settings(&settings)
+fn load_picker_rows(settings: Option<DesktopRunnerSettings>) -> Result<Vec<PickerRow>, String> {
+    let runner = AgentscanRunner::from_settings(settings);
+    load_picker_rows_with_runner(&runner)
 }
 
 #[tauri::command]
-fn focus_picker_row(pane_id: String, settings: Option<LocalRunnerSettings>) -> Result<(), String> {
-    let settings = settings.unwrap_or_default();
-    focus_picker_row_with_settings(&settings, &pane_id)
+fn focus_picker_row(pane_id: String, settings: Option<DesktopRunnerSettings>) -> Result<(), String> {
+    let runner = AgentscanRunner::from_settings(settings);
+    focus_picker_row_with_runner(&runner, &pane_id)
 }
 
 #[tauri::command]
 fn start_live_picker(
     app: tauri::AppHandle,
-    settings: Option<LocalRunnerSettings>,
+    settings: Option<DesktopRunnerSettings>,
 ) -> Result<(), String> {
-    let settings = settings.unwrap_or_default();
-    start_live_picker_with_settings(app, settings)
+    let runner = AgentscanRunner::from_settings(settings);
+    start_live_picker_with_runner(app, runner)
 }
 
 #[tauri::command]
@@ -215,16 +244,57 @@ fn known_agentscan_paths(home: Option<&OsStr>) -> impl Iterator<Item = PathBuf> 
     .flatten()
 }
 
+impl AgentscanRunner {
+    fn from_settings(settings: Option<DesktopRunnerSettings>) -> Self {
+        match settings {
+            Some(DesktopRunnerSettings::Local { binary_path, env }) => {
+                Self::Local(LocalRunnerSettings { binary_path, env })
+            }
+            Some(DesktopRunnerSettings::Ssh {
+                host,
+                binary_path,
+                env,
+            }) => Self::Ssh(SshRunnerSettings {
+                host: host.trim().to_owned(),
+                binary_path,
+                env,
+            }),
+            None => Self::Local(LocalRunnerSettings::default()),
+        }
+    }
+
+    fn display_binary(&self) -> String {
+        match self {
+            Self::Local(settings) => agentscan_binary_for_settings(settings)
+                .to_string_lossy()
+                .into_owned(),
+            Self::Ssh(settings) => {
+                let binary = remote_agentscan_binary_for_settings(settings);
+                format!("ssh {} -- {binary}", settings.host)
+            }
+        }
+    }
+}
+
+fn remote_agentscan_binary_for_settings(settings: &SshRunnerSettings) -> String {
+    settings
+        .binary_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .unwrap_or("agentscan")
+        .to_owned()
+}
+
 #[cfg(test)]
 fn run_agentscan_preflight(binary: OsString) -> AgentscanPreflight {
     run_agentscan_preflight_with_timeout(binary, PREFLIGHT_TIMEOUT)
 }
 
-fn run_agentscan_preflight_with_settings(settings: &LocalRunnerSettings) -> AgentscanPreflight {
-    let binary = agentscan_binary_for_settings(settings);
-    let binary_display = binary.to_string_lossy().into_owned();
+fn run_agentscan_preflight_with_runner(runner: &AgentscanRunner) -> AgentscanPreflight {
+    let binary_display = runner.display_binary();
 
-    match run_agentscan_command_with_env(&binary, ["--version"], &settings.env, PREFLIGHT_TIMEOUT) {
+    match run_agentscan_command(runner, ["--version"], PREFLIGHT_TIMEOUT) {
         Ok(output) if output.status.success() => AgentscanPreflight {
             binary: binary_display,
             ok: true,
@@ -250,7 +320,7 @@ fn run_agentscan_preflight_with_settings(settings: &LocalRunnerSettings) -> Agen
 fn run_agentscan_preflight_with_timeout(binary: OsString, timeout: Duration) -> AgentscanPreflight {
     let binary_display = binary.to_string_lossy().into_owned();
 
-    match run_agentscan_command(&binary, ["--version"], timeout) {
+    match run_agentscan_binary_command(&binary, ["--version"], timeout) {
         Ok(output) if output.status.success() => AgentscanPreflight {
             binary: binary_display,
             ok: true,
@@ -272,23 +342,13 @@ fn run_agentscan_preflight_with_timeout(binary: OsString, timeout: Duration) -> 
     }
 }
 
-fn load_picker_rows_with_settings(
-    settings: &LocalRunnerSettings,
-) -> Result<Vec<PickerRow>, String> {
-    load_picker_rows_from_binary_and_env(agentscan_binary_for_settings(settings), &settings.env)
+fn load_picker_rows_with_runner(runner: &AgentscanRunner) -> Result<Vec<PickerRow>, String> {
+    load_picker_rows_from_runner(runner)
 }
 
-fn load_picker_rows_from_binary_and_env(
-    binary: OsString,
-    env: &[LocalEnvironmentVariable],
-) -> Result<Vec<PickerRow>, String> {
-    let output = run_agentscan_command_with_env(
-        &binary,
-        ["hotkeys", "--format", "json"],
-        env,
-        HOTKEYS_TIMEOUT,
-    )
-    .map_err(|error| format!("Unable to run agentscan hotkeys: {error}"))?;
+fn load_picker_rows_from_runner(runner: &AgentscanRunner) -> Result<Vec<PickerRow>, String> {
+    let output = run_agentscan_command(runner, ["hotkeys", "--format", "json"], HOTKEYS_TIMEOUT)
+        .map_err(|error| format!("Unable to run agentscan hotkeys: {error}"))?;
 
     if !output.status.success() {
         return Err(stderr_or_status(
@@ -304,32 +364,28 @@ fn load_picker_rows_from_binary_and_env(
     Ok(rows)
 }
 
-fn focus_picker_row_with_settings(
-    settings: &LocalRunnerSettings,
-    pane_id: &str,
-) -> Result<(), String> {
-    focus_picker_row_with_binary_and_env(
-        agentscan_binary_for_settings(settings),
-        &settings.env,
-        pane_id,
-    )
+fn focus_picker_row_with_runner(runner: &AgentscanRunner, pane_id: &str) -> Result<(), String> {
+    focus_picker_row_with_runner_and_timeout(runner, pane_id, FOCUS_TIMEOUT)
 }
 
 #[cfg(test)]
 fn focus_picker_row_with_binary(binary: OsString, pane_id: &str) -> Result<(), String> {
-    focus_picker_row_with_binary_and_env(binary, &[], pane_id)
+    focus_picker_row_with_runner(&AgentscanRunner::Local(LocalRunnerSettings {
+        binary_path: Some(binary.to_string_lossy().into_owned()),
+        env: Vec::new(),
+    }), pane_id)
 }
 
-fn focus_picker_row_with_binary_and_env(
-    binary: OsString,
-    env: &[LocalEnvironmentVariable],
+fn focus_picker_row_with_runner_and_timeout(
+    runner: &AgentscanRunner,
     pane_id: &str,
+    timeout: Duration,
 ) -> Result<(), String> {
     if pane_id.trim().is_empty() {
         return Err("Cannot focus an empty pane id".to_owned());
     }
 
-    let output = run_agentscan_command_with_env(&binary, ["focus", pane_id], env, FOCUS_TIMEOUT)
+    let output = run_agentscan_command(runner, ["focus", pane_id], timeout)
         .map_err(|error| format!("Unable to run agentscan focus: {error}"))?;
 
     if output.status.success() {
@@ -343,9 +399,9 @@ fn focus_picker_row_with_binary_and_env(
     }
 }
 
-fn start_live_picker_with_settings(
+fn start_live_picker_with_runner(
     app: tauri::AppHandle,
-    settings: LocalRunnerSettings,
+    runner: AgentscanRunner,
 ) -> Result<(), String> {
     let mut supervisor = live_picker_supervisor()
         .lock()
@@ -361,7 +417,7 @@ fn start_live_picker_with_settings(
     let worker_child = Arc::clone(&child);
     let worker = thread::Builder::new()
         .name("agentscan-live-picker".to_owned())
-        .spawn(move || run_live_picker_worker(app, settings, worker_stop, worker_child))
+        .spawn(move || run_live_picker_worker(app, runner, worker_stop, worker_child))
         .map_err(|error| format!("Unable to start live picker worker: {error}"))?;
 
     *supervisor = Some(LivePickerSupervisor {
@@ -397,11 +453,10 @@ fn live_picker_supervisor() -> &'static Mutex<Option<LivePickerSupervisor>> {
 
 fn run_live_picker_worker(
     app: tauri::AppHandle,
-    settings: LocalRunnerSettings,
+    runner: AgentscanRunner,
     stop: Arc<AtomicBool>,
     child_slot: Arc<Mutex<Option<Child>>>,
 ) {
-    let binary = agentscan_binary_for_settings(&settings);
     let mut has_connected = false;
 
     while !stop.load(Ordering::SeqCst) {
@@ -410,7 +465,7 @@ fn run_live_picker_worker(
                 &app,
                 LivePickerEvent::Reconnecting {
                     message: "Reconnecting to agentscan subscribe".to_owned(),
-                    diagnostics: load_daemon_status(&binary, &settings.env).ok(),
+                    diagnostics: load_daemon_status(&runner).ok(),
                 },
             );
         } else {
@@ -422,7 +477,7 @@ fn run_live_picker_worker(
             );
         }
 
-        match run_live_picker_subscription(&app, &binary, &settings.env, &stop, &child_slot) {
+        match run_live_picker_subscription(&app, &runner, &stop, &child_slot) {
             LivePickerWorkerExit::Stopped | LivePickerWorkerExit::Shutdown => break,
             LivePickerWorkerExit::Fatal => break,
             LivePickerWorkerExit::Retry => {
@@ -453,27 +508,24 @@ enum LivePickerWorkerExit {
 
 fn run_live_picker_subscription(
     app: &tauri::AppHandle,
-    binary: &OsStr,
-    env: &[LocalEnvironmentVariable],
+    runner: &AgentscanRunner,
     stop: &AtomicBool,
     child_slot: &Arc<Mutex<Option<Child>>>,
 ) -> LivePickerWorkerExit {
-    let mut command = Command::new(binary);
-    command
-        .args(["subscribe", "--format", "json"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    if let Err(error) = apply_command_env(&mut command, env) {
-        emit_live_picker_event(
-            app,
-            LivePickerEvent::Fatal {
-                message: error,
-                diagnostics: None,
-            },
-        );
-        return LivePickerWorkerExit::Fatal;
-    }
+    let mut command = match agentscan_command(runner, ["subscribe", "--format", "json"]) {
+        Ok(command) => command,
+        Err(error) => {
+            emit_live_picker_event(
+                app,
+                LivePickerEvent::Fatal {
+                    message: error,
+                    diagnostics: None,
+                },
+            );
+            return LivePickerWorkerExit::Fatal;
+        }
+    };
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     let mut child = match command.spawn() {
         Ok(child) => child,
@@ -483,7 +535,7 @@ fn run_live_picker_subscription(
                 LivePickerEvent::Offline {
                     message: format!("Unable to start agentscan subscribe: {error}"),
                     retrying: true,
-                    diagnostics: load_daemon_status(binary, env).ok(),
+                    diagnostics: load_daemon_status(runner).ok(),
                 },
             );
             return LivePickerWorkerExit::Retry;
@@ -500,7 +552,7 @@ fn run_live_picker_subscription(
                 LivePickerEvent::Offline {
                     message: "agentscan subscribe did not expose stdout".to_owned(),
                     retrying: true,
-                    diagnostics: load_daemon_status(binary, env).ok(),
+                    diagnostics: load_daemon_status(runner).ok(),
                 },
             );
             return LivePickerWorkerExit::Retry;
@@ -533,7 +585,7 @@ fn run_live_picker_subscription(
         match line {
             Ok(line) if line.trim().is_empty() => {}
             Ok(line) => match serde_json::from_str::<SubscribeFrame>(&line) {
-                Ok(frame) => match handle_subscribe_frame(app, binary, env, frame) {
+                Ok(frame) => match handle_subscribe_frame(app, runner, frame) {
                     LivePickerWorkerExit::Retry => {}
                     terminal_exit => {
                         exit = terminal_exit;
@@ -546,7 +598,7 @@ fn run_live_picker_subscription(
                         LivePickerEvent::Offline {
                             message: format!("Invalid agentscan subscribe frame: {error}"),
                             retrying: true,
-                            diagnostics: load_daemon_status(binary, env).ok(),
+                            diagnostics: load_daemon_status(runner).ok(),
                         },
                     );
                     break;
@@ -559,7 +611,7 @@ fn run_live_picker_subscription(
                         LivePickerEvent::Offline {
                             message: format!("Unable to read agentscan subscribe output: {error}"),
                             retrying: true,
-                            diagnostics: load_daemon_status(binary, env).ok(),
+                            diagnostics: load_daemon_status(runner).ok(),
                         },
                     );
                 }
@@ -581,12 +633,12 @@ fn run_live_picker_subscription(
     if matches!(exit, LivePickerWorkerExit::Retry) {
         emit_live_picker_event(
             app,
-            LivePickerEvent::Offline {
-                message: process_exit_message(status_message.as_deref(), &stderr),
-                retrying: true,
-                diagnostics: load_daemon_status(binary, env).ok(),
-            },
-        );
+                LivePickerEvent::Offline {
+                    message: process_exit_message(status_message.as_deref(), &stderr),
+                    retrying: true,
+                    diagnostics: load_daemon_status(runner).ok(),
+                },
+            );
     }
 
     exit
@@ -594,11 +646,10 @@ fn run_live_picker_subscription(
 
 fn handle_subscribe_frame(
     app: &tauri::AppHandle,
-    binary: &OsStr,
-    env: &[LocalEnvironmentVariable],
+    runner: &AgentscanRunner,
     frame: SubscribeFrame,
 ) -> LivePickerWorkerExit {
-    match live_event_from_subscribe_frame(binary, env, frame) {
+    match live_event_from_subscribe_frame(runner, frame) {
         Ok((event, exit)) => {
             emit_live_picker_event(app, event);
             exit
@@ -608,7 +659,7 @@ fn handle_subscribe_frame(
                 app,
                 LivePickerEvent::Fatal {
                     message,
-                    diagnostics: load_daemon_status(binary, env).ok(),
+                    diagnostics: load_daemon_status(runner).ok(),
                 },
             );
             LivePickerWorkerExit::Fatal
@@ -617,8 +668,7 @@ fn handle_subscribe_frame(
 }
 
 fn live_event_from_subscribe_frame(
-    binary: &OsStr,
-    env: &[LocalEnvironmentVariable],
+    runner: &AgentscanRunner,
     frame: SubscribeFrame,
 ) -> Result<(LivePickerEvent, LivePickerWorkerExit), String> {
     match frame {
@@ -627,14 +677,14 @@ fn live_event_from_subscribe_frame(
             LivePickerWorkerExit::Retry,
         )),
         SubscribeFrame::Snapshot { snapshot } => {
-            let rows = match load_picker_rows_from_binary_and_env(binary.to_os_string(), env) {
+            let rows = match load_picker_rows_from_runner(runner) {
                 Ok(rows) => rows,
                 Err(message) => {
                     return Ok((
                         LivePickerEvent::Offline {
                             message,
                             retrying: true,
-                            diagnostics: load_daemon_status(binary, env).ok(),
+                            diagnostics: load_daemon_status(runner).ok(),
                         },
                         LivePickerWorkerExit::Retry,
                     ));
@@ -650,7 +700,7 @@ fn live_event_from_subscribe_frame(
             LivePickerEvent::Offline {
                 message,
                 retrying,
-                diagnostics: load_daemon_status(binary, env).ok(),
+                diagnostics: load_daemon_status(runner).ok(),
             },
             LivePickerWorkerExit::Retry,
         )),
@@ -661,7 +711,7 @@ fn live_event_from_subscribe_frame(
         SubscribeFrame::Fatal { message } => Ok((
             LivePickerEvent::Fatal {
                 message,
-                diagnostics: load_daemon_status(binary, env).ok(),
+                diagnostics: load_daemon_status(runner).ok(),
             },
             LivePickerWorkerExit::Fatal,
         )),
@@ -686,14 +736,10 @@ fn summarize_snapshot(snapshot: &serde_json::Value) -> LiveSnapshotSummary {
     }
 }
 
-fn load_daemon_status(
-    binary: &OsStr,
-    env: &[LocalEnvironmentVariable],
-) -> Result<serde_json::Value, String> {
-    let output = run_agentscan_command_with_env(
-        binary,
+fn load_daemon_status(runner: &AgentscanRunner) -> Result<serde_json::Value, String> {
+    let output = run_agentscan_command(
+        runner,
         ["daemon", "status", "--format", "json"],
-        env,
         DAEMON_STATUS_TIMEOUT,
     )
     .map_err(|error| format!("Unable to run agentscan daemon status: {error}"))?;
@@ -816,15 +862,90 @@ fn validate_picker_rows(rows: &[PickerRow]) -> Result<(), String> {
 }
 
 #[cfg(test)]
-fn run_agentscan_command<const N: usize>(
+fn run_agentscan_binary_command<const N: usize>(
     binary: &OsStr,
     args: [&str; N],
     timeout: Duration,
 ) -> Result<CommandOutput, String> {
-    run_agentscan_command_with_env(binary, args, &[], timeout)
+    run_agentscan_local_command_with_env(binary, args, &[], timeout)
 }
 
-fn run_agentscan_command_with_env<const N: usize>(
+fn run_agentscan_command<const N: usize>(
+    runner: &AgentscanRunner,
+    args: [&str; N],
+    timeout: Duration,
+) -> Result<CommandOutput, String> {
+    let mut command = agentscan_command(runner, args)?;
+    run_command_with_timeout(&mut command, timeout)
+}
+
+fn agentscan_command<const N: usize>(
+    runner: &AgentscanRunner,
+    args: [&str; N],
+) -> Result<Command, String> {
+    match runner {
+        AgentscanRunner::Local(settings) => {
+            let mut command = Command::new(agentscan_binary_for_settings(settings));
+            command.args(args);
+            apply_command_env(&mut command, &settings.env)?;
+            Ok(command)
+        }
+        AgentscanRunner::Ssh(settings) => ssh_agentscan_command(settings, &args),
+    }
+}
+
+fn ssh_agentscan_command(settings: &SshRunnerSettings, args: &[&str]) -> Result<Command, String> {
+    validate_ssh_host(&settings.host)?;
+
+    let mut command = Command::new("ssh");
+    command
+        .arg("--")
+        .arg(settings.host.trim())
+        .arg(remote_agentscan_script(settings, args)?);
+    Ok(command)
+}
+
+fn remote_agentscan_script(settings: &SshRunnerSettings, args: &[&str]) -> Result<String, String> {
+    validate_command_env(&settings.env)?;
+
+    let mut parts = Vec::with_capacity(settings.env.len() + args.len() + 2);
+    for variable in &settings.env {
+        parts.push(format!(
+            "{}={}",
+            variable.name.trim(),
+            shell_quote(&variable.value)
+        ));
+    }
+    parts.push("exec".to_owned());
+    parts.push(shell_quote(&remote_agentscan_binary_for_settings(settings)));
+    parts.extend(args.iter().map(|arg| shell_quote(arg)));
+    Ok(parts.join(" "))
+}
+
+fn validate_ssh_host(host: &str) -> Result<(), String> {
+    let host = host.trim();
+
+    if host.is_empty() {
+        return Err("SSH host cannot be empty".to_owned());
+    }
+
+    if host.starts_with('-') || host.contains('\0') {
+        return Err(format!("Invalid SSH host: {host}"));
+    }
+
+    Ok(())
+}
+
+fn shell_quote(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_owned();
+    }
+
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+#[cfg(test)]
+fn run_agentscan_local_command_with_env<const N: usize>(
     binary: &OsStr,
     args: [&str; N],
     env: &[LocalEnvironmentVariable],
@@ -836,7 +957,14 @@ fn run_agentscan_command_with_env<const N: usize>(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     apply_command_env(&mut command, env)?;
+    run_command_with_timeout(&mut command, timeout)
+}
 
+fn run_command_with_timeout(
+    command: &mut Command,
+    timeout: Duration,
+) -> Result<CommandOutput, String> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command.spawn().map_err(|error| error.to_string())?;
 
     let start = Instant::now();
@@ -874,6 +1002,16 @@ fn apply_command_env(
     command: &mut Command,
     env: &[LocalEnvironmentVariable],
 ) -> Result<(), String> {
+    validate_command_env(env)?;
+
+    for variable in env {
+        command.env(variable.name.trim(), &variable.value);
+    }
+
+    Ok(())
+}
+
+fn validate_command_env(env: &[LocalEnvironmentVariable]) -> Result<(), String> {
     for variable in env {
         let name = variable.name.trim();
 
@@ -884,8 +1022,6 @@ fn apply_command_env(
         if name.contains('=') || name.contains('\0') {
             return Err(format!("Invalid environment variable name: {name}"));
         }
-
-        command.env(name, &variable.value);
     }
 
     Ok(())
@@ -1202,6 +1338,118 @@ mod tests {
         assert_eq!(
             agentscan_binary_for_settings(&settings),
             OsString::from("/tmp/agentscan-custom")
+        );
+    }
+
+    #[test]
+    fn runner_settings_deserialize_frontend_local_payload() {
+        let settings: DesktopRunnerSettings = serde_json::from_str(
+            r#"{
+              "kind": "local",
+              "binaryPath": "/tmp/agentscan-custom",
+              "env": [{ "name": "AGENTSCAN_SOCKET_PATH", "value": "/tmp/agentscan.sock" }]
+            }"#,
+        )
+        .expect("frontend local runner payload deserializes");
+
+        assert_eq!(
+            settings,
+            DesktopRunnerSettings::Local {
+                binary_path: Some("/tmp/agentscan-custom".to_owned()),
+                env: vec![LocalEnvironmentVariable {
+                    name: "AGENTSCAN_SOCKET_PATH".to_owned(),
+                    value: "/tmp/agentscan.sock".to_owned(),
+                }],
+            }
+        );
+    }
+
+    #[test]
+    fn runner_settings_deserialize_frontend_ssh_payload() {
+        let settings: DesktopRunnerSettings = serde_json::from_str(
+            r#"{
+              "kind": "ssh",
+              "host": "devbox",
+              "binaryPath": "/opt/agentscan",
+              "env": []
+            }"#,
+        )
+        .expect("frontend ssh runner payload deserializes");
+
+        assert_eq!(
+            settings,
+            DesktopRunnerSettings::Ssh {
+                host: "devbox".to_owned(),
+                binary_path: Some("/opt/agentscan".to_owned()),
+                env: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn ssh_runner_builds_remote_agentscan_script() {
+        let settings = SshRunnerSettings {
+            host: "devbox".to_owned(),
+            binary_path: Some("/opt/bin/agentscan custom".to_owned()),
+            env: vec![
+                LocalEnvironmentVariable {
+                    name: "AGENTSCAN_TMUX_SOCKET".to_owned(),
+                    value: "/tmp/tmux socket".to_owned(),
+                },
+                LocalEnvironmentVariable {
+                    name: "QUOTE".to_owned(),
+                    value: "can't".to_owned(),
+                },
+            ],
+        };
+
+        assert_eq!(
+            remote_agentscan_script(&settings, &["hotkeys", "--format", "json"]).unwrap(),
+            "AGENTSCAN_TMUX_SOCKET='/tmp/tmux socket' QUOTE='can'\\''t' exec '/opt/bin/agentscan custom' 'hotkeys' '--format' 'json'"
+        );
+    }
+
+    #[test]
+    fn ssh_runner_wraps_command_with_ssh_destination() {
+        let settings = SshRunnerSettings {
+            host: "user@devbox".to_owned(),
+            binary_path: None,
+            env: Vec::new(),
+        };
+        let command = ssh_agentscan_command(&settings, &["subscribe", "--format", "json"])
+            .expect("ssh command builds");
+
+        assert_eq!(command.get_program(), OsStr::new("ssh"));
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            vec![
+                OsStr::new("--"),
+                OsStr::new("user@devbox"),
+                OsStr::new("exec 'agentscan' 'subscribe' '--format' 'json'")
+            ]
+        );
+    }
+
+    #[test]
+    fn ssh_runner_rejects_empty_and_option_shaped_hosts() {
+        let mut settings = SshRunnerSettings {
+            host: " ".to_owned(),
+            binary_path: None,
+            env: Vec::new(),
+        };
+
+        assert_eq!(
+            ssh_agentscan_command(&settings, &["--version"])
+                .unwrap_err()
+                .as_str(),
+            "SSH host cannot be empty"
+        );
+
+        settings.host = "-oProxyCommand=bad".to_owned();
+        assert!(
+            ssh_agentscan_command(&settings, &["--version"])
+                .unwrap_err()
+                .contains("Invalid SSH host")
         );
     }
 
