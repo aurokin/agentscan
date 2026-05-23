@@ -83,6 +83,143 @@ impl DaemonStartRequest<'_> {
     }
 }
 
+struct DaemonStartCoordinator {
+    executable_path: PathBuf,
+    envs: Vec<(OsString, OsString)>,
+    env_removes: Vec<OsString>,
+}
+
+impl DaemonStartCoordinator {
+    fn from_current_process() -> std::result::Result<Self, DaemonSnapshotError> {
+        let executable_path =
+            env::current_exe().map_err(|error| DaemonSnapshotError::UnexpectedFrame {
+                message: format!("failed to resolve current executable: {error}"),
+            })?;
+        Ok(Self {
+            executable_path,
+            envs: daemon_start_tmux_envs(),
+            env_removes: daemon_start_env_removes(),
+        })
+    }
+
+    fn from_command(
+        executable_path: &Path,
+        envs: &[(OsString, OsString)],
+        env_removes: &[OsString],
+    ) -> Self {
+        Self {
+            executable_path: executable_path.to_path_buf(),
+            envs: envs.to_vec(),
+            env_removes: env_removes.to_vec(),
+        }
+    }
+
+    fn start(
+        &self,
+        socket_path: &Path,
+        output: StartOutput,
+        intent: DaemonStartIntent,
+    ) -> std::result::Result<(), DaemonSnapshotError> {
+        start_daemon_from_request(self.request(socket_path, output, intent))
+    }
+
+    fn request<'a>(
+        &'a self,
+        socket_path: &'a Path,
+        output: StartOutput,
+        intent: DaemonStartIntent,
+    ) -> DaemonStartRequest<'a> {
+        DaemonStartRequest {
+            socket_path,
+            output,
+            intent,
+            executable_path: &self.executable_path,
+            envs: &self.envs,
+            env_removes: &self.env_removes,
+        }
+    }
+}
+
+enum DaemonStartCoordinatorSource<'a> {
+    CurrentProcess,
+    Command(&'a DaemonStartCoordinator),
+}
+
+impl DaemonStartCoordinatorSource<'_> {
+    fn start(
+        &self,
+        socket_path: &Path,
+        output: StartOutput,
+        intent: DaemonStartIntent,
+    ) -> std::result::Result<(), DaemonSnapshotError> {
+        match self {
+            Self::CurrentProcess => {
+                DaemonStartCoordinator::from_current_process()?.start(socket_path, output, intent)
+            }
+            Self::Command(coordinator) => coordinator.start(socket_path, output, intent),
+        }
+    }
+}
+
+#[cfg(test)]
+mod start_coordinator_tests {
+    use super::*;
+
+    #[test]
+    fn coordinator_request_preserves_spawn_context_for_all_intents() {
+        let coordinator = DaemonStartCoordinator::from_command(
+            Path::new("/tmp/agentscan"),
+            &[(
+                OsString::from(TMUX_SOCKET_ENV_VAR),
+                OsString::from("/tmp/tmux.sock"),
+            )],
+            &[OsString::from("TMUX")],
+        );
+        let socket_path = Path::new("/tmp/agentscan.sock");
+
+        for intent in [
+            DaemonStartIntent::ExplicitLifecycleCommand,
+            DaemonStartIntent::ImplicitConsumerAutoStart,
+            DaemonStartIntent::TuiSubscriptionAutoStart,
+        ] {
+            let request = coordinator.request(socket_path, StartOutput::Quiet, intent);
+
+            assert_eq!(request.socket_path, socket_path);
+            assert_eq!(request.output, StartOutput::Quiet);
+            assert_eq!(request.intent, intent);
+            assert_eq!(request.executable_path, Path::new("/tmp/agentscan"));
+            assert_eq!(
+                request.envs,
+                &[(
+                    OsString::from(TMUX_SOCKET_ENV_VAR),
+                    OsString::from("/tmp/tmux.sock")
+                )]
+            );
+            assert_eq!(request.env_removes, &[OsString::from("TMUX")]);
+        }
+    }
+
+    #[test]
+    fn coordinator_from_command_owns_spawn_inputs() {
+        let mut envs = vec![(OsString::from("A"), OsString::from("1"))];
+        let mut env_removes = vec![OsString::from("TMUX")];
+        let coordinator =
+            DaemonStartCoordinator::from_command(Path::new("/tmp/agentscan"), &envs, &env_removes);
+
+        envs.push((OsString::from("B"), OsString::from("2")));
+        env_removes.push(OsString::from("AGENTSCAN_TMUX_SOCKET"));
+
+        let request = coordinator.request(
+            Path::new("/tmp/agentscan.sock"),
+            StartOutput::Verbose,
+            DaemonStartIntent::ExplicitLifecycleCommand,
+        );
+
+        assert_eq!(request.envs, &[(OsString::from("A"), OsString::from("1"))]);
+        assert_eq!(request.env_removes, &[OsString::from("TMUX")]);
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum DaemonStartPolicyDecision {
     Allowed,
@@ -787,7 +924,8 @@ fn subscription_worker_loop(
                         message: format!("starting daemon after {reason}"),
                     },
                 )?;
-                match daemon_start_with_socket_path_and_output(
+                let coordinator = DaemonStartCoordinator::from_current_process()?;
+                match coordinator.start(
                     &socket_path,
                     StartOutput::Quiet,
                     DaemonStartIntent::TuiSubscriptionAutoStart,
@@ -1109,19 +1247,17 @@ pub(crate) fn snapshot_via_socket_path(
     socket_path: &Path,
     policy: AutoStartPolicy,
 ) -> std::result::Result<SnapshotEnvelope, DaemonSnapshotError> {
-    snapshot_via_socket_path_with_starter(socket_path, policy, |socket_path| {
-        daemon_start_with_socket_path_and_output(
-            socket_path,
-            StartOutput::Quiet,
-            DaemonStartIntent::ImplicitConsumerAutoStart,
-        )
-    })
+    snapshot_via_socket_path_with_coordinator(
+        socket_path,
+        policy,
+        DaemonStartCoordinatorSource::CurrentProcess,
+    )
 }
 
-fn snapshot_via_socket_path_with_starter(
+fn snapshot_via_socket_path_with_coordinator(
     socket_path: &Path,
     policy: AutoStartPolicy,
-    mut start_daemon: impl FnMut(&Path) -> std::result::Result<(), DaemonSnapshotError>,
+    coordinator: DaemonStartCoordinatorSource<'_>,
 ) -> std::result::Result<SnapshotEnvelope, DaemonSnapshotError> {
     let paths = LifecyclePaths::from_socket_path(socket_path);
     let deadline = Instant::now() + DAEMON_START_READINESS_TIMEOUT;
@@ -1145,7 +1281,11 @@ fn snapshot_via_socket_path_with_starter(
             }
             SnapshotQuery::NotRunning(reason) if !attempted_start => {
                 attempted_start = true;
-                start_daemon(socket_path)?;
+                coordinator.start(
+                    socket_path,
+                    StartOutput::Quiet,
+                    DaemonStartIntent::ImplicitConsumerAutoStart,
+                )?;
                 let _ = reason;
             }
             SnapshotQuery::NotRunning(reason) => {
@@ -1191,16 +1331,12 @@ pub(crate) fn snapshot_via_socket_path_with_start_command(
     envs: &[(OsString, OsString)],
     env_removes: &[OsString],
 ) -> std::result::Result<SnapshotEnvelope, DaemonSnapshotError> {
-    snapshot_via_socket_path_with_starter(socket_path, AutoStartPolicy::default(), |socket_path| {
-        start_daemon(DaemonStartRequest {
-            socket_path,
-            output: StartOutput::Quiet,
-            intent: DaemonStartIntent::ImplicitConsumerAutoStart,
-            executable_path,
-            envs,
-            env_removes,
-        })
-    })
+    let coordinator = DaemonStartCoordinator::from_command(executable_path, envs, env_removes);
+    snapshot_via_socket_path_with_coordinator(
+        socket_path,
+        AutoStartPolicy::default(),
+        DaemonStartCoordinatorSource::Command(&coordinator),
+    )
 }
 
 fn print_lifecycle_not_running(socket_path: &Path, paths: &LifecyclePaths, reason: &str) {
@@ -1752,20 +1888,7 @@ fn daemon_start_with_socket_path_and_output(
     output: StartOutput,
     intent: DaemonStartIntent,
 ) -> std::result::Result<(), DaemonSnapshotError> {
-    let executable_path =
-        env::current_exe().map_err(|error| DaemonSnapshotError::UnexpectedFrame {
-            message: format!("failed to resolve current executable: {error}"),
-        })?;
-    let envs = daemon_start_tmux_envs();
-    let env_removes = daemon_start_env_removes();
-    start_daemon(DaemonStartRequest {
-        socket_path,
-        output,
-        intent,
-        executable_path: &executable_path,
-        envs: &envs,
-        env_removes: &env_removes,
-    })
+    DaemonStartCoordinator::from_current_process()?.start(socket_path, output, intent)
 }
 
 fn daemon_start_tmux_envs() -> Vec<(OsString, OsString)> {
@@ -2128,7 +2251,9 @@ fn log_daemon_start_policy_decision(
     );
 }
 
-fn start_daemon(request: DaemonStartRequest<'_>) -> std::result::Result<(), DaemonSnapshotError> {
+fn start_daemon_from_request(
+    request: DaemonStartRequest<'_>,
+) -> std::result::Result<(), DaemonSnapshotError> {
     let paths = request.paths();
 
     if daemon_start_existing_status(request.socket_path, &paths, request.output)? {

@@ -194,3 +194,14 @@ slices so they can be reviewed together at the end of the work.
   bootstrap is terminal offline, post-bootstrap start-policy refusal retries and
   clears the start-attempt flag after backoff, and successful subscription
   resets retry state.
+
+## Slice 16: Explicit Start Coordinator Boundary
+
+- Detached daemon starts now enter through an explicit `DaemonStartCoordinator`
+  before constructing the lower-level `DaemonStartRequest`.
+- Explicit lifecycle starts, one-shot socket auto-starts, TUI subscription
+  auto-starts, and injected start commands use the same coordinator path for
+  executable, environment, output, intent, and socket inputs.
+- The low-level start routine still owns locking, stale socket cleanup, policy
+  logging, spawn, readiness, and child cleanup. The coordinator boundary makes
+  caller intent and spawn context testable without changing behavior.
