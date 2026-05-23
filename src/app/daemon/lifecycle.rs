@@ -223,6 +223,7 @@ mod start_coordinator_tests {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum DaemonStartPolicyDecision {
     Allowed,
+    #[cfg_attr(not(any(test, target_os = "macos")), allow(dead_code))]
     Blocked(DaemonSnapshotError),
 }
 
