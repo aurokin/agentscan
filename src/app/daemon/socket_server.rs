@@ -146,6 +146,7 @@ struct DaemonSocketStateInner {
     identity: Option<DaemonRuntimeIdentity>,
     snapshots: SnapshotStore,
     control_mode_broker: Option<ipc::ControlModeBrokerStatusFrame>,
+    runtime_telemetry: Option<ipc::RuntimeTelemetryFrame>,
     pending_handshakes: usize,
     subscribers: HashMap<SubscriberId, SubscriberMailbox>,
     next_subscriber_id: SubscriberId,
@@ -232,6 +233,7 @@ impl DaemonSocketState {
                 identity: None,
                 snapshots: SnapshotStore::default(),
                 control_mode_broker: None,
+                runtime_telemetry: None,
                 pending_handshakes: 0,
                 subscribers: HashMap::new(),
                 next_subscriber_id: 1,
@@ -432,6 +434,7 @@ impl DaemonSocketState {
                 .latest_update()
                 .and_then(|update| update.duration_ms),
             control_mode_broker: inner.control_mode_broker.clone(),
+            runtime_telemetry: inner.runtime_telemetry.clone(),
             unavailable_reason,
             message,
         }
@@ -443,6 +446,11 @@ impl DaemonSocketState {
     ) {
         let mut inner = self.lock();
         inner.control_mode_broker = Some(status);
+    }
+
+    pub(super) fn update_runtime_telemetry(&self, telemetry: ipc::RuntimeTelemetryFrame) {
+        let mut inner = self.lock();
+        inner.runtime_telemetry = Some(telemetry);
     }
 
     pub(crate) fn try_acquire_pending_handshake(&self) -> Option<PendingHandshake> {
@@ -783,7 +791,7 @@ fn handle_daemon_socket_client_with_pending(
             write_daemon_frame(
                 &mut writer,
                 &ipc::DaemonFrame::LifecycleStatus {
-                    status: state.lifecycle_status(),
+                    status: Box::new(state.lifecycle_status()),
                 },
             )?;
             writer

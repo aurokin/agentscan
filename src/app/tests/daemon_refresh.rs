@@ -188,3 +188,44 @@ fn daemon_full_reconcile_replaces_snapshot_from_provider() {
     assert_eq!(snapshot.panes[0].pane_id, "%2");
     assert_eq!(snapshot.panes[0].diagnostics.cache_origin, "daemon_snapshot");
 }
+
+#[test]
+fn daemon_resnapshot_control_event_marks_full_snapshot_refresh() {
+    let old_row = daemon_refresh_row("%1", "$1", "@1", 0, "old");
+    let new_row = daemon_refresh_row("%2", "$2", "@2", 0, "new");
+    let mut snapshot = daemon_refresh_snapshot(vec![old_row]);
+    let mut provider = FakeTmuxReadProvider::default().with_all_panes(vec![new_row]);
+
+    let (changed, full_snapshot_refresh) =
+        daemon::test_apply_resnapshot_control_event_with_provider(&mut snapshot, &mut provider)
+            .expect("resnapshot control event should succeed");
+
+    assert!(changed);
+    assert!(full_snapshot_refresh);
+    assert_eq!(snapshot.panes.len(), 1);
+    assert_eq!(snapshot.panes[0].pane_id, "%2");
+}
+
+#[test]
+fn daemon_runtime_telemetry_counts_reconcile_results_and_fallbacks() {
+    let previous = empty_socket_snapshot("2026-05-23T18:00:00Z");
+    let mut noop_current = previous.clone();
+    noop_current.generated_at = "2026-05-23T18:00:01Z".to_string();
+    noop_current.source.daemon_generated_at = Some("2026-05-23T18:00:01Z".to_string());
+
+    let mut changed_current = noop_current.clone();
+    changed_current.panes.push(proc_fallback_pane(42, "claude", "claude"));
+
+    let telemetry = daemon::test_runtime_telemetry_after_reconcile_results(
+        &previous,
+        &noop_current,
+        &changed_current,
+    );
+
+    assert_eq!(telemetry.control_event_refresh_count, 1);
+    assert_eq!(telemetry.targeted_refresh_fallback_to_full_count, 1);
+    assert_eq!(telemetry.reconcile_attempt_count, 2);
+    assert_eq!(telemetry.reconcile_noop_count, 1);
+    assert_eq!(telemetry.reconcile_changed_snapshot_count, 1);
+    assert_eq!(telemetry.broker_fallback_count, 2);
+}

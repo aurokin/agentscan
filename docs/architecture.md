@@ -63,7 +63,16 @@ Expected missing-target responses remain normal refresh outcomes. Unexpected
 broker failures fall back to short-lived tmux commands for the current read so
 the daemon can keep publishing snapshots, then attempt to reconnect the
 control-mode client. `agentscan daemon status` reports whether the broker is
-active or in fallback, the last disabled reason, and the reconnect count.
+active or in fallback, the last disabled reason, the reconnect count, and the
+fallback count.
+
+`agentscan daemon status` also reports cumulative runtime telemetry for event
+and reconcile behavior. The counters separate control-mode-driven refreshes,
+full reconcile attempts, no-op reconciles, reconciles that found material
+snapshot changes, targeted refreshes that fell back to full snapshots, and
+broker fallback activations. Reconcile materiality ignores timestamp-only
+differences and cache-origin churn so the counters can show whether the safety
+loop is catching missed state changes or mostly confirming the event stream.
 
 The initial daemon snapshot still uses a short-lived tmux command before socket
 readiness is published.

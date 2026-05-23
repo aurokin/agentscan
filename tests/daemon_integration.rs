@@ -359,6 +359,18 @@ fn daemon_lifecycle_start_status_stop() -> Result<()> {
         status_output.contains("latest_snapshot_update_source:"),
         "expected snapshot update telemetry in status, got:\n{status_output}"
     );
+    assert!(
+        status_output.contains("control_event_refresh_count:"),
+        "expected runtime telemetry in status, got:\n{status_output}"
+    );
+    assert!(
+        status_output.contains("reconcile_attempt_count:"),
+        "expected reconcile telemetry in status, got:\n{status_output}"
+    );
+    assert!(
+        status_output.contains("broker_fallback_count:"),
+        "expected broker fallback telemetry in status, got:\n{status_output}"
+    );
 
     let status_json_output = harness.agentscan_output(["daemon", "status", "--format", "json"])?;
     let status_json: Value =
@@ -392,6 +404,19 @@ fn daemon_lifecycle_start_status_stop() -> Result<()> {
             .is_some_and(|source| !source.is_empty()),
         "expected snapshot update telemetry in status JSON, got:\n{status_json_output}"
     );
+    for key in [
+        "control_event_refresh_count",
+        "reconcile_attempt_count",
+        "reconcile_noop_count",
+        "reconcile_changed_snapshot_count",
+        "targeted_refresh_fallback_to_full_count",
+        "broker_fallback_count",
+    ] {
+        assert!(
+            status_json[key].as_u64().is_some(),
+            "expected numeric {key} in status JSON, got:\n{status_json_output}"
+        );
+    }
 
     let scan_output = harness.agentscan_output(["scan", "--all", "--format", "json"])?;
     assert!(

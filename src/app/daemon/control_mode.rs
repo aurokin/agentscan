@@ -110,6 +110,7 @@ impl TmuxControlModeReadBroker<'_> {
 struct TmuxBrokerHealth {
     disabled_reason: Option<String>,
     reconnect_count: u32,
+    fallback_count: u64,
 }
 
 impl TmuxBrokerHealth {
@@ -119,6 +120,7 @@ impl TmuxBrokerHealth {
 
     fn disable_after_error(&mut self, error: &anyhow::Error) {
         if self.disabled_reason.is_none() {
+            self.fallback_count = self.fallback_count.saturating_add(1);
             self.disabled_reason = Some(format!("{error:#}"));
         }
     }
@@ -137,6 +139,7 @@ impl TmuxBrokerHealth {
             },
             disabled_reason: self.disabled_reason.clone(),
             reconnect_count: self.reconnect_count,
+            fallback_count: Some(self.fallback_count),
         }
     }
 
@@ -147,13 +150,26 @@ impl TmuxBrokerHealth {
 }
 
 #[cfg(test)]
-pub(crate) fn test_broker_health_after_error(message: &str) -> (bool, Option<String>) {
+pub(crate) fn test_broker_health_after_error(message: &str) -> (bool, Option<String>, u64) {
     let mut health = TmuxBrokerHealth::default();
     let error = anyhow::anyhow!(message.to_string());
     health.disable_after_error(&error);
     (
         health.enabled(),
         health.test_disabled_reason().map(str::to_string),
+        health.fallback_count,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn test_broker_health_after_repeated_error(message: &str) -> (Option<String>, u64) {
+    let mut health = TmuxBrokerHealth::default();
+    let error = anyhow::anyhow!(message.to_string());
+    health.disable_after_error(&error);
+    health.disable_after_error(&error);
+    (
+        health.test_disabled_reason().map(str::to_string),
+        health.fallback_count,
     )
 }
 

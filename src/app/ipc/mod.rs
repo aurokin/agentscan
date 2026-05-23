@@ -100,7 +100,7 @@ pub(crate) enum DaemonFrame {
         message: String,
     },
     LifecycleStatus {
-        status: LifecycleStatusFrame,
+        status: Box<LifecycleStatusFrame>,
     },
     Shutdown {
         reason: ShutdownReason,
@@ -143,8 +143,20 @@ pub(crate) struct LifecycleStatusFrame {
     pub(crate) latest_snapshot_update_duration_ms: Option<u64>,
     #[serde(default)]
     pub(crate) control_mode_broker: Option<ControlModeBrokerStatusFrame>,
+    #[serde(default)]
+    pub(crate) runtime_telemetry: Option<RuntimeTelemetryFrame>,
     pub(crate) unavailable_reason: Option<UnavailableReason>,
     pub(crate) message: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct RuntimeTelemetryFrame {
+    pub(crate) control_event_refresh_count: u64,
+    pub(crate) reconcile_attempt_count: u64,
+    pub(crate) reconcile_noop_count: u64,
+    pub(crate) reconcile_changed_snapshot_count: u64,
+    pub(crate) targeted_refresh_fallback_to_full_count: u64,
+    pub(crate) broker_fallback_count: u64,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -159,6 +171,8 @@ pub(crate) struct ControlModeBrokerStatusFrame {
     pub(crate) mode: ControlModeBrokerMode,
     pub(crate) disabled_reason: Option<String>,
     pub(crate) reconnect_count: u32,
+    #[serde(default)]
+    pub(crate) fallback_count: Option<u64>,
 }
 
 impl SocketPathConfig {

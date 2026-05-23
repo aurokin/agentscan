@@ -94,6 +94,19 @@ fn daemon_status_json_reports_not_running_without_cache_freshness_checks() -> Re
             .is_some_and(|reason| !reason.is_empty())
     );
     assert!(status["pid"].is_null());
+    for key in [
+        "control_event_refresh_count",
+        "reconcile_attempt_count",
+        "reconcile_noop_count",
+        "reconcile_changed_snapshot_count",
+        "targeted_refresh_fallback_to_full_count",
+        "broker_fallback_count",
+    ] {
+        assert!(
+            status[key].is_null(),
+            "expected {key} to be null when daemon is not running, got:\n{stdout}"
+        );
+    }
 
     drop(tempdir);
     Ok(())

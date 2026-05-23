@@ -187,10 +187,19 @@ fn daemon_broker_list_all_preserves_unexpected_errors() {
 
 #[test]
 fn daemon_broker_health_disables_after_unexpected_error() {
-    let (enabled, reason) = daemon::test_broker_health_after_error("broken pipe");
+    let (enabled, reason, fallback_count) = daemon::test_broker_health_after_error("broken pipe");
 
     assert!(!enabled);
     assert_eq!(reason.as_deref(), Some("broken pipe"));
+    assert_eq!(fallback_count, 1);
+}
+
+#[test]
+fn daemon_broker_health_counts_only_fallback_transition() {
+    let (reason, fallback_count) = daemon::test_broker_health_after_repeated_error("broken pipe");
+
+    assert_eq!(reason.as_deref(), Some("broken pipe"));
+    assert_eq!(fallback_count, 1);
 }
 
 #[test]
@@ -200,6 +209,7 @@ fn daemon_broker_health_returns_active_after_reconnect() {
     assert_eq!(status.mode, ipc::ControlModeBrokerMode::Active);
     assert_eq!(status.disabled_reason, None);
     assert_eq!(status.reconnect_count, 1);
+    assert_eq!(status.fallback_count, Some(1));
 }
 
 #[test]

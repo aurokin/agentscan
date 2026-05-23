@@ -10,6 +10,9 @@
 - Added `agentscan subscribe --format json` as a live JSON Lines daemon
   subscription stream for terminal-adjacent tools and future local/SSH desktop
   clients.
+- Added daemon runtime telemetry counters to `agentscan daemon status`, covering
+  control-event refreshes, reconcile attempts/no-ops/material changes, targeted
+  refresh full-snapshot fallbacks, and broker fallback activations.
 
 ### Changed
 

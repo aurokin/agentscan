@@ -140,6 +140,23 @@ then used a provider-specific current prompt/footer/status pattern to infer
 `busy` or `idle`. Pane output must not be used as provider identity evidence,
 and stale historical lines in the pane tail should not drive current status.
 
+`agentscan daemon status --format json` includes runtime telemetry counters for
+clients and developers that need to evaluate event-driven behavior:
+
+- `control_event_refresh_count`
+- `reconcile_attempt_count`
+- `reconcile_noop_count`
+- `reconcile_changed_snapshot_count`
+- `targeted_refresh_fallback_to_full_count`
+- `broker_fallback_count`
+
+When the daemon is not running, has not finished initializing runtime
+telemetry, or is an older compatible daemon that does not publish these
+counters, these fields are `null`. Once runtime telemetry is available they are
+numeric counters for the current daemon process. These are diagnostic signals,
+not subscription heartbeats; live consumers should still react to
+`agentscan subscribe --format json` frames.
+
 ## Wrapper Metadata Contract
 
 Launch wrappers may publish explicit pane-local tmux user options:

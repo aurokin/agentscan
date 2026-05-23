@@ -717,9 +717,7 @@ fn lifecycle_status_once(socket_path: &Path) -> Result<LifecycleQuery> {
                 ));
             };
             match second_frame {
-                ipc::DaemonFrame::LifecycleStatus { status } => {
-                    Ok(LifecycleQuery::Status(Box::new(status)))
-                }
+                ipc::DaemonFrame::LifecycleStatus { status } => Ok(LifecycleQuery::Status(status)),
                 other => Ok(LifecycleQuery::Incompatible(format!(
                     "daemon returned unexpected lifecycle frame {other:?}"
                 ))),
@@ -1436,6 +1434,13 @@ struct DaemonStatusJson {
     control_mode_broker_mode: Option<String>,
     control_mode_broker_disabled_reason: Option<String>,
     control_mode_broker_reconnect_count: Option<u32>,
+    control_mode_broker_fallback_count: Option<u64>,
+    control_event_refresh_count: Option<u64>,
+    reconcile_attempt_count: Option<u64>,
+    reconcile_noop_count: Option<u64>,
+    reconcile_changed_snapshot_count: Option<u64>,
+    targeted_refresh_fallback_to_full_count: Option<u64>,
+    broker_fallback_count: Option<u64>,
     unavailable_reason: Option<String>,
     message: Option<String>,
 }
@@ -1467,6 +1472,13 @@ fn lifecycle_not_running_json(
         control_mode_broker_mode: None,
         control_mode_broker_disabled_reason: None,
         control_mode_broker_reconnect_count: None,
+        control_mode_broker_fallback_count: None,
+        control_event_refresh_count: None,
+        reconcile_attempt_count: None,
+        reconcile_noop_count: None,
+        reconcile_changed_snapshot_count: None,
+        targeted_refresh_fallback_to_full_count: None,
+        broker_fallback_count: None,
         unavailable_reason: None,
         message: None,
     }
@@ -1507,6 +1519,34 @@ fn lifecycle_status_json(
             .control_mode_broker
             .as_ref()
             .map(|broker| broker.reconnect_count),
+        control_mode_broker_fallback_count: status
+            .control_mode_broker
+            .as_ref()
+            .and_then(|broker| broker.fallback_count),
+        control_event_refresh_count: status
+            .runtime_telemetry
+            .as_ref()
+            .map(|telemetry| telemetry.control_event_refresh_count),
+        reconcile_attempt_count: status
+            .runtime_telemetry
+            .as_ref()
+            .map(|telemetry| telemetry.reconcile_attempt_count),
+        reconcile_noop_count: status
+            .runtime_telemetry
+            .as_ref()
+            .map(|telemetry| telemetry.reconcile_noop_count),
+        reconcile_changed_snapshot_count: status
+            .runtime_telemetry
+            .as_ref()
+            .map(|telemetry| telemetry.reconcile_changed_snapshot_count),
+        targeted_refresh_fallback_to_full_count: status
+            .runtime_telemetry
+            .as_ref()
+            .map(|telemetry| telemetry.targeted_refresh_fallback_to_full_count),
+        broker_fallback_count: status
+            .runtime_telemetry
+            .as_ref()
+            .map(|telemetry| telemetry.broker_fallback_count),
         unavailable_reason: status
             .unavailable_reason
             .map(unavailable_reason_label)
@@ -1620,9 +1660,36 @@ fn print_lifecycle_status(paths: &LifecyclePaths, status: &ipc::LifecycleStatusF
             "control_mode_broker_reconnect_count: {}",
             broker.reconnect_count
         );
+        if let Some(fallback_count) = broker.fallback_count {
+            println!("control_mode_broker_fallback_count: {fallback_count}");
+        } else {
+            println!("control_mode_broker_fallback_count: unavailable");
+        }
         if let Some(reason) = &broker.disabled_reason {
             println!("control_mode_broker_disabled_reason: {reason}");
         }
+    }
+    if let Some(telemetry) = &status.runtime_telemetry {
+        println!(
+            "control_event_refresh_count: {}",
+            telemetry.control_event_refresh_count
+        );
+        println!(
+            "reconcile_attempt_count: {}",
+            telemetry.reconcile_attempt_count
+        );
+        println!("reconcile_noop_count: {}", telemetry.reconcile_noop_count);
+        println!(
+            "reconcile_changed_snapshot_count: {}",
+            telemetry.reconcile_changed_snapshot_count
+        );
+        println!(
+            "targeted_refresh_fallback_to_full_count: {}",
+            telemetry.targeted_refresh_fallback_to_full_count
+        );
+        println!("broker_fallback_count: {}", telemetry.broker_fallback_count);
+    } else {
+        println!("runtime_telemetry: unavailable");
     }
     if let Some(reason) = status.unavailable_reason {
         println!("unavailable_reason: {}", unavailable_reason_label(reason));

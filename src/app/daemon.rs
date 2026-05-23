@@ -25,8 +25,8 @@ use control_mode::control_mode_startup_response_from_line;
 pub(crate) use control_mode::{
     ControlModeBrokerTranscriptHarness, ControlModeBrokerTranscriptStep, ControlModeCommandFrameId,
     ControlModeCommandMarker, control_mode_command_marker, test_broker_health_after_error,
-    test_broker_health_after_reconnect, test_collect_control_mode_command_response,
-    test_reconnect_preserves_deferred_lines,
+    test_broker_health_after_reconnect, test_broker_health_after_repeated_error,
+    test_collect_control_mode_command_response, test_reconnect_preserves_deferred_lines,
 };
 use control_mode::{
     DaemonClosingGuard, RunningTmuxControlModeClient, install_shutdown_signal_handlers,
@@ -205,6 +205,52 @@ struct DaemonRuntime<S> {
     pane_output_cache: scanner::PaneOutputStatusCache,
     control_mode: RunningTmuxControlModeClient,
     next_reconcile_at: Instant,
+    telemetry: RuntimeTelemetry,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct RuntimeTelemetry {
+    control_event_refresh_count: u64,
+    reconcile_attempt_count: u64,
+    reconcile_noop_count: u64,
+    reconcile_changed_snapshot_count: u64,
+    targeted_refresh_fallback_to_full_count: u64,
+}
+
+impl RuntimeTelemetry {
+    fn record_control_event_refresh(&mut self) {
+        self.control_event_refresh_count = self.control_event_refresh_count.saturating_add(1);
+    }
+
+    fn record_targeted_refresh_fallback_to_full(&mut self) {
+        self.targeted_refresh_fallback_to_full_count = self
+            .targeted_refresh_fallback_to_full_count
+            .saturating_add(1);
+    }
+
+    fn record_reconcile_result(&mut self, previous: &SnapshotEnvelope, current: &SnapshotEnvelope) {
+        self.reconcile_attempt_count = self.reconcile_attempt_count.saturating_add(1);
+        if snapshots_are_materially_equal(previous, current) {
+            self.reconcile_noop_count = self.reconcile_noop_count.saturating_add(1);
+        } else {
+            self.reconcile_changed_snapshot_count =
+                self.reconcile_changed_snapshot_count.saturating_add(1);
+        }
+    }
+
+    fn frame(
+        &self,
+        broker_status: &ipc::ControlModeBrokerStatusFrame,
+    ) -> ipc::RuntimeTelemetryFrame {
+        ipc::RuntimeTelemetryFrame {
+            control_event_refresh_count: self.control_event_refresh_count,
+            reconcile_attempt_count: self.reconcile_attempt_count,
+            reconcile_noop_count: self.reconcile_noop_count,
+            reconcile_changed_snapshot_count: self.reconcile_changed_snapshot_count,
+            targeted_refresh_fallback_to_full_count: self.targeted_refresh_fallback_to_full_count,
+            broker_fallback_count: broker_status.fallback_count.unwrap_or_default(),
+        }
+    }
 }
 
 enum RefreshRequest<'a> {
@@ -264,7 +310,10 @@ impl<S: StartupActions> DaemonRuntime<S> {
         let snapshot = pending_snapshot.snapshot.clone();
         socket_state.publish_prepared_snapshot(pending_snapshot);
         let control_mode = RunningTmuxControlModeClient::from_started(tmux_client)?;
-        socket_state.update_control_mode_broker_status(control_mode.broker_status_frame());
+        let telemetry = RuntimeTelemetry::default();
+        let broker_status = control_mode.broker_status_frame();
+        socket_state.update_control_mode_broker_status(broker_status.clone());
+        socket_state.update_runtime_telemetry(telemetry.frame(&broker_status));
         Ok(Self {
             startup,
             socket_state,
@@ -273,6 +322,7 @@ impl<S: StartupActions> DaemonRuntime<S> {
             pane_output_cache: scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL),
             control_mode,
             next_reconcile_at: Instant::now() + RECONCILE_INTERVAL,
+            telemetry,
         })
     }
 
@@ -329,16 +379,34 @@ impl<S: StartupActions> DaemonRuntime<S> {
             return Ok(RefreshOutcome::exit());
         }
         let event_publish_context = event.publish_context();
+        let previous_snapshot = matches!(
+            event,
+            ControlEvent::WindowChanged(_)
+                | ControlEvent::SessionChanged(_)
+                | ControlEvent::Resnapshot
+        )
+        .then(|| self.snapshot.clone());
         let mut event_tmux_reads = self.control_mode.read_provider();
-        let changed = apply_control_event(
+        let event_outcome = apply_control_event(
             &mut self.snapshot,
             &mut event_tmux_reads,
             line,
             &event,
             &mut self.pane_output_cache,
         )?;
-        if !changed {
+        if !event_outcome.changed {
+            self.update_runtime_telemetry();
             return Ok(RefreshOutcome::no_publish());
+        }
+        self.telemetry.record_control_event_refresh();
+        if event_outcome.full_snapshot_refresh
+            && let Some(previous_snapshot) = previous_snapshot
+        {
+            self.telemetry
+                .record_reconcile_result(&previous_snapshot, &self.snapshot);
+        }
+        if event_outcome.fallback_to_full {
+            self.telemetry.record_targeted_refresh_fallback_to_full();
         }
 
         let reconnected = self.recover_broker_and_reconcile_if_needed()?;
@@ -355,6 +423,7 @@ impl<S: StartupActions> DaemonRuntime<S> {
         &mut self,
         publish_context: SnapshotPublishContext,
     ) -> Result<RefreshOutcome> {
+        let previous_snapshot = self.snapshot.clone();
         let mut reconcile_tmux_reads = self.control_mode.read_provider();
         reconcile_full_snapshot(
             &mut self.snapshot,
@@ -362,6 +431,8 @@ impl<S: StartupActions> DaemonRuntime<S> {
             self.tmux_version.as_deref(),
             &mut self.pane_output_cache,
         )?;
+        self.telemetry
+            .record_reconcile_result(&previous_snapshot, &self.snapshot);
         self.recover_broker_and_reconcile_if_needed()?;
         Ok(RefreshOutcome::publish_and_reset_reconcile_timer(
             publish_context,
@@ -373,6 +444,7 @@ impl<S: StartupActions> DaemonRuntime<S> {
             .control_mode
             .recover_broker_if_disabled(&self.startup, &self.socket_state);
         if reconnected {
+            let previous_snapshot = self.snapshot.clone();
             let tmux_version = self.snapshot.source.tmux_version.clone();
             let mut reconnect_tmux_reads = self.control_mode.read_provider();
             reconcile_full_snapshot(
@@ -381,15 +453,24 @@ impl<S: StartupActions> DaemonRuntime<S> {
                 tmux_version.as_deref(),
                 &mut self.pane_output_cache,
             )?;
+            self.telemetry
+                .record_reconcile_result(&previous_snapshot, &self.snapshot);
         }
         Ok(reconnected)
     }
 
     fn publish_current_snapshot(&self, publish_context: SnapshotPublishContext) {
-        self.socket_state
-            .update_control_mode_broker_status(self.control_mode.broker_status_frame());
+        self.update_runtime_telemetry();
         self.socket_state
             .publish_later_snapshot_with_context(self.snapshot.clone(), publish_context);
+    }
+
+    fn update_runtime_telemetry(&self) {
+        let broker_status = self.control_mode.broker_status_frame();
+        self.socket_state
+            .update_control_mode_broker_status(broker_status.clone());
+        self.socket_state
+            .update_runtime_telemetry(self.telemetry.frame(&broker_status));
     }
 
     fn shutdown_control_mode(mut self) -> Result<()> {
@@ -548,6 +629,47 @@ enum ControlEvent {
     Ignored,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ControlEventOutcome {
+    changed: bool,
+    fallback_to_full: bool,
+    full_snapshot_refresh: bool,
+}
+
+impl ControlEventOutcome {
+    fn changed() -> Self {
+        Self {
+            changed: true,
+            fallback_to_full: false,
+            full_snapshot_refresh: false,
+        }
+    }
+
+    fn changed_with_full_fallback() -> Self {
+        Self {
+            changed: true,
+            fallback_to_full: true,
+            full_snapshot_refresh: true,
+        }
+    }
+
+    fn changed_with_full_refresh() -> Self {
+        Self {
+            changed: true,
+            fallback_to_full: false,
+            full_snapshot_refresh: true,
+        }
+    }
+
+    fn unchanged() -> Self {
+        Self {
+            changed: false,
+            fallback_to_full: false,
+            full_snapshot_refresh: false,
+        }
+    }
+}
+
 impl ControlEvent {
     fn publish_context(&self) -> Option<SnapshotPublishContext> {
         match self {
@@ -611,11 +733,11 @@ fn apply_control_event(
     line: &str,
     event: &ControlEvent,
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
-) -> Result<bool> {
+) -> Result<ControlEventOutcome> {
     match event {
         ControlEvent::PaneChanged(pane_id) => {
             refresh_snapshot_pane(snapshot, tmux_reads, pane_id, pane_output_cache)?;
-            Ok(true)
+            Ok(ControlEventOutcome::changed())
         }
         ControlEvent::TitleChanged { pane_id, title } => {
             refresh_snapshot_pane_with_title(
@@ -625,35 +747,37 @@ fn apply_control_event(
                 Some(title.as_str()),
                 pane_output_cache,
             )?;
-            Ok(true)
+            Ok(ControlEventOutcome::changed())
         }
         ControlEvent::WindowChanged(window_id) => {
-            refresh_snapshot_window(snapshot, tmux_reads, window_id, pane_output_cache).or_else(
-                |error| {
+            match refresh_snapshot_window(snapshot, tmux_reads, window_id, pane_output_cache) {
+                Ok(()) => Ok(ControlEventOutcome::changed()),
+                Err(error) => {
                     fallback_to_full_resnapshot(
                         snapshot,
                         tmux_reads,
                         line,
                         error,
                         pane_output_cache,
-                    )
-                },
-            )?;
-            Ok(true)
+                    )?;
+                    Ok(ControlEventOutcome::changed_with_full_fallback())
+                }
+            }
         }
         ControlEvent::SessionChanged(session_id) => {
-            refresh_snapshot_session(snapshot, tmux_reads, session_id, pane_output_cache).or_else(
-                |error| {
+            match refresh_snapshot_session(snapshot, tmux_reads, session_id, pane_output_cache) {
+                Ok(()) => Ok(ControlEventOutcome::changed()),
+                Err(error) => {
                     fallback_to_full_resnapshot(
                         snapshot,
                         tmux_reads,
                         line,
                         error,
                         pane_output_cache,
-                    )
-                },
-            )?;
-            Ok(true)
+                    )?;
+                    Ok(ControlEventOutcome::changed_with_full_fallback())
+                }
+            }
         }
         ControlEvent::Resnapshot => {
             let tmux_version = snapshot.source.tmux_version.clone();
@@ -663,9 +787,9 @@ fn apply_control_event(
                 tmux_version.as_deref(),
                 pane_output_cache,
             )?;
-            Ok(true)
+            Ok(ControlEventOutcome::changed_with_full_refresh())
         }
-        ControlEvent::Exit | ControlEvent::Ignored => Ok(false),
+        ControlEvent::Exit | ControlEvent::Ignored => Ok(ControlEventOutcome::unchanged()),
     }
 }
 
@@ -974,6 +1098,22 @@ fn reconcile_full_snapshot(
     Ok(())
 }
 
+fn snapshots_are_materially_equal(left: &SnapshotEnvelope, right: &SnapshotEnvelope) -> bool {
+    let mut left = left.clone();
+    let mut right = right.clone();
+    normalize_snapshot_for_material_comparison(&mut left);
+    normalize_snapshot_for_material_comparison(&mut right);
+    left == right
+}
+
+fn normalize_snapshot_for_material_comparison(snapshot: &mut SnapshotEnvelope) {
+    snapshot.generated_at.clear();
+    snapshot.source.daemon_generated_at = None;
+    for pane in &mut snapshot.panes {
+        pane.diagnostics.cache_origin.clear();
+    }
+}
+
 fn daemon_snapshot_from_tmux_with_provider(
     tmux_reads: &mut impl TmuxReadProvider,
     tmux_version: Option<&str>,
@@ -1011,6 +1151,41 @@ pub(crate) fn test_refresh_snapshot_pane_with_provider(
 ) -> Result<()> {
     let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
     refresh_snapshot_pane(snapshot, tmux_reads, pane_id, &mut pane_output_cache)
+}
+
+#[cfg(test)]
+pub(crate) fn test_apply_resnapshot_control_event_with_provider(
+    snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &mut impl TmuxReadProvider,
+) -> Result<(bool, bool)> {
+    let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
+    let outcome = apply_control_event(
+        snapshot,
+        tmux_reads,
+        "%layout-change @1",
+        &ControlEvent::Resnapshot,
+        &mut pane_output_cache,
+    )?;
+    Ok((outcome.changed, outcome.full_snapshot_refresh))
+}
+
+#[cfg(test)]
+pub(crate) fn test_runtime_telemetry_after_reconcile_results(
+    previous: &SnapshotEnvelope,
+    noop_current: &SnapshotEnvelope,
+    changed_current: &SnapshotEnvelope,
+) -> ipc::RuntimeTelemetryFrame {
+    let mut telemetry = RuntimeTelemetry::default();
+    telemetry.record_control_event_refresh();
+    telemetry.record_targeted_refresh_fallback_to_full();
+    telemetry.record_reconcile_result(previous, noop_current);
+    telemetry.record_reconcile_result(noop_current, changed_current);
+    telemetry.frame(&ipc::ControlModeBrokerStatusFrame {
+        mode: ipc::ControlModeBrokerMode::Fallback,
+        disabled_reason: Some("test fallback".to_string()),
+        reconnect_count: 1,
+        fallback_count: Some(2),
+    })
 }
 
 #[cfg(test)]

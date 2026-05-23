@@ -233,7 +233,7 @@ fn ipc_frame_accepts_lifecycle_status_mode() {
 #[test]
 fn ipc_lifecycle_status_frame_roundtrips() {
     let frame = ipc::DaemonFrame::LifecycleStatus {
-        status: ipc::LifecycleStatusFrame {
+        status: Box::new(ipc::LifecycleStatusFrame {
             state: ipc::LifecycleDaemonState::Ready,
             identity: ipc::DaemonIdentityFrame {
                 pid: 42,
@@ -254,16 +254,55 @@ fn ipc_lifecycle_status_frame_roundtrips() {
                 mode: ipc::ControlModeBrokerMode::Active,
                 disabled_reason: None,
                 reconnect_count: 1,
+                fallback_count: Some(2),
+            }),
+            runtime_telemetry: Some(ipc::RuntimeTelemetryFrame {
+                control_event_refresh_count: 3,
+                reconcile_attempt_count: 4,
+                reconcile_noop_count: 5,
+                reconcile_changed_snapshot_count: 6,
+                targeted_refresh_fallback_to_full_count: 7,
+                broker_fallback_count: 2,
             }),
             unavailable_reason: None,
             message: None,
-        },
+        }),
     };
 
     let encoded = ipc::encode_frame(&frame).expect("frame should encode");
     let decoded = ipc::decode_daemon_frame(encoded.trim_ascii()).expect("frame should decode");
 
     assert_eq!(decoded, frame);
+}
+
+#[test]
+fn ipc_lifecycle_status_preserves_missing_runtime_telemetry() {
+    let bytes = br#"{"type":"lifecycle_status","status":{"state":"ready","identity":{"pid":42,"daemon_start_time":"2026-05-03T00:00:00Z","executable":"/tmp/agentscan","executable_canonical":null,"socket_path":"/tmp/agentscan.sock","protocol_version":1,"snapshot_schema_version":4},"subscriber_count":0,"latest_snapshot_generated_at":null,"latest_snapshot_pane_count":null,"latest_snapshot_update_source":null,"latest_snapshot_update_detail":null,"latest_snapshot_update_duration_ms":null,"control_mode_broker":null,"unavailable_reason":null,"message":null}}"#;
+
+    let decoded = ipc::decode_daemon_frame(bytes).expect("status frame should decode");
+    let ipc::DaemonFrame::LifecycleStatus { status } = decoded else {
+        panic!("expected lifecycle status frame");
+    };
+
+    assert_eq!(status.runtime_telemetry, None);
+}
+
+#[test]
+fn ipc_lifecycle_status_preserves_missing_broker_fallback_count() {
+    let bytes = br#"{"type":"lifecycle_status","status":{"state":"ready","identity":{"pid":42,"daemon_start_time":"2026-05-03T00:00:00Z","executable":"/tmp/agentscan","executable_canonical":null,"socket_path":"/tmp/agentscan.sock","protocol_version":1,"snapshot_schema_version":4},"subscriber_count":0,"latest_snapshot_generated_at":null,"latest_snapshot_pane_count":null,"latest_snapshot_update_source":null,"latest_snapshot_update_detail":null,"latest_snapshot_update_duration_ms":null,"control_mode_broker":{"mode":"fallback","disabled_reason":"old daemon","reconnect_count":1},"runtime_telemetry":null,"unavailable_reason":null,"message":null}}"#;
+
+    let decoded = ipc::decode_daemon_frame(bytes).expect("status frame should decode");
+    let ipc::DaemonFrame::LifecycleStatus { status } = decoded else {
+        panic!("expected lifecycle status frame");
+    };
+
+    assert_eq!(
+        status
+            .control_mode_broker
+            .expect("broker status should decode")
+            .fallback_count,
+        None
+    );
 }
 
 #[test]
