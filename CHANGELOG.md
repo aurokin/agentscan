@@ -4,6 +4,9 @@
 
 ### Added
 
+- Added an ADR choosing Tauri 2 with a Rust backend and React/TypeScript UI for
+  the macOS-first desktop shell, while preserving the shared CLI client contract
+  for terminal and desktop consumers.
 - Added `agentscan hotkeys --format json` and `agentscan hotkey <key>` as the
   shared picker hotkey contract for tmux binds, the terminal TUI model, and
   future desktop picker surfaces.

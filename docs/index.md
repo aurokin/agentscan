@@ -25,6 +25,9 @@ This repo uses progressively disclosed documentation.
   - `docs/adr/macos-daemon-autostart-and-executable-assessment.md`
     ADR for macOS daemon auto-start, executable assessment, observed
     AppleSystemPolicy panics, and the signed-versus-ad-hoc lifecycle boundary.
+  - `docs/adr/desktop-shell-and-shared-client-contract.md`
+    ADR for the desktop shell stack, macOS-first posture, and shared
+    TUI/desktop command-runner client contract.
 - `docs/notes/`
   Narrow follow-up or historical notes that are too specific for the primary docs but still worth keeping in the repo.
   - `docs/notes/provider-evidence-roadmap.md`
