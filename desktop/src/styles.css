@@ -228,6 +228,58 @@ button:disabled {
   margin-bottom: 12px;
 }
 
+.live-banner {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid #c5c9bf;
+  border-radius: 6px;
+  background: #f8faf6;
+}
+
+.live-banner.ready {
+  border-color: #1f6b53;
+  background: #e7f4ed;
+}
+
+.live-banner.warn {
+  border-color: #b38424;
+  background: #fff8e6;
+}
+
+.live-banner.error {
+  border-color: #b94a48;
+  background: #fff1f0;
+}
+
+.live-banner div {
+  min-width: 0;
+}
+
+.live-banner span {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.live-banner p,
+.live-banner small {
+  margin: 0;
+  color: #62685c;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.live-banner small {
+  flex: 0 1 220px;
+  text-align: right;
+}
+
 .picker-list {
   display: grid;
   gap: 8px;
@@ -325,6 +377,14 @@ kbd {
 
   .picker-row-meta {
     grid-column: 2;
+    text-align: left;
+  }
+
+  .live-banner {
+    display: grid;
+  }
+
+  .live-banner small {
     text-align: left;
   }
 }

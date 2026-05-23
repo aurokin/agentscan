@@ -14,6 +14,9 @@
   `agentscan focus <pane_id>`, keeping focus behavior delegated to the CLI.
 - Added a macOS-first desktop global hotkey (`CommandOrControl+Shift+A`) that
   toggles the picker window while preserving the CLI-backed picker contract.
+- Added a supervised desktop live-picker subscription that consumes
+  `agentscan subscribe --format json`, preserves the last visible rows during
+  reconnects, and surfaces daemon diagnostics for offline/fatal states.
 - Added an ADR choosing Tauri 2 with a Rust backend and React/TypeScript UI for
   the macOS-first desktop shell, while preserving the shared CLI client contract
   for terminal and desktop consumers.

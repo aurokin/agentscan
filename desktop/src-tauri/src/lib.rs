@@ -1,15 +1,25 @@
 use std::{
     env,
     ffi::{OsStr, OsString},
+    io::{BufRead, BufReader},
     path::{Path, PathBuf},
-    process::{Command, ExitStatus, Stdio},
-    thread,
+    process::{Child, Command, ExitStatus, Stdio},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
 const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(2);
 const HOTKEYS_TIMEOUT: Duration = Duration::from_secs(5);
 const FOCUS_TIMEOUT: Duration = Duration::from_secs(5);
+const DAEMON_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
+const LIVE_RECONNECT_DELAY: Duration = Duration::from_secs(1);
+const LIVE_PICKER_EVENT: &str = "agentscan-live-picker";
+
+static LIVE_PICKER: OnceLock<Mutex<Option<LivePickerSupervisor>>> = OnceLock::new();
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -62,6 +72,59 @@ struct PickerLocation {
     extra: serde_json::Map<String, serde_json::Value>,
 }
 
+#[derive(Debug)]
+struct LivePickerSupervisor {
+    stop: Arc<AtomicBool>,
+    child: Arc<Mutex<Option<Child>>>,
+    worker: Option<JoinHandle<()>>,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum SubscribeFrame {
+    Connecting { message: String },
+    Snapshot { snapshot: serde_json::Value },
+    Offline { message: String, retrying: bool },
+    Shutdown { message: String },
+    Fatal { message: String },
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum LivePickerEvent {
+    Connecting {
+        message: String,
+    },
+    Reconnecting {
+        message: String,
+        diagnostics: Option<serde_json::Value>,
+    },
+    Rows {
+        rows: Vec<PickerRow>,
+        snapshot: LiveSnapshotSummary,
+    },
+    Offline {
+        message: String,
+        retrying: bool,
+        diagnostics: Option<serde_json::Value>,
+    },
+    Shutdown {
+        message: String,
+    },
+    Fatal {
+        message: String,
+        diagnostics: Option<serde_json::Value>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LiveSnapshotSummary {
+    pane_count: usize,
+    generated_at: Option<String>,
+    source_kind: Option<String>,
+}
+
 #[tauri::command]
 fn local_profiles() -> Vec<DesktopProfile> {
     vec![DesktopProfile {
@@ -84,6 +147,16 @@ fn load_picker_rows() -> Result<Vec<PickerRow>, String> {
 #[tauri::command]
 fn focus_picker_row(pane_id: String) -> Result<(), String> {
     focus_picker_row_with_binary(agentscan_binary(), &pane_id)
+}
+
+#[tauri::command]
+fn start_live_picker(app: tauri::AppHandle) -> Result<(), String> {
+    start_live_picker_with_binary(app, agentscan_binary())
+}
+
+#[tauri::command]
+fn stop_live_picker() -> Result<(), String> {
+    stop_live_picker_supervisor()
 }
 
 fn agentscan_binary() -> OsString {
@@ -174,6 +247,399 @@ fn focus_picker_row_with_binary(binary: OsString, pane_id: &str) -> Result<(), S
             output.status,
         ))
     }
+}
+
+fn start_live_picker_with_binary(app: tauri::AppHandle, binary: OsString) -> Result<(), String> {
+    let mut supervisor = live_picker_supervisor()
+        .lock()
+        .map_err(|_| "live picker supervisor lock poisoned".to_owned())?;
+
+    if supervisor.is_some() {
+        return Ok(());
+    }
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let child = Arc::new(Mutex::new(None));
+    let worker_stop = Arc::clone(&stop);
+    let worker_child = Arc::clone(&child);
+    let worker = thread::Builder::new()
+        .name("agentscan-live-picker".to_owned())
+        .spawn(move || run_live_picker_worker(app, binary, worker_stop, worker_child))
+        .map_err(|error| format!("Unable to start live picker worker: {error}"))?;
+
+    *supervisor = Some(LivePickerSupervisor {
+        stop,
+        child,
+        worker: Some(worker),
+    });
+
+    Ok(())
+}
+
+fn stop_live_picker_supervisor() -> Result<(), String> {
+    let supervisor = live_picker_supervisor()
+        .lock()
+        .map_err(|_| "live picker supervisor lock poisoned".to_owned())?
+        .take();
+
+    if let Some(mut supervisor) = supervisor {
+        supervisor.stop.store(true, Ordering::SeqCst);
+        kill_live_picker_child(&supervisor.child);
+
+        if let Some(worker) = supervisor.worker.take() {
+            let _ = worker.join();
+        }
+    }
+
+    Ok(())
+}
+
+fn live_picker_supervisor() -> &'static Mutex<Option<LivePickerSupervisor>> {
+    LIVE_PICKER.get_or_init(|| Mutex::new(None))
+}
+
+fn run_live_picker_worker(
+    app: tauri::AppHandle,
+    binary: OsString,
+    stop: Arc<AtomicBool>,
+    child_slot: Arc<Mutex<Option<Child>>>,
+) {
+    let mut has_connected = false;
+
+    while !stop.load(Ordering::SeqCst) {
+        if has_connected {
+            emit_live_picker_event(
+                &app,
+                LivePickerEvent::Reconnecting {
+                    message: "Reconnecting to agentscan subscribe".to_owned(),
+                    diagnostics: load_daemon_status_from_binary(&binary).ok(),
+                },
+            );
+        } else {
+            emit_live_picker_event(
+                &app,
+                LivePickerEvent::Connecting {
+                    message: "Connecting to agentscan subscribe".to_owned(),
+                },
+            );
+        }
+
+        match run_live_picker_subscription(&app, &binary, &stop, &child_slot) {
+            LivePickerWorkerExit::Stopped | LivePickerWorkerExit::Shutdown => break,
+            LivePickerWorkerExit::Fatal => break,
+            LivePickerWorkerExit::Retry => {
+                has_connected = true;
+                sleep_until_retry_or_stop(&stop);
+            }
+        }
+    }
+
+    kill_live_picker_child(&child_slot);
+    let _ = live_picker_supervisor().lock().map(|mut supervisor| {
+        if supervisor
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(&current.stop, &stop))
+        {
+            *supervisor = None;
+        }
+    });
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LivePickerWorkerExit {
+    Retry,
+    Shutdown,
+    Fatal,
+    Stopped,
+}
+
+fn run_live_picker_subscription(
+    app: &tauri::AppHandle,
+    binary: &OsStr,
+    stop: &AtomicBool,
+    child_slot: &Arc<Mutex<Option<Child>>>,
+) -> LivePickerWorkerExit {
+    let mut child = match Command::new(binary)
+        .args(["subscribe", "--format", "json"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => {
+            emit_live_picker_event(
+                app,
+                LivePickerEvent::Offline {
+                    message: format!("Unable to start agentscan subscribe: {error}"),
+                    retrying: true,
+                    diagnostics: load_daemon_status_from_binary(binary).ok(),
+                },
+            );
+            return LivePickerWorkerExit::Retry;
+        }
+    };
+
+    let stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            emit_live_picker_event(
+                app,
+                LivePickerEvent::Offline {
+                    message: "agentscan subscribe did not expose stdout".to_owned(),
+                    retrying: true,
+                    diagnostics: load_daemon_status_from_binary(binary).ok(),
+                },
+            );
+            return LivePickerWorkerExit::Retry;
+        }
+    };
+
+    let stderr = child.stderr.take();
+    if let Ok(mut slot) = child_slot.lock() {
+        *slot = Some(child);
+    } else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return LivePickerWorkerExit::Retry;
+    }
+
+    let stderr_reader = stderr.map(|stderr| {
+        thread::Builder::new()
+            .name("agentscan-live-picker-stderr".to_owned())
+            .spawn(move || read_process_stderr(stderr))
+            .ok()
+    });
+    let mut exit = LivePickerWorkerExit::Retry;
+
+    for line in BufReader::new(stdout).lines() {
+        if stop.load(Ordering::SeqCst) {
+            exit = LivePickerWorkerExit::Stopped;
+            break;
+        }
+
+        match line {
+            Ok(line) if line.trim().is_empty() => {}
+            Ok(line) => match serde_json::from_str::<SubscribeFrame>(&line) {
+                Ok(frame) => match handle_subscribe_frame(app, binary, frame) {
+                    LivePickerWorkerExit::Retry => {}
+                    terminal_exit => {
+                        exit = terminal_exit;
+                        break;
+                    }
+                },
+                Err(error) => {
+                    emit_live_picker_event(
+                        app,
+                        LivePickerEvent::Offline {
+                            message: format!("Invalid agentscan subscribe frame: {error}"),
+                            retrying: true,
+                            diagnostics: load_daemon_status_from_binary(binary).ok(),
+                        },
+                    );
+                    break;
+                }
+            },
+            Err(error) => {
+                if !stop.load(Ordering::SeqCst) {
+                    emit_live_picker_event(
+                        app,
+                        LivePickerEvent::Offline {
+                            message: format!("Unable to read agentscan subscribe output: {error}"),
+                            retrying: true,
+                            diagnostics: load_daemon_status_from_binary(binary).ok(),
+                        },
+                    );
+                }
+                break;
+            }
+        }
+    }
+
+    let status_message = wait_for_live_picker_child(child_slot);
+    let stderr = stderr_reader
+        .flatten()
+        .and_then(|worker| worker.join().ok())
+        .unwrap_or_default();
+
+    if stop.load(Ordering::SeqCst) {
+        return LivePickerWorkerExit::Stopped;
+    }
+
+    if matches!(exit, LivePickerWorkerExit::Retry) {
+        emit_live_picker_event(
+            app,
+            LivePickerEvent::Offline {
+                message: process_exit_message(status_message.as_deref(), &stderr),
+                retrying: true,
+                diagnostics: load_daemon_status_from_binary(binary).ok(),
+            },
+        );
+    }
+
+    exit
+}
+
+fn handle_subscribe_frame(
+    app: &tauri::AppHandle,
+    binary: &OsStr,
+    frame: SubscribeFrame,
+) -> LivePickerWorkerExit {
+    match live_event_from_subscribe_frame(binary, frame) {
+        Ok((event, exit)) => {
+            emit_live_picker_event(app, event);
+            exit
+        }
+        Err(message) => {
+            emit_live_picker_event(
+                app,
+                LivePickerEvent::Fatal {
+                    message,
+                    diagnostics: load_daemon_status_from_binary(binary).ok(),
+                },
+            );
+            LivePickerWorkerExit::Fatal
+        }
+    }
+}
+
+fn live_event_from_subscribe_frame(
+    binary: &OsStr,
+    frame: SubscribeFrame,
+) -> Result<(LivePickerEvent, LivePickerWorkerExit), String> {
+    match frame {
+        SubscribeFrame::Connecting { message } => Ok((
+            LivePickerEvent::Connecting { message },
+            LivePickerWorkerExit::Retry,
+        )),
+        SubscribeFrame::Snapshot { snapshot } => {
+            let rows = match load_picker_rows_from_binary(binary.to_os_string()) {
+                Ok(rows) => rows,
+                Err(message) => {
+                    return Ok((
+                        LivePickerEvent::Offline {
+                            message,
+                            retrying: true,
+                            diagnostics: load_daemon_status_from_binary(binary).ok(),
+                        },
+                        LivePickerWorkerExit::Retry,
+                    ));
+                }
+            };
+            let snapshot = summarize_snapshot(&snapshot);
+            Ok((
+                LivePickerEvent::Rows { rows, snapshot },
+                LivePickerWorkerExit::Retry,
+            ))
+        }
+        SubscribeFrame::Offline { message, retrying } => Ok((
+            LivePickerEvent::Offline {
+                message,
+                retrying,
+                diagnostics: load_daemon_status_from_binary(binary).ok(),
+            },
+            LivePickerWorkerExit::Retry,
+        )),
+        SubscribeFrame::Shutdown { message } => Ok((
+            LivePickerEvent::Shutdown { message },
+            LivePickerWorkerExit::Shutdown,
+        )),
+        SubscribeFrame::Fatal { message } => Ok((
+            LivePickerEvent::Fatal {
+                message,
+                diagnostics: load_daemon_status_from_binary(binary).ok(),
+            },
+            LivePickerWorkerExit::Fatal,
+        )),
+    }
+}
+
+fn summarize_snapshot(snapshot: &serde_json::Value) -> LiveSnapshotSummary {
+    LiveSnapshotSummary {
+        pane_count: snapshot
+            .get("panes")
+            .and_then(serde_json::Value::as_array)
+            .map_or(0, Vec::len),
+        generated_at: snapshot
+            .get("generated_at")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        source_kind: snapshot
+            .get("source")
+            .and_then(|source| source.get("kind"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+    }
+}
+
+fn load_daemon_status_from_binary(binary: &OsStr) -> Result<serde_json::Value, String> {
+    let output = run_agentscan_command(
+        binary,
+        ["daemon", "status", "--format", "json"],
+        DAEMON_STATUS_TIMEOUT,
+    )
+    .map_err(|error| format!("Unable to run agentscan daemon status: {error}"))?;
+
+    if !output.status.success() {
+        return Err(stderr_or_status(
+            "agentscan daemon status",
+            &output.stderr,
+            output.status,
+        ));
+    }
+
+    serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("Invalid agentscan daemon status JSON: {error}"))
+}
+
+fn read_process_stderr(stderr: impl std::io::Read) -> String {
+    let mut lines = Vec::new();
+    for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+        if !line.trim().is_empty() {
+            lines.push(line);
+        }
+    }
+    lines.join("\n")
+}
+
+fn wait_for_live_picker_child(child_slot: &Arc<Mutex<Option<Child>>>) -> Option<String> {
+    let mut child = child_slot.lock().ok()?.take()?;
+    Some(match child.wait() {
+        Ok(status) => format!("agentscan subscribe exited with status {status}"),
+        Err(error) => format!("Unable to wait for agentscan subscribe: {error}"),
+    })
+}
+
+fn kill_live_picker_child(child_slot: &Arc<Mutex<Option<Child>>>) {
+    if let Ok(mut slot) = child_slot.lock()
+        && let Some(mut child) = slot.take()
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+fn process_exit_message(status_message: Option<&str>, stderr: &str) -> String {
+    let stderr = stderr.trim();
+
+    match (status_message, stderr.is_empty()) {
+        (Some(status), true) => status.to_owned(),
+        (Some(status), false) => format!("{status}: {stderr}"),
+        (None, true) => "agentscan subscribe exited".to_owned(),
+        (None, false) => stderr.to_owned(),
+    }
+}
+
+fn sleep_until_retry_or_stop(stop: &AtomicBool) {
+    let start = Instant::now();
+    while !stop.load(Ordering::SeqCst) && start.elapsed() < LIVE_RECONNECT_DELAY {
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn emit_live_picker_event(app: &tauri::AppHandle, event: LivePickerEvent) {
+    let _ = tauri::Emitter::emit(app, LIVE_PICKER_EVENT, event);
 }
 
 fn validate_picker_rows(rows: &[PickerRow]) -> Result<(), String> {
@@ -292,7 +758,9 @@ pub fn run() {
             focus_picker_row,
             local_profiles,
             load_picker_rows,
-            preflight_agentscan
+            preflight_agentscan,
+            start_live_picker,
+            stop_live_picker
         ])
         .run(tauri::generate_context!())
         .expect("error while running agentscan desktop");
@@ -448,6 +916,81 @@ mod tests {
             focus_picker_row_with_binary(OsString::from("agentscan"), "  ").unwrap_err(),
             "Cannot focus an empty pane id"
         );
+    }
+
+    #[test]
+    fn subscribe_lifecycle_frames_parse() {
+        let frame: SubscribeFrame =
+            serde_json::from_str(r#"{"type":"connecting","message":"connecting"}"#)
+                .expect("connecting frame parses");
+
+        assert_eq!(
+            frame,
+            SubscribeFrame::Connecting {
+                message: "connecting".to_owned()
+            }
+        );
+
+        let frame: SubscribeFrame =
+            serde_json::from_str(r#"{"type":"offline","message":"lost","retrying":true}"#)
+                .expect("offline frame parses");
+
+        assert_eq!(
+            frame,
+            SubscribeFrame::Offline {
+                message: "lost".to_owned(),
+                retrying: true
+            }
+        );
+    }
+
+    #[test]
+    fn snapshot_summary_reads_canonical_fields() {
+        let snapshot: serde_json::Value = serde_json::from_str(
+            r#"{
+              "generated_at": "2026-05-23T20:00:00Z",
+              "source": { "kind": "daemon" },
+              "panes": [{ "pane_id": "%1" }, { "pane_id": "%2" }]
+            }"#,
+        )
+        .expect("snapshot parses");
+
+        assert_eq!(
+            summarize_snapshot(&snapshot),
+            LiveSnapshotSummary {
+                pane_count: 2,
+                generated_at: Some("2026-05-23T20:00:00Z".to_owned()),
+                source_kind: Some("daemon".to_owned())
+            }
+        );
+    }
+
+    #[test]
+    fn snapshot_summary_defaults_missing_optional_fields() {
+        let snapshot: serde_json::Value = serde_json::from_str(r#"{ "panes": [] }"#)
+            .expect("snapshot parses");
+
+        assert_eq!(
+            summarize_snapshot(&snapshot),
+            LiveSnapshotSummary {
+                pane_count: 0,
+                generated_at: None,
+                source_kind: None
+            }
+        );
+    }
+
+    #[test]
+    fn process_exit_message_preserves_stderr_context() {
+        assert_eq!(
+            process_exit_message(
+                Some("agentscan subscribe exited with status 1"),
+                "tmux missing"
+            ),
+            "agentscan subscribe exited with status 1: tmux missing"
+        );
+
+        assert_eq!(process_exit_message(None, ""), "agentscan subscribe exited");
     }
 
     #[test]

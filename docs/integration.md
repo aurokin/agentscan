@@ -207,6 +207,14 @@ status, and process cancellation. It should not tunnel the daemon Unix socket as
 the primary remote design, parse remote tmux directly, or duplicate scanner
 logic in desktop code.
 
+The local desktop MVP keeps one supervised `agentscan subscribe --format json`
+process for live state. Snapshot frames trigger a picker-row refresh through
+`agentscan hotkeys --format json`, preserving the shared CLI picker contract
+instead of reimplementing key assignment or display shaping in desktop code.
+When the subscription exits unexpectedly, the UI keeps the last successful
+snapshot visible while reconnecting and uses
+`agentscan daemon status --format json` for lightweight diagnostics.
+
 Remote commands target the remote default tmux server and daemon socket unless
 the runner supplies an isolated context. For non-default tmux servers, desktop
 profiles should propagate both `AGENTSCAN_TMUX_SOCKET` and a matching

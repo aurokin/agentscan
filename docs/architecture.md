@@ -166,6 +166,8 @@ modules:
 
 - live client subscription events live outside daemon and TUI modules so
   terminal and JSONL stream consumers share one event vocabulary
+- the desktop backend owns process supervision for `agentscan subscribe`, while
+  picker row shaping remains delegated to the CLI hotkeys contract
 - provider-specific process evidence lives under `classify::proc_evidence`
   instead of the fallback orchestration path
 - tmux command execution, parsing, focus/client handling, and pane metadata

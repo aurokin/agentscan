@@ -1,11 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type SetStateAction } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 
 const PICKER_HOTKEY = "CommandOrControl+Shift+A";
+const LIVE_PICKER_EVENT = "agentscan-live-picker";
 
 let hotkeyOperationQueue = Promise.resolve();
+let liveOperationQueue = Promise.resolve();
 let windowOperationQueue = Promise.resolve();
 
 type DesktopProfile = {
@@ -30,6 +33,28 @@ type PickerRow = {
   location_tag: string;
 };
 
+type LiveSnapshotSummary = {
+  paneCount: number;
+  generatedAt: string | null;
+  sourceKind: string | null;
+};
+
+type LivePickerEvent =
+  | { kind: "connecting"; message: string }
+  | { kind: "reconnecting"; message: string; diagnostics: unknown | null }
+  | { kind: "rows"; rows: PickerRow[]; snapshot: LiveSnapshotSummary }
+  | { kind: "offline"; message: string; retrying: boolean; diagnostics: unknown | null }
+  | { kind: "shutdown"; message: string }
+  | { kind: "fatal"; message: string; diagnostics: unknown | null };
+
+type LiveConnectionState =
+  | { status: "connecting"; message: string }
+  | { status: "online"; message: string; snapshot: LiveSnapshotSummary }
+  | { status: "reconnecting"; message: string; diagnostics: unknown | null }
+  | { status: "offline"; message: string; retrying: boolean; diagnostics: unknown | null }
+  | { status: "shutdown"; message: string }
+  | { status: "fatal"; message: string; diagnostics: unknown | null };
+
 type LoadState =
   | { status: "loading" }
   | {
@@ -52,6 +77,10 @@ type PickerActivation =
 
 function App() {
   const [state, setState] = useState<LoadState>({ status: "loading" });
+  const [liveState, setLiveState] = useState<LiveConnectionState>({
+    status: "connecting",
+    message: "Starting live client",
+  });
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isPickerVisible, setIsPickerVisible] = useState(true);
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -76,27 +105,6 @@ function App() {
           });
         }
 
-        try {
-          const pickerRows = await invoke<PickerRow[]>("load_picker_rows");
-
-          if (!cancelled) {
-            setState({
-              status: "ready",
-              profiles,
-              preflight,
-              picker: { status: "ready", rows: pickerRows },
-            });
-          }
-        } catch (error) {
-          if (!cancelled) {
-            setState({
-              status: "ready",
-              profiles,
-              preflight,
-              picker: { status: "failed", message: errorMessage(error) },
-            });
-          }
-        }
       } catch (error) {
         if (!cancelled) {
           setState({
@@ -113,6 +121,67 @@ function App() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (state.status !== "ready") {
+      return;
+    }
+
+    let disposed = false;
+    let unlisten: UnlistenFn | null = null;
+
+    function enqueueLiveOperation(operation: () => Promise<void>) {
+      liveOperationQueue = liveOperationQueue.then(operation, operation);
+      return liveOperationQueue;
+    }
+
+    async function startLivePicker() {
+      try {
+        unlisten = await listen<LivePickerEvent>(LIVE_PICKER_EVENT, (event) => {
+          if (!disposed) {
+            applyLivePickerEvent(event.payload, setLiveState, setState);
+          }
+        });
+      } catch (error) {
+        if (!disposed) {
+          const message = errorMessage(error);
+          setLiveState({ status: "fatal", message, diagnostics: null });
+          markPickerFailedIfEmpty(setState, message);
+        }
+        return;
+      }
+
+      if (disposed) {
+        unlisten();
+        unlisten = null;
+        return;
+      }
+
+      try {
+        await enqueueLiveOperation(async () => {
+          if (!disposed) {
+            await invoke("start_live_picker");
+          }
+        });
+      } catch (error) {
+        if (!disposed) {
+          const message = errorMessage(error);
+          setLiveState({ status: "fatal", message, diagnostics: null });
+          markPickerFailedIfEmpty(setState, message);
+        }
+      }
+    }
+
+    void startLivePicker();
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+      void enqueueLiveOperation(async () => {
+        await invoke("stop_live_picker");
+      });
+    };
+  }, [state.status]);
 
   useEffect(() => {
     let disposed = false;
@@ -342,6 +411,8 @@ function App() {
               </div>
             </div>
 
+            <LiveConnectionBanner state={liveState} />
+
             {activation.status === "failed" ? (
               <div className="error-state activation-error" role="alert">
                 <h3>Unable to focus pane</h3>
@@ -370,6 +441,145 @@ function App() {
       )}
     </main>
   );
+}
+
+function applyLivePickerEvent(
+  event: LivePickerEvent,
+  setLiveState: (value: SetStateAction<LiveConnectionState>) => void,
+  setState: (value: SetStateAction<LoadState>) => void,
+) {
+  if (event.kind === "rows") {
+    setLiveState({
+      status: "online",
+      message: `${event.rows.length} picker ${event.rows.length === 1 ? "row" : "rows"}`,
+      snapshot: event.snapshot,
+    });
+    setState((current) =>
+      current.status === "ready"
+        ? { ...current, picker: { status: "ready", rows: event.rows } }
+        : current,
+    );
+    return;
+  }
+
+  if (event.kind === "connecting") {
+    setLiveState({ status: "connecting", message: event.message });
+    return;
+  }
+
+  if (event.kind === "reconnecting") {
+    setLiveState({
+      status: "reconnecting",
+      message: event.message,
+      diagnostics: event.diagnostics,
+    });
+    return;
+  }
+
+  if (event.kind === "offline") {
+    setLiveState({
+      status: "offline",
+      message: event.message,
+      retrying: event.retrying,
+      diagnostics: event.diagnostics,
+    });
+    markPickerFailedIfEmpty(setState, event.message);
+    return;
+  }
+
+  if (event.kind === "shutdown") {
+    setLiveState({ status: "shutdown", message: event.message });
+    markPickerFailedIfEmpty(setState, event.message);
+    return;
+  }
+
+  setLiveState({
+    status: "fatal",
+    message: event.message,
+    diagnostics: event.diagnostics,
+  });
+  markPickerFailedIfEmpty(setState, event.message);
+}
+
+function markPickerFailedIfEmpty(
+  setState: (value: SetStateAction<LoadState>) => void,
+  message: string,
+) {
+  setState((current) => {
+    if (current.status !== "ready" || current.picker.status === "ready") {
+      return current;
+    }
+
+    return { ...current, picker: { status: "failed", message } };
+  });
+}
+
+function LiveConnectionBanner({ state }: { state: LiveConnectionState }) {
+  const tone = state.status === "online" ? "ready" : state.status === "fatal" ? "error" : "warn";
+
+  return (
+    <div className={`live-banner ${tone}`} aria-live="polite">
+      <div>
+        <span>{liveStateLabel(state)}</span>
+        <p>{state.message}</p>
+      </div>
+      {state.status === "online" ? (
+        <small>
+          {state.snapshot.paneCount} panes
+          {state.snapshot.sourceKind ? ` · ${state.snapshot.sourceKind}` : ""}
+        </small>
+      ) : isDiagnosticState(state) && state.diagnostics ? (
+        <small>{formatDiagnostics(state.diagnostics)}</small>
+      ) : null}
+    </div>
+  );
+}
+
+function liveStateLabel(state: LiveConnectionState) {
+  if (state.status === "online") {
+    return "Live";
+  }
+
+  if (state.status === "reconnecting") {
+    return "Reconnecting";
+  }
+
+  if (state.status === "offline") {
+    return state.retrying ? "Offline, retrying" : "Offline";
+  }
+
+  if (state.status === "fatal") {
+    return "Live client failed";
+  }
+
+  if (state.status === "shutdown") {
+    return "Daemon shutdown";
+  }
+
+  return "Connecting";
+}
+
+function isDiagnosticState(
+  state: LiveConnectionState,
+): state is Extract<LiveConnectionState, { diagnostics: unknown | null }> {
+  return "diagnostics" in state;
+}
+
+function formatDiagnostics(diagnostics: unknown) {
+  if (!diagnostics || typeof diagnostics !== "object") {
+    return String(diagnostics);
+  }
+
+  const status = diagnostics as { state?: unknown; message?: unknown; subscriber_count?: unknown };
+  const parts = [
+    typeof status.state === "string" ? status.state : null,
+    typeof status.message === "string" ? status.message : null,
+    typeof status.subscriber_count === "number"
+      ? `${status.subscriber_count} subscribers`
+      : null,
+  ].filter(Boolean);
+
+  return parts.length > 0 ? parts.join(" · ") : "Daemon diagnostics available";
 }
 
 async function togglePickerWindow(beforeShow: () => void) {
