@@ -60,6 +60,12 @@ Current local baseline:
 - `cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_arguments`
 - `cargo test`
 
+Desktop shell checks:
+
+- `cd desktop && npm run build`
+- `cargo test --manifest-path desktop/src-tauri/Cargo.toml`
+- `cd desktop && npm run tauri dev`
+
 Current test coverage also includes committed file-based fixtures for representative
 tmux title snapshots and snapshot envelopes, plus property tests for parser and
 normalization invariants, so parser and schema regressions can be checked against
@@ -104,6 +110,8 @@ The current branch centers on:
 - direct tmux snapshots from `tmux list-panes -a -F ...`
 - a control-mode daemon that serves socket snapshots
 - repo-local tmux helpers that stay thin and call the CLI
+- a Mac-first Tauri desktop shell in `desktop/` that talks to the installed
+  `agentscan` CLI through a narrow IPC/preflight boundary
 - a runtime split by concern under `src/app/` rather than a single monolithic application file
 
 It can:
