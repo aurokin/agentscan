@@ -215,6 +215,12 @@ When the subscription exits unexpectedly, the UI keeps the last successful
 snapshot visible while reconnecting and uses
 `agentscan daemon status --format json` for lightweight diagnostics.
 
+The local profile can override the `agentscan` binary path and provide
+additional environment variables for every local command and the live
+subscription process. The desktop debug log records command names, outcomes,
+errors, and stream events, but it should show environment variable names/counts
+rather than dumping values into routine diagnostics.
+
 Remote commands target the remote default tmux server and daemon socket unless
 the runner supplies an isolated context. For non-default tmux servers, desktop
 profiles should propagate both `AGENTSCAN_TMUX_SOCKET` and a matching

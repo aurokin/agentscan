@@ -38,6 +38,21 @@ struct AgentscanPreflight {
     error: Option<String>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalRunnerSettings {
+    binary_path: Option<String>,
+    #[serde(default)]
+    env: Vec<LocalEnvironmentVariable>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalEnvironmentVariable {
+    name: String,
+    value: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CommandOutput {
     status: ExitStatus,
@@ -135,23 +150,30 @@ fn local_profiles() -> Vec<DesktopProfile> {
 }
 
 #[tauri::command]
-fn preflight_agentscan() -> AgentscanPreflight {
-    run_agentscan_preflight(agentscan_binary())
+fn preflight_agentscan(settings: Option<LocalRunnerSettings>) -> AgentscanPreflight {
+    let settings = settings.unwrap_or_default();
+    run_agentscan_preflight_with_settings(&settings)
 }
 
 #[tauri::command]
-fn load_picker_rows() -> Result<Vec<PickerRow>, String> {
-    load_picker_rows_from_binary(agentscan_binary())
+fn load_picker_rows(settings: Option<LocalRunnerSettings>) -> Result<Vec<PickerRow>, String> {
+    let settings = settings.unwrap_or_default();
+    load_picker_rows_with_settings(&settings)
 }
 
 #[tauri::command]
-fn focus_picker_row(pane_id: String) -> Result<(), String> {
-    focus_picker_row_with_binary(agentscan_binary(), &pane_id)
+fn focus_picker_row(pane_id: String, settings: Option<LocalRunnerSettings>) -> Result<(), String> {
+    let settings = settings.unwrap_or_default();
+    focus_picker_row_with_settings(&settings, &pane_id)
 }
 
 #[tauri::command]
-fn start_live_picker(app: tauri::AppHandle) -> Result<(), String> {
-    start_live_picker_with_binary(app, agentscan_binary())
+fn start_live_picker(
+    app: tauri::AppHandle,
+    settings: Option<LocalRunnerSettings>,
+) -> Result<(), String> {
+    let settings = settings.unwrap_or_default();
+    start_live_picker_with_settings(app, settings)
 }
 
 #[tauri::command]
@@ -163,6 +185,16 @@ fn agentscan_binary() -> OsString {
     env::var_os("AGENTSCAN_DESKTOP_AGENTSCAN_BIN")
         .or_else(|| find_known_agentscan_binary().map(PathBuf::into_os_string))
         .unwrap_or_else(|| OsString::from("agentscan"))
+}
+
+fn agentscan_binary_for_settings(settings: &LocalRunnerSettings) -> OsString {
+    settings
+        .binary_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(OsString::from)
+        .unwrap_or_else(agentscan_binary)
 }
 
 fn find_known_agentscan_binary() -> Option<PathBuf> {
@@ -183,10 +215,38 @@ fn known_agentscan_paths(home: Option<&OsStr>) -> impl Iterator<Item = PathBuf> 
     .flatten()
 }
 
+#[cfg(test)]
 fn run_agentscan_preflight(binary: OsString) -> AgentscanPreflight {
     run_agentscan_preflight_with_timeout(binary, PREFLIGHT_TIMEOUT)
 }
 
+fn run_agentscan_preflight_with_settings(settings: &LocalRunnerSettings) -> AgentscanPreflight {
+    let binary = agentscan_binary_for_settings(settings);
+    let binary_display = binary.to_string_lossy().into_owned();
+
+    match run_agentscan_command_with_env(&binary, ["--version"], &settings.env, PREFLIGHT_TIMEOUT) {
+        Ok(output) if output.status.success() => AgentscanPreflight {
+            binary: binary_display,
+            ok: true,
+            version: Some(String::from_utf8_lossy(&output.stdout).trim().to_owned()),
+            error: None,
+        },
+        Ok(output) => AgentscanPreflight {
+            binary: binary_display,
+            ok: false,
+            version: None,
+            error: Some(stderr_or_status("agentscan", &output.stderr, output.status)),
+        },
+        Err(error) => AgentscanPreflight {
+            binary: binary_display,
+            ok: false,
+            version: None,
+            error: Some(error.to_string()),
+        },
+    }
+}
+
+#[cfg(test)]
 fn run_agentscan_preflight_with_timeout(binary: OsString, timeout: Duration) -> AgentscanPreflight {
     let binary_display = binary.to_string_lossy().into_owned();
 
@@ -212,9 +272,23 @@ fn run_agentscan_preflight_with_timeout(binary: OsString, timeout: Duration) -> 
     }
 }
 
-fn load_picker_rows_from_binary(binary: OsString) -> Result<Vec<PickerRow>, String> {
-    let output = run_agentscan_command(&binary, ["hotkeys", "--format", "json"], HOTKEYS_TIMEOUT)
-        .map_err(|error| format!("Unable to run agentscan hotkeys: {error}"))?;
+fn load_picker_rows_with_settings(
+    settings: &LocalRunnerSettings,
+) -> Result<Vec<PickerRow>, String> {
+    load_picker_rows_from_binary_and_env(agentscan_binary_for_settings(settings), &settings.env)
+}
+
+fn load_picker_rows_from_binary_and_env(
+    binary: OsString,
+    env: &[LocalEnvironmentVariable],
+) -> Result<Vec<PickerRow>, String> {
+    let output = run_agentscan_command_with_env(
+        &binary,
+        ["hotkeys", "--format", "json"],
+        env,
+        HOTKEYS_TIMEOUT,
+    )
+    .map_err(|error| format!("Unable to run agentscan hotkeys: {error}"))?;
 
     if !output.status.success() {
         return Err(stderr_or_status(
@@ -230,12 +304,32 @@ fn load_picker_rows_from_binary(binary: OsString) -> Result<Vec<PickerRow>, Stri
     Ok(rows)
 }
 
+fn focus_picker_row_with_settings(
+    settings: &LocalRunnerSettings,
+    pane_id: &str,
+) -> Result<(), String> {
+    focus_picker_row_with_binary_and_env(
+        agentscan_binary_for_settings(settings),
+        &settings.env,
+        pane_id,
+    )
+}
+
+#[cfg(test)]
 fn focus_picker_row_with_binary(binary: OsString, pane_id: &str) -> Result<(), String> {
+    focus_picker_row_with_binary_and_env(binary, &[], pane_id)
+}
+
+fn focus_picker_row_with_binary_and_env(
+    binary: OsString,
+    env: &[LocalEnvironmentVariable],
+    pane_id: &str,
+) -> Result<(), String> {
     if pane_id.trim().is_empty() {
         return Err("Cannot focus an empty pane id".to_owned());
     }
 
-    let output = run_agentscan_command(&binary, ["focus", pane_id], FOCUS_TIMEOUT)
+    let output = run_agentscan_command_with_env(&binary, ["focus", pane_id], env, FOCUS_TIMEOUT)
         .map_err(|error| format!("Unable to run agentscan focus: {error}"))?;
 
     if output.status.success() {
@@ -249,7 +343,10 @@ fn focus_picker_row_with_binary(binary: OsString, pane_id: &str) -> Result<(), S
     }
 }
 
-fn start_live_picker_with_binary(app: tauri::AppHandle, binary: OsString) -> Result<(), String> {
+fn start_live_picker_with_settings(
+    app: tauri::AppHandle,
+    settings: LocalRunnerSettings,
+) -> Result<(), String> {
     let mut supervisor = live_picker_supervisor()
         .lock()
         .map_err(|_| "live picker supervisor lock poisoned".to_owned())?;
@@ -264,7 +361,7 @@ fn start_live_picker_with_binary(app: tauri::AppHandle, binary: OsString) -> Res
     let worker_child = Arc::clone(&child);
     let worker = thread::Builder::new()
         .name("agentscan-live-picker".to_owned())
-        .spawn(move || run_live_picker_worker(app, binary, worker_stop, worker_child))
+        .spawn(move || run_live_picker_worker(app, settings, worker_stop, worker_child))
         .map_err(|error| format!("Unable to start live picker worker: {error}"))?;
 
     *supervisor = Some(LivePickerSupervisor {
@@ -300,10 +397,11 @@ fn live_picker_supervisor() -> &'static Mutex<Option<LivePickerSupervisor>> {
 
 fn run_live_picker_worker(
     app: tauri::AppHandle,
-    binary: OsString,
+    settings: LocalRunnerSettings,
     stop: Arc<AtomicBool>,
     child_slot: Arc<Mutex<Option<Child>>>,
 ) {
+    let binary = agentscan_binary_for_settings(&settings);
     let mut has_connected = false;
 
     while !stop.load(Ordering::SeqCst) {
@@ -312,7 +410,7 @@ fn run_live_picker_worker(
                 &app,
                 LivePickerEvent::Reconnecting {
                     message: "Reconnecting to agentscan subscribe".to_owned(),
-                    diagnostics: load_daemon_status_from_binary(&binary).ok(),
+                    diagnostics: load_daemon_status(&binary, &settings.env).ok(),
                 },
             );
         } else {
@@ -324,7 +422,7 @@ fn run_live_picker_worker(
             );
         }
 
-        match run_live_picker_subscription(&app, &binary, &stop, &child_slot) {
+        match run_live_picker_subscription(&app, &binary, &settings.env, &stop, &child_slot) {
             LivePickerWorkerExit::Stopped | LivePickerWorkerExit::Shutdown => break,
             LivePickerWorkerExit::Fatal => break,
             LivePickerWorkerExit::Retry => {
@@ -356,15 +454,28 @@ enum LivePickerWorkerExit {
 fn run_live_picker_subscription(
     app: &tauri::AppHandle,
     binary: &OsStr,
+    env: &[LocalEnvironmentVariable],
     stop: &AtomicBool,
     child_slot: &Arc<Mutex<Option<Child>>>,
 ) -> LivePickerWorkerExit {
-    let mut child = match Command::new(binary)
+    let mut command = Command::new(binary);
+    command
         .args(["subscribe", "--format", "json"])
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
+        .stderr(Stdio::piped());
+
+    if let Err(error) = apply_command_env(&mut command, env) {
+        emit_live_picker_event(
+            app,
+            LivePickerEvent::Fatal {
+                message: error,
+                diagnostics: None,
+            },
+        );
+        return LivePickerWorkerExit::Fatal;
+    }
+
+    let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
             emit_live_picker_event(
@@ -372,7 +483,7 @@ fn run_live_picker_subscription(
                 LivePickerEvent::Offline {
                     message: format!("Unable to start agentscan subscribe: {error}"),
                     retrying: true,
-                    diagnostics: load_daemon_status_from_binary(binary).ok(),
+                    diagnostics: load_daemon_status(binary, env).ok(),
                 },
             );
             return LivePickerWorkerExit::Retry;
@@ -389,7 +500,7 @@ fn run_live_picker_subscription(
                 LivePickerEvent::Offline {
                     message: "agentscan subscribe did not expose stdout".to_owned(),
                     retrying: true,
-                    diagnostics: load_daemon_status_from_binary(binary).ok(),
+                    diagnostics: load_daemon_status(binary, env).ok(),
                 },
             );
             return LivePickerWorkerExit::Retry;
@@ -422,7 +533,7 @@ fn run_live_picker_subscription(
         match line {
             Ok(line) if line.trim().is_empty() => {}
             Ok(line) => match serde_json::from_str::<SubscribeFrame>(&line) {
-                Ok(frame) => match handle_subscribe_frame(app, binary, frame) {
+                Ok(frame) => match handle_subscribe_frame(app, binary, env, frame) {
                     LivePickerWorkerExit::Retry => {}
                     terminal_exit => {
                         exit = terminal_exit;
@@ -435,7 +546,7 @@ fn run_live_picker_subscription(
                         LivePickerEvent::Offline {
                             message: format!("Invalid agentscan subscribe frame: {error}"),
                             retrying: true,
-                            diagnostics: load_daemon_status_from_binary(binary).ok(),
+                            diagnostics: load_daemon_status(binary, env).ok(),
                         },
                     );
                     break;
@@ -448,7 +559,7 @@ fn run_live_picker_subscription(
                         LivePickerEvent::Offline {
                             message: format!("Unable to read agentscan subscribe output: {error}"),
                             retrying: true,
-                            diagnostics: load_daemon_status_from_binary(binary).ok(),
+                            diagnostics: load_daemon_status(binary, env).ok(),
                         },
                     );
                 }
@@ -473,7 +584,7 @@ fn run_live_picker_subscription(
             LivePickerEvent::Offline {
                 message: process_exit_message(status_message.as_deref(), &stderr),
                 retrying: true,
-                diagnostics: load_daemon_status_from_binary(binary).ok(),
+                diagnostics: load_daemon_status(binary, env).ok(),
             },
         );
     }
@@ -484,9 +595,10 @@ fn run_live_picker_subscription(
 fn handle_subscribe_frame(
     app: &tauri::AppHandle,
     binary: &OsStr,
+    env: &[LocalEnvironmentVariable],
     frame: SubscribeFrame,
 ) -> LivePickerWorkerExit {
-    match live_event_from_subscribe_frame(binary, frame) {
+    match live_event_from_subscribe_frame(binary, env, frame) {
         Ok((event, exit)) => {
             emit_live_picker_event(app, event);
             exit
@@ -496,7 +608,7 @@ fn handle_subscribe_frame(
                 app,
                 LivePickerEvent::Fatal {
                     message,
-                    diagnostics: load_daemon_status_from_binary(binary).ok(),
+                    diagnostics: load_daemon_status(binary, env).ok(),
                 },
             );
             LivePickerWorkerExit::Fatal
@@ -506,6 +618,7 @@ fn handle_subscribe_frame(
 
 fn live_event_from_subscribe_frame(
     binary: &OsStr,
+    env: &[LocalEnvironmentVariable],
     frame: SubscribeFrame,
 ) -> Result<(LivePickerEvent, LivePickerWorkerExit), String> {
     match frame {
@@ -514,14 +627,14 @@ fn live_event_from_subscribe_frame(
             LivePickerWorkerExit::Retry,
         )),
         SubscribeFrame::Snapshot { snapshot } => {
-            let rows = match load_picker_rows_from_binary(binary.to_os_string()) {
+            let rows = match load_picker_rows_from_binary_and_env(binary.to_os_string(), env) {
                 Ok(rows) => rows,
                 Err(message) => {
                     return Ok((
                         LivePickerEvent::Offline {
                             message,
                             retrying: true,
-                            diagnostics: load_daemon_status_from_binary(binary).ok(),
+                            diagnostics: load_daemon_status(binary, env).ok(),
                         },
                         LivePickerWorkerExit::Retry,
                     ));
@@ -537,7 +650,7 @@ fn live_event_from_subscribe_frame(
             LivePickerEvent::Offline {
                 message,
                 retrying,
-                diagnostics: load_daemon_status_from_binary(binary).ok(),
+                diagnostics: load_daemon_status(binary, env).ok(),
             },
             LivePickerWorkerExit::Retry,
         )),
@@ -548,7 +661,7 @@ fn live_event_from_subscribe_frame(
         SubscribeFrame::Fatal { message } => Ok((
             LivePickerEvent::Fatal {
                 message,
-                diagnostics: load_daemon_status_from_binary(binary).ok(),
+                diagnostics: load_daemon_status(binary, env).ok(),
             },
             LivePickerWorkerExit::Fatal,
         )),
@@ -573,10 +686,14 @@ fn summarize_snapshot(snapshot: &serde_json::Value) -> LiveSnapshotSummary {
     }
 }
 
-fn load_daemon_status_from_binary(binary: &OsStr) -> Result<serde_json::Value, String> {
-    let output = run_agentscan_command(
+fn load_daemon_status(
+    binary: &OsStr,
+    env: &[LocalEnvironmentVariable],
+) -> Result<serde_json::Value, String> {
+    let output = run_agentscan_command_with_env(
         binary,
         ["daemon", "status", "--format", "json"],
+        env,
         DAEMON_STATUS_TIMEOUT,
     )
     .map_err(|error| format!("Unable to run agentscan daemon status: {error}"))?;
@@ -698,17 +815,29 @@ fn validate_picker_rows(rows: &[PickerRow]) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
 fn run_agentscan_command<const N: usize>(
     binary: &OsStr,
     args: [&str; N],
     timeout: Duration,
 ) -> Result<CommandOutput, String> {
-    let mut child = Command::new(binary)
+    run_agentscan_command_with_env(binary, args, &[], timeout)
+}
+
+fn run_agentscan_command_with_env<const N: usize>(
+    binary: &OsStr,
+    args: [&str; N],
+    env: &[LocalEnvironmentVariable],
+    timeout: Duration,
+) -> Result<CommandOutput, String> {
+    let mut command = Command::new(binary);
+    command
         .args(args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| error.to_string())?;
+        .stderr(Stdio::piped());
+    apply_command_env(&mut command, env)?;
+
+    let mut child = command.spawn().map_err(|error| error.to_string())?;
 
     let start = Instant::now();
     loop {
@@ -739,6 +868,27 @@ fn run_agentscan_command<const N: usize>(
         stdout: output.stdout,
         stderr: output.stderr,
     })
+}
+
+fn apply_command_env(
+    command: &mut Command,
+    env: &[LocalEnvironmentVariable],
+) -> Result<(), String> {
+    for variable in env {
+        let name = variable.name.trim();
+
+        if name.is_empty() {
+            return Err("Environment variable names cannot be empty".to_owned());
+        }
+
+        if name.contains('=') || name.contains('\0') {
+            return Err(format!("Invalid environment variable name: {name}"));
+        }
+
+        command.env(name, &variable.value);
+    }
+
+    Ok(())
 }
 
 fn stderr_or_status(command: &str, stderr: &[u8], status: std::process::ExitStatus) -> String {
@@ -967,8 +1117,8 @@ mod tests {
 
     #[test]
     fn snapshot_summary_defaults_missing_optional_fields() {
-        let snapshot: serde_json::Value = serde_json::from_str(r#"{ "panes": [] }"#)
-            .expect("snapshot parses");
+        let snapshot: serde_json::Value =
+            serde_json::from_str(r#"{ "panes": [] }"#).expect("snapshot parses");
 
         assert_eq!(
             summarize_snapshot(&snapshot),
@@ -1039,6 +1189,49 @@ mod tests {
                 PathBuf::from("/opt/homebrew/bin/agentscan"),
                 PathBuf::from("/usr/local/bin/agentscan"),
             ]
+        );
+    }
+
+    #[test]
+    fn runner_settings_override_binary_path() {
+        let settings = LocalRunnerSettings {
+            binary_path: Some("  /tmp/agentscan-custom  ".to_owned()),
+            env: Vec::new(),
+        };
+
+        assert_eq!(
+            agentscan_binary_for_settings(&settings),
+            OsString::from("/tmp/agentscan-custom")
+        );
+    }
+
+    #[test]
+    fn command_env_rejects_empty_and_invalid_names() {
+        let mut command = Command::new("agentscan");
+
+        assert_eq!(
+            apply_command_env(
+                &mut command,
+                &[LocalEnvironmentVariable {
+                    name: " ".to_owned(),
+                    value: "value".to_owned()
+                }]
+            )
+            .unwrap_err(),
+            "Environment variable names cannot be empty"
+        );
+
+        let mut command = Command::new("agentscan");
+        assert!(
+            apply_command_env(
+                &mut command,
+                &[LocalEnvironmentVariable {
+                    name: "BAD=NAME".to_owned(),
+                    value: "value".to_owned()
+                }]
+            )
+            .unwrap_err()
+            .contains("Invalid environment variable name")
         );
     }
 }

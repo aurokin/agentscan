@@ -6,6 +6,8 @@ import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 
 const PICKER_HOTKEY = "CommandOrControl+Shift+A";
 const LIVE_PICKER_EVENT = "agentscan-live-picker";
+const SETTINGS_STORAGE_KEY = "agentscan.desktop.localRunnerSettings";
+const DEBUG_LOG_LIMIT = 80;
 
 let hotkeyOperationQueue = Promise.resolve();
 let liveOperationQueue = Promise.resolve();
@@ -22,6 +24,24 @@ type AgentscanPreflight = {
   ok: boolean;
   version: string | null;
   error: string | null;
+};
+
+type RunnerSettings = {
+  binaryPath: string;
+  env: EnvironmentVariable[];
+};
+
+type EnvironmentVariable = {
+  name: string;
+  value: string;
+};
+
+type DebugEntry = {
+  id: number;
+  time: string;
+  kind: "command" | "stream" | "settings";
+  label: string;
+  detail: string;
 };
 
 type PickerRow = {
@@ -77,6 +97,13 @@ type PickerActivation =
 
 function App() {
   const [state, setState] = useState<LoadState>({ status: "loading" });
+  const [runnerSettings, setRunnerSettings] = useState<RunnerSettings>(() =>
+    loadStoredRunnerSettings(),
+  );
+  const [settingsDraft, setSettingsDraft] = useState<RunnerSettings>(() =>
+    loadStoredRunnerSettings(),
+  );
+  const [debugEntries, setDebugEntries] = useState<DebugEntry[]>([]);
   const [liveState, setLiveState] = useState<LiveConnectionState>({
     status: "connecting",
     message: "Starting live client",
@@ -90,10 +117,23 @@ function App() {
     let cancelled = false;
 
     async function loadShellState() {
+      setState({ status: "loading" });
+      setLiveState({
+        status: "connecting",
+        message: "Starting live client",
+      });
+
       try {
         const [profiles, preflight] = await Promise.all([
           invoke<DesktopProfile[]>("local_profiles"),
-          invoke<AgentscanPreflight>("preflight_agentscan"),
+          runCommand<AgentscanPreflight>(
+            "agentscan --version",
+            () =>
+              invoke<AgentscanPreflight>("preflight_agentscan", {
+                settings: runnerSettings,
+              }),
+            appendDebugEntry,
+          ),
         ]);
 
         if (!cancelled) {
@@ -120,7 +160,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [runnerSettings]);
 
   useEffect(() => {
     if (state.status !== "ready") {
@@ -139,9 +179,14 @@ function App() {
       try {
         unlisten = await listen<LivePickerEvent>(LIVE_PICKER_EVENT, (event) => {
           if (!disposed) {
-            applyLivePickerEvent(event.payload, setLiveState, setState);
-          }
-        });
+          applyLivePickerEvent(event.payload, setLiveState, setState);
+          appendDebugEntry({
+            kind: "stream",
+            label: liveStateLabelFromEvent(event.payload),
+            detail: liveEventDetail(event.payload),
+          });
+        }
+      });
       } catch (error) {
         if (!disposed) {
           const message = errorMessage(error);
@@ -160,7 +205,11 @@ function App() {
       try {
         await enqueueLiveOperation(async () => {
           if (!disposed) {
-            await invoke("start_live_picker");
+            await runCommand(
+              "agentscan subscribe --format json",
+              () => invoke("start_live_picker", { settings: runnerSettings }),
+              appendDebugEntry,
+            );
           }
         });
       } catch (error) {
@@ -178,10 +227,10 @@ function App() {
       disposed = true;
       unlisten?.();
       void enqueueLiveOperation(async () => {
-        await invoke("stop_live_picker");
+        await runCommand("stop live picker", () => invoke("stop_live_picker"), appendDebugEntry);
       });
     };
-  }, [state.status]);
+  }, [runnerSettings, state.status]);
 
   useEffect(() => {
     let disposed = false;
@@ -257,7 +306,11 @@ function App() {
     setState({ ...state, picker: { status: "loading" } });
 
     try {
-      const rows = await invoke<PickerRow[]>("load_picker_rows");
+      const rows = await runCommand<PickerRow[]>(
+        "agentscan hotkeys --format json",
+        () => invoke<PickerRow[]>("load_picker_rows", { settings: runnerSettings }),
+        appendDebugEntry,
+      );
       setState((current) =>
         current.status === "ready"
           ? { ...current, picker: { status: "ready", rows } }
@@ -294,7 +347,11 @@ function App() {
     setActivation({ status: "running", paneId: row.pane_id });
 
     try {
-      await invoke("focus_picker_row", { paneId: row.pane_id });
+      await runCommand(
+        `agentscan focus ${row.pane_id}`,
+        () => invoke("focus_picker_row", { paneId: row.pane_id, settings: runnerSettings }),
+        appendDebugEntry,
+      );
       setActivation({ status: "idle" });
       await hidePickerWindow();
     } catch (error) {
@@ -343,6 +400,31 @@ function App() {
       setIsPickerVisible(false);
       void hidePickerWindow();
     }
+  }
+
+  function applyRunnerSettings() {
+    const normalized = normalizeRunnerSettings(settingsDraft);
+    setSettingsDraft(normalized);
+    setRunnerSettings(normalized);
+    storeRunnerSettings(normalized);
+    appendDebugEntry({
+      kind: "settings",
+      label: "Local settings applied",
+      detail: `${normalized.binaryPath.trim() || "auto-detected agentscan"} · ${normalized.env.length} env ${normalized.env.length === 1 ? "name" : "names"}`,
+    });
+  }
+
+  function appendDebugEntry(entry: Omit<DebugEntry, "id" | "time">) {
+    setDebugEntries((current) =>
+      [
+        {
+          ...entry,
+          id: Date.now() + Math.random(),
+          time: new Date().toLocaleTimeString(),
+        },
+        ...current,
+      ].slice(0, DEBUG_LOG_LIMIT),
+    );
   }
 
   useEffect(() => {
@@ -396,6 +478,44 @@ function App() {
             </div>
           </section>
 
+          <section className="settings-panel" aria-label="Local runner settings">
+            <div className="panel-heading">
+              <h2>Local Runner</h2>
+              <button type="button" onClick={applyRunnerSettings}>
+                Apply
+              </button>
+            </div>
+            <div className="settings-grid">
+              <label>
+                <span>agentscan binary</span>
+                <input
+                  value={settingsDraft.binaryPath}
+                  onChange={(event) =>
+                    setSettingsDraft((current) => ({
+                      ...current,
+                      binaryPath: event.target.value,
+                    }))
+                  }
+                  placeholder="Auto-detect"
+                />
+              </label>
+              <label>
+                <span>environment</span>
+                <textarea
+                  value={formatEnvironmentDraft(settingsDraft.env)}
+                  onChange={(event) =>
+                    setSettingsDraft((current) => ({
+                      ...current,
+                      env: parseEnvironmentDraft(event.target.value),
+                    }))
+                  }
+                  spellCheck={false}
+                  placeholder={"AGENTSCAN_TMUX_SOCKET=/tmp/tmux-501/default\nAGENTSCAN_SOCKET_PATH=/tmp/agentscan.sock"}
+                />
+              </label>
+            </div>
+          </section>
+
           <section className="picker-panel" aria-label="Local picker rows" tabIndex={-1}>
             <div className="panel-heading">
               <h2>Picker</h2>
@@ -431,6 +551,16 @@ function App() {
             ) : (
               <p className="muted">Picker hidden.</p>
             )}
+          </section>
+
+          <section className="debug-panel" aria-label="Command debug log">
+            <div className="panel-heading">
+              <h2>Debug</h2>
+              <button type="button" onClick={() => setDebugEntries([])}>
+                Clear
+              </button>
+            </div>
+            <DebugLog entries={debugEntries} />
           </section>
         </>
       ) : (
@@ -514,6 +644,27 @@ function markPickerFailedIfEmpty(
   });
 }
 
+async function runCommand<T>(
+  label: string,
+  operation: () => Promise<T>,
+  appendDebugEntry: (entry: Omit<DebugEntry, "id" | "time">) => void,
+) {
+  appendDebugEntry({ kind: "command", label, detail: "started" });
+
+  try {
+    const result = await operation();
+    appendDebugEntry({ kind: "command", label, detail: "ok" });
+    return result;
+  } catch (error) {
+    appendDebugEntry({
+      kind: "command",
+      label,
+      detail: errorMessage(error),
+    });
+    throw error;
+  }
+}
+
 function LiveConnectionBanner({ state }: { state: LiveConnectionState }) {
   const tone = state.status === "online" ? "ready" : state.status === "fatal" ? "error" : "warn";
 
@@ -533,6 +684,104 @@ function LiveConnectionBanner({ state }: { state: LiveConnectionState }) {
       ) : null}
     </div>
   );
+}
+
+function DebugLog({ entries }: { entries: DebugEntry[] }) {
+  if (entries.length === 0) {
+    return <p className="muted">No debug events yet.</p>;
+  }
+
+  return (
+    <ol className="debug-list">
+      {entries.map((entry) => (
+        <li key={entry.id}>
+          <time>{entry.time}</time>
+          <span>{entry.kind}</span>
+          <strong>{entry.label}</strong>
+          <small>{entry.detail}</small>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function loadStoredRunnerSettings(): RunnerSettings {
+  try {
+    const value = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
+    if (!value) {
+      return emptyRunnerSettings();
+    }
+
+    return normalizeRunnerSettings(JSON.parse(value) as Partial<RunnerSettings>);
+  } catch {
+    return emptyRunnerSettings();
+  }
+}
+
+function storeRunnerSettings(settings: RunnerSettings) {
+  window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+}
+
+function emptyRunnerSettings(): RunnerSettings {
+  return { binaryPath: "", env: [] };
+}
+
+function normalizeRunnerSettings(settings: Partial<RunnerSettings>): RunnerSettings {
+  const env = Array.isArray(settings.env)
+    ? settings.env
+        .map((variable) => ({
+          name: String(variable.name ?? "").trim(),
+          value: String(variable.value ?? ""),
+        }))
+        .filter((variable) => variable.name.length > 0)
+    : [];
+
+  return {
+    binaryPath: String(settings.binaryPath ?? "").trim(),
+    env,
+  };
+}
+
+function parseEnvironmentDraft(value: string): EnvironmentVariable[] {
+  return value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const separator = line.indexOf("=");
+      if (separator === -1) {
+        return { name: line, value: "" };
+      }
+
+      return {
+        name: line.slice(0, separator).trim(),
+        value: line.slice(separator + 1),
+      };
+    });
+}
+
+function formatEnvironmentDraft(env: EnvironmentVariable[]) {
+  return env.map((variable) => `${variable.name}=${variable.value}`).join("\n");
+}
+
+function liveStateLabelFromEvent(event: LivePickerEvent) {
+  if (event.kind === "rows") {
+    return "snapshot";
+  }
+
+  return event.kind;
+}
+
+function liveEventDetail(event: LivePickerEvent) {
+  if (event.kind === "rows") {
+    return `${event.rows.length} rows · ${event.snapshot.paneCount} panes`;
+  }
+
+  if (event.kind === "offline") {
+    return `${event.message}${event.retrying ? " · retrying" : ""}`;
+  }
+
+  return event.message;
 }
 
 function liveStateLabel(state: LiveConnectionState) {
