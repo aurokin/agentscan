@@ -199,6 +199,13 @@ button:disabled {
   margin-bottom: 0;
 }
 
+.panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .muted {
   margin-bottom: 0;
   color: #62685c;
@@ -215,6 +222,10 @@ button:disabled {
 .error-state p {
   margin-bottom: 0;
   overflow-wrap: anywhere;
+}
+
+.activation-error {
+  margin-bottom: 12px;
 }
 
 .picker-list {
@@ -235,6 +246,13 @@ button:disabled {
   border: 1px solid #e1e4dc;
   border-radius: 6px;
   background: #fbfcfa;
+  cursor: default;
+}
+
+.picker-list li.selected {
+  border-color: #1f6b53;
+  background: #e7f4ed;
+  box-shadow: inset 3px 0 0 #1f6b53;
 }
 
 kbd {

@@ -9,6 +9,7 @@ use std::{
 
 const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(2);
 const HOTKEYS_TIMEOUT: Duration = Duration::from_secs(5);
+const FOCUS_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -80,6 +81,11 @@ fn load_picker_rows() -> Result<Vec<PickerRow>, String> {
     load_picker_rows_from_binary(agentscan_binary())
 }
 
+#[tauri::command]
+fn focus_picker_row(pane_id: String) -> Result<(), String> {
+    focus_picker_row_with_binary(agentscan_binary(), &pane_id)
+}
+
 fn agentscan_binary() -> OsString {
     env::var_os("AGENTSCAN_DESKTOP_AGENTSCAN_BIN")
         .or_else(|| find_known_agentscan_binary().map(PathBuf::into_os_string))
@@ -149,6 +155,25 @@ fn load_picker_rows_from_binary(binary: OsString) -> Result<Vec<PickerRow>, Stri
         .map_err(|error| format!("Invalid agentscan hotkeys JSON: {error}"))?;
     validate_picker_rows(&rows)?;
     Ok(rows)
+}
+
+fn focus_picker_row_with_binary(binary: OsString, pane_id: &str) -> Result<(), String> {
+    if pane_id.trim().is_empty() {
+        return Err("Cannot focus an empty pane id".to_owned());
+    }
+
+    let output = run_agentscan_command(&binary, ["focus", pane_id], FOCUS_TIMEOUT)
+        .map_err(|error| format!("Unable to run agentscan focus: {error}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(stderr_or_status(
+            "agentscan focus",
+            &output.stderr,
+            output.status,
+        ))
+    }
 }
 
 fn validate_picker_rows(rows: &[PickerRow]) -> Result<(), String> {
@@ -263,6 +288,7 @@ fn stderr_or_status(command: &str, stderr: &[u8], status: std::process::ExitStat
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
+            focus_picker_row,
             local_profiles,
             load_picker_rows,
             preflight_agentscan
@@ -413,6 +439,14 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("missing field `status`"));
+    }
+
+    #[test]
+    fn focus_picker_row_rejects_empty_pane_id() {
+        assert_eq!(
+            focus_picker_row_with_binary(OsString::from("agentscan"), "  ").unwrap_err(),
+            "Cannot focus an empty pane id"
+        );
     }
 
     #[test]

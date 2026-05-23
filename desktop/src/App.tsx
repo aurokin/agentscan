@@ -38,9 +38,17 @@ type PickerState =
   | { status: "ready"; rows: PickerRow[] }
   | { status: "failed"; message: string };
 
+type PickerActivation =
+  | { status: "idle" }
+  | { status: "running"; paneId: string }
+  | { status: "failed"; message: string };
+
 function App() {
   const [state, setState] = useState<LoadState>({ status: "loading" });
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isPickerVisible, setIsPickerVisible] = useState(true);
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [activation, setActivation] = useState<PickerActivation>({ status: "idle" });
 
   useEffect(() => {
     let cancelled = false;
@@ -137,6 +145,80 @@ function App() {
     }
   }
 
+  const pickerRows =
+    state.status === "ready" && state.picker.status === "ready" ? state.picker.rows : [];
+  const clampedSelectedIndex =
+    pickerRows.length === 0 ? 0 : Math.min(selectedIndex, pickerRows.length - 1);
+  const selectedRow = pickerRows[clampedSelectedIndex] ?? null;
+
+  useEffect(() => {
+    if (clampedSelectedIndex !== selectedIndex) {
+      setSelectedIndex(clampedSelectedIndex);
+    }
+  }, [clampedSelectedIndex, selectedIndex]);
+
+  async function activateSelectedRow(row = selectedRow) {
+    if (!row || activation.status === "running") {
+      return;
+    }
+
+    setActivation({ status: "running", paneId: row.pane_id });
+
+    try {
+      await invoke("focus_picker_row", { paneId: row.pane_id });
+      setActivation({ status: "idle" });
+    } catch (error) {
+      setActivation({ status: "failed", message: errorMessage(error) });
+      await refreshPickerRows();
+    }
+  }
+
+  function moveSelection(delta: number) {
+    if (pickerRows.length === 0) {
+      return;
+    }
+
+    setSelectedIndex((current) => {
+      const next = current + delta;
+      return Math.max(0, Math.min(next, pickerRows.length - 1));
+    });
+  }
+
+  function handlePickerKeyDown(event: KeyboardEvent) {
+    if (!isPickerVisible) {
+      return;
+    }
+
+    if (isInteractiveShortcutTarget(event.target)) {
+      return;
+    }
+
+    if (event.key === "ArrowDown" || event.key === "j") {
+      event.preventDefault();
+      moveSelection(1);
+    } else if (event.key === "ArrowUp" || event.key === "k") {
+      event.preventDefault();
+      moveSelection(-1);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      setSelectedIndex(0);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      setSelectedIndex(Math.max(0, pickerRows.length - 1));
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      void activateSelectedRow();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      setIsPickerVisible(false);
+    }
+  }
+
+  useEffect(() => {
+    window.addEventListener("keydown", handlePickerKeyDown);
+    return () => window.removeEventListener("keydown", handlePickerKeyDown);
+  });
+
   return (
     <main className="app-shell">
       <section className="summary">
@@ -183,15 +265,39 @@ function App() {
             </div>
           </section>
 
-          <section className="picker-panel" aria-label="Local picker rows">
+          <section className="picker-panel" aria-label="Local picker rows" tabIndex={-1}>
             <div className="panel-heading">
               <h2>Picker</h2>
-              <button type="button" onClick={refreshPickerRows} disabled={isRefreshing}>
-                {isRefreshing ? "Refreshing" : "Refresh"}
-              </button>
+              <div className="panel-actions">
+                {!isPickerVisible ? (
+                  <button type="button" onClick={() => setIsPickerVisible(true)}>
+                    Show
+                  </button>
+                ) : null}
+                <button type="button" onClick={refreshPickerRows} disabled={isRefreshing}>
+                  {isRefreshing ? "Refreshing" : "Refresh"}
+                </button>
+              </div>
             </div>
 
-            <PickerRows state={state.picker} />
+            {activation.status === "failed" ? (
+              <div className="error-state activation-error" role="alert">
+                <h3>Unable to focus pane</h3>
+                <p>{activation.message}</p>
+              </div>
+            ) : null}
+
+            {isPickerVisible ? (
+              <PickerRows
+                activation={activation}
+                selectedIndex={clampedSelectedIndex}
+                state={state.picker}
+                onActivate={activateSelectedRow}
+                onSelect={setSelectedIndex}
+              />
+            ) : (
+              <p className="muted">Picker hidden.</p>
+            )}
           </section>
         </>
       ) : (
@@ -204,7 +310,19 @@ function App() {
   );
 }
 
-function PickerRows({ state }: { state: PickerState }) {
+function PickerRows({
+  activation,
+  selectedIndex,
+  state,
+  onActivate,
+  onSelect,
+}: {
+  activation: PickerActivation;
+  selectedIndex: number;
+  state: PickerState;
+  onActivate: (row: PickerRow) => void;
+  onSelect: (index: number) => void;
+}) {
   if (state.status === "loading") {
     return <p className="muted">Loading picker rows.</p>;
   }
@@ -224,8 +342,14 @@ function PickerRows({ state }: { state: PickerState }) {
 
   return (
     <ul className="picker-list">
-      {state.rows.map((row) => (
-        <li key={`${row.key}-${row.pane_id}`}>
+      {state.rows.map((row, index) => (
+        <li
+          aria-selected={index === selectedIndex}
+          className={index === selectedIndex ? "selected" : undefined}
+          key={`${row.key}-${row.pane_id}`}
+          onClick={() => onSelect(index)}
+          onDoubleClick={() => onActivate(row)}
+        >
           <kbd>{row.key}</kbd>
           <div className="picker-row-main">
             <span>{row.display_label}</span>
@@ -233,11 +357,26 @@ function PickerRows({ state }: { state: PickerState }) {
           </div>
           <div className="picker-row-meta">
             <span>{row.provider ?? "unknown"}</span>
-            <small>{row.status.kind}</small>
+            <small>
+              {activation.status === "running" && activation.paneId === row.pane_id
+                ? "focusing"
+                : row.status.kind}
+            </small>
           </div>
         </li>
       ))}
     </ul>
+  );
+}
+
+function isInteractiveShortcutTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  return (
+    target.isContentEditable ||
+    Boolean(target.closest("button,input,select,textarea,a,[contenteditable]"))
   );
 }
 
