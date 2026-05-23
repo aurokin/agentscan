@@ -130,6 +130,8 @@ The command surface is organized by concern:
 - `agentscan daemon`: long-lived indexer and daemon health commands
 - `agentscan snapshot`: raw snapshot-envelope inspection for consumers that
   need the unfiltered envelope
+- `agentscan providers`: supported provider names, display markers, marker
+  codepoints, and matching aliases
 - `agentscan tui`: interactive-only pane picker, not a stdout automation API
 - `agentscan tmux`: tmux-facing metadata helpers
 

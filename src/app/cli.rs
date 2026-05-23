@@ -20,6 +20,8 @@ pub(crate) enum Commands {
     List(ListArgs),
     /// Print the current raw snapshot envelope.
     Snapshot(SnapshotArgs),
+    /// Print supported coding agent providers and display markers.
+    Providers(ProvidersArgs),
     /// Open the interactive TUI. `tui` is interactive-only; use `list --format json` for automation.
     Tui(TuiArgs),
     /// Inspect one pane by pane id.
@@ -71,6 +73,13 @@ pub(crate) struct SnapshotArgs {
     #[command(flatten)]
     pub(crate) auto_start: AutoStartArgs,
 
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    pub(crate) format: OutputFormat,
+}
+
+#[derive(Args, Clone, Copy, Debug)]
+pub(crate) struct ProvidersArgs {
     /// Output format.
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     pub(crate) format: OutputFormat,

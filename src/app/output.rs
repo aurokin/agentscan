@@ -10,6 +10,16 @@ pub(super) fn emit_snapshot(snapshot: &SnapshotEnvelope, format: OutputFormat) -
     }
 }
 
+pub(super) fn emit_providers(providers: &[ProviderSummary], format: OutputFormat) -> Result<()> {
+    match format {
+        OutputFormat::Text => {
+            print_providers_text(providers);
+            Ok(())
+        }
+        OutputFormat::Json => print_json(providers),
+    }
+}
+
 fn print_list_text(panes: &[PaneRecord]) {
     if panes.is_empty() {
         println!("No matching tmux panes.");
@@ -26,6 +36,16 @@ fn print_list_text(panes: &[PaneRecord]) {
             pane.location.window_index,
             pane.location.pane_index,
             pane.display_label()
+        );
+    }
+}
+
+fn print_providers_text(providers: &[ProviderSummary]) {
+    for provider in providers {
+        let codepoints = provider.display_marker_codepoints.join(" ");
+        println!(
+            "{} {} ({codepoints})",
+            provider.display_marker, provider.name
         );
     }
 }
@@ -167,7 +187,7 @@ pub(super) fn inspect_text(pane: &PaneRecord) -> String {
     text
 }
 
-pub(super) fn print_json<T: Serialize>(value: &T) -> Result<()> {
+pub(super) fn print_json<T: Serialize + ?Sized>(value: &T) -> Result<()> {
     println!(
         "{}",
         serde_json::to_string_pretty(value).context("failed to serialize JSON output")?

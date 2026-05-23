@@ -167,6 +167,8 @@ Automation contract:
 - `agentscan list --format json` is the supported machine-readable command for downstream consumers in normal automation flows
 - `agentscan list --all --format json` is the supported way to include non-agent panes in that machine-readable output
 - `agentscan snapshot --format json` exposes the raw snapshot envelope when a consumer explicitly needs envelope details rather than the normal `list` view
+- `agentscan providers --format json` exposes supported provider names,
+  display markers, marker codepoints, and matching aliases
 - TUI-shaped TSV or JSON output is not a supported long-term contract
 
 Operational commands:
@@ -182,6 +184,7 @@ Operational commands:
 - `agentscan daemon stop`
 - `agentscan daemon restart`
 - `agentscan snapshot`
+- `agentscan providers`
 - `agentscan tui`
 - `agentscan tmux set-metadata`
 - `agentscan tmux clear-metadata`
@@ -208,6 +211,8 @@ Use:
 - `agentscan list --all --format json` if the consumer previously depended on interactive `--all`
 - `agentscan snapshot --format json` only when the consumer intentionally needs the raw snapshot envelope
 - `agentscan daemon status --format json` for daemon lifecycle and readiness checks
+- `agentscan providers --format json` for supported provider names, display
+  markers, marker codepoints, and aliases
 - `agentscan scan` or supported `--refresh` flags when a script intentionally
   needs direct tmux state instead of daemon state
 

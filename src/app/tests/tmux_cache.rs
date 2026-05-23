@@ -449,6 +449,35 @@ fn provider_metadata_table_covers_aliases_commands_and_summary_order() {
 }
 
 #[test]
+fn provider_summaries_expose_display_markers_and_aliases() {
+    let summaries = super::provider_summaries();
+
+    assert_eq!(summaries.len(), super::provider_summary_order().count());
+    let codex = summaries
+        .iter()
+        .find(|summary| summary.provider == Provider::Codex)
+        .expect("codex summary should be present");
+    assert_eq!(codex.name, "codex");
+    assert_eq!(codex.display_marker, "\u{f07b5}");
+    assert_eq!(codex.display_marker_codepoints, ["U+F07B5"]);
+    assert_eq!(codex.metadata_aliases, ["codex"]);
+    assert!(
+        codex
+            .command_aliases
+            .iter()
+            .any(|alias| alias.name == "codex" && alias.allow_suffix)
+    );
+
+    let droid = summaries
+        .iter()
+        .find(|summary| summary.provider == Provider::Droid)
+        .expect("droid summary should be present");
+    assert_eq!(droid.display_marker, "⛬");
+    assert_eq!(droid.display_marker_codepoints, ["U+26EC"]);
+    assert!(droid.metadata_aliases.contains(&"factory-droid"));
+}
+
+#[test]
 fn parses_tmux_output_into_rows() {
     let input = concat!(
         "dotfiles\x1f1\x1f1\x1f%50\x1f438455\x1fcodex\x1f(bront) .dotfiles: codex\x1f/dev/pts/55\x1f/home/auro/.dotfiles\x1feditor\n",

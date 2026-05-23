@@ -12,6 +12,8 @@ Machine-readable consumers should use:
 - `agentscan list --all --format json` when non-agent panes are intentionally needed
 - `agentscan snapshot --format json` only when a consumer explicitly needs the raw snapshot envelope
 - `agentscan daemon status --format json` for daemon lifecycle, socket, and readiness checks
+- `agentscan providers --format json` for supported provider names, display
+  markers, marker codepoints, and aliases
 
 `agentscan tui` is interactive-only. It must not become a TUI-shaped JSON or TSV
 surface, and unsupported formatting requests must not become compatibility
@@ -28,6 +30,7 @@ Migration targets:
 | Parse all tmux panes, including non-agent panes | `agentscan list --all --format json` |
 | Inspect schema version or the unfiltered snapshot envelope | `agentscan snapshot --format json` |
 | Check daemon lifecycle or readiness | `agentscan daemon status --format json` |
+| Inspect supported providers, display markers, and aliases | `agentscan providers --format json` |
 | Open a human pane picker from a tmux bind | `agentscan tui` |
 | Force a direct tmux read for recovery or debugging | `agentscan scan` or a supported `--refresh` flag |
 

@@ -89,6 +89,26 @@ fn root_list_args_merge_into_other_refresh_capable_commands() {
 }
 
 #[test]
+fn providers_accepts_local_and_root_format() {
+    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "providers", "--format", "json"]);
+    match cli.command {
+        Some(super::Commands::Providers(args)) => {
+            assert_eq!(args.format, OutputFormat::Json);
+        }
+        other => panic!("expected providers command, got {other:?}"),
+    }
+
+    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "--format", "json", "providers"]);
+    match cli.command {
+        Some(super::Commands::Providers(mut args)) => {
+            super::commands::merge_providers_args(&mut args, &cli.list_args).unwrap();
+            assert_eq!(args.format, OutputFormat::Json);
+        }
+        other => panic!("expected providers command, got {other:?}"),
+    }
+}
+
+#[test]
 fn daemon_status_accepts_local_format() {
     let cli =
         <Cli as clap::Parser>::parse_from(["agentscan", "daemon", "status", "--format", "json"]);
@@ -165,6 +185,18 @@ fn unsupported_root_list_args_are_rejected_for_other_commands() {
             );
         }
         other => panic!("expected tui command, got {other:?}"),
+    }
+
+    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "--all", "providers"]);
+    match cli.command {
+        Some(super::Commands::Providers(mut args)) => {
+            let error = super::commands::merge_providers_args(&mut args, &cli.list_args).unwrap_err();
+            assert!(
+                error.to_string().contains("`--all` is not supported"),
+                "expected root all rejection, got {error:#}"
+            );
+        }
+        other => panic!("expected providers command, got {other:?}"),
     }
 }
 
@@ -268,6 +300,10 @@ fn auto_start_opt_out_is_rejected_for_non_daemon_backed_commands() {
         (
             ["agentscan", "--no-auto-start", "tmux", "set-metadata"].as_slice(),
             "tmux",
+        ),
+        (
+            ["agentscan", "--no-auto-start", "providers"].as_slice(),
+            "providers",
         ),
     ] {
         let cli = <Cli as clap::Parser>::parse_from(args);

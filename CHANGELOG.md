@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+
+- Added `agentscan providers` to list supported coding agent providers, display
+  markers, and marker codepoints, with JSON output for scripts.
+
 ## 0.2.8 - 2026-05-23
 
 ### Changed

@@ -42,10 +42,28 @@ pub(crate) struct ProviderInfo {
     generic_display_labels: &'static [&'static str],
 }
 
+#[derive(Serialize)]
+pub(crate) struct ProviderSummary {
+    pub(crate) provider: Provider,
+    pub(crate) name: &'static str,
+    pub(crate) display_marker: &'static str,
+    pub(crate) display_marker_codepoints: Vec<String>,
+    pub(crate) metadata_aliases: &'static [&'static str],
+    pub(crate) command_aliases: Vec<ProviderCommandAliasSummary>,
+    pub(crate) title_prefixes: &'static [&'static str],
+    pub(crate) title_aliases: &'static [&'static str],
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct ProviderCommandAlias {
     name: &'static str,
     allow_suffix: bool,
+}
+
+#[derive(Serialize)]
+pub(crate) struct ProviderCommandAliasSummary {
+    pub(crate) name: &'static str,
+    pub(crate) allow_suffix: bool,
 }
 
 impl ProviderCommandAlias {
@@ -186,6 +204,29 @@ pub(crate) fn provider_summary_order() -> impl Iterator<Item = Provider> {
     PROVIDER_INFOS.iter().map(|info| info.provider)
 }
 
+pub(crate) fn provider_summaries() -> Vec<ProviderSummary> {
+    PROVIDER_INFOS
+        .iter()
+        .map(|info| ProviderSummary {
+            provider: info.provider,
+            name: info.canonical_name,
+            display_marker: info.display_marker,
+            display_marker_codepoints: marker_codepoints(info.display_marker),
+            metadata_aliases: info.metadata_aliases,
+            command_aliases: info
+                .command_aliases
+                .iter()
+                .map(|alias| ProviderCommandAliasSummary {
+                    name: alias.name,
+                    allow_suffix: alias.allow_suffix,
+                })
+                .collect(),
+            title_prefixes: info.title_prefixes,
+            title_aliases: info.title_aliases,
+        })
+        .collect()
+}
+
 pub(crate) fn provider_title_prefixes(provider: Provider) -> &'static [&'static str] {
     provider_info(provider).title_prefixes
 }
@@ -220,6 +261,13 @@ fn provider_info(provider: Provider) -> &'static ProviderInfo {
         .iter()
         .find(|info| info.provider == provider)
         .expect("provider metadata table should include every provider")
+}
+
+fn marker_codepoints(marker: &str) -> Vec<String> {
+    marker
+        .chars()
+        .map(|character| format!("U+{:04X}", character as u32))
+        .collect()
 }
 
 fn matches_binary(command: &str, provider: &str, allow_suffix: bool) -> Option<bool> {

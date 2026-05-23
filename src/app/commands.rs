@@ -18,6 +18,10 @@ pub fn run() -> Result<()> {
             merge_snapshot_args(&mut args, &root_list_args)?;
             command_snapshot(&args)
         }
+        Some(Commands::Providers(mut args)) => {
+            merge_providers_args(&mut args, &root_list_args)?;
+            command_providers(&args)
+        }
         Some(Commands::Tui(mut args)) => {
             merge_tui_args(&mut args, &root_list_args)?;
             command_tui(&args)
@@ -63,6 +67,20 @@ pub(super) fn merge_snapshot_args(
     reject_root_all(root_list_args, "snapshot")?;
     args.refresh.refresh |= root_list_args.refresh.refresh;
     args.auto_start.no_auto_start |= root_list_args.auto_start.no_auto_start;
+    if args.format == OutputFormat::Text {
+        args.format = root_list_args.format;
+    }
+
+    Ok(())
+}
+
+pub(super) fn merge_providers_args(
+    args: &mut ProvidersArgs,
+    root_list_args: &ListArgs,
+) -> Result<()> {
+    reject_root_refresh(root_list_args, "providers")?;
+    reject_root_all(root_list_args, "providers")?;
+    reject_root_auto_start(root_list_args, "providers")?;
     if args.format == OutputFormat::Text {
         args.format = root_list_args.format;
     }
@@ -192,6 +210,10 @@ fn emit_filtered_snapshot(
 ) -> Result<()> {
     snapshot::filter_snapshot(&mut snapshot, include_all);
     output::emit_snapshot(&snapshot, format)
+}
+
+fn command_providers(args: &ProvidersArgs) -> Result<()> {
+    output::emit_providers(&provider_summaries(), args.format)
 }
 
 fn command_tui(args: &TuiArgs) -> Result<()> {
