@@ -73,6 +73,9 @@ snapshot changes, targeted refreshes that fell back to full snapshots, and
 broker fallback activations. Reconcile materiality ignores timestamp-only
 differences and cache-origin churn so the counters can show whether the safety
 loop is catching missed state changes or mostly confirming the event stream.
+No-op interval and timeout reconciles update telemetry but do not fan out
+snapshot frames to subscribers; only materially changed reconcile results
+publish a new snapshot.
 
 The initial daemon snapshot still uses a short-lived tmux command before socket
 readiness is published.

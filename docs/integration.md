@@ -157,6 +157,10 @@ numeric counters for the current daemon process. These are diagnostic signals,
 not subscription heartbeats; live consumers should still react to
 `agentscan subscribe --format json` frames.
 
+No-op reconcile passes are intentionally silent on the subscription stream. Use
+the daemon status counters to observe reconcile activity; do not rely on
+periodic snapshot frames as heartbeats.
+
 ## Wrapper Metadata Contract
 
 Launch wrappers may publish explicit pane-local tmux user options:

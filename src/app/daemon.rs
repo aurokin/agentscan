@@ -274,6 +274,14 @@ impl RefreshOutcome {
         }
     }
 
+    fn no_publish_and_reset_reconcile_timer() -> Self {
+        Self {
+            should_exit: false,
+            publish_context: None,
+            reset_reconcile_timer: true,
+        }
+    }
+
     fn exit() -> Self {
         Self {
             should_exit: true,
@@ -434,9 +442,12 @@ impl<S: StartupActions> DaemonRuntime<S> {
         self.telemetry
             .record_reconcile_result(&previous_snapshot, &self.snapshot);
         self.recover_broker_and_reconcile_if_needed()?;
-        Ok(RefreshOutcome::publish_and_reset_reconcile_timer(
-            publish_context,
-        ))
+        let outcome =
+            reconcile_refresh_outcome(&previous_snapshot, &self.snapshot, publish_context);
+        if outcome.publish_context.is_none() {
+            self.update_runtime_telemetry();
+        }
+        Ok(outcome)
     }
 
     fn recover_broker_and_reconcile_if_needed(&mut self) -> Result<bool> {
@@ -1098,6 +1109,18 @@ fn reconcile_full_snapshot(
     Ok(())
 }
 
+fn reconcile_refresh_outcome(
+    previous: &SnapshotEnvelope,
+    current: &SnapshotEnvelope,
+    publish_context: SnapshotPublishContext,
+) -> RefreshOutcome {
+    if snapshots_are_materially_equal(previous, current) {
+        RefreshOutcome::no_publish_and_reset_reconcile_timer()
+    } else {
+        RefreshOutcome::publish_and_reset_reconcile_timer(publish_context)
+    }
+}
+
 fn snapshots_are_materially_equal(left: &SnapshotEnvelope, right: &SnapshotEnvelope) -> bool {
     let mut left = left.clone();
     let mut right = right.clone();
@@ -1167,6 +1190,22 @@ pub(crate) fn test_apply_resnapshot_control_event_with_provider(
         &mut pane_output_cache,
     )?;
     Ok((outcome.changed, outcome.full_snapshot_refresh))
+}
+
+#[cfg(test)]
+pub(crate) fn test_reconcile_refresh_publish_decision(
+    previous: &SnapshotEnvelope,
+    current: &SnapshotEnvelope,
+) -> (bool, bool) {
+    let outcome = reconcile_refresh_outcome(
+        previous,
+        current,
+        SnapshotPublishContext::new("reconcile").with_detail("test"),
+    );
+    (
+        outcome.publish_context.is_some(),
+        outcome.reset_reconcile_timer,
+    )
 }
 
 #[cfg(test)]

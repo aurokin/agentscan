@@ -207,6 +207,33 @@ fn daemon_resnapshot_control_event_marks_full_snapshot_refresh() {
 }
 
 #[test]
+fn daemon_reconcile_publish_decision_suppresses_timestamp_only_changes() {
+    let previous = empty_socket_snapshot("2026-05-23T18:00:00Z");
+    let mut current = previous.clone();
+    current.generated_at = "2026-05-23T18:00:01Z".to_string();
+    current.source.daemon_generated_at = Some("2026-05-23T18:00:01Z".to_string());
+
+    let (should_publish, reset_reconcile_timer) =
+        daemon::test_reconcile_refresh_publish_decision(&previous, &current);
+
+    assert!(!should_publish);
+    assert!(reset_reconcile_timer);
+}
+
+#[test]
+fn daemon_reconcile_publish_decision_publishes_material_changes() {
+    let previous = empty_socket_snapshot("2026-05-23T18:00:00Z");
+    let mut current = previous.clone();
+    current.panes.push(proc_fallback_pane(42, "claude", "claude"));
+
+    let (should_publish, reset_reconcile_timer) =
+        daemon::test_reconcile_refresh_publish_decision(&previous, &current);
+
+    assert!(should_publish);
+    assert!(reset_reconcile_timer);
+}
+
+#[test]
 fn daemon_runtime_telemetry_counts_reconcile_results_and_fallbacks() {
     let previous = empty_socket_snapshot("2026-05-23T18:00:00Z");
     let mut noop_current = previous.clone();

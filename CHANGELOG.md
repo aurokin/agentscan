@@ -18,6 +18,8 @@
 
 - Extracted the live client subscription event model so the terminal TUI and
   JSON Lines subscription stream share the same event vocabulary.
+- Suppressed no-op reconcile snapshot publications so live subscribers only
+  receive reconcile frames when the reconciled state materially changes.
 
 ## 0.2.9 - 2026-05-23
 

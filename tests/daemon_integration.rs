@@ -235,6 +235,87 @@ fn daemon_fans_out_live_updates_to_subscriber_socket() -> Result<()> {
 }
 
 #[test]
+fn daemon_does_not_fan_out_noop_reconcile_to_subscriber_socket() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let pane_id = harness.start_session("socket-noop-reconcile", "sleep 300")?;
+    let mut daemon = harness.start_daemon()?;
+    harness.wait_for_daemon_snapshot(&mut daemon, |snapshot| {
+        pane_from_snapshot(snapshot, &pane_id).is_some()
+    })?;
+
+    let mut stream = connect_agentscan_socket(&harness.agentscan_socket_path)?;
+    stream
+        .set_read_timeout(Some(Duration::from_millis(1500)))
+        .context("failed to set subscriber socket read timeout")?;
+    writeln!(
+        stream,
+        "{}",
+        serde_json::json!({
+            "type": "hello",
+            "protocol_version": daemon_protocol_version(),
+            "snapshot_schema_version": snapshot_schema_version(),
+            "mode": "subscribe",
+        })
+    )
+    .context("failed to write daemon socket subscribe hello")?;
+
+    let mut reader = BufReader::new(
+        stream
+            .try_clone()
+            .context("failed to clone subscriber socket")?,
+    );
+    let ack = read_daemon_socket_json_line(&mut reader)?;
+    assert_eq!(ack["type"], "hello_ack");
+    let bootstrap = read_daemon_socket_json_line(&mut reader)?;
+    assert_eq!(bootstrap["type"], "snapshot");
+    validate_snapshot_json(&bootstrap["snapshot"])?;
+
+    stream
+        .set_read_timeout(Some(Duration::from_millis(250)))
+        .context("failed to set subscriber socket drain timeout")?;
+    let drain_deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let mut pending_line = String::new();
+        match reader.read_line(&mut pending_line) {
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                if Instant::now() >= drain_deadline {
+                    break;
+                }
+            }
+            Ok(0) => bail!("subscriber socket closed while draining setup frames"),
+            Ok(_) => {}
+            Err(error) => return Err(error).context("failed while draining setup frames"),
+        }
+    }
+
+    stream
+        .set_read_timeout(Some(Duration::from_millis(1500)))
+        .context("failed to set subscriber socket no-op reconcile timeout")?;
+    let mut line = String::new();
+    match reader.read_line(&mut line) {
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ) => {}
+        Ok(0) => bail!("subscriber socket closed while waiting for no-op reconcile"),
+        Ok(_) => bail!("no-op reconcile should not publish subscriber frame, got: {line}"),
+        Err(error) => return Err(error).context("failed while waiting for no-op reconcile"),
+    }
+
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .context("failed to close subscriber write side")?;
+    daemon.shutdown()?;
+    Ok(())
+}
+
+#[test]
 fn subscribe_command_streams_bootstrap_and_live_updates() -> Result<()> {
     let harness = TestHarness::new()?;
     let pane_id = harness.start_session("cli-subscribe", "sh")?;
@@ -928,7 +1009,7 @@ fn metadata_helpers_survive_unrelated_daemon_updates() -> Result<()> {
         .context("metadata snapshot was missing generated_at")?
         .to_string();
 
-    sleep(Duration::from_millis(1200));
+    harness.send_title_escape(&trigger_pane_id, "Claude Code | Still Working")?;
     harness.wait_for_daemon_snapshot(&mut daemon, |snapshot| {
         snapshot["generated_at"].as_str() != Some(metadata_generated_at.as_str())
             && pane_from_snapshot(snapshot, &metadata_pane_id).is_some_and(|pane| {
