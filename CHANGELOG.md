@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.2.8 - 2026-05-23
+
+### Changed
+
+- Refined daemon internals around explicit runtime ownership, refresh request
+  handling, TUI subscription state, and detached-start coordination.
+- Routed explicit daemon starts, one-shot daemon auto-starts, TUI subscription
+  auto-starts, and injected start commands through a single start coordinator
+  boundary while preserving existing behavior.
+
 ## 0.2.7 - 2026-05-23
 
 ### Added
