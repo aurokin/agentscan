@@ -36,6 +36,7 @@ pub(crate) use lifecycle::{
     AutoStartPolicy, DaemonSnapshotError, DaemonSubscriptionEvent, daemon_restart, daemon_run,
     daemon_start, daemon_status, daemon_stop, snapshot_via_socket,
     snapshot_via_socket_path_with_start_command, spawn_subscription_worker,
+    stream_subscription_events_json,
 };
 use lifecycle::{DaemonLifecycleGuard, LifecyclePaths, remove_stale_socket_if_present};
 #[cfg(test)]

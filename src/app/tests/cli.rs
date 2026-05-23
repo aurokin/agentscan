@@ -111,6 +111,61 @@ fn root_list_args_merge_into_other_refresh_capable_commands() {
         }
         other => panic!("expected snapshot command, got {other:?}"),
     }
+
+}
+
+#[test]
+fn subscribe_args_parse_and_merge_root_options() {
+    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "subscribe", "--format", "json"]);
+    match cli.command {
+        Some(super::Commands::Subscribe(mut args)) => {
+            super::commands::merge_subscribe_args(&mut args, &cli.list_args).unwrap();
+            assert!(!args.auto_start.no_auto_start);
+            assert_eq!(args.format, OutputFormat::Json);
+        }
+        other => panic!("expected subscribe command, got {other:?}"),
+    }
+
+    let cli = <Cli as clap::Parser>::parse_from([
+        "agentscan",
+        "--no-auto-start",
+        "subscribe",
+        "--format",
+        "json",
+    ]);
+    match cli.command {
+        Some(super::Commands::Subscribe(mut args)) => {
+            super::commands::merge_subscribe_args(&mut args, &cli.list_args).unwrap();
+            assert!(args.auto_start.no_auto_start);
+            assert_eq!(args.format, OutputFormat::Json);
+        }
+        other => panic!("expected subscribe command, got {other:?}"),
+    }
+
+    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "subscribe", "--format", "text"]);
+    match cli.command {
+        Some(super::Commands::Subscribe(mut args)) => {
+            super::commands::merge_subscribe_args(&mut args, &cli.list_args).unwrap();
+            assert_eq!(args.format, OutputFormat::Text);
+        }
+        other => panic!("expected subscribe command, got {other:?}"),
+    }
+
+    let cli =
+        <Cli as clap::Parser>::parse_from(["agentscan", "--format", "json", "subscribe"]);
+    match cli.command {
+        Some(super::Commands::Subscribe(mut args)) => {
+            let error = super::commands::merge_subscribe_args(&mut args, &cli.list_args)
+                .expect_err("root --format should be rejected for subscribe");
+            assert!(
+                error
+                    .to_string()
+                    .contains("`--format` is not supported before `subscribe`"),
+                "expected root format rejection, got {error:#}"
+            );
+        }
+        other => panic!("expected subscribe command, got {other:?}"),
+    }
 }
 
 #[test]
@@ -191,6 +246,10 @@ fn root_icon_mode_is_rejected_for_non_icon_commands() {
             "snapshot",
         ),
         (
+            ["agentscan", "--icons", "nerd-font", "subscribe"].as_slice(),
+            "subscribe",
+        ),
+        (
             ["agentscan", "--icons", "nerd-font", "inspect", "%1"].as_slice(),
             "inspect",
         ),
@@ -228,6 +287,9 @@ fn root_icon_mode_is_rejected_for_non_icon_commands() {
         let error = match cli.command {
             Some(super::Commands::Snapshot(mut args)) => {
                 super::commands::merge_snapshot_args(&mut args, &cli.list_args).unwrap_err()
+            }
+            Some(super::Commands::Subscribe(mut args)) => {
+                super::commands::merge_subscribe_args(&mut args, &cli.list_args).unwrap_err()
             }
             Some(super::Commands::Inspect(mut args)) => {
                 super::commands::merge_inspect_args(&mut args, &cli.list_args).unwrap_err()

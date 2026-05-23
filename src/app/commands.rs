@@ -18,6 +18,10 @@ pub fn run() -> Result<()> {
             merge_snapshot_args(&mut args, &root_list_args)?;
             command_snapshot(&args)
         }
+        Some(Commands::Subscribe(mut args)) => {
+            merge_subscribe_args(&mut args, &root_list_args)?;
+            command_subscribe(&args)
+        }
         Some(Commands::Providers(mut args)) => {
             merge_providers_args(&mut args, &root_list_args)?;
             command_providers(&args)
@@ -81,6 +85,19 @@ pub(super) fn merge_snapshot_args(
     if args.format == OutputFormat::Text {
         args.format = root_list_args.format;
     }
+
+    Ok(())
+}
+
+pub(super) fn merge_subscribe_args(
+    args: &mut SubscribeArgs,
+    root_list_args: &ListArgs,
+) -> Result<()> {
+    reject_root_refresh(root_list_args, "subscribe")?;
+    reject_root_all(root_list_args, "subscribe")?;
+    reject_root_format(root_list_args, "subscribe")?;
+    reject_root_icons(root_list_args, "subscribe")?;
+    args.auto_start.no_auto_start |= root_list_args.auto_start.no_auto_start;
 
     Ok(())
 }
@@ -316,6 +333,15 @@ fn command_snapshot(args: &SnapshotArgs) -> Result<()> {
         OutputFormat::Json => output::print_json(&snapshot)?,
     }
     Ok(())
+}
+
+fn command_subscribe(args: &SubscribeArgs) -> Result<()> {
+    if args.format != OutputFormat::Json {
+        bail!("`agentscan subscribe` only supports `--format json`");
+    }
+
+    daemon::stream_subscription_events_json(daemon::AutoStartPolicy::from_args(args.auto_start))
+        .map_err(daemon::DaemonSnapshotError::into_anyhow)
 }
 
 fn command_inspect(args: &InspectArgs) -> Result<()> {

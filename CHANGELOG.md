@@ -7,6 +7,9 @@
 - Added `agentscan hotkeys --format json` and `agentscan hotkey <key>` as the
   shared picker hotkey contract for tmux binds, the terminal TUI model, and
   future desktop picker surfaces.
+- Added `agentscan subscribe --format json` as a live JSON Lines daemon
+  subscription stream for terminal-adjacent tools and future local/SSH desktop
+  clients.
 
 ## 0.2.9 - 2026-05-23
 

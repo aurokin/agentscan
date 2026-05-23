@@ -343,7 +343,8 @@ impl std::fmt::Display for DaemonSnapshotError {
 
 impl std::error::Error for DaemonSnapshotError {}
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum DaemonSubscriptionEvent {
     Connecting { message: String },
     Snapshot { snapshot: SnapshotEnvelope },
@@ -864,6 +865,87 @@ pub(crate) fn spawn_subscription_worker(
             });
         }
     })
+}
+
+pub(crate) fn stream_subscription_events_json(
+    policy: AutoStartPolicy,
+) -> std::result::Result<(), DaemonSnapshotError> {
+    let (events_tx, events_rx) = mpsc::channel();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let worker = spawn_subscription_worker(policy, events_tx, Arc::clone(&cancel));
+    let result = write_subscription_events_json(events_rx, &cancel);
+    cancel.store(true, Ordering::Relaxed);
+    match result {
+        Ok(SubscriptionStreamCompletion::StdoutClosed) => Ok(()),
+        Ok(SubscriptionStreamCompletion::WorkerFinished) => {
+            let _ = worker.join();
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SubscriptionStreamCompletion {
+    StdoutClosed,
+    WorkerFinished,
+}
+
+fn write_subscription_events_json(
+    events: mpsc::Receiver<DaemonSubscriptionEvent>,
+    cancel: &AtomicBool,
+) -> std::result::Result<SubscriptionStreamCompletion, DaemonSnapshotError> {
+    let stdout = std::io::stdout();
+    let mut stdout = stdout.lock();
+
+    while let Ok(event) = events.recv() {
+        if !write_subscription_event_json_line(&mut stdout, &event, cancel)? {
+            return Ok(SubscriptionStreamCompletion::StdoutClosed);
+        }
+
+        match event {
+            DaemonSubscriptionEvent::Fatal { message } => {
+                return Err(DaemonSnapshotError::UnexpectedFrame { message });
+            }
+            DaemonSubscriptionEvent::Shutdown { .. } => {
+                return Ok(SubscriptionStreamCompletion::WorkerFinished);
+            }
+            DaemonSubscriptionEvent::Connecting { .. }
+            | DaemonSubscriptionEvent::Snapshot { .. }
+            | DaemonSubscriptionEvent::Offline { .. } => {}
+        }
+    }
+
+    Ok(SubscriptionStreamCompletion::WorkerFinished)
+}
+
+fn write_subscription_event_json_line(
+    writer: &mut impl Write,
+    event: &DaemonSubscriptionEvent,
+    cancel: &AtomicBool,
+) -> std::result::Result<bool, DaemonSnapshotError> {
+    if let Err(error) = serde_json::to_writer(&mut *writer, event) {
+        if error
+            .io_error_kind()
+            .is_some_and(|kind| kind == std::io::ErrorKind::BrokenPipe)
+        {
+            cancel.store(true, Ordering::Relaxed);
+            return Ok(false);
+        }
+        return Err(DaemonSnapshotError::UnexpectedFrame {
+            message: format!("failed to encode subscription event: {error}"),
+        });
+    }
+    if let Err(error) = writer.write_all(b"\n").and_then(|()| writer.flush()) {
+        if error.kind() == std::io::ErrorKind::BrokenPipe {
+            cancel.store(true, Ordering::Relaxed);
+            return Ok(false);
+        }
+        return Err(DaemonSnapshotError::UnexpectedFrame {
+            message: format!("failed to write subscription event: {error}"),
+        });
+    }
+    Ok(true)
 }
 
 fn subscription_worker_loop(

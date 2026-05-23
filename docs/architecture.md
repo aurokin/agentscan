@@ -130,6 +130,8 @@ The command surface is organized by concern:
 - `agentscan daemon`: long-lived indexer and daemon health commands
 - `agentscan snapshot`: raw snapshot-envelope inspection for consumers that
   need the unfiltered envelope
+- `agentscan subscribe`: JSON Lines daemon subscription stream for live local
+  or SSH-transported clients
 - `agentscan providers`: supported provider names, icon modes, marker
   codepoints, and matching aliases
 - `agentscan tui`: interactive-only pane picker, not a stdout automation API
@@ -181,6 +183,9 @@ Current lifecycle policy:
 - The TUI remains interactive-only and not a machine-readable contract.
 - Normal automation should use `agentscan list --format json`; raw snapshot
   consumers should use `agentscan snapshot --format json`.
+- Live automation and future desktop clients should use
+  `agentscan subscribe --format json` rather than connecting directly to the
+  daemon Unix socket.
 - Daemon health automation should use `agentscan daemon status --format json`.
 - Keep shell wrappers thin; discovery and classification belong in Rust.
 - Prefer honest labels from tmux metadata over richer weak inference.

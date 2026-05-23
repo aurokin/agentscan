@@ -1,6 +1,7 @@
 use std::ffi::OsString;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -229,6 +230,96 @@ fn daemon_fans_out_live_updates_to_subscriber_socket() -> Result<()> {
     stream
         .shutdown(std::net::Shutdown::Write)
         .context("failed to close subscriber write side")?;
+    daemon.shutdown()?;
+    Ok(())
+}
+
+#[test]
+fn subscribe_command_streams_bootstrap_and_live_updates() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let pane_id = harness.start_session("cli-subscribe", "sh")?;
+    let mut daemon = harness.start_daemon()?;
+    harness.wait_for_daemon_snapshot(&mut daemon, |snapshot| {
+        pane_from_snapshot(snapshot, &pane_id).is_some()
+    })?;
+
+    let mut child = harness.agentscan_command()?;
+    child.args(["subscribe", "--format", "json"]);
+    child.stdout(Stdio::piped());
+    let mut child = child
+        .spawn()
+        .context("failed to spawn agentscan subscribe")?;
+    let stdout = child
+        .stdout
+        .take()
+        .context("subscribe child did not expose stdout")?;
+    set_fd_nonblocking(stdout.as_raw_fd())?;
+    let mut reader = BufReader::new(stdout);
+
+    let bootstrap = read_subscribe_stream_until(&mut reader, |frame| {
+        frame["type"] == "snapshot"
+            && frame["snapshot"]["panes"]
+                .as_array()
+                .is_some_and(|panes| panes.iter().any(|pane| pane["pane_id"] == pane_id))
+    })?;
+    validate_snapshot_json(&bootstrap["snapshot"])?;
+
+    harness.send_title_escape(&pane_id, "Claude Code | Working")?;
+    let update = read_subscribe_stream_until(&mut reader, |frame| {
+        frame["type"] == "snapshot"
+            && frame["snapshot"]["panes"].as_array().is_some_and(|panes| {
+                panes.iter().any(|pane| {
+                    pane["pane_id"] == pane_id
+                        && pane["provider"] == "claude"
+                        && pane["status"]["kind"] == "busy"
+                })
+            })
+    })?;
+    validate_snapshot_json(&update["snapshot"])?;
+
+    child.kill().context("failed to stop subscribe child")?;
+    let _ = child.wait();
+    daemon.shutdown()?;
+    Ok(())
+}
+
+#[test]
+fn subscribe_command_exits_when_stdout_consumer_closes() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let pane_id = harness.start_session("cli-subscribe-close", "sh")?;
+    let mut daemon = harness.start_daemon()?;
+    harness.wait_for_daemon_snapshot(&mut daemon, |snapshot| {
+        pane_from_snapshot(snapshot, &pane_id).is_some()
+    })?;
+
+    let mut child = harness.agentscan_command()?;
+    child.args(["subscribe", "--format", "json"]);
+    child.stdout(Stdio::piped());
+    let mut child = child
+        .spawn()
+        .context("failed to spawn agentscan subscribe")?;
+    let stdout = child
+        .stdout
+        .take()
+        .context("subscribe child did not expose stdout")?;
+    set_fd_nonblocking(stdout.as_raw_fd())?;
+    let mut reader = BufReader::new(stdout);
+
+    let bootstrap = read_subscribe_stream_until(&mut reader, |frame| {
+        frame["type"] == "snapshot"
+            && frame["snapshot"]["panes"]
+                .as_array()
+                .is_some_and(|panes| panes.iter().any(|pane| pane["pane_id"] == pane_id))
+    })?;
+    validate_snapshot_json(&bootstrap["snapshot"])?;
+
+    drop(reader);
+    let status = wait_for_child_exit(&mut child, DAEMON_TIMEOUT)
+        .context("subscribe command should exit after stdout closes")?;
+    assert!(
+        status.success(),
+        "subscribe command should exit successfully after stdout closes, got {status}"
+    );
     daemon.shutdown()?;
     Ok(())
 }
@@ -1767,6 +1858,63 @@ fn read_daemon_socket_json_line(reader: &mut impl BufRead) -> Result<Value> {
         bail!("daemon socket closed before sending expected frame");
     }
     serde_json::from_str(&line).context("daemon socket frame was not valid JSON")
+}
+
+fn read_subscribe_stream_until(
+    reader: &mut impl BufRead,
+    matches: impl Fn(&Value) -> bool,
+) -> Result<Value> {
+    let deadline = Instant::now() + DAEMON_TIMEOUT;
+    let mut last_frame = Value::Null;
+    let mut line = String::new();
+    while Instant::now() < deadline {
+        match reader.read_line(&mut line) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                sleep(POLL_INTERVAL);
+                continue;
+            }
+            Err(error) => return Err(error).context("failed to read subscribe stream frame"),
+        }
+        if line.is_empty() {
+            bail!("subscribe stream closed before expected frame; last frame: {last_frame}");
+        }
+        let frame: Value = serde_json::from_str(&line)
+            .with_context(|| format!("subscribe stream frame was not JSON: {line:?}"))?;
+        if matches(&frame) {
+            return Ok(frame);
+        }
+        last_frame = frame;
+        line.clear();
+    }
+    bail!("timed out waiting for subscribe stream frame; last frame: {last_frame}");
+}
+
+fn set_fd_nonblocking(fd: std::os::fd::RawFd) -> Result<()> {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(std::io::Error::last_os_error()).context("failed to get file descriptor flags");
+    }
+    let result = unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+    if result < 0 {
+        return Err(std::io::Error::last_os_error()).context("failed to set nonblocking pipe");
+    }
+    Ok(())
+}
+
+fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> Result<ExitStatus> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait().context("failed to poll child process")? {
+            return Ok(status);
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("timed out waiting for child process to exit");
+        }
+        sleep(POLL_INTERVAL);
+    }
 }
 
 fn serve_fake_snapshot(socket_path: &Path, snapshot: Value) -> FakeSnapshotServer {

@@ -20,6 +20,8 @@ pub(crate) enum Commands {
     List(ListArgs),
     /// Print the current raw snapshot envelope.
     Snapshot(SnapshotArgs),
+    /// Stream live daemon subscription events as JSON Lines.
+    Subscribe(SubscribeArgs),
     /// Print supported coding agent providers and display markers.
     Providers(ProvidersArgs),
     /// Print current picker hotkeys and their target panes.
@@ -82,6 +84,16 @@ pub(crate) struct SnapshotArgs {
     #[command(flatten)]
     pub(crate) refresh: RefreshArgs,
 
+    #[command(flatten)]
+    pub(crate) auto_start: AutoStartArgs,
+
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    pub(crate) format: OutputFormat,
+}
+
+#[derive(Args, Clone, Copy, Debug)]
+pub(crate) struct SubscribeArgs {
     #[command(flatten)]
     pub(crate) auto_start: AutoStartArgs,
 

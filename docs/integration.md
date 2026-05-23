@@ -11,6 +11,8 @@ Machine-readable consumers should use:
 - `agentscan list --format json` for the supported pane listing surface in normal automation flows
 - `agentscan list --all --format json` when non-agent panes are intentionally needed
 - `agentscan snapshot --format json` only when a consumer explicitly needs the raw snapshot envelope
+- `agentscan subscribe --format json` for a live JSON Lines stream of daemon
+  subscription events
 - `agentscan daemon status --format json` for daemon lifecycle, socket, and readiness checks
 - `agentscan providers --format json` for supported provider names, display
   markers for all icon modes, marker codepoints, and aliases
@@ -31,6 +33,7 @@ Migration targets:
 | Parse agent panes for automation | `agentscan list --format json` |
 | Parse all tmux panes, including non-agent panes | `agentscan list --all --format json` |
 | Inspect schema version or the unfiltered snapshot envelope | `agentscan snapshot --format json` |
+| Subscribe to live daemon updates locally or over SSH | `agentscan subscribe --format json` |
 | Check daemon lifecycle or readiness | `agentscan daemon status --format json` |
 | Inspect supported providers, icon modes, and aliases | `agentscan providers --format json` |
 | Render a pane picker with stable selection keys | `agentscan hotkeys --format json` |
@@ -100,6 +103,28 @@ delegates focus through the same pane validation and tmux focus behavior as
 Both commands are daemon-backed by default and support `--refresh` for direct
 tmux recovery. `hotkeys` also supports `--all`; `hotkey` accepts `--all` when a
 binding intentionally targets a picker model that includes non-agent panes.
+
+## Live Subscription Stream
+
+Use `agentscan subscribe --format json` when a long-lived consumer needs live
+daemon updates. The command emits newline-delimited JSON frames and flushes each
+frame as it is written. The stream starts with connection lifecycle frames such
+as `connecting`, then emits `snapshot` frames for the bootstrap and later daemon
+updates. Terminal-adjacent tools and the future desktop app should consume this
+stream instead of connecting to the daemon Unix socket directly.
+
+The stream is designed to be transport-neutral. Local consumers can spawn
+`agentscan subscribe --format json`; remote consumers can run the same command
+through SSH, for example:
+
+```bash
+ssh workbox agentscan subscribe --format json
+```
+
+Fatal setup or compatibility failures are emitted as a `fatal` frame before the
+process exits non-zero. Daemon shutdown is emitted as a `shutdown` frame before
+the stream exits successfully. Closing the consumer side of stdout stops the
+subscription without requiring an explicit daemon command.
 
 Normal consumers are daemon-backed and auto-start the daemon by default so
 desktop workflows do not need service setup. On macOS, detached auto-start is
