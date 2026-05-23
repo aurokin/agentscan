@@ -2,12 +2,16 @@
 
 ## Unreleased
 
+## 0.2.9 - 2026-05-23
+
 ### Added
 
 - Added `agentscan providers` to list supported coding agent providers, display
   markers, and marker codepoints, with JSON output for scripts.
 - Added configurable provider icon rendering through `--icons`,
   `AGENTSCAN_ICONS`, and `${XDG_CONFIG_HOME:-~/.config}/agentscan/config.toml`.
+- Added active icon mode, marker, and marker codepoints to
+  `agentscan providers --format json` for configuration debugging.
 
 ## 0.2.8 - 2026-05-23
 
