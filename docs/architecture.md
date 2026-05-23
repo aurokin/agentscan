@@ -130,12 +130,16 @@ The command surface is organized by concern:
 - `agentscan daemon`: long-lived indexer and daemon health commands
 - `agentscan snapshot`: raw snapshot-envelope inspection for consumers that
   need the unfiltered envelope
-- `agentscan providers`: supported provider names, display markers, marker
+- `agentscan providers`: supported provider names, icon modes, marker
   codepoints, and matching aliases
 - `agentscan tui`: interactive-only pane picker, not a stdout automation API
 - `agentscan tmux`: tmux-facing metadata helpers
 
 The default bare `agentscan` flow is daemon-backed `list`.
+
+Icon mode is a presentation concern resolved by short-lived consumers from CLI,
+environment, config file, then the built-in default. It must not affect daemon
+snapshot payloads, provider classification, or socket protocol state.
 
 ## Internal Module Boundaries
 

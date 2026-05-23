@@ -1,33 +1,41 @@
 use super::*;
 
-pub(super) fn emit_snapshot(snapshot: &SnapshotEnvelope, format: OutputFormat) -> Result<()> {
+pub(super) fn emit_snapshot(
+    snapshot: &SnapshotEnvelope,
+    format: OutputFormat,
+    icon_mode: IconMode,
+) -> Result<()> {
     match format {
         OutputFormat::Text => {
-            print_list_text(&snapshot.panes);
+            print_list_text(&snapshot.panes, icon_mode);
             Ok(())
         }
         OutputFormat::Json => print_json(snapshot),
     }
 }
 
-pub(super) fn emit_providers(providers: &[ProviderSummary], format: OutputFormat) -> Result<()> {
+pub(super) fn emit_providers(
+    providers: &[ProviderSummary],
+    format: OutputFormat,
+    icon_mode: IconMode,
+) -> Result<()> {
     match format {
         OutputFormat::Text => {
-            print_providers_text(providers);
+            print_providers_text(providers, icon_mode);
             Ok(())
         }
         OutputFormat::Json => print_json(providers),
     }
 }
 
-fn print_list_text(panes: &[PaneRecord]) {
+fn print_list_text(panes: &[PaneRecord], icon_mode: IconMode) {
     if panes.is_empty() {
         println!("No matching tmux panes.");
         return;
     }
 
     for pane in panes {
-        let provider = provider_display_marker(pane.provider);
+        let provider = provider_display_marker(pane.provider, icon_mode);
 
         println!(
             "{} {}:{}.{} - {}",
@@ -40,13 +48,12 @@ fn print_list_text(panes: &[PaneRecord]) {
     }
 }
 
-fn print_providers_text(providers: &[ProviderSummary]) {
+fn print_providers_text(providers: &[ProviderSummary], icon_mode: IconMode) {
+    println!("icons: {icon_mode}");
     for provider in providers {
-        let codepoints = provider.display_marker_codepoints.join(" ");
-        println!(
-            "{} {} ({codepoints})",
-            provider.display_marker, provider.name
-        );
+        let marker = provider_marker(provider.provider, icon_mode);
+        let codepoints = marker_codepoints(marker).join(" ");
+        println!("{} {} ({codepoints})", marker, provider.name);
     }
 }
 

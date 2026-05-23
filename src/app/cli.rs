@@ -1,6 +1,6 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-use super::{Provider, StatusKind};
+use super::{IconMode, Provider, StatusKind};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Scan tmux panes for agent sessions")]
@@ -49,6 +49,10 @@ pub(crate) struct ListArgs {
     /// Output format.
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     pub(crate) format: OutputFormat,
+
+    /// Icon rendering mode for human-facing output.
+    #[arg(long, value_enum)]
+    pub(crate) icons: Option<IconMode>,
 }
 
 #[derive(Args, Clone, Copy, Debug)]
@@ -63,6 +67,10 @@ pub(crate) struct ScanArgs {
     /// Output format.
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     pub(crate) format: OutputFormat,
+
+    /// Icon rendering mode for human-facing output.
+    #[arg(long, value_enum)]
+    pub(crate) icons: Option<IconMode>,
 }
 
 #[derive(Args, Clone, Copy, Debug)]
@@ -83,6 +91,10 @@ pub(crate) struct ProvidersArgs {
     /// Output format.
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     pub(crate) format: OutputFormat,
+
+    /// Icon rendering mode for human-facing output.
+    #[arg(long, value_enum)]
+    pub(crate) icons: Option<IconMode>,
 }
 
 #[derive(Args, Debug)]
@@ -125,6 +137,10 @@ pub(crate) struct TuiArgs {
     /// Include all tmux panes, not only likely agent panes, in the interactive picker.
     #[arg(long)]
     pub(crate) all: bool,
+
+    /// Icon rendering mode for human-facing output.
+    #[arg(long, value_enum)]
+    pub(crate) icons: Option<IconMode>,
 }
 
 #[derive(Args, Debug)]

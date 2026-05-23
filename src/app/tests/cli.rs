@@ -109,6 +109,116 @@ fn providers_accepts_local_and_root_format() {
 }
 
 #[test]
+fn icon_mode_merges_into_human_facing_commands() {
+    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "--icons", "nerd-font"]);
+    assert_eq!(cli.list_args.icons, Some(IconMode::NerdFont));
+
+    let cli = <Cli as clap::Parser>::parse_from([
+        "agentscan",
+        "--icons",
+        "emoji",
+        "list",
+        "--icons",
+        "nerd-font",
+    ]);
+    match cli.command {
+        Some(super::Commands::List(mut args)) => {
+            super::commands::merge_list_args(&mut args, &cli.list_args);
+            assert_eq!(args.icons, Some(IconMode::NerdFont));
+        }
+        other => panic!("expected list command, got {other:?}"),
+    }
+
+    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "--icons", "nerd-font", "scan"]);
+    match cli.command {
+        Some(super::Commands::Scan(mut args)) => {
+            super::commands::merge_scan_args(&mut args, &cli.list_args);
+            assert_eq!(args.icons, Some(IconMode::NerdFont));
+        }
+        other => panic!("expected scan command, got {other:?}"),
+    }
+
+    let cli =
+        <Cli as clap::Parser>::parse_from(["agentscan", "--icons", "nerd-font", "providers"]);
+    match cli.command {
+        Some(super::Commands::Providers(mut args)) => {
+            super::commands::merge_providers_args(&mut args, &cli.list_args).unwrap();
+            assert_eq!(args.icons, Some(IconMode::NerdFont));
+        }
+        other => panic!("expected providers command, got {other:?}"),
+    }
+
+    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "--icons", "nerd-font", "tui"]);
+    match cli.command {
+        Some(super::Commands::Tui(mut args)) => {
+            super::commands::merge_tui_args(&mut args, &cli.list_args).unwrap();
+            assert_eq!(args.icons, Some(IconMode::NerdFont));
+        }
+        other => panic!("expected tui command, got {other:?}"),
+    }
+}
+
+#[test]
+fn root_icon_mode_is_rejected_for_non_icon_commands() {
+    for (args, command_name) in [
+        (
+            ["agentscan", "--icons", "nerd-font", "snapshot"].as_slice(),
+            "snapshot",
+        ),
+        (
+            ["agentscan", "--icons", "nerd-font", "inspect", "%1"].as_slice(),
+            "inspect",
+        ),
+        (
+            ["agentscan", "--icons", "nerd-font", "focus", "%1"].as_slice(),
+            "focus",
+        ),
+        (
+            ["agentscan", "--icons", "nerd-font", "daemon", "status"].as_slice(),
+            "daemon",
+        ),
+        (
+            [
+                "agentscan",
+                "--icons",
+                "nerd-font",
+                "tmux",
+                "set-metadata",
+            ]
+            .as_slice(),
+            "tmux",
+        ),
+    ] {
+        let cli = <Cli as clap::Parser>::parse_from(args);
+        assert_eq!(cli.list_args.icons, Some(IconMode::NerdFont));
+
+        let error = match cli.command {
+            Some(super::Commands::Snapshot(mut args)) => {
+                super::commands::merge_snapshot_args(&mut args, &cli.list_args).unwrap_err()
+            }
+            Some(super::Commands::Inspect(mut args)) => {
+                super::commands::merge_inspect_args(&mut args, &cli.list_args).unwrap_err()
+            }
+            Some(super::Commands::Focus(mut args)) => {
+                super::commands::merge_focus_args(&mut args, &cli.list_args).unwrap_err()
+            }
+            Some(super::Commands::Daemon(_)) => {
+                super::commands::reject_root_icons(&cli.list_args, command_name).unwrap_err()
+            }
+            Some(super::Commands::Tmux(_)) => {
+                super::commands::reject_root_icons(&cli.list_args, command_name).unwrap_err()
+            }
+            other => panic!("unexpected command for {command_name}: {other:?}"),
+        };
+
+        assert!(
+            error.to_string().contains("`--icons` is not supported"),
+            "expected root icons rejection, got {error:#}"
+        );
+    }
+}
+
+#[test]
 fn daemon_status_accepts_local_format() {
     let cli =
         <Cli as clap::Parser>::parse_from(["agentscan", "daemon", "status", "--format", "json"]);

@@ -168,7 +168,7 @@ Automation contract:
 - `agentscan list --all --format json` is the supported way to include non-agent panes in that machine-readable output
 - `agentscan snapshot --format json` exposes the raw snapshot envelope when a consumer explicitly needs envelope details rather than the normal `list` view
 - `agentscan providers --format json` exposes supported provider names,
-  display markers, marker codepoints, and matching aliases
+  display markers for all icon modes, marker codepoints, and matching aliases
 - TUI-shaped TSV or JSON output is not a supported long-term contract
 
 Operational commands:
@@ -200,6 +200,33 @@ For repo-local tmux `display-popup` testing without installing the binary on
 `PATH`, use `tmux display-popup -E "$PWD/target/debug/agentscan" tui` after
 building once.
 
+## Configuration
+
+`agentscan` reads optional user configuration from:
+
+```toml
+# ${XDG_CONFIG_HOME:-~/.config}/agentscan/config.toml
+icons = "emoji"
+```
+
+Supported icon modes:
+
+- `emoji`: default provider icons for terminals without Nerd Font coverage
+- `nerd-font`: current Nerd Font provider icons
+- `nerd-font-patched`: reserved for a future custom patched Nerd Font; it
+  currently falls back to the `nerd-font` values
+
+Icon mode precedence is CLI, then environment, then config file, then default:
+
+```sh
+agentscan list --icons nerd-font
+AGENTSCAN_ICONS=nerd-font agentscan tui
+```
+
+`agentscan providers` previews the active text icon mode, and
+`agentscan providers --format json` exposes every icon mode and codepoint for
+scripts or font tweaking.
+
 ## Automation Migration
 
 Machine-readable consumers should not call `agentscan tui`. The legacy
@@ -212,7 +239,7 @@ Use:
 - `agentscan snapshot --format json` only when the consumer intentionally needs the raw snapshot envelope
 - `agentscan daemon status --format json` for daemon lifecycle and readiness checks
 - `agentscan providers --format json` for supported provider names, display
-  markers, marker codepoints, and aliases
+  markers for all icon modes, marker codepoints, and aliases
 - `agentscan scan` or supported `--refresh` flags when a script intentionally
   needs direct tmux state instead of daemon state
 

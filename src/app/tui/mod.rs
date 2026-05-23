@@ -11,9 +11,12 @@ use crossterm::terminal;
 
 use super::*;
 use input::{TuiLoopAction, handle_key_event, is_key_press};
-pub(crate) use render::{TuiTerminalSize, render_rows, render_tui_frame_for_size, write_tui_frame};
+pub(crate) use render::{TuiTerminalSize, render_rows, write_tui_frame};
 #[cfg(test)]
-pub(crate) use render::{render_error_frame, render_rows_for_width};
+pub(crate) use render::{
+    render_error_frame, render_rows_for_width, render_rows_for_width_with_icons,
+    render_tui_frame_for_size,
+};
 #[cfg(test)]
 pub(crate) use state::merge_tui_session_panes;
 pub(crate) use state::{TuiState, synchronize_key_targets};
@@ -34,8 +37,8 @@ enum TuiEvent {
     InputFatal(String),
 }
 
-pub(crate) fn run(args: &TuiArgs) -> Result<()> {
-    let result = run_tui_loop(args);
+pub(crate) fn run(args: &TuiArgs, icon_mode: IconMode) -> Result<()> {
+    let result = run_tui_loop(args, icon_mode);
     write_tui_marker_from_env(
         TUI_DONE_PATH_ENV,
         if result.is_ok() { "0\n" } else { "1\n" },
@@ -43,11 +46,11 @@ pub(crate) fn run(args: &TuiArgs) -> Result<()> {
     result
 }
 
-fn run_tui_loop(args: &TuiArgs) -> Result<()> {
+fn run_tui_loop(args: &TuiArgs, icon_mode: IconMode) -> Result<()> {
     let mut session = TerminalSession::enter()?;
     let mut state = TuiState::default();
     state.set_connecting("connecting to daemon".to_string());
-    draw_tui_frame(&mut session.stdout, &mut state)?;
+    draw_tui_frame(&mut session.stdout, &mut state, icon_mode)?;
     write_tui_marker_from_env(TUI_READY_PATH_ENV, "")?;
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -58,7 +61,7 @@ fn run_tui_loop(args: &TuiArgs) -> Result<()> {
     while let Ok(event) = events_rx.recv() {
         match handle_tui_event(event, &mut state, args.all)? {
             TuiLoopAction::Continue => {}
-            TuiLoopAction::Redraw => draw_tui_frame(&mut session.stdout, &mut state)?,
+            TuiLoopAction::Redraw => draw_tui_frame(&mut session.stdout, &mut state, icon_mode)?,
             TuiLoopAction::Close => break,
         };
     }
@@ -177,8 +180,8 @@ fn write_tui_marker_from_env(env_name: &str, contents: &str) -> Result<()> {
         .with_context(|| format!("failed to write tui marker {}", Path::new(&path).display()))
 }
 
-fn draw_tui_frame(stdout: &mut Stdout, state: &mut TuiState) -> Result<()> {
-    let frame = render_tui_frame_for_size(state, terminal_size()?);
+fn draw_tui_frame(stdout: &mut Stdout, state: &mut TuiState, icon_mode: IconMode) -> Result<()> {
+    let frame = render::render_tui_frame_for_size_with_icons(state, terminal_size()?, icon_mode);
     write_tui_frame(stdout, &frame)?;
     stdout.flush().context("failed to flush tui frame")
 }

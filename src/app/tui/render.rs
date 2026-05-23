@@ -41,9 +41,18 @@ pub(crate) fn write_tui_frame<W: Write>(writer: &mut W, frame: &TuiFrame) -> Res
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn render_tui_frame_for_size(
     state: &mut TuiState,
     terminal_size: TuiTerminalSize,
+) -> TuiFrame {
+    render_tui_frame_for_size_with_icons(state, terminal_size, IconMode::Emoji)
+}
+
+pub(crate) fn render_tui_frame_for_size_with_icons(
+    state: &mut TuiState,
+    terminal_size: TuiTerminalSize,
+    icon_mode: IconMode,
 ) -> TuiFrame {
     state.set_terminal_size(terminal_size);
 
@@ -126,7 +135,8 @@ pub(crate) fn render_tui_frame_for_size(
         .map(|pane| pane.pane_id.clone())
         .collect::<Vec<_>>();
     let row_width = usize::from(terminal_size.width);
-    let mut lines = render_rows_for_width(visible_panes, &state.key_targets, row_width);
+    let mut lines =
+        render_rows_for_width_with_icons(visible_panes, &state.key_targets, row_width, icon_mode);
     lines.extend(render_footer_lines(
         state.page_start,
         page_size,
@@ -156,6 +166,15 @@ pub(crate) fn render_rows_for_width(
     key_targets: &BTreeMap<char, String>,
     width: usize,
 ) -> Vec<String> {
+    render_rows_for_width_with_icons(panes, key_targets, width, IconMode::Emoji)
+}
+
+pub(crate) fn render_rows_for_width_with_icons(
+    panes: &[PaneRecord],
+    key_targets: &BTreeMap<char, String>,
+    width: usize,
+    icon_mode: IconMode,
+) -> Vec<String> {
     let key_labels: HashMap<&str, char> = key_targets
         .iter()
         .map(|(key, pane_id)| (pane_id.as_str(), *key))
@@ -163,15 +182,27 @@ pub(crate) fn render_rows_for_width(
 
     panes
         .iter()
-        .map(|pane| render_pane_row(pane, key_labels.get(pane.pane_id.as_str()).copied(), width))
+        .map(|pane| {
+            render_pane_row(
+                pane,
+                key_labels.get(pane.pane_id.as_str()).copied(),
+                width,
+                icon_mode,
+            )
+        })
         .collect()
 }
 
-fn render_pane_row(pane: &PaneRecord, selection: Option<char>, width: usize) -> String {
+fn render_pane_row(
+    pane: &PaneRecord,
+    selection: Option<char>,
+    width: usize,
+    icon_mode: IconMode,
+) -> String {
     let selection_label = selection
         .map(|assigned_key| format!("[{assigned_key}]"))
         .unwrap_or_else(|| "   ".to_string());
-    let provider = provider_display_marker(pane.provider);
+    let provider = provider_display_marker(pane.provider, icon_mode);
     let prefix = format!(
         "{} {} {} {} - ",
         selection_label,

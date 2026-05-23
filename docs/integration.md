@@ -13,7 +13,7 @@ Machine-readable consumers should use:
 - `agentscan snapshot --format json` only when a consumer explicitly needs the raw snapshot envelope
 - `agentscan daemon status --format json` for daemon lifecycle, socket, and readiness checks
 - `agentscan providers --format json` for supported provider names, display
-  markers, marker codepoints, and aliases
+  markers for all icon modes, marker codepoints, and aliases
 
 `agentscan tui` is interactive-only. It must not become a TUI-shaped JSON or TSV
 surface, and unsupported formatting requests must not become compatibility
@@ -30,7 +30,7 @@ Migration targets:
 | Parse all tmux panes, including non-agent panes | `agentscan list --all --format json` |
 | Inspect schema version or the unfiltered snapshot envelope | `agentscan snapshot --format json` |
 | Check daemon lifecycle or readiness | `agentscan daemon status --format json` |
-| Inspect supported providers, display markers, and aliases | `agentscan providers --format json` |
+| Inspect supported providers, icon modes, and aliases | `agentscan providers --format json` |
 | Open a human pane picker from a tmux bind | `agentscan tui` |
 | Force a direct tmux read for recovery or debugging | `agentscan scan` or a supported `--refresh` flag |
 
@@ -45,6 +45,28 @@ Removed surfaces do not have compatibility aliases:
 
 There is no cache-file IPC replacement. Socket-isolated tests and harnesses
 should use `AGENTSCAN_SOCKET_PATH` when they need a non-default daemon socket.
+
+## Icon Configuration
+
+Provider icon rendering is presentation-only. It does not change provider
+classification, daemon socket snapshots, or machine-readable pane records.
+
+Supported modes are `emoji`, `nerd-font`, and `nerd-font-patched`. The default is
+`emoji`. The patched Nerd Font mode is reserved for a future custom font and
+currently falls back to the Nerd Font values.
+
+Resolution precedence is:
+
+1. `--icons <mode>` on human-facing commands
+2. `AGENTSCAN_ICONS=<mode>`
+3. `${XDG_CONFIG_HOME:-~/.config}/agentscan/config.toml`
+4. the built-in `emoji` default
+
+The config file shape is:
+
+```toml
+icons = "emoji"
+```
 
 If a script needs data that is missing from the documented JSON surfaces, treat
 that as an API gap in `list` or snapshot JSON. Do not add hidden `tui --format`

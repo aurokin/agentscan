@@ -50,49 +50,123 @@ fn tui_render_rows_include_location_status_and_key_labels() {
     super::tui::synchronize_key_targets(&mut key_targets, std::slice::from_ref(&pane));
 
     let lines = super::tui::render_rows(&[pane], &key_targets);
-    assert_eq!(lines, vec!["[1] 🟡 \u{e76f} notes:4.1 - Working"]);
+    assert_eq!(lines, vec!["[1] 🟡 🧠 notes:4.1 - Working"]);
 }
 
 #[test]
-fn provider_display_marker_uses_compact_markers_for_codex_and_claude() {
+fn provider_display_marker_uses_emoji_by_default_and_supports_nerd_font_modes() {
     assert_eq!(
-        super::provider_display_marker(Some(Provider::Codex)),
+        super::provider_display_marker(Some(Provider::Codex), IconMode::Emoji),
+        "🤖"
+    );
+    assert_eq!(
+        super::provider_display_marker(Some(Provider::Claude), IconMode::Emoji),
+        "🧠"
+    );
+    assert_eq!(
+        super::provider_display_marker(Some(Provider::Gemini), IconMode::Emoji),
+        "✨"
+    );
+    assert_eq!(
+        super::provider_display_marker(Some(Provider::Antigravity), IconMode::Emoji),
+        "🛸"
+    );
+    assert_eq!(
+        super::provider_display_marker(Some(Provider::Copilot), IconMode::Emoji),
+        "🧭"
+    );
+    assert_eq!(
+        super::provider_display_marker(Some(Provider::CursorCli), IconMode::Emoji),
+        "🖱️"
+    );
+    assert_eq!(
+        super::provider_display_marker(Some(Provider::Pi), IconMode::Emoji),
+        "🥧"
+    );
+    assert_eq!(
+        super::provider_display_marker(Some(Provider::Grok), IconMode::Emoji),
+        "💡"
+    );
+    assert_eq!(
+        super::provider_display_marker(Some(Provider::Hermes), IconMode::Emoji),
+        "⚕️"
+    );
+    assert_eq!(
+        super::provider_display_marker(Some(Provider::Opencode), IconMode::Emoji),
+        "🧰"
+    );
+
+    assert_eq!(
+        super::provider_display_marker(Some(Provider::Codex), IconMode::NerdFont),
         "\u{f07b5}"
     );
     assert_eq!(
-        super::provider_display_marker(Some(Provider::Claude)),
+        super::provider_display_marker(Some(Provider::Claude), IconMode::NerdFont),
         "\u{e76f}"
     );
     assert_eq!(
-        super::provider_display_marker(Some(Provider::Gemini)),
+        super::provider_display_marker(Some(Provider::Gemini), IconMode::NerdFont),
         "\u{e7f0}"
     );
     assert_eq!(
-        super::provider_display_marker(Some(Provider::Antigravity)),
+        super::provider_display_marker(Some(Provider::Antigravity), IconMode::NerdFont),
         "A"
     );
     assert_eq!(
-        super::provider_display_marker(Some(Provider::Copilot)),
+        super::provider_display_marker(Some(Provider::Copilot), IconMode::NerdFont),
         "\u{ec1e}"
     );
     assert_eq!(
-        super::provider_display_marker(Some(Provider::CursorCli)),
+        super::provider_display_marker(Some(Provider::CursorCli), IconMode::NerdFont),
         "\u{f12e9}"
     );
     assert_eq!(
-        super::provider_display_marker(Some(Provider::Pi)),
+        super::provider_display_marker(Some(Provider::Pi), IconMode::NerdFont),
         "\u{e22c}"
     );
-    assert_eq!(super::provider_display_marker(Some(Provider::Grok)), "G");
     assert_eq!(
-        super::provider_display_marker(Some(Provider::Hermes)),
+        super::provider_display_marker(Some(Provider::Grok), IconMode::NerdFont),
+        "G"
+    );
+    assert_eq!(
+        super::provider_display_marker(Some(Provider::Hermes), IconMode::NerdFont),
         "⚕"
     );
     assert_eq!(
-        super::provider_display_marker(Some(Provider::Opencode)),
+        super::provider_display_marker(Some(Provider::Opencode), IconMode::NerdFont),
         "\u{f07e2}"
     );
-    assert_eq!(super::provider_display_marker(None), "unknown");
+    assert_eq!(super::provider_display_marker(None, IconMode::Emoji), "?");
+}
+
+#[test]
+fn tui_render_rows_can_use_nerd_font_provider_markers() {
+    let pane = classify::pane_from_row(super::TmuxPaneRow {
+        session_name: "notes".to_string(),
+        window_index: 4,
+        pane_index: 1,
+        pane_id: "%41".to_string(),
+        pane_pid: 324026,
+        pane_current_command: "claude".to_string(),
+        pane_title_raw: "Claude Code | Working".to_string(),
+        pane_tty: "/dev/pts/44".to_string(),
+        pane_current_path: "/home/auro/notes".to_string(),
+        window_name: "ai".to_string(),
+        session_id: None,
+        window_id: None,
+        agent_provider: None,
+        agent_label: None,
+        agent_cwd: None,
+        agent_state: None,
+        agent_session_id: None,
+    });
+
+    let mut key_targets = std::collections::BTreeMap::new();
+    super::tui::synchronize_key_targets(&mut key_targets, std::slice::from_ref(&pane));
+
+    let lines =
+        super::tui::render_rows_for_width_with_icons(&[pane], &key_targets, usize::MAX, IconMode::NerdFont);
+    assert_eq!(lines, vec!["[1] 🟡 \u{e76f} notes:4.1 - Working"]);
 }
 
 #[test]
@@ -156,7 +230,7 @@ fn tui_render_rows_sanitize_control_characters_and_escape_sequences() {
     let lines = super::tui::render_rows(&[pane], &key_targets);
     assert_eq!(
         lines,
-        vec!["[1] 🟡 \u{e76f} notes:4.1 - Task next step now"]
+        vec!["[1] 🟡 🧠 notes:4.1 - Task next step now"]
     );
 }
 
@@ -680,7 +754,7 @@ fn tui_frame_writer_sanitizes_tmux_controlled_labels() {
             height: 3,
         },
     );
-    assert_eq!(frame.lines[0], "[1] 🟡 \u{e76f} notes:4.1 - Task next step");
+    assert_eq!(frame.lines[0], "[1] 🟡 🧠 notes:4.1 - Task next step");
     assert!(!frame.lines[0].contains(['\n', '\r', '\t', '\u{1b}']));
 
     let mut rendered = Vec::new();

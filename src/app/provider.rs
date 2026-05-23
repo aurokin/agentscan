@@ -3,6 +3,8 @@ use std::fmt;
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
+use super::IconMode;
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Provider {
@@ -34,7 +36,7 @@ impl fmt::Display for Provider {
 pub(crate) struct ProviderInfo {
     provider: Provider,
     canonical_name: &'static str,
-    display_marker: &'static str,
+    icons: ProviderIconSet,
     metadata_aliases: &'static [&'static str],
     command_aliases: &'static [ProviderCommandAlias],
     title_prefixes: &'static [&'static str],
@@ -48,10 +50,31 @@ pub(crate) struct ProviderSummary {
     pub(crate) name: &'static str,
     pub(crate) display_marker: &'static str,
     pub(crate) display_marker_codepoints: Vec<String>,
+    pub(crate) icons: ProviderIconSummary,
     pub(crate) metadata_aliases: &'static [&'static str],
     pub(crate) command_aliases: Vec<ProviderCommandAliasSummary>,
     pub(crate) title_prefixes: &'static [&'static str],
     pub(crate) title_aliases: &'static [&'static str],
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ProviderIconSet {
+    emoji: &'static str,
+    nerd_font: &'static str,
+    nerd_font_patched: &'static str,
+}
+
+#[derive(Serialize)]
+pub(crate) struct ProviderIconSummary {
+    pub(crate) emoji: ProviderIconModeSummary,
+    pub(crate) nerd_font: ProviderIconModeSummary,
+    pub(crate) nerd_font_patched: ProviderIconModeSummary,
+}
+
+#[derive(Serialize)]
+pub(crate) struct ProviderIconModeSummary {
+    pub(crate) marker: &'static str,
+    pub(crate) codepoints: Vec<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -72,11 +95,33 @@ impl ProviderCommandAlias {
     }
 }
 
+impl ProviderIconSet {
+    const fn new(
+        emoji: &'static str,
+        nerd_font: &'static str,
+        nerd_font_patched: &'static str,
+    ) -> Self {
+        Self {
+            emoji,
+            nerd_font,
+            nerd_font_patched,
+        }
+    }
+
+    fn marker(self, mode: IconMode) -> &'static str {
+        match mode {
+            IconMode::Emoji => self.emoji,
+            IconMode::NerdFont => self.nerd_font,
+            IconMode::NerdFontPatched => self.nerd_font_patched,
+        }
+    }
+}
+
 const PROVIDER_INFOS: &[ProviderInfo] = &[
     ProviderInfo {
         provider: Provider::Codex,
         canonical_name: "codex",
-        display_marker: "\u{f07b5}",
+        icons: ProviderIconSet::new("🤖", "\u{f07b5}", "\u{f07b5}"),
         metadata_aliases: &["codex"],
         command_aliases: &[ProviderCommandAlias::new("codex", true)],
         title_prefixes: &[],
@@ -86,7 +131,7 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
     ProviderInfo {
         provider: Provider::Claude,
         canonical_name: "claude",
-        display_marker: "\u{e76f}",
+        icons: ProviderIconSet::new("🧠", "\u{e76f}", "\u{e76f}"),
         metadata_aliases: &["claude"],
         command_aliases: &[ProviderCommandAlias::new("claude", true)],
         title_prefixes: &["Claude Code | ", "Claude | "],
@@ -96,7 +141,7 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
     ProviderInfo {
         provider: Provider::Gemini,
         canonical_name: "gemini",
-        display_marker: "\u{e7f0}",
+        icons: ProviderIconSet::new("✨", "\u{e7f0}", "\u{e7f0}"),
         metadata_aliases: &["gemini"],
         command_aliases: &[ProviderCommandAlias::new("gemini", true)],
         title_prefixes: &[],
@@ -106,7 +151,7 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
     ProviderInfo {
         provider: Provider::Antigravity,
         canonical_name: "antigravity",
-        display_marker: "A",
+        icons: ProviderIconSet::new("🛸", "A", "A"),
         metadata_aliases: &["antigravity", "agy", "google antigravity"],
         command_aliases: &[ProviderCommandAlias::new("agy", false)],
         title_prefixes: &[],
@@ -116,7 +161,7 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
     ProviderInfo {
         provider: Provider::Opencode,
         canonical_name: "opencode",
-        display_marker: "\u{f07e2}",
+        icons: ProviderIconSet::new("🧰", "\u{f07e2}", "\u{f07e2}"),
         metadata_aliases: &["opencode"],
         command_aliases: &[ProviderCommandAlias::new("opencode", true)],
         title_prefixes: &["OC | "],
@@ -126,7 +171,7 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
     ProviderInfo {
         provider: Provider::Copilot,
         canonical_name: "copilot",
-        display_marker: "\u{ec1e}",
+        icons: ProviderIconSet::new("🧭", "\u{ec1e}", "\u{ec1e}"),
         metadata_aliases: &["copilot", "github-copilot", "github copilot"],
         command_aliases: &[
             ProviderCommandAlias::new("copilot", false),
@@ -139,7 +184,7 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
     ProviderInfo {
         provider: Provider::CursorCli,
         canonical_name: "cursor_cli",
-        display_marker: "\u{f12e9}",
+        icons: ProviderIconSet::new("🖱️", "\u{f12e9}", "\u{f12e9}"),
         metadata_aliases: &["cursor_cli", "cursor-cli", "cursor cli", "cursor-agent"],
         command_aliases: &[
             ProviderCommandAlias::new("cursor-cli", false),
@@ -152,7 +197,7 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
     ProviderInfo {
         provider: Provider::Pi,
         canonical_name: "pi",
-        display_marker: "\u{e22c}",
+        icons: ProviderIconSet::new("🥧", "\u{e22c}", "\u{e22c}"),
         metadata_aliases: &["pi", "pi-coding-agent", "pi coding agent"],
         command_aliases: &[ProviderCommandAlias::new("pi-coding-agent", false)],
         title_prefixes: &["π - ", "pi - "],
@@ -162,7 +207,7 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
     ProviderInfo {
         provider: Provider::Grok,
         canonical_name: "grok",
-        display_marker: "G",
+        icons: ProviderIconSet::new("💡", "G", "G"),
         metadata_aliases: &["grok", "grok-build", "grok build"],
         command_aliases: &[ProviderCommandAlias::new("grok", true)],
         title_prefixes: &[],
@@ -172,7 +217,7 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
     ProviderInfo {
         provider: Provider::Hermes,
         canonical_name: "hermes",
-        display_marker: "⚕",
+        icons: ProviderIconSet::new("⚕️", "⚕", "⚕"),
         metadata_aliases: &["hermes", "hermes-agent", "hermes agent"],
         command_aliases: &[
             ProviderCommandAlias::new("hermes", false),
@@ -185,7 +230,7 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
     ProviderInfo {
         provider: Provider::Droid,
         canonical_name: "droid",
-        display_marker: "⛬",
+        icons: ProviderIconSet::new("🏭", "⛬", "⛬"),
         metadata_aliases: &["droid", "factory-droid", "factory droid"],
         command_aliases: &[ProviderCommandAlias::new("droid", false)],
         title_prefixes: &["⛬ "],
@@ -194,10 +239,10 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
     },
 ];
 
-pub(crate) fn provider_display_marker(provider: Option<Provider>) -> String {
+pub(crate) fn provider_display_marker(provider: Option<Provider>, icon_mode: IconMode) -> String {
     provider
-        .map(|provider| provider_info(provider).display_marker.to_string())
-        .unwrap_or_else(|| "unknown".to_string())
+        .map(|provider| provider_info(provider).icons.marker(icon_mode).to_string())
+        .unwrap_or_else(|| "?".to_string())
 }
 
 pub(crate) fn provider_summary_order() -> impl Iterator<Item = Provider> {
@@ -210,8 +255,9 @@ pub(crate) fn provider_summaries() -> Vec<ProviderSummary> {
         .map(|info| ProviderSummary {
             provider: info.provider,
             name: info.canonical_name,
-            display_marker: info.display_marker,
-            display_marker_codepoints: marker_codepoints(info.display_marker),
+            display_marker: info.icons.nerd_font,
+            display_marker_codepoints: marker_codepoints(info.icons.nerd_font),
+            icons: icon_summary(info.icons),
             metadata_aliases: info.metadata_aliases,
             command_aliases: info
                 .command_aliases
@@ -225,6 +271,10 @@ pub(crate) fn provider_summaries() -> Vec<ProviderSummary> {
             title_aliases: info.title_aliases,
         })
         .collect()
+}
+
+pub(crate) fn provider_marker(provider: Provider, icon_mode: IconMode) -> &'static str {
+    provider_info(provider).icons.marker(icon_mode)
 }
 
 pub(crate) fn provider_title_prefixes(provider: Provider) -> &'static [&'static str] {
@@ -263,7 +313,22 @@ fn provider_info(provider: Provider) -> &'static ProviderInfo {
         .expect("provider metadata table should include every provider")
 }
 
-fn marker_codepoints(marker: &str) -> Vec<String> {
+fn icon_summary(icons: ProviderIconSet) -> ProviderIconSummary {
+    ProviderIconSummary {
+        emoji: icon_mode_summary(icons.emoji),
+        nerd_font: icon_mode_summary(icons.nerd_font),
+        nerd_font_patched: icon_mode_summary(icons.nerd_font_patched),
+    }
+}
+
+fn icon_mode_summary(marker: &'static str) -> ProviderIconModeSummary {
+    ProviderIconModeSummary {
+        marker,
+        codepoints: marker_codepoints(marker),
+    }
+}
+
+pub(crate) fn marker_codepoints(marker: &str) -> Vec<String> {
     marker
         .chars()
         .map(|character| format!("U+{:04X}", character as u32))

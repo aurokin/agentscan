@@ -50,6 +50,7 @@ pub(super) fn merge_list_args(args: &mut ListArgs, root_list_args: &ListArgs) {
     if args.format == OutputFormat::Text {
         args.format = root_list_args.format;
     }
+    args.icons = args.icons.or(root_list_args.icons);
 }
 
 pub(super) fn merge_scan_args(args: &mut ScanArgs, root_list_args: &ListArgs) {
@@ -58,6 +59,7 @@ pub(super) fn merge_scan_args(args: &mut ScanArgs, root_list_args: &ListArgs) {
     if args.format == OutputFormat::Text {
         args.format = root_list_args.format;
     }
+    args.icons = args.icons.or(root_list_args.icons);
 }
 
 pub(super) fn merge_snapshot_args(
@@ -65,6 +67,7 @@ pub(super) fn merge_snapshot_args(
     root_list_args: &ListArgs,
 ) -> Result<()> {
     reject_root_all(root_list_args, "snapshot")?;
+    reject_root_icons(root_list_args, "snapshot")?;
     args.refresh.refresh |= root_list_args.refresh.refresh;
     args.auto_start.no_auto_start |= root_list_args.auto_start.no_auto_start;
     if args.format == OutputFormat::Text {
@@ -84,12 +87,14 @@ pub(super) fn merge_providers_args(
     if args.format == OutputFormat::Text {
         args.format = root_list_args.format;
     }
+    args.icons = args.icons.or(root_list_args.icons);
 
     Ok(())
 }
 
 pub(super) fn merge_inspect_args(args: &mut InspectArgs, root_list_args: &ListArgs) -> Result<()> {
     reject_root_all(root_list_args, "inspect")?;
+    reject_root_icons(root_list_args, "inspect")?;
     args.auto_start.no_auto_start |= root_list_args.auto_start.no_auto_start;
     args.refresh.refresh |= root_list_args.refresh.refresh;
     if args.format == OutputFormat::Text {
@@ -102,6 +107,7 @@ pub(super) fn merge_inspect_args(args: &mut InspectArgs, root_list_args: &ListAr
 pub(super) fn merge_focus_args(args: &mut FocusArgs, root_list_args: &ListArgs) -> Result<()> {
     reject_root_all(root_list_args, "focus")?;
     reject_root_format(root_list_args, "focus")?;
+    reject_root_icons(root_list_args, "focus")?;
     args.auto_start.no_auto_start |= root_list_args.auto_start.no_auto_start;
     args.refresh.refresh |= root_list_args.refresh.refresh;
 
@@ -113,6 +119,7 @@ pub(super) fn merge_tui_args(args: &mut TuiArgs, root_list_args: &ListArgs) -> R
     reject_root_refresh(root_list_args, "tui")?;
     args.auto_start.no_auto_start |= root_list_args.auto_start.no_auto_start;
     args.all |= root_list_args.all;
+    args.icons = args.icons.or(root_list_args.icons);
 
     Ok(())
 }
@@ -157,6 +164,16 @@ pub(super) fn reject_root_auto_start(root_list_args: &ListArgs, command_name: &s
     Ok(())
 }
 
+pub(super) fn reject_root_icons(root_list_args: &ListArgs, command_name: &str) -> Result<()> {
+    if root_list_args.icons.is_some() {
+        bail!(
+            "`--icons` is not supported before `{command_name}`; place it on a human-facing command that renders provider icons or omit it"
+        );
+    }
+
+    Ok(())
+}
+
 pub(super) fn reject_tui_format(root_list_args: &ListArgs) -> Result<()> {
     if root_list_args.format != OutputFormat::Text {
         bail!(
@@ -171,14 +188,28 @@ fn reject_root_list_args(root_list_args: &ListArgs, command_name: &str) -> Resul
     reject_root_refresh(root_list_args, command_name)?;
     reject_root_all(root_list_args, command_name)?;
     reject_root_format(root_list_args, command_name)?;
-    reject_root_auto_start(root_list_args, command_name)
+    reject_root_auto_start(root_list_args, command_name)?;
+    reject_root_icons(root_list_args, command_name)
+}
+
+fn resolve_command_config(icons: Option<IconMode>) -> Result<ResolvedConfig> {
+    config::resolve_config(config::CliConfigOverrides { icons })
+}
+
+fn resolve_text_icon_mode(format: OutputFormat, icons: Option<IconMode>) -> Result<IconMode> {
+    match format {
+        OutputFormat::Text => Ok(resolve_command_config(icons)?.icons),
+        OutputFormat::Json => Ok(IconMode::default()),
+    }
 }
 
 fn command_scan(args: &ScanArgs) -> Result<()> {
+    let icon_mode = resolve_text_icon_mode(args.format, args.icons)?;
     emit_filtered_snapshot(
         snapshot_from_direct_tmux_for_recovery()?,
         args.all,
         args.format,
+        icon_mode,
     )
 }
 
@@ -199,25 +230,29 @@ fn snapshot_for_consumer(
 }
 
 fn command_list(args: &ListArgs) -> Result<()> {
+    let icon_mode = resolve_text_icon_mode(args.format, args.icons)?;
     let snapshot = snapshot_for_consumer(args.refresh, args.auto_start)?;
-    emit_filtered_snapshot(snapshot, args.all, args.format)
+    emit_filtered_snapshot(snapshot, args.all, args.format, icon_mode)
 }
 
 fn emit_filtered_snapshot(
     mut snapshot: SnapshotEnvelope,
     include_all: bool,
     format: OutputFormat,
+    icon_mode: IconMode,
 ) -> Result<()> {
     snapshot::filter_snapshot(&mut snapshot, include_all);
-    output::emit_snapshot(&snapshot, format)
+    output::emit_snapshot(&snapshot, format, icon_mode)
 }
 
 fn command_providers(args: &ProvidersArgs) -> Result<()> {
-    output::emit_providers(&provider_summaries(), args.format)
+    let icon_mode = resolve_text_icon_mode(args.format, args.icons)?;
+    output::emit_providers(&provider_summaries(), args.format, icon_mode)
 }
 
 fn command_tui(args: &TuiArgs) -> Result<()> {
-    tui::run(args)
+    let config = resolve_command_config(args.icons)?;
+    tui::run(args, config.icons)
 }
 
 fn command_snapshot(args: &SnapshotArgs) -> Result<()> {

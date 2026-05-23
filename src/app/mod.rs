@@ -15,6 +15,7 @@ pub mod bench_support;
 mod classify;
 mod cli;
 mod commands;
+mod config;
 mod daemon;
 mod ipc;
 mod model;
@@ -31,6 +32,7 @@ mod tui;
 
 pub(crate) use cli::*;
 pub use commands::run;
+pub(crate) use config::*;
 pub(crate) use model::*;
 pub(crate) use path::*;
 pub(crate) use provider::*;
