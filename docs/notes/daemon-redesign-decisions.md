@@ -120,5 +120,9 @@ slices so they can be reviewed together at the end of the work.
   `src/app/daemon/snapshot_store.rs`.
 - The control-mode runtime, brokered read provider, command-frame parser, and
   broker transcript harness moved into `src/app/daemon/control_mode.rs`.
+- The daemon socket server, socket state machine, subscriber mailboxes, snapshot
+  publication telemetry, and socket client handler moved into
+  `src/app/daemon/socket_server.rs`.
 - The daemon loop still owns when to refresh, recover, publish, and reconcile;
-  the control-mode module owns how brokered tmux reads and reconnect state work.
+  the control-mode module owns how brokered tmux reads and reconnect state work,
+  and the socket module owns how daemon snapshots are published to clients.
