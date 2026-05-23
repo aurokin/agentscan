@@ -126,11 +126,18 @@ type PickerActivation =
   | { status: "running"; paneId: string }
   | { status: "failed"; message: string };
 
+type DraftValidation = {
+  errors: string[];
+};
+
 function App() {
   const [state, setState] = useState<LoadState>({ status: "loading" });
   const [profileState, setProfileState] = useState<ProfileState>(() => loadStoredProfiles());
   const activeProfile = useMemo(() => getActiveProfile(profileState), [profileState]);
   const runnerSettings = useMemo(() => runnerSettingsForProfile(activeProfile), [activeProfile]);
+  const [profileNameDraft, setProfileNameDraft] = useState(() =>
+    getActiveProfile(loadStoredProfiles()).name,
+  );
   const [settingsDraft, setSettingsDraft] = useState<RunnerSettings>(() =>
     getActiveProfile(loadStoredProfiles()).runner,
   );
@@ -147,6 +154,17 @@ function App() {
   const [isPickerVisible, setIsPickerVisible] = useState(true);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [activation, setActivation] = useState<PickerActivation>({ status: "idle" });
+  const validation = useMemo(
+    () => validateProfileDraft(activeProfile, profileNameDraft, settingsDraft, sshHostDraft),
+    [activeProfile, profileNameDraft, settingsDraft, sshHostDraft],
+  );
+  const isSettingsDirty = useMemo(
+    () =>
+      profileNameDraft.trim() !== activeProfile.name ||
+      sshHostDraft.trim() !== (activeProfile.kind === "ssh" ? activeProfile.host : "") ||
+      !runnerSettingsEqual(settingsDraft, activeProfile.runner),
+    [activeProfile, profileNameDraft, settingsDraft, sshHostDraft],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -159,6 +177,29 @@ function App() {
       });
 
       try {
+        const profileValidation = validateProfileDraft(
+          activeProfile,
+          activeProfile.name,
+          activeProfile.runner,
+          activeProfile.kind === "ssh" ? activeProfile.host : "",
+        );
+        if (profileValidation.errors.length > 0) {
+          const message = profileValidation.errors.join(" ");
+          setState({
+            status: "ready",
+            profiles: profileState.profiles.map(profileSummary),
+            preflight: {
+              binary: commandPrefix(activeProfile),
+              ok: false,
+              version: null,
+              error: message,
+            },
+            picker: { status: "failed", message },
+          });
+          setLiveState({ status: "fatal", message, diagnostics: null });
+          return;
+        }
+
         const [profiles, preflight] = await Promise.all([
           Promise.resolve(profileState.profiles.map(profileSummary)),
           runCommand<AgentscanPreflight>(
@@ -198,7 +239,7 @@ function App() {
   }, [profileState, runnerSettings]);
 
   useEffect(() => {
-    if (state.status !== "ready") {
+    if (state.status !== "ready" || !state.preflight.ok) {
       return;
     }
 
@@ -377,6 +418,7 @@ function App() {
   }, [clampedSelectedIndex, selectedIndex]);
 
   useEffect(() => {
+    setProfileNameDraft(activeProfile.name);
     setSettingsDraft(activeProfile.runner);
     setSshHostDraft(activeProfile.kind === "ssh" ? activeProfile.host : "");
   }, [activeProfile]);
@@ -445,10 +487,30 @@ function App() {
   }
 
   function applyRunnerSettings() {
+    const validation = validateProfileDraft(
+      activeProfile,
+      profileNameDraft,
+      settingsDraft,
+      sshHostDraft,
+    );
+    if (validation.errors.length > 0) {
+      appendDebugEntry({
+        kind: "settings",
+        label: `${activeProfile.name} settings rejected`,
+        detail: validation.errors.join(" · "),
+      });
+      return;
+    }
+
     const normalized = normalizeRunnerSettings(settingsDraft);
     setSettingsDraft(normalized);
     setProfileState((current) => {
-      const next = updateActiveProfileSettings(current, normalized, sshHostDraft);
+      const next = updateActiveProfileSettings(
+        current,
+        profileNameDraft.trim(),
+        normalized,
+        sshHostDraft,
+      );
       storeProfiles(next);
       return next;
     });
@@ -457,6 +519,12 @@ function App() {
       label: `${activeProfile.name} settings applied`,
       detail: `${runnerSummary(normalized)} · ${normalized.env.length} env ${normalized.env.length === 1 ? "name" : "names"}`,
     });
+  }
+
+  function resetProfileSettings() {
+    setProfileNameDraft(activeProfile.name);
+    setSettingsDraft(activeProfile.runner);
+    setSshHostDraft(activeProfile.kind === "ssh" ? activeProfile.host : "");
   }
 
   function selectProfile(id: string) {
@@ -475,8 +543,8 @@ function App() {
   function addSshProfile() {
     setProfileState((current) => {
       const profile: SshProfileConfig = {
-        id: `ssh-${Date.now()}`,
-        name: "Remote",
+        id: newProfileId("ssh"),
+        name: nextRemoteProfileName(current.profiles),
         kind: "ssh",
         host: "",
         runner: emptyRunnerSettings(),
@@ -489,6 +557,51 @@ function App() {
       storeProfiles(next);
       return next;
     });
+  }
+
+  function deleteActiveProfile() {
+    if (activeProfile.kind === "local") {
+      return;
+    }
+
+    setProfileState((current) => {
+      const profiles = current.profiles.filter((profile) => profile.id !== activeProfile.id);
+      const fallback = profiles.find((profile) => profile.kind === "local") ?? profiles[0];
+      const next = normalizeProfileState({
+        activeProfileId: fallback?.id,
+        profiles,
+      });
+      storeProfiles(next);
+      return next;
+    });
+    appendDebugEntry({
+      kind: "settings",
+      label: `${activeProfile.name} profile deleted`,
+      detail: "active profile changed",
+    });
+  }
+
+  function updateEnvironmentVariable(index: number, patch: Partial<EnvironmentVariable>) {
+    setSettingsDraft((current) => ({
+      ...current,
+      env: current.env.map((variable, variableIndex) =>
+        variableIndex === index ? { ...variable, ...patch } : variable,
+      ),
+    }));
+  }
+
+  function addEnvironmentVariable() {
+    setSettingsDraft((current) => ({
+      ...current,
+      env: [...current.env, { name: "", value: "" }],
+    }));
+  }
+
+  function removeEnvironmentVariable(index: number) {
+    setSettingsDraft((current) => ({
+      ...current,
+      env: current.env.filter((_, variableIndex) => variableIndex !== index),
+    }));
   }
 
   function appendDebugEntry(entry: Omit<DebugEntry, "id" | "time">) {
@@ -531,13 +644,16 @@ function App() {
               </div>
               <ul className="profile-list">
                 {state.profiles.map((profile) => (
-                  <li
-                    className={profile.id === activeProfile.id ? "active" : undefined}
-                    key={profile.id}
-                    onClick={() => selectProfile(profile.id)}
-                  >
-                    <span>{profile.name}</span>
-                    <small>{profile.kind === "ssh" ? "ssh" : profile.kind}</small>
+                  <li key={profile.id}>
+                    <button
+                      aria-pressed={profile.id === activeProfile.id}
+                      className={profile.id === activeProfile.id ? "active" : undefined}
+                      type="button"
+                      onClick={() => selectProfile(profile.id)}
+                    >
+                      <span>{profile.name}</span>
+                      <small>{profile.kind === "ssh" ? "ssh" : profile.kind}</small>
+                    </button>
                   </li>
                 ))}
               </ul>
@@ -567,11 +683,51 @@ function App() {
           <section className="settings-panel" aria-label="Local runner settings">
             <div className="panel-heading">
               <h2>{activeProfile.name} Runner</h2>
-              <button type="button" onClick={applyRunnerSettings}>
-                Apply
-              </button>
+              <div className="panel-actions">
+                {activeProfile.kind === "ssh" ? (
+                  <button
+                    className="secondary-button danger"
+                    type="button"
+                    onClick={deleteActiveProfile}
+                  >
+                    Delete
+                  </button>
+                ) : null}
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={resetProfileSettings}
+                  disabled={!isSettingsDirty}
+                >
+                  Reset
+                </button>
+                <button
+                  type="button"
+                  onClick={applyRunnerSettings}
+                  disabled={!isSettingsDirty || validation.errors.length > 0}
+                >
+                  Apply
+                </button>
+              </div>
             </div>
+            {validation.errors.length > 0 ? (
+              <div className="error-state settings-error" role="alert">
+                <h3>Invalid settings</h3>
+                <ul>
+                  {validation.errors.map((error) => (
+                    <li key={error}>{error}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
             <div className="settings-grid">
+              <label>
+                <span>profile name</span>
+                <input
+                  value={profileNameDraft}
+                  onChange={(event) => setProfileNameDraft(event.target.value)}
+                />
+              </label>
               {activeProfile.kind === "ssh" ? (
                 <label>
                   <span>ssh host</span>
@@ -595,20 +751,47 @@ function App() {
                   placeholder="Auto-detect"
                 />
               </label>
-              <label>
+              <div className="env-editor">
                 <span>environment</span>
-                <textarea
-                  value={formatEnvironmentDraft(settingsDraft.env)}
-                  onChange={(event) =>
-                    setSettingsDraft((current) => ({
-                      ...current,
-                      env: parseEnvironmentDraft(event.target.value),
-                    }))
-                  }
-                  spellCheck={false}
-                  placeholder={"AGENTSCAN_TMUX_SOCKET=/tmp/tmux-501/default\nAGENTSCAN_SOCKET_PATH=/tmp/agentscan.sock"}
-                />
-              </label>
+                <div className="env-list">
+                  {settingsDraft.env.map((variable, index) => (
+                    <div className="env-row" key={index}>
+                      <input
+                        aria-label="Environment variable name"
+                        value={variable.name}
+                        onChange={(event) =>
+                          updateEnvironmentVariable(index, { name: event.target.value })
+                        }
+                        placeholder="NAME"
+                        spellCheck={false}
+                      />
+                      <input
+                        aria-label="Environment variable value"
+                        value={variable.value}
+                        onChange={(event) =>
+                          updateEnvironmentVariable(index, { value: event.target.value })
+                        }
+                        placeholder="value"
+                        spellCheck={false}
+                      />
+                      <button
+                        className="secondary-button"
+                        type="button"
+                        onClick={() => removeEnvironmentVariable(index)}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={addEnvironmentVariable}
+                >
+                  Add env
+                </button>
+              </div>
             </div>
           </section>
 
@@ -621,7 +804,11 @@ function App() {
                     Show
                   </button>
                 ) : null}
-                <button type="button" onClick={refreshPickerRows} disabled={isRefreshing}>
+                <button
+                  type="button"
+                  onClick={refreshPickerRows}
+                  disabled={isRefreshing || isSettingsDirty || validation.errors.length > 0}
+                >
                   {isRefreshing ? "Refreshing" : "Refresh"}
                 </button>
               </div>
@@ -829,7 +1016,10 @@ function loadStoredProfiles(): ProfileState {
 
 function storeProfiles(state: ProfileState) {
   window.localStorage.setItem(PROFILES_STORAGE_KEY, JSON.stringify(state));
-  window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(getActiveProfile(state).runner));
+  const localProfile = state.profiles.find((profile) => profile.kind === "local");
+  if (localProfile) {
+    window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(localProfile.runner));
+  }
 }
 
 function storeRunnerSettings(settings: RunnerSettings) {
@@ -922,6 +1112,7 @@ function isRunnableProfile(profile: DesktopProfileConfig): boolean {
 
 function updateActiveProfileSettings(
   state: ProfileState,
+  name: string,
   runner: RunnerSettings,
   sshHost: string,
 ): ProfileState {
@@ -929,7 +1120,7 @@ function updateActiveProfileSettings(
     ...state,
     profiles: state.profiles.map((profile) =>
       profile.id === state.activeProfileId
-        ? updateProfileSettings(profile, runner, sshHost)
+        ? updateProfileSettings(profile, name, runner, sshHost)
         : profile,
     ),
   };
@@ -937,21 +1128,24 @@ function updateActiveProfileSettings(
 
 function updateProfileSettings(
   profile: DesktopProfileConfig,
+  name: string,
   runner: RunnerSettings,
   sshHost: string,
 ): DesktopProfileConfig {
   const normalizedRunner = normalizeRunnerSettings(runner);
+  const normalizedName = name.trim() || profile.name;
 
   if (profile.kind === "ssh") {
     return {
       ...profile,
+      name: normalizedName,
       host: sshHost.trim(),
       runner: normalizedRunner,
       enabled: true,
     };
   }
 
-  return { ...profile, runner: normalizedRunner };
+  return { ...profile, name: normalizedName, runner: normalizedRunner };
 }
 
 function profileSummary(profile: DesktopProfileConfig): DesktopProfile {
@@ -995,6 +1189,77 @@ function profileKindLabel(profile: DesktopProfileConfig) {
   return profile.kind === "ssh" ? "SSH" : "Local";
 }
 
+function validateProfileDraft(
+  profile: DesktopProfileConfig,
+  name: string,
+  runner: RunnerSettings,
+  sshHost: string,
+): DraftValidation {
+  const errors: string[] = [];
+
+  if (!name.trim()) {
+    errors.push("Profile name is required.");
+  }
+
+  if (runner.binaryPath.includes("\0")) {
+    errors.push("agentscan binary cannot contain a null byte.");
+  }
+
+  if (profile.kind === "ssh") {
+    const host = sshHost.trim();
+    if (!host) {
+      errors.push("SSH host is required.");
+    } else if (host.startsWith("-") || /\s/.test(host) || host.includes("\0")) {
+      errors.push("SSH host must be a single host alias and cannot start with '-'.");
+    }
+  }
+
+  const seenNames = new Set<string>();
+  runner.env.forEach((variable, index) => {
+    const name = variable.name.trim();
+    if (!name) {
+      errors.push(`Environment row ${index + 1} needs a name.`);
+      return;
+    }
+
+    if (name.includes("=") || name.includes("\0")) {
+      errors.push(`Environment row ${index + 1} has an invalid name.`);
+      return;
+    }
+
+    if (seenNames.has(name)) {
+      errors.push(`Environment variable ${name} is duplicated.`);
+    }
+    seenNames.add(name);
+  });
+
+  return { errors };
+}
+
+function runnerSettingsEqual(left: RunnerSettings, right: RunnerSettings) {
+  if (left.binaryPath !== right.binaryPath || left.env.length !== right.env.length) {
+    return false;
+  }
+
+  return left.env.every(
+    (variable, index) =>
+      variable.name === right.env[index]?.name && variable.value === right.env[index]?.value,
+  );
+}
+
+function newProfileId(prefix: string) {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+
+  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function nextRemoteProfileName(profiles: DesktopProfileConfig[]) {
+  const remoteCount = profiles.filter((profile) => profile.kind === "ssh").length;
+  return remoteCount === 0 ? "Remote" : `Remote ${remoteCount + 1}`;
+}
+
 function normalizeRunnerSettings(settings: Partial<RunnerSettings>): RunnerSettings {
   const env = Array.isArray(settings.env)
     ? settings.env
@@ -1009,28 +1274,6 @@ function normalizeRunnerSettings(settings: Partial<RunnerSettings>): RunnerSetti
     binaryPath: String(settings.binaryPath ?? "").trim(),
     env,
   };
-}
-
-function parseEnvironmentDraft(value: string): EnvironmentVariable[] {
-  return value
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const separator = line.indexOf("=");
-      if (separator === -1) {
-        return { name: line, value: "" };
-      }
-
-      return {
-        name: line.slice(0, separator).trim(),
-        value: line.slice(separator + 1),
-      };
-    });
-}
-
-function formatEnvironmentDraft(env: EnvironmentVariable[]) {
-  return env.map((variable) => `${variable.name}=${variable.value}`).join("\n");
 }
 
 function liveStateLabelFromEvent(event: LivePickerEvent) {

@@ -24,6 +24,8 @@
 - Added an SSH desktop runner profile spike that executes the same preflight,
   picker, live subscription, and focus command contract through the user's SSH
   configuration.
+- Added desktop profile management controls for renaming, deleting, resetting,
+  validating, and editing environment variables in local and SSH profiles.
 - Added an ADR choosing Tauri 2 with a Rust backend and React/TypeScript UI for
   the macOS-first desktop shell, while preserving the shared CLI client contract
   for terminal and desktop consumers.

@@ -85,6 +85,17 @@ button {
   font-weight: 700;
 }
 
+button.secondary-button {
+  color: #1f312b;
+  border-color: #c5c9bf;
+  background: #fbfcfa;
+}
+
+button.secondary-button.danger {
+  color: #8a2f2c;
+  border-color: #d9a19e;
+}
+
 button:disabled {
   cursor: wait;
   color: #62685c;
@@ -130,18 +141,27 @@ button:disabled {
 }
 
 .profile-list li {
+  min-width: 0;
+}
+
+.profile-list button {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  width: 100%;
   min-height: 42px;
   padding: 10px 12px;
+  color: #1f312b;
+  border: 1px solid transparent;
   border-radius: 6px;
   background: #f1f4ef;
-  cursor: default;
+  cursor: pointer;
+  font-weight: 400;
+  text-align: left;
 }
 
-.profile-list li.active {
+.profile-list button.active {
   border: 1px solid #1f6b53;
   background: #e7f4ed;
 }
@@ -251,7 +271,7 @@ button:disabled {
 }
 
 .settings-grid input,
-.settings-grid textarea {
+.env-row input {
   width: 100%;
   border: 1px solid #c5c9bf;
   border-radius: 6px;
@@ -266,10 +286,36 @@ button:disabled {
   padding: 0 10px;
 }
 
-.settings-grid textarea {
-  min-height: 88px;
-  resize: vertical;
-  padding: 10px;
+.env-editor {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 8px;
+  min-width: 0;
+}
+
+.env-list {
+  display: grid;
+  gap: 8px;
+}
+
+.env-row {
+  display: grid;
+  grid-template-columns: minmax(130px, 0.65fr) minmax(160px, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.settings-error {
+  margin-bottom: 14px;
+}
+
+.settings-error ul {
+  padding-left: 18px;
+  margin: 0;
+}
+
+.settings-error li {
+  margin: 4px 0;
 }
 
 .muted {
@@ -475,6 +521,7 @@ kbd {
   }
 
   .settings-grid,
+  .env-row,
   .debug-list li {
     grid-template-columns: 1fr;
   }
