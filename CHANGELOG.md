@@ -19,6 +19,8 @@
   reconnects, and surfaces daemon diagnostics for offline/fatal states.
 - Added local desktop runner settings for the `agentscan` binary path and
   optional environment variables, plus a command and stream debug log.
+- Added a typed desktop profile model with the local runner stored as the active
+  profile, preparing the UI and command boundary for future SSH profiles.
 - Added an ADR choosing Tauri 2 with a Rust backend and React/TypeScript UI for
   the macOS-first desktop shell, while preserving the shared CLI client contract
   for terminal and desktop consumers.

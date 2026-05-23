@@ -7,7 +7,9 @@ import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 const PICKER_HOTKEY = "CommandOrControl+Shift+A";
 const LIVE_PICKER_EVENT = "agentscan-live-picker";
 const SETTINGS_STORAGE_KEY = "agentscan.desktop.localRunnerSettings";
+const PROFILES_STORAGE_KEY = "agentscan.desktop.profiles";
 const DEBUG_LOG_LIMIT = 80;
+const LOCAL_PROFILE_ID = "local";
 
 let hotkeyOperationQueue = Promise.resolve();
 let liveOperationQueue = Promise.resolve();
@@ -16,8 +18,10 @@ let windowOperationQueue = Promise.resolve();
 type DesktopProfile = {
   id: string;
   name: string;
-  kind: "local";
+  kind: ProfileKind;
 };
+
+type ProfileKind = "local" | "ssh";
 
 type AgentscanPreflight = {
   binary: string;
@@ -29,6 +33,29 @@ type AgentscanPreflight = {
 type RunnerSettings = {
   binaryPath: string;
   env: EnvironmentVariable[];
+};
+
+type ProfileState = {
+  activeProfileId: string;
+  profiles: DesktopProfileConfig[];
+};
+
+type DesktopProfileConfig = LocalProfileConfig | SshProfileConfig;
+
+type LocalProfileConfig = {
+  id: string;
+  name: string;
+  kind: "local";
+  runner: RunnerSettings;
+};
+
+type SshProfileConfig = {
+  id: string;
+  name: string;
+  kind: "ssh";
+  host: string;
+  runner: RunnerSettings;
+  enabled: false;
 };
 
 type EnvironmentVariable = {
@@ -97,11 +124,11 @@ type PickerActivation =
 
 function App() {
   const [state, setState] = useState<LoadState>({ status: "loading" });
-  const [runnerSettings, setRunnerSettings] = useState<RunnerSettings>(() =>
-    loadStoredRunnerSettings(),
-  );
+  const [profileState, setProfileState] = useState<ProfileState>(() => loadStoredProfiles());
+  const activeProfile = useMemo(() => getActiveProfile(profileState), [profileState]);
+  const runnerSettings = activeProfile.runner;
   const [settingsDraft, setSettingsDraft] = useState<RunnerSettings>(() =>
-    loadStoredRunnerSettings(),
+    getActiveProfile(loadStoredProfiles()).runner,
   );
   const [debugEntries, setDebugEntries] = useState<DebugEntry[]>([]);
   const [liveState, setLiveState] = useState<LiveConnectionState>({
@@ -125,7 +152,7 @@ function App() {
 
       try {
         const [profiles, preflight] = await Promise.all([
-          invoke<DesktopProfile[]>("local_profiles"),
+          Promise.resolve(profileState.profiles.map(profileSummary)),
           runCommand<AgentscanPreflight>(
             "agentscan --version",
             () =>
@@ -160,7 +187,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [runnerSettings]);
+  }, [profileState, runnerSettings]);
 
   useEffect(() => {
     if (state.status !== "ready") {
@@ -179,14 +206,14 @@ function App() {
       try {
         unlisten = await listen<LivePickerEvent>(LIVE_PICKER_EVENT, (event) => {
           if (!disposed) {
-          applyLivePickerEvent(event.payload, setLiveState, setState);
-          appendDebugEntry({
-            kind: "stream",
-            label: liveStateLabelFromEvent(event.payload),
-            detail: liveEventDetail(event.payload),
-          });
-        }
-      });
+            applyLivePickerEvent(event.payload, setLiveState, setState);
+            appendDebugEntry({
+              kind: "stream",
+              label: liveStateLabelFromEvent(event.payload),
+              detail: liveEventDetail(event.payload),
+            });
+          }
+        });
       } catch (error) {
         if (!disposed) {
           const message = errorMessage(error);
@@ -247,28 +274,28 @@ function App() {
           return;
         }
 
-      try {
-        await register(PICKER_HOTKEY, (event) => {
-          if (event.state === "Pressed") {
-            void togglePickerWindow(() => setIsPickerVisible(true));
+        try {
+          await register(PICKER_HOTKEY, (event) => {
+            if (event.state === "Pressed") {
+              void togglePickerWindow(() => setIsPickerVisible(true));
+            }
+          });
+          registered = true;
+
+          if (disposed) {
+            await unregister(PICKER_HOTKEY);
+            registered = false;
           }
-        });
-        registered = true;
+        } catch (error) {
+          if (disposed) {
+            return;
+          }
 
-        if (disposed) {
-          await unregister(PICKER_HOTKEY);
-          registered = false;
+          setActivation({
+            status: "failed",
+            message: `Unable to register ${PICKER_HOTKEY}: ${errorMessage(error)}`,
+          });
         }
-      } catch (error) {
-        if (disposed) {
-          return;
-        }
-
-        setActivation({
-          status: "failed",
-          message: `Unable to register ${PICKER_HOTKEY}: ${errorMessage(error)}`,
-        });
-      }
       });
     }
 
@@ -339,6 +366,10 @@ function App() {
     }
   }, [clampedSelectedIndex, selectedIndex]);
 
+  useEffect(() => {
+    setSettingsDraft(activeProfile.runner);
+  }, [activeProfile.id, activeProfile.runner]);
+
   async function activateSelectedRow(row = selectedRow) {
     if (!row || activation.status === "running") {
       return;
@@ -405,12 +436,15 @@ function App() {
   function applyRunnerSettings() {
     const normalized = normalizeRunnerSettings(settingsDraft);
     setSettingsDraft(normalized);
-    setRunnerSettings(normalized);
-    storeRunnerSettings(normalized);
+    setProfileState((current) => {
+      const next = updateActiveProfileRunner(current, normalized);
+      storeProfiles(next);
+      return next;
+    });
     appendDebugEntry({
       kind: "settings",
-      label: "Local settings applied",
-      detail: `${normalized.binaryPath.trim() || "auto-detected agentscan"} · ${normalized.env.length} env ${normalized.env.length === 1 ? "name" : "names"}`,
+      label: `${activeProfile.name} settings applied`,
+      detail: `${runnerSummary(normalized)} · ${normalized.env.length} env ${normalized.env.length === 1 ? "name" : "names"}`,
     });
   }
 
@@ -449,9 +483,12 @@ function App() {
               <h2>Profiles</h2>
               <ul className="profile-list">
                 {state.profiles.map((profile) => (
-                  <li key={profile.id}>
+                  <li
+                    className={profile.id === activeProfile.id ? "active" : undefined}
+                    key={profile.id}
+                  >
                     <span>{profile.name}</span>
-                    <small>{profile.kind}</small>
+                    <small>{profile.kind === "ssh" ? "ssh planned" : profile.kind}</small>
                   </li>
                 ))}
               </ul>
@@ -480,7 +517,7 @@ function App() {
 
           <section className="settings-panel" aria-label="Local runner settings">
             <div className="panel-heading">
-              <h2>Local Runner</h2>
+              <h2>{activeProfile.name} Runner</h2>
               <button type="button" onClick={applyRunnerSettings}>
                 Apply
               </button>
@@ -718,12 +755,122 @@ function loadStoredRunnerSettings(): RunnerSettings {
   }
 }
 
+function loadStoredProfiles(): ProfileState {
+  try {
+    const value = window.localStorage.getItem(PROFILES_STORAGE_KEY);
+    if (!value) {
+      return defaultProfileState(loadStoredRunnerSettings());
+    }
+
+    return normalizeProfileState(JSON.parse(value) as Partial<ProfileState>);
+  } catch {
+    return defaultProfileState(loadStoredRunnerSettings());
+  }
+}
+
+function storeProfiles(state: ProfileState) {
+  window.localStorage.setItem(PROFILES_STORAGE_KEY, JSON.stringify(state));
+  window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(getActiveProfile(state).runner));
+}
+
 function storeRunnerSettings(settings: RunnerSettings) {
   window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
 }
 
 function emptyRunnerSettings(): RunnerSettings {
   return { binaryPath: "", env: [] };
+}
+
+function defaultProfileState(runner = emptyRunnerSettings()): ProfileState {
+  return {
+    activeProfileId: LOCAL_PROFILE_ID,
+    profiles: [
+      {
+        id: LOCAL_PROFILE_ID,
+        name: "Local",
+        kind: "local",
+        runner: normalizeRunnerSettings(runner),
+      },
+    ],
+  };
+}
+
+function normalizeProfileState(value: Partial<ProfileState>): ProfileState {
+  const profiles = Array.isArray(value.profiles)
+    ? value.profiles.map(normalizeProfile).filter((profile) => profile !== null)
+    : [];
+
+  if (!profiles.some((profile) => profile.kind === "local")) {
+    profiles.unshift(defaultProfileState(loadStoredRunnerSettings()).profiles[0]);
+  }
+
+  const activeProfileId =
+    typeof value.activeProfileId === "string" &&
+    profiles.some((profile) => profile.id === value.activeProfileId)
+      ? value.activeProfileId
+      : profiles[0].id;
+
+  return { activeProfileId, profiles };
+}
+
+function normalizeProfile(value: unknown): DesktopProfileConfig | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const profile = value as Partial<DesktopProfileConfig>;
+  const id = typeof profile.id === "string" && profile.id.trim() ? profile.id.trim() : "";
+  const name = typeof profile.name === "string" && profile.name.trim() ? profile.name.trim() : "";
+  const runner = normalizeRunnerSettings(profile.runner ?? emptyRunnerSettings());
+
+  if (profile.kind === "local") {
+    return {
+      id: id || LOCAL_PROFILE_ID,
+      name: name || "Local",
+      kind: "local",
+      runner,
+    };
+  }
+
+  if (profile.kind === "ssh") {
+    return {
+      id: id || `ssh-${Date.now()}`,
+      name: name || "Remote",
+      kind: "ssh",
+      host: typeof profile.host === "string" ? profile.host.trim() : "",
+      runner,
+      enabled: false,
+    };
+  }
+
+  return null;
+}
+
+function getActiveProfile(state: ProfileState): DesktopProfileConfig {
+  return state.profiles.find((profile) => profile.id === state.activeProfileId) ?? state.profiles[0];
+}
+
+function updateActiveProfileRunner(state: ProfileState, runner: RunnerSettings): ProfileState {
+  return {
+    ...state,
+    profiles: state.profiles.map((profile) =>
+      profile.id === state.activeProfileId
+        ? { ...profile, runner: normalizeRunnerSettings(runner) }
+        : profile,
+    ),
+  };
+}
+
+function profileSummary(profile: DesktopProfileConfig): DesktopProfile {
+  return {
+    id: profile.id,
+    name: profile.name,
+    kind: profile.kind,
+  };
+}
+
+function runnerSummary(settings: RunnerSettings) {
+  return settings.binaryPath.trim() || "auto-detected agentscan";
 }
 
 function normalizeRunnerSettings(settings: Partial<RunnerSettings>): RunnerSettings {

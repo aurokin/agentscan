@@ -221,6 +221,11 @@ subscription process. The desktop debug log records command names, outcomes,
 errors, and stream events, but it should show environment variable names/counts
 rather than dumping values into routine diagnostics.
 
+Desktop profile storage is intentionally transport-shaped before SSH execution
+lands. The active local profile owns its runner settings now; future SSH
+profiles should add transport fields around the same command contract instead
+of adding desktop-specific scanner or tmux parsing paths.
+
 Remote commands target the remote default tmux server and daemon socket unless
 the runner supplies an isolated context. For non-default tmux servers, desktop
 profiles should propagate both `AGENTSCAN_TMUX_SOCKET` and a matching
