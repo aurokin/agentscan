@@ -67,6 +67,36 @@ impl DaemonStartIntent {
     }
 }
 
+struct DaemonStartRequest<'a> {
+    socket_path: &'a Path,
+    output: StartOutput,
+    intent: DaemonStartIntent,
+    executable_path: &'a Path,
+    envs: &'a [(OsString, OsString)],
+    env_removes: &'a [OsString],
+}
+
+impl DaemonStartRequest<'_> {
+    fn paths(&self) -> LifecyclePaths {
+        LifecyclePaths::from_socket_path(self.socket_path)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum DaemonStartPolicyDecision {
+    Allowed,
+    Blocked(DaemonSnapshotError),
+}
+
+impl DaemonStartPolicyDecision {
+    fn into_result(self) -> std::result::Result<(), DaemonSnapshotError> {
+        match self {
+            Self::Allowed => Ok(()),
+            Self::Blocked(error) => Err(error),
+        }
+    }
+}
+
 #[cfg(any(test, target_os = "macos"))]
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum MacExecutableAssessment {
@@ -1052,14 +1082,14 @@ pub(crate) fn snapshot_via_socket_path_with_start_command(
     env_removes: &[OsString],
 ) -> std::result::Result<SnapshotEnvelope, DaemonSnapshotError> {
     snapshot_via_socket_path_with_starter(socket_path, AutoStartPolicy::default(), |socket_path| {
-        daemon_start_with_socket_path_output_and_command(
+        start_daemon(DaemonStartRequest {
             socket_path,
-            StartOutput::Quiet,
-            DaemonStartIntent::ImplicitConsumerAutoStart,
+            output: StartOutput::Quiet,
+            intent: DaemonStartIntent::ImplicitConsumerAutoStart,
             executable_path,
             envs,
             env_removes,
-        )
+        })
     })
 }
 
@@ -1618,14 +1648,14 @@ fn daemon_start_with_socket_path_and_output(
         })?;
     let envs = daemon_start_tmux_envs();
     let env_removes = daemon_start_env_removes();
-    daemon_start_with_socket_path_output_and_command(
+    start_daemon(DaemonStartRequest {
         socket_path,
         output,
         intent,
-        &executable_path,
-        &envs,
-        &env_removes,
-    )
+        executable_path: &executable_path,
+        envs: &envs,
+        env_removes: &env_removes,
+    })
 }
 
 fn daemon_start_tmux_envs() -> Vec<(OsString, OsString)> {
@@ -1721,26 +1751,31 @@ fn test_macos_auto_start_preflight(
         Some(reason) => MacExecutableAssessment::Untrusted(reason.to_string()),
         None => MacExecutableAssessment::Trusted,
     };
-    daemon_start_preflight_from_macos_assessment(intent, Path::new("/tmp/agentscan"), assessment)
+    daemon_start_policy_decision_from_macos_assessment(
+        intent,
+        Path::new("/tmp/agentscan"),
+        assessment,
+    )
+    .into_result()
 }
 
 #[cfg(target_os = "macos")]
-fn daemon_start_preflight(
+fn daemon_start_policy_decision(
     intent: DaemonStartIntent,
     executable_path: &Path,
     envs: &[(OsString, OsString)],
-) -> std::result::Result<(), DaemonSnapshotError> {
+) -> DaemonStartPolicyDecision {
     let _ = envs;
     if macos_implicit_auto_start_is_disabled(intent) {
-        return Err(DaemonSnapshotError::AutoStartDisabled {
+        return DaemonStartPolicyDecision::Blocked(DaemonSnapshotError::AutoStartDisabled {
             reason: macos_implicit_auto_start_disabled_reason(intent, "daemon is not running"),
         });
     }
     if !intent.requires_macos_trust_preflight() {
-        return Ok(());
+        return DaemonStartPolicyDecision::Allowed;
     }
     let assessment = assess_macos_executable_for_daemon_autostart(executable_path);
-    daemon_start_preflight_from_macos_assessment(intent, executable_path, assessment)
+    daemon_start_policy_decision_from_macos_assessment(intent, executable_path, assessment)
 }
 
 #[cfg(test)]
@@ -1754,39 +1789,49 @@ pub(crate) fn test_macos_preflight_skips_assessment(explicit_start: bool, tui_st
 }
 
 #[cfg(not(target_os = "macos"))]
+fn daemon_start_policy_decision(
+    intent: DaemonStartIntent,
+    executable_path: &Path,
+    envs: &[(OsString, OsString)],
+) -> DaemonStartPolicyDecision {
+    let _ = (intent, executable_path, envs);
+    DaemonStartPolicyDecision::Allowed
+}
+
 fn daemon_start_preflight(
     intent: DaemonStartIntent,
     executable_path: &Path,
     envs: &[(OsString, OsString)],
 ) -> std::result::Result<(), DaemonSnapshotError> {
-    let _ = (intent, executable_path, envs);
-    Ok(())
+    daemon_start_policy_decision(intent, executable_path, envs).into_result()
 }
 
 #[cfg(any(test, target_os = "macos"))]
-fn daemon_start_preflight_from_macos_assessment(
+fn daemon_start_policy_decision_from_macos_assessment(
     intent: DaemonStartIntent,
     executable_path: &Path,
     assessment: MacExecutableAssessment,
-) -> std::result::Result<(), DaemonSnapshotError> {
+) -> DaemonStartPolicyDecision {
     if macos_implicit_auto_start_is_disabled_for_policy_tests(intent) {
-        return Err(DaemonSnapshotError::AutoStartDisabled {
+        return DaemonStartPolicyDecision::Blocked(DaemonSnapshotError::AutoStartDisabled {
             reason: macos_implicit_auto_start_disabled_reason(intent, "daemon is not running"),
         });
     }
     if !intent.requires_macos_trust_preflight() {
-        return Ok(());
+        return DaemonStartPolicyDecision::Allowed;
     }
 
     match assessment {
-        MacExecutableAssessment::Trusted => Ok(()),
-        MacExecutableAssessment::Untrusted(reason) => Err(DaemonSnapshotError::AutoStartDisabled {
-            reason: format!(
-                "macOS executable trust preflight rejected detached daemon start for {}; {reason}. {}",
-                executable_path.display(),
-                macos_auto_start_recovery_guidance(intent)
-            ),
-        }),
+        MacExecutableAssessment::Trusted => DaemonStartPolicyDecision::Allowed,
+        MacExecutableAssessment::Untrusted(reason) => {
+            DaemonStartPolicyDecision::Blocked(DaemonSnapshotError::AutoStartDisabled {
+                reason: format!(
+                    "macOS executable trust preflight rejected detached daemon start for {}; {reason}. {}",
+                    executable_path.display(),
+                    macos_auto_start_recovery_guidance(intent)
+                ),
+            })
+        }
     }
 }
 
@@ -1972,14 +2017,10 @@ fn compact_command_output(text: &str) -> String {
     }
 }
 
-fn log_daemon_start_preflight(
+fn log_daemon_start_policy_decision(
     paths: &LifecyclePaths,
-    socket_path: &Path,
-    intent: DaemonStartIntent,
-    executable_path: &Path,
-    envs: &[(OsString, OsString)],
-    env_removes: &[OsString],
-    preflight: &std::result::Result<(), DaemonSnapshotError>,
+    request: &DaemonStartRequest<'_>,
+    decision: &DaemonStartPolicyDecision,
 ) {
     let Ok(mut log) = OpenOptions::new()
         .create(true)
@@ -1989,48 +2030,44 @@ fn log_daemon_start_preflight(
         return;
     };
     let timestamp = snapshot::now_rfc3339().unwrap_or_else(|_| "unknown".to_string());
-    let executable_canonical = fs::canonicalize(executable_path)
+    let executable_canonical = fs::canonicalize(request.executable_path)
         .ok()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|| "<unavailable>".to_string());
-    let env_keys = envs
+    let env_keys = request
+        .envs
         .iter()
         .map(|(key, _)| key.to_string_lossy())
         .collect::<Vec<_>>()
         .join(",");
-    let env_remove_keys = env_removes
+    let env_remove_keys = request
+        .env_removes
         .iter()
         .map(|key| key.to_string_lossy())
         .collect::<Vec<_>>()
         .join(",");
-    let result = match preflight {
-        Ok(()) => "allowed".to_string(),
-        Err(error) => format!("blocked: {error}"),
+    let result = match decision {
+        DaemonStartPolicyDecision::Allowed => "allowed".to_string(),
+        DaemonStartPolicyDecision::Blocked(error) => format!("blocked: {error}"),
     };
     let _ = writeln!(
         log,
-        "daemon_start_preflight timestamp={timestamp} parent_pid={} intent={intent:?} target_os={} socket_path={} executable_path={} executable_canonical={} envs={} env_removes={} result={result}",
+        "daemon_start_preflight timestamp={timestamp} parent_pid={} intent={:?} target_os={} socket_path={} executable_path={} executable_canonical={} envs={} env_removes={} result={result}",
         std::process::id(),
+        request.intent,
         std::env::consts::OS,
-        socket_path.display(),
-        executable_path.display(),
+        request.socket_path.display(),
+        request.executable_path.display(),
         executable_canonical,
         env_keys,
         env_remove_keys,
     );
 }
 
-fn daemon_start_with_socket_path_output_and_command(
-    socket_path: &Path,
-    output: StartOutput,
-    intent: DaemonStartIntent,
-    executable_path: &Path,
-    envs: &[(OsString, OsString)],
-    env_removes: &[OsString],
-) -> std::result::Result<(), DaemonSnapshotError> {
-    let paths = LifecyclePaths::from_socket_path(socket_path);
+fn start_daemon(request: DaemonStartRequest<'_>) -> std::result::Result<(), DaemonSnapshotError> {
+    let paths = request.paths();
 
-    if daemon_start_existing_status(socket_path, &paths, output)? {
+    if daemon_start_existing_status(request.socket_path, &paths, request.output)? {
         return Ok(());
     }
     let _start_guard = DaemonStartGuard::acquire(&paths).map_err(|error| {
@@ -2038,11 +2075,11 @@ fn daemon_start_with_socket_path_output_and_command(
             message: error.to_string(),
         }
     })?;
-    if daemon_start_existing_status(socket_path, &paths, output)? {
+    if daemon_start_existing_status(request.socket_path, &paths, request.output)? {
         return Ok(());
     }
 
-    remove_stale_socket_if_present(socket_path).map_err(|error| {
+    remove_stale_socket_if_present(request.socket_path).map_err(|error| {
         DaemonSnapshotError::UnexpectedFrame {
             message: error.to_string(),
         }
@@ -2050,18 +2087,25 @@ fn daemon_start_with_socket_path_output_and_command(
     prepare_log_file(&paths.log_path).map_err(|error| DaemonSnapshotError::UnexpectedFrame {
         message: error.to_string(),
     })?;
-    let preflight = daemon_start_preflight(intent, executable_path, envs);
-    log_daemon_start_preflight(
-        &paths,
-        socket_path,
-        intent,
-        executable_path,
-        envs,
-        env_removes,
-        &preflight,
-    );
-    preflight?;
+    let decision =
+        daemon_start_policy_decision(request.intent, request.executable_path, request.envs);
+    log_daemon_start_policy_decision(&paths, &request, &decision);
+    decision.into_result()?;
 
+    let mut child = spawn_detached_daemon_process(&paths, &request)?;
+    match wait_for_daemon_start(request.socket_path, &paths, &mut child, request.output) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            cleanup_detached_daemon_child(&mut child);
+            Err(error)
+        }
+    }
+}
+
+fn spawn_detached_daemon_process(
+    paths: &LifecyclePaths,
+    request: &DaemonStartRequest<'_>,
+) -> std::result::Result<std::process::Child, DaemonSnapshotError> {
     let log_stdout = OpenOptions::new()
         .create(true)
         .append(true)
@@ -2082,14 +2126,14 @@ fn daemon_start_with_socket_path_output_and_command(
             message: error.to_string(),
         })?;
 
-    let mut command = Command::new(executable_path);
+    let mut command = Command::new(request.executable_path);
     command
         .args(["daemon", "run"])
         .stdin(Stdio::from(stdin))
         .stdout(Stdio::from(log_stdout))
         .stderr(Stdio::from(log_stderr));
-    command.envs(envs.iter().cloned());
-    for key in env_removes {
+    command.envs(request.envs.iter().cloned());
+    for key in request.env_removes {
         command.env_remove(key);
     }
     unsafe {
@@ -2101,19 +2145,12 @@ fn daemon_start_with_socket_path_output_and_command(
         });
     }
 
-    let mut child = command
+    command
         .spawn()
         .context("failed to start daemon process")
         .map_err(|error| DaemonSnapshotError::UnexpectedFrame {
             message: error.to_string(),
-        })?;
-    match wait_for_daemon_start(socket_path, &paths, &mut child, output) {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            cleanup_detached_daemon_child(&mut child);
-            Err(error)
-        }
-    }
+        })
 }
 
 pub(crate) fn daemon_stop() -> Result<()> {

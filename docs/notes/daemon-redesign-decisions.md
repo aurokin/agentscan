@@ -130,3 +130,17 @@ slices so they can be reviewed together at the end of the work.
   the control-mode module owns how brokered tmux reads and reconnect state work,
   the socket module owns how daemon snapshots are published to clients, and the
   lifecycle module owns whether and how the daemon process is started/stopped.
+
+## Slice 11: Daemon Start Coordinator
+
+- Detached daemon starts now flow through a single `DaemonStartRequest` and
+  `start_daemon` coordinator, whether they are explicit lifecycle starts,
+  one-shot consumer auto-starts, TUI subscription starts, or benchmark-injected
+  start commands.
+- The coordinator owns the common start sequence: existing-daemon detection,
+  start lock acquisition, stale socket removal, log preparation, policy
+  decision logging, child spawn, readiness wait, and failed-child cleanup.
+- macOS start policy is represented as a separate decision before process
+  spawning. This preserves the current behavior for this slice: explicit
+  lifecycle starts still run the macOS executable trust preflight, while
+  implicit macOS auto-start remains disabled.
