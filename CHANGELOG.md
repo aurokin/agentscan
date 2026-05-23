@@ -20,6 +20,9 @@
   JSON Lines subscription stream share the same event vocabulary.
 - Suppressed no-op reconcile snapshot publications so live subscribers only
   receive reconcile frames when the reconciled state materially changes.
+- Documented the SSH-ready desktop transport contract: desktop clients run the
+  same local or remote `agentscan` command surfaces rather than scanning tmux or
+  tunneling daemon sockets directly.
 
 ## 0.2.9 - 2026-05-23
 

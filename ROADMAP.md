@@ -188,6 +188,28 @@ Implications:
 - shell should not shape machine-readable pane output
 - wrapper behavior is integration context, not a reason to move launch logic into Rust
 
+### Desktop And Remote Client Boundary
+
+Terminal and desktop clients should converge on the same command/event
+contract. A local desktop runner executes `agentscan` directly. A remote
+desktop runner executes the same commands through SSH using the user's normal
+SSH configuration and authentication.
+
+Implications:
+
+- desktop code owns host/profile selection, process supervision, stdout/stderr
+  handling, reconnect policy, rendering, global hotkeys, and error presentation
+- the machine that owns tmux also owns `agentscan` daemon lifecycle,
+  classification, picker rows, hotkey actions, and focus actions
+- remote desktop support is SSH command execution around documented JSON/JSONL
+  CLI surfaces, not daemon socket forwarding, remote tmux parsing, or a
+  desktop-specific scanner protocol
+- non-default remote tmux targets must propagate both `AGENTSCAN_TMUX_SOCKET`
+  and an isolated `AGENTSCAN_SOCKET_PATH` so the remote daemon and tmux server
+  stay paired
+- remote install/bootstrap UX is a desktop product follow-up, not part of the
+  scanner contract
+
 ### Platform Priority
 
 Linux and macOS are the primary targets for early fallback logic.

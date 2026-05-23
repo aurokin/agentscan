@@ -146,6 +146,10 @@ The command surface is organized by concern:
   or SSH-transported clients
 - `agentscan providers`: supported provider names, icon modes, marker
   codepoints, and matching aliases
+- `agentscan hotkeys`: stable picker-row model for tmux binds, terminal
+  surfaces, and future desktop picker surfaces
+- `agentscan hotkey <key>`: activate a stable picker-row key through the shared
+  focus path
 - `agentscan tui`: interactive-only pane picker, not a stdout automation API
 - `agentscan tmux`: tmux-facing metadata helpers
 
@@ -190,6 +194,26 @@ Current lifecycle policy:
 - `--refresh` for one-shot recovery or forced tmux snapshots
 - fail clearly when tmux disappears or the daemon protocol is incompatible
 - leave crash/restart policy to explicit commands or an external supervisor
+
+## Desktop And SSH Client Boundary
+
+Future desktop surfaces are thin clients over the same command families. A
+local desktop runner executes `agentscan` directly. A remote desktop runner
+executes the same commands through SSH, using the user's normal SSH
+configuration and authentication. Both runners consume stdout JSON/JSONL,
+stderr, exit status, and cancellation; neither runner connects to tmux or the
+daemon Unix socket directly.
+
+The scanner contract remains on the machine that owns tmux:
+
+- local desktop target: local `agentscan` owns daemon lifecycle and tmux access
+- remote desktop target: remote `agentscan` owns daemon lifecycle and tmux access
+- desktop shell: owns host selection, process supervision, rendering, keyboard
+  lifecycle, and error presentation
+
+The primary remote design is command execution over SSH, not socket forwarding.
+Remote install/bootstrap UX is outside the scanner contract and should be
+handled as a desktop product follow-up.
 
 ## Design Guardrails
 

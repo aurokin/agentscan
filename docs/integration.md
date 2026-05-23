@@ -161,6 +161,126 @@ No-op reconcile passes are intentionally silent on the subscription stream. Use
 the daemon status counters to observe reconcile activity; do not rely on
 periodic snapshot frames as heartbeats.
 
+## SSH Desktop Transport Contract
+
+Local and remote desktop clients should use the same `agentscan` command
+contract. The desktop shell owns process execution, SSH orchestration, window
+lifecycle, global hotkeys, rendering, and retry policy. The remote host owns
+tmux, the daemon, discovery, classification, picker rows, and focus actions.
+There is no desktop-specific scanner path.
+
+For a local target, the desktop command runner executes commands directly:
+
+```bash
+agentscan daemon status --format json
+agentscan subscribe --format json
+agentscan hotkeys --format json
+agentscan hotkey q
+agentscan focus %1
+```
+
+For a remote target, the desktop command runner executes the same commands
+through the user's normal SSH configuration and authentication:
+
+```bash
+ssh workbox agentscan daemon status --format json
+ssh workbox agentscan subscribe --format json
+ssh workbox agentscan hotkeys --format json
+ssh workbox agentscan hotkey q
+ssh workbox agentscan focus %1
+```
+
+The desktop app should treat SSH as transport around stdout, stderr, exit
+status, and process cancellation. It should not tunnel the daemon Unix socket as
+the primary remote design, parse remote tmux directly, or duplicate scanner
+logic in desktop code.
+
+Remote commands target the remote default tmux server and daemon socket unless
+the runner supplies an isolated context. For non-default tmux servers, desktop
+profiles should propagate both `AGENTSCAN_TMUX_SOCKET` and a matching
+`AGENTSCAN_SOCKET_PATH` into each remote command rather than parsing tmux
+directly. That keeps discovery, subscription, hotkeys, and focus scoped to the
+same remote tmux target:
+
+```bash
+ssh workbox 'mkdir -p "$HOME/.local/state/agentscan" && env \
+  AGENTSCAN_TMUX_SOCKET=/tmp/tmux-501/custom \
+  AGENTSCAN_SOCKET_PATH="$HOME/.local/state/agentscan/custom.sock" \
+  agentscan subscribe --format json'
+```
+
+Focus actions target a tmux client, not only a pane. Terminal-launched commands
+can usually infer the current client from tmux, then fall back to the most
+recent attached client. A desktop SSH exec often has no current tmux client, so
+when the desktop owns or knows the intended remote tmux view it should pass that
+client explicitly:
+
+```bash
+ssh workbox agentscan hotkey q --client-tty /dev/pts/7
+ssh workbox agentscan focus %1 --client-tty /dev/pts/7
+```
+
+If the desktop does not know a client tty, the bare action commands remain valid
+best-effort commands, but failures or surprising focus targets should be treated
+as remote tmux client-targeting problems rather than desktop-side scanner
+problems.
+
+Remote discovery should start with a cheap command that proves the binary is
+present and speaks JSON:
+
+```bash
+ssh workbox agentscan daemon status --format json
+```
+
+If that succeeds and reports non-null `protocol_version` and
+`snapshot_schema_version` values, validate exact compatibility before starting
+the long-lived subscription process. The current compatible values are
+`protocol_version=1` and `snapshot_schema_version=4`; future incompatible
+changes must update the corresponding constants and error guidance. If the
+daemon is not running, this command reports the normal not-running JSON shape
+without a live daemon protocol/schema to validate. Normal remote consumers may
+then let `agentscan subscribe --format json` auto-start the daemon according to
+the remote host's platform policy. The subscribe command validates the socket
+protocol internally: a successful bootstrap `snapshot` frame implies wire
+protocol compatibility, and consumers should validate the exposed
+`snapshot.schema_version`; incompatible handshakes surface as a `fatal` frame or
+non-zero command failure. When a scripted or preview-only flow must not start a
+daemon, pass `--no-auto-start` or set `AGENTSCAN_NO_AUTO_START=1` inside the
+remote command environment.
+
+Expected failure surfaces:
+
+| Failure | Source | Desktop handling |
+|---------|--------|------------------|
+| SSH host, network, or auth failure | SSH process exit/stderr | Show connection failure and keep local UI state unchanged |
+| Missing remote binary | SSH exit status/stderr such as `agentscan: command not found` | Show install/configuration guidance for that host |
+| Incompatible protocol or snapshot schema | non-zero `daemon status` stderr, returned status JSON, or `fatal` subscribe frame | Ask the user to upgrade `agentscan` on the target host |
+| Invalid JSON or unexpected stdout | command stdout/stderr | Treat the remote command as incompatible or misconfigured and surface a short output sample |
+| Daemon auto-start refusal | `fatal`/offline subscribe frame or daemon status message | Show the remote `agentscan daemon run` / signing / opt-out guidance from the payload |
+| tmux missing or gone | daemon status, subscribe offline/fatal frame, or command stderr | Show remote tmux availability guidance; do not fall back to desktop-side scanning |
+| Focus or hotkey target gone or client tty unavailable | non-zero action exit or command error text | Refresh picker state from the shared commands and report the stale target or client-targeting failure |
+
+Remote smoke plan:
+
+1. Run `ssh workbox agentscan daemon status --format json` and confirm JSON
+   parses. If protocol/schema versions are present, confirm they are compatible;
+   if the daemon is not running, confirm the not-running state/error guidance is
+   visible and defer compatibility validation to subscription startup.
+2. Run `ssh workbox agentscan hotkeys --format json` and render picker rows from
+   the returned command output without local tmux access.
+3. Start `ssh workbox agentscan subscribe --format json`, read the bootstrap
+   `snapshot` frame, then change a remote agent pane title or metadata and
+   confirm a later `snapshot` frame arrives.
+4. Invoke `ssh workbox agentscan hotkey <key> --client-tty <tty>` or
+   `ssh workbox agentscan focus <pane_id> --client-tty <tty>` when a target
+   remote client tty is known. Otherwise invoke the bare command as a
+   best-effort fallback. Verify failures are reported from the command result
+   rather than inferred by the desktop app.
+
+Remote install/bootstrap UX is a follow-up product concern. The stable contract
+for this project remains command execution over SSH using the documented JSON
+and action surfaces.
+
 ## Wrapper Metadata Contract
 
 Launch wrappers may publish explicit pane-local tmux user options:

@@ -42,7 +42,8 @@ remain unchanged until `agentscan` is ready to replace it.
 - `ROADMAP.md`: durable product direction, boundaries, and decision log
 - `CHANGELOG.md`: unreleased user-facing changes and migration notes
 - `docs/architecture.md`: runtime model, daemon/socket contract, command families, and guardrails
-- `docs/integration.md`: wrapper metadata, daemon-backed automation surfaces, shell boundary, and migration posture
+- `docs/integration.md`: wrapper metadata, daemon-backed automation surfaces,
+  SSH desktop transport, shell boundary, and migration posture
 - `docs/harness-engineering.md`: progressively disclosed harness engineering approach for the repo
 - `docs/macos-release-signing.md`: local and GitHub Actions Developer ID signing/notarization workflow
 
