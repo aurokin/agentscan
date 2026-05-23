@@ -187,7 +187,7 @@ Add or preserve harness coverage for:
 - daemon socket publication order after rapid topology changes
 - `AGENTSCAN_TMUX_SOCKET` propagation into any broker-backed tmux child
 - non-default `AGENTSCAN_SOCKET_PATH`
-- macOS no-auto-start expectations
+- macOS signed-preflight auto-start expectations
 
 Live integration tests should continue to isolate tmux with harness sockets and
 temp `TMUX_TMPDIR`. If broker wiring increases parallel flake, prefer targeted
