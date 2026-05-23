@@ -804,11 +804,12 @@ function normalizeProfileState(value: Partial<ProfileState>): ProfileState {
     profiles.unshift(defaultProfileState(loadStoredRunnerSettings()).profiles[0]);
   }
 
+  const fallbackProfile = profiles.find(isRunnableProfile) ?? profiles[0];
   const activeProfileId =
     typeof value.activeProfileId === "string" &&
-    profiles.some((profile) => profile.id === value.activeProfileId)
+    profiles.some((profile) => profile.id === value.activeProfileId && isRunnableProfile(profile))
       ? value.activeProfileId
-      : profiles[0].id;
+      : fallbackProfile.id;
 
   return { activeProfileId, profiles };
 }
@@ -847,7 +848,17 @@ function normalizeProfile(value: unknown): DesktopProfileConfig | null {
 }
 
 function getActiveProfile(state: ProfileState): DesktopProfileConfig {
-  return state.profiles.find((profile) => profile.id === state.activeProfileId) ?? state.profiles[0];
+  return (
+    state.profiles.find(
+      (profile) => profile.id === state.activeProfileId && isRunnableProfile(profile),
+    ) ??
+    state.profiles.find(isRunnableProfile) ??
+    state.profiles[0]
+  );
+}
+
+function isRunnableProfile(profile: DesktopProfileConfig): boolean {
+  return profile.kind === "local" || profile.enabled;
 }
 
 function updateActiveProfileRunner(state: ProfileState, runner: RunnerSettings): ProfileState {

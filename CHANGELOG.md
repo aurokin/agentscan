@@ -44,6 +44,11 @@
   same local or remote `agentscan` command surfaces rather than scanning tmux or
   tunneling daemon sockets directly.
 
+### Fixed
+
+- Prevented disabled desktop SSH profiles from being restored as the active
+  runner profile before SSH execution is implemented.
+
 ## 0.2.9 - 2026-05-23
 
 ### Added
