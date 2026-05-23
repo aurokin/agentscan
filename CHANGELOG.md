@@ -46,6 +46,7 @@
 - Documented the SSH-ready desktop transport contract: desktop clients run the
   same local or remote `agentscan` command surfaces rather than scanning tmux or
   tunneling daemon sockets directly.
+- Documented the desktop spike stop/go decision and follow-up hardening backlog.
 
 ### Fixed
 

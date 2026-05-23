@@ -44,6 +44,9 @@ This repo uses progressively disclosed documentation.
     daemon redesign.
   - `docs/notes/daemon-redesign-decisions.md`
     Running implementation decision log for daemon redesign slices.
+  - `docs/notes/desktop-spike-closeout.md`
+    Stop/go decision, evidence, known gaps, and follow-up backlog map for the
+    first macOS desktop spike.
 - Linear
   Active milestones, blockers, sequencing, and execution detail.
 
