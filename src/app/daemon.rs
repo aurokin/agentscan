@@ -13,6 +13,10 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 use std::time::Instant;
 
+mod snapshot_store;
+
+use snapshot_store::SnapshotStore;
+
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(1);
 const PANE_OUTPUT_STATUS_CACHE_TTL: Duration = Duration::from_secs(2);
 const STARTUP_FAILURE_OBSERVABILITY_WINDOW: Duration = Duration::from_millis(200);
@@ -1179,6 +1183,9 @@ struct DaemonStatusJson {
     latest_snapshot_update_source: Option<String>,
     latest_snapshot_update_detail: Option<String>,
     latest_snapshot_update_duration_ms: Option<u64>,
+    control_mode_broker_mode: Option<String>,
+    control_mode_broker_disabled_reason: Option<String>,
+    control_mode_broker_reconnect_count: Option<u32>,
     unavailable_reason: Option<String>,
     message: Option<String>,
 }
@@ -1207,6 +1214,9 @@ fn lifecycle_not_running_json(
         latest_snapshot_update_source: None,
         latest_snapshot_update_detail: None,
         latest_snapshot_update_duration_ms: None,
+        control_mode_broker_mode: None,
+        control_mode_broker_disabled_reason: None,
+        control_mode_broker_reconnect_count: None,
         unavailable_reason: None,
         message: None,
     }
@@ -1235,6 +1245,18 @@ fn lifecycle_status_json(
         latest_snapshot_update_source: status.latest_snapshot_update_source.clone(),
         latest_snapshot_update_detail: status.latest_snapshot_update_detail.clone(),
         latest_snapshot_update_duration_ms: status.latest_snapshot_update_duration_ms,
+        control_mode_broker_mode: status
+            .control_mode_broker
+            .as_ref()
+            .map(|broker| control_mode_broker_mode_label(broker.mode).to_string()),
+        control_mode_broker_disabled_reason: status
+            .control_mode_broker
+            .as_ref()
+            .and_then(|broker| broker.disabled_reason.clone()),
+        control_mode_broker_reconnect_count: status
+            .control_mode_broker
+            .as_ref()
+            .map(|broker| broker.reconnect_count),
         unavailable_reason: status
             .unavailable_reason
             .map(unavailable_reason_label)
@@ -1299,6 +1321,13 @@ fn unavailable_reason_label(reason: ipc::UnavailableReason) -> &'static str {
     }
 }
 
+fn control_mode_broker_mode_label(mode: ipc::ControlModeBrokerMode) -> &'static str {
+    match mode {
+        ipc::ControlModeBrokerMode::Active => "active",
+        ipc::ControlModeBrokerMode::Fallback => "fallback",
+    }
+}
+
 fn print_lifecycle_status(paths: &LifecyclePaths, status: &ipc::LifecycleStatusFrame) {
     println!("daemon_state: {}", lifecycle_state_label(status.state));
     println!("socket_path: {}", status.identity.socket_path);
@@ -1331,6 +1360,19 @@ fn print_lifecycle_status(paths: &LifecyclePaths, status: &ipc::LifecycleStatusF
     }
     if let Some(duration_ms) = status.latest_snapshot_update_duration_ms {
         println!("latest_snapshot_update_duration_ms: {duration_ms}");
+    }
+    if let Some(broker) = &status.control_mode_broker {
+        println!(
+            "control_mode_broker_mode: {}",
+            control_mode_broker_mode_label(broker.mode)
+        );
+        println!(
+            "control_mode_broker_reconnect_count: {}",
+            broker.reconnect_count
+        );
+        if let Some(reason) = &broker.disabled_reason {
+            println!("control_mode_broker_disabled_reason: {reason}");
+        }
     }
     if let Some(reason) = status.unavailable_reason {
         println!("unavailable_reason: {}", unavailable_reason_label(reason));
@@ -2277,7 +2319,7 @@ fn daemon_run_with_socket_path_and_startup(
         }
     };
 
-    let mut tmux_client = match startup.start_tmux_control_mode_client() {
+    let tmux_client = match startup.start_tmux_control_mode_client() {
         Ok(client) => client,
         Err(error) => {
             let message = startup_failure_message("tmux control-mode startup", &error);
@@ -2292,42 +2334,10 @@ fn daemon_run_with_socket_path_and_startup(
     let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
     socket_state.publish_prepared_snapshot(pending_snapshot);
     let mut closing_guard = DaemonClosingGuard::new(socket_state.clone());
-    let stdout_reader = tmux_client
-        .stdout_reader
-        .take()
-        .context("tmux control-mode client did not provide stdout")?;
-    let mut child = tmux_client
-        .child
-        .take()
-        .context("tmux control-mode client did not provide child process")?;
-    let mut control_mode_stdin = tmux_client
-        .stdin
-        .take()
-        .context("tmux control-mode client did not provide stdin")?;
-    let mut running_tmux_client = RunningTmuxControlModeClient { child: &mut child };
-
-    let (line_tx, line_rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let mut reader = stdout_reader;
-        loop {
-            match read_control_mode_line(&mut reader) {
-                Ok(Some(line)) => {
-                    if line_tx.send(Ok(line)).is_err() {
-                        break;
-                    }
-                }
-                Ok(None) => break,
-                Err(error) => {
-                    let _ = line_tx.send(Err(error));
-                    break;
-                }
-            }
-        }
-    });
+    let mut control_mode = RunningTmuxControlModeClient::from_started(tmux_client)?;
 
     let mut next_reconcile_at = Instant::now() + RECONCILE_INTERVAL;
-    let mut deferred_control_lines = VecDeque::new();
-    let mut broker_health = TmuxBrokerHealth::default();
+    socket_state.update_control_mode_broker_status(control_mode.broker_status_frame());
 
     loop {
         if DAEMON_SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
@@ -2336,50 +2346,33 @@ fn daemon_run_with_socket_path_and_startup(
         let now = Instant::now();
         if now >= next_reconcile_at {
             let publish_context = SnapshotPublishContext::new("reconcile").with_detail("interval");
-            let mut reconcile_tmux_reads = TmuxDaemonReadProvider {
-                fallback: TmuxCommandReadProvider,
-                broker: broker_health
-                    .enabled()
-                    .then_some(TmuxControlModeReadBroker {
-                        stdin: &mut control_mode_stdin,
-                        line_rx: &line_rx,
-                        deferred_lines: &mut deferred_control_lines,
-                        broker_health: &mut broker_health,
-                    }),
-            };
+            let mut reconcile_tmux_reads = control_mode.read_provider();
             reconcile_full_snapshot(
                 &mut snapshot,
                 &mut reconcile_tmux_reads,
                 tmux_version.as_deref(),
                 &mut pane_output_cache,
             )?;
+            recover_broker_and_reconcile_if_needed(
+                &mut control_mode,
+                &startup,
+                &socket_state,
+                &mut snapshot,
+                &mut pane_output_cache,
+            )?;
+            socket_state.update_control_mode_broker_status(control_mode.broker_status_frame());
             socket_state.publish_later_snapshot_with_context(snapshot.clone(), publish_context);
             next_reconcile_at = Instant::now() + RECONCILE_INTERVAL;
         }
 
         let timeout = next_reconcile_at.saturating_duration_since(Instant::now());
-        let control_line = if let Some(line) = deferred_control_lines.pop_front() {
-            Ok(Ok(line))
-        } else {
-            line_rx.recv_timeout(timeout)
-        };
-        match control_line {
+        match control_mode.recv_timeout(timeout) {
             Ok(line) => {
                 let line = line?;
                 let event = control_event_from_line(&line);
                 let should_exit = event == ControlEvent::Exit;
                 let publish_context = event.publish_context();
-                let mut event_tmux_reads = TmuxDaemonReadProvider {
-                    fallback: TmuxCommandReadProvider,
-                    broker: broker_health
-                        .enabled()
-                        .then_some(TmuxControlModeReadBroker {
-                            stdin: &mut control_mode_stdin,
-                            line_rx: &line_rx,
-                            deferred_lines: &mut deferred_control_lines,
-                            broker_health: &mut broker_health,
-                        }),
-                };
+                let mut event_tmux_reads = control_mode.read_provider();
                 if apply_control_event(
                     &mut snapshot,
                     &mut event_tmux_reads,
@@ -2387,11 +2380,24 @@ fn daemon_run_with_socket_path_and_startup(
                     &event,
                     &mut pane_output_cache,
                 )? {
+                    let reconnected = recover_broker_and_reconcile_if_needed(
+                        &mut control_mode,
+                        &startup,
+                        &socket_state,
+                        &mut snapshot,
+                        &mut pane_output_cache,
+                    )?;
+                    socket_state
+                        .update_control_mode_broker_status(control_mode.broker_status_frame());
                     socket_state.publish_later_snapshot_with_context(
                         snapshot.clone(),
-                        publish_context.unwrap_or_else(|| {
-                            SnapshotPublishContext::new("control_event").with_detail("unknown")
-                        }),
+                        if reconnected {
+                            SnapshotPublishContext::new("reconcile").with_detail("broker_reconnect")
+                        } else {
+                            publish_context.unwrap_or_else(|| {
+                                SnapshotPublishContext::new("control_event").with_detail("unknown")
+                            })
+                        },
                     );
                 }
 
@@ -2402,23 +2408,21 @@ fn daemon_run_with_socket_path_and_startup(
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 let publish_context =
                     SnapshotPublishContext::new("reconcile").with_detail("timeout");
-                let mut reconcile_tmux_reads = TmuxDaemonReadProvider {
-                    fallback: TmuxCommandReadProvider,
-                    broker: broker_health
-                        .enabled()
-                        .then_some(TmuxControlModeReadBroker {
-                            stdin: &mut control_mode_stdin,
-                            line_rx: &line_rx,
-                            deferred_lines: &mut deferred_control_lines,
-                            broker_health: &mut broker_health,
-                        }),
-                };
+                let mut reconcile_tmux_reads = control_mode.read_provider();
                 reconcile_full_snapshot(
                     &mut snapshot,
                     &mut reconcile_tmux_reads,
                     tmux_version.as_deref(),
                     &mut pane_output_cache,
                 )?;
+                recover_broker_and_reconcile_if_needed(
+                    &mut control_mode,
+                    &startup,
+                    &socket_state,
+                    &mut snapshot,
+                    &mut pane_output_cache,
+                )?;
+                socket_state.update_control_mode_broker_status(control_mode.broker_status_frame());
                 socket_state.publish_later_snapshot_with_context(snapshot.clone(), publish_context);
                 next_reconcile_at = Instant::now() + RECONCILE_INTERVAL;
             }
@@ -2429,12 +2433,33 @@ fn daemon_run_with_socket_path_and_startup(
     closing_guard.mark_closing();
 
     if DAEMON_SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-        running_tmux_client.terminate();
+        control_mode.terminate();
     } else {
-        running_tmux_client.wait_for_exit()?;
+        control_mode.wait_for_exit()?;
     }
 
     Ok(())
+}
+
+fn recover_broker_and_reconcile_if_needed(
+    control_mode: &mut RunningTmuxControlModeClient,
+    startup: &impl StartupActions,
+    socket_state: &DaemonSocketState,
+    snapshot: &mut SnapshotEnvelope,
+    pane_output_cache: &mut scanner::PaneOutputStatusCache,
+) -> Result<bool> {
+    let reconnected = control_mode.recover_broker_if_disabled(startup, socket_state);
+    if reconnected {
+        let tmux_version = snapshot.source.tmux_version.clone();
+        let mut reconnect_tmux_reads = control_mode.read_provider();
+        reconcile_full_snapshot(
+            snapshot,
+            &mut reconnect_tmux_reads,
+            tmux_version.as_deref(),
+            pane_output_cache,
+        )?;
+    }
+    Ok(reconnected)
 }
 
 pub(crate) trait StartupActions {
@@ -2592,6 +2617,7 @@ impl TmuxControlModeReadBroker<'_> {
 #[derive(Default)]
 struct TmuxBrokerHealth {
     disabled_reason: Option<String>,
+    reconnect_count: u32,
 }
 
 impl TmuxBrokerHealth {
@@ -2602,6 +2628,23 @@ impl TmuxBrokerHealth {
     fn disable_after_error(&mut self, error: &anyhow::Error) {
         if self.disabled_reason.is_none() {
             self.disabled_reason = Some(format!("{error:#}"));
+        }
+    }
+
+    fn mark_reconnected(&mut self) {
+        self.disabled_reason = None;
+        self.reconnect_count = self.reconnect_count.saturating_add(1);
+    }
+
+    fn status_frame(&self) -> ipc::ControlModeBrokerStatusFrame {
+        ipc::ControlModeBrokerStatusFrame {
+            mode: if self.enabled() {
+                ipc::ControlModeBrokerMode::Active
+            } else {
+                ipc::ControlModeBrokerMode::Fallback
+            },
+            disabled_reason: self.disabled_reason.clone(),
+            reconnect_count: self.reconnect_count,
         }
     }
 
@@ -2620,6 +2663,30 @@ pub(crate) fn test_broker_health_after_error(message: &str) -> (bool, Option<Str
         health.enabled(),
         health.test_disabled_reason().map(str::to_string),
     )
+}
+
+#[cfg(test)]
+pub(crate) fn test_broker_health_after_reconnect(
+    message: &str,
+) -> ipc::ControlModeBrokerStatusFrame {
+    let mut health = TmuxBrokerHealth::default();
+    let error = anyhow::anyhow!(message.to_string());
+    health.disable_after_error(&error);
+    health.mark_reconnected();
+    health.status_frame()
+}
+
+#[cfg(test)]
+pub(crate) fn test_reconnect_preserves_deferred_lines() -> Vec<String> {
+    let deferred_lines = VecDeque::from([
+        "%subscription-changed agentscan $1 @1 0 %1 : %1:Codex:codex::::".to_string(),
+    ]);
+    let mut health = TmuxBrokerHealth::default();
+    let error = anyhow::anyhow!("broken pipe");
+    health.disable_after_error(&error);
+    health.mark_reconnected();
+
+    deferred_lines.into_iter().collect()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2667,11 +2734,96 @@ impl StartedTmuxControlModeClient {
     }
 }
 
-struct RunningTmuxControlModeClient<'a> {
-    child: &'a mut std::process::Child,
+struct RunningTmuxControlModeClient {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    line_rx: mpsc::Receiver<Result<String>>,
+    deferred_lines: VecDeque<String>,
+    broker_health: TmuxBrokerHealth,
 }
 
-impl RunningTmuxControlModeClient<'_> {
+impl RunningTmuxControlModeClient {
+    fn from_started(started: StartedTmuxControlModeClient) -> Result<Self> {
+        let (child, stdin, line_rx) = control_mode_connection_from_started(started)?;
+        Ok(Self {
+            child,
+            stdin,
+            line_rx,
+            deferred_lines: VecDeque::new(),
+            broker_health: TmuxBrokerHealth::default(),
+        })
+    }
+
+    fn read_provider(&mut self) -> TmuxDaemonReadProvider<'_> {
+        TmuxDaemonReadProvider {
+            fallback: TmuxCommandReadProvider,
+            broker: self
+                .broker_health
+                .enabled()
+                .then_some(TmuxControlModeReadBroker {
+                    stdin: &mut self.stdin,
+                    line_rx: &self.line_rx,
+                    deferred_lines: &mut self.deferred_lines,
+                    broker_health: &mut self.broker_health,
+                }),
+        }
+    }
+
+    fn recv_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> std::result::Result<Result<String>, mpsc::RecvTimeoutError> {
+        if let Some(line) = self.deferred_lines.pop_front() {
+            Ok(Ok(line))
+        } else {
+            self.line_rx.recv_timeout(timeout)
+        }
+    }
+
+    fn broker_status_frame(&self) -> ipc::ControlModeBrokerStatusFrame {
+        self.broker_health.status_frame()
+    }
+
+    fn recover_broker_if_disabled(
+        &mut self,
+        startup: &impl StartupActions,
+        socket_state: &DaemonSocketState,
+    ) -> bool {
+        if self.broker_health.enabled() {
+            return false;
+        }
+
+        socket_state.update_control_mode_broker_status(self.broker_status_frame());
+        match self.reconnect(startup) {
+            Ok(()) => {
+                socket_state.update_control_mode_broker_status(self.broker_status_frame());
+                true
+            }
+            Err(error) => {
+                eprintln!(
+                    "agentscan: failed to reconnect tmux control-mode broker; continuing with short-lived tmux reads: {error:#}"
+                );
+                false
+            }
+        }
+    }
+
+    fn reconnect(&mut self, startup: &impl StartupActions) -> Result<()> {
+        let started = startup
+            .start_tmux_control_mode_client()
+            .context("failed to restart tmux control-mode client")?;
+        let (mut replacement_child, replacement_stdin, replacement_line_rx) =
+            control_mode_connection_from_started(started)
+                .context("failed to configure restarted tmux control-mode client")?;
+
+        std::mem::swap(&mut self.child, &mut replacement_child);
+        cleanup_startup_child(&mut replacement_child);
+        self.stdin = replacement_stdin;
+        self.line_rx = replacement_line_rx;
+        self.broker_health.mark_reconnected();
+        Ok(())
+    }
+
     fn wait_for_exit(&mut self) -> Result<()> {
         let status = self
             .child
@@ -2684,14 +2836,61 @@ impl RunningTmuxControlModeClient<'_> {
     }
 
     fn terminate(&mut self) {
-        cleanup_startup_child(self.child);
+        cleanup_startup_child(&mut self.child);
     }
 }
 
-impl Drop for RunningTmuxControlModeClient<'_> {
+impl Drop for RunningTmuxControlModeClient {
     fn drop(&mut self) {
-        cleanup_startup_child(self.child);
+        cleanup_startup_child(&mut self.child);
     }
+}
+
+fn control_mode_connection_from_started(
+    mut started: StartedTmuxControlModeClient,
+) -> Result<(
+    std::process::Child,
+    std::process::ChildStdin,
+    mpsc::Receiver<Result<String>>,
+)> {
+    let stdout_reader = started
+        .stdout_reader
+        .take()
+        .context("tmux control-mode client did not provide stdout")?;
+    let child = started
+        .child
+        .take()
+        .context("tmux control-mode client did not provide child process")?;
+    let stdin = started
+        .stdin
+        .take()
+        .context("tmux control-mode client did not provide stdin")?;
+    let line_rx = spawn_control_mode_line_reader(stdout_reader);
+    Ok((child, stdin, line_rx))
+}
+
+fn spawn_control_mode_line_reader(
+    stdout_reader: BufReader<std::process::ChildStdout>,
+) -> mpsc::Receiver<Result<String>> {
+    let (line_tx, line_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut reader = stdout_reader;
+        loop {
+            match read_control_mode_line(&mut reader) {
+                Ok(Some(line)) => {
+                    if line_tx.send(Ok(line)).is_err() {
+                        break;
+                    }
+                }
+                Ok(None) => break,
+                Err(error) => {
+                    let _ = line_tx.send(Err(error));
+                    break;
+                }
+            }
+        }
+    });
+    line_rx
 }
 
 extern "C" fn daemon_shutdown_signal_handler(_signal: libc::c_int) {
@@ -3500,6 +3699,7 @@ struct DaemonSocketStateInner {
     startup_state: DaemonStartupState,
     identity: Option<DaemonRuntimeIdentity>,
     snapshots: SnapshotStore,
+    control_mode_broker: Option<ipc::ControlModeBrokerStatusFrame>,
     pending_handshakes: usize,
     subscribers: HashMap<SubscriberId, SubscriberMailbox>,
     next_subscriber_id: SubscriberId,
@@ -3578,47 +3778,6 @@ impl PreparedSnapshot {
     }
 }
 
-#[derive(Default)]
-struct SnapshotStore {
-    latest_snapshot: Option<SnapshotEnvelope>,
-    latest_snapshot_frame: Option<EncodedDaemonFrame>,
-    latest_snapshot_update: Option<SnapshotUpdateTelemetry>,
-}
-
-impl SnapshotStore {
-    fn publish(
-        &mut self,
-        prepared: PreparedSnapshot,
-        telemetry: SnapshotUpdateTelemetry,
-    ) -> EncodedDaemonFrame {
-        let frame = prepared.frame.clone();
-        self.latest_snapshot = Some(prepared.snapshot);
-        self.latest_snapshot_frame = Some(frame.clone());
-        self.latest_snapshot_update = Some(telemetry);
-        frame
-    }
-
-    fn latest_frame(&self) -> Option<EncodedDaemonFrame> {
-        self.latest_snapshot_frame.clone()
-    }
-
-    fn latest_generated_at(&self) -> Option<String> {
-        self.latest_snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.generated_at.clone())
-    }
-
-    fn latest_pane_count(&self) -> Option<usize> {
-        self.latest_snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.panes.len())
-    }
-
-    fn latest_update(&self) -> Option<&SnapshotUpdateTelemetry> {
-        self.latest_snapshot_update.as_ref()
-    }
-}
-
 impl DaemonSocketState {
     pub(crate) fn new() -> Self {
         Self {
@@ -3626,6 +3785,7 @@ impl DaemonSocketState {
                 startup_state: DaemonStartupState::Initializing,
                 identity: None,
                 snapshots: SnapshotStore::default(),
+                control_mode_broker: None,
                 pending_handshakes: 0,
                 subscribers: HashMap::new(),
                 next_subscriber_id: 1,
@@ -3825,9 +3985,15 @@ impl DaemonSocketState {
                 .snapshots
                 .latest_update()
                 .and_then(|update| update.duration_ms),
+            control_mode_broker: inner.control_mode_broker.clone(),
             unavailable_reason,
             message,
         }
+    }
+
+    fn update_control_mode_broker_status(&self, status: ipc::ControlModeBrokerStatusFrame) {
+        let mut inner = self.lock();
+        inner.control_mode_broker = Some(status);
     }
 
     pub(crate) fn try_acquire_pending_handshake(&self) -> Option<PendingHandshake> {

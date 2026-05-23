@@ -194,6 +194,25 @@ fn daemon_broker_health_disables_after_unexpected_error() {
 }
 
 #[test]
+fn daemon_broker_health_returns_active_after_reconnect() {
+    let status = daemon::test_broker_health_after_reconnect("broken pipe");
+
+    assert_eq!(status.mode, ipc::ControlModeBrokerMode::Active);
+    assert_eq!(status.disabled_reason, None);
+    assert_eq!(status.reconnect_count, 1);
+}
+
+#[test]
+fn daemon_broker_reconnect_preserves_deferred_events() {
+    let deferred_events = daemon::test_reconnect_preserves_deferred_lines();
+
+    assert_eq!(
+        deferred_events,
+        vec!["%subscription-changed agentscan $1 @1 0 %1 : %1:Codex:codex::::"]
+    );
+}
+
+#[test]
 fn daemon_broker_list_pane_keeps_event_shaped_rows_as_output() {
     let expected_id = broker_frame_id("211");
     let mut harness = daemon::ControlModeBrokerTranscriptHarness::new([

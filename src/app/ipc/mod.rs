@@ -141,8 +141,24 @@ pub(crate) struct LifecycleStatusFrame {
     pub(crate) latest_snapshot_update_detail: Option<String>,
     #[serde(default)]
     pub(crate) latest_snapshot_update_duration_ms: Option<u64>,
+    #[serde(default)]
+    pub(crate) control_mode_broker: Option<ControlModeBrokerStatusFrame>,
     pub(crate) unavailable_reason: Option<UnavailableReason>,
     pub(crate) message: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ControlModeBrokerMode {
+    Active,
+    Fallback,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct ControlModeBrokerStatusFrame {
+    pub(crate) mode: ControlModeBrokerMode,
+    pub(crate) disabled_reason: Option<String>,
+    pub(crate) reconnect_count: u32,
 }
 
 impl SocketPathConfig {

@@ -250,6 +250,11 @@ fn ipc_lifecycle_status_frame_roundtrips() {
             latest_snapshot_update_source: Some("reconcile".to_string()),
             latest_snapshot_update_detail: Some("interval".to_string()),
             latest_snapshot_update_duration_ms: Some(12),
+            control_mode_broker: Some(ipc::ControlModeBrokerStatusFrame {
+                mode: ipc::ControlModeBrokerMode::Active,
+                disabled_reason: None,
+                reconnect_count: 1,
+            }),
             unavailable_reason: None,
             message: None,
         },

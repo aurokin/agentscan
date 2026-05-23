@@ -137,14 +137,16 @@ Implications:
 - tmux subprocesses remain an intentional boundary for direct snapshots,
   initial daemon bootstrap, focus, metadata helpers, and pane-output fallback.
   Steady-state daemon `list-panes` refreshes use the brokered control-mode
-  command path, with short-lived tmux reads retained as fallback.
+  command path, with short-lived tmux reads retained as fallback when a broker
+  command fails.
 - daemon pane-output status fallback may use a short-lived in-memory cache to
   throttle repeated `capture-pane` reads during refresh bursts. The cache is
   local to the daemon, keyed by pane identity and classification inputs, and is
   not canonical state. Direct `scan` snapshots remain uncached.
 - daemon refresh `list-panes` reads may use the control-mode event client only
   through the brokered command path that owns response collection, event
-  buffering, timeouts, and fallback. See
+  buffering, timeouts, fallback, reconnect attempts, and lifecycle status
+  reporting. See
   `docs/notes/daemon-redesign-decisions.md` for the implementation decisions
   and `docs/notes/daemon-redesign-brief.md` for the original migration slices.
 - provider logs, transcript files, session databases, and other historical

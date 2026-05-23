@@ -519,6 +519,7 @@ fn daemon_socket_lifecycle_status_reports_ready_identity_and_counts() {
             );
             assert_eq!(status.latest_snapshot_update_detail, None);
             assert_eq!(status.latest_snapshot_update_duration_ms, None);
+            assert_eq!(status.control_mode_broker, None);
             assert_eq!(status.unavailable_reason, None);
         }
         other => panic!("expected lifecycle status frames, got {other:?}"),
@@ -546,6 +547,11 @@ fn daemon_lifecycle_query_rejects_incompatible_hello_ack() {
         latest_snapshot_update_source: None,
         latest_snapshot_update_detail: None,
         latest_snapshot_update_duration_ms: None,
+        control_mode_broker: Some(ipc::ControlModeBrokerStatusFrame {
+            mode: ipc::ControlModeBrokerMode::Fallback,
+            disabled_reason: Some("test fallback".to_string()),
+            reconnect_count: 2,
+        }),
         unavailable_reason: None,
         message: None,
     };

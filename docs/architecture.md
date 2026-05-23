@@ -60,8 +60,10 @@ The broker shares the daemon's long-lived control-mode client, owns command
 response collection while a command is pending, and replays unrelated
 control-mode events back into the daemon loop before reading new socket events.
 Expected missing-target responses remain normal refresh outcomes. Unexpected
-broker failures disable brokered reads for the daemon lifetime and fall back to
-short-lived tmux commands so the daemon can keep publishing snapshots.
+broker failures fall back to short-lived tmux commands for the current read so
+the daemon can keep publishing snapshots, then attempt to reconnect the
+control-mode client. `agentscan daemon status` reports whether the broker is
+active or in fallback, the last disabled reason, and the reconnect count.
 
 The initial daemon snapshot still uses a short-lived tmux command before socket
 readiness is published.

@@ -96,17 +96,28 @@ slices so they can be reviewed together at the end of the work.
 ## Slice 9: Broker Failure Recovery
 
 - Broker health is tracked explicitly instead of as an anonymous boolean.
-- Any unexpected broker command failure disables brokered reads for the daemon
-  lifetime; subsequent pane, scope, and reconcile reads use the short-lived tmux
-  provider.
+- Any unexpected broker command failure falls back to the short-lived tmux
+  provider for the current pane, scope, or reconcile read.
 - Expected missing-target responses remain successful refresh outcomes and do
   not poison broker health.
 - Empty `%error` marker payloads use the last command output line as the error
   message, matching tmux control-mode framing for missing-target errors.
+- After a poisoned broker read, the daemon attempts to attach a replacement
+  control-mode client. A successful reconnect clears the disabled reason,
+  increments the reconnect count, and returns later refreshes to the brokered
+  path. A failed reconnect leaves the existing event stream alive and keeps
+  short-lived tmux reads as fallback.
+- `agentscan daemon status` now reports broker mode, disabled reason, and
+  reconnect count through lifecycle text and JSON output.
 - Faster brokered pane removals exposed an existing TUI race where render could
   prune a key target before the user selected it. TUI state now keeps retired
   key targets so selecting a just-removed pane still closes with the existing
   "pane is no longer available" flow.
-- This slice does not reconnect the control-mode child. Reconnect remains a
-  later hardening step because it needs request correlation across a newly
-  attached client and live event replay semantics.
+
+## Slice 10: Daemon Module Split
+
+- `SnapshotStore` moved out of the monolithic daemon module into
+  `src/app/daemon/snapshot_store.rs`.
+- The broker code remains in `daemon.rs` for now because it still touches the
+  control-mode runtime, event loop, and refresh provider boundary. Splitting it
+  should come after recovery behavior settles.
