@@ -170,3 +170,14 @@ slices so they can be reviewed together at the end of the work.
 - This is behavior-preserving. The extraction creates a clearer boundary for
   future daemon supervisor work without changing the socket protocol, refresh
   pipeline, or macOS lifecycle policy.
+
+## Slice 14: Refresh Request Pipeline
+
+- Daemon runtime refreshes now flow through an explicit `RefreshRequest` /
+  `RefreshOutcome` boundary inside `DaemonRuntime`.
+- Interval reconciles, timeout reconciles, and control-mode event lines share
+  one application path that decides whether to publish, whether to exit, and
+  whether to reset the reconcile timer.
+- Existing publish context behavior is preserved: interval and timeout
+  reconciles keep their reconcile detail, while control-event refreshes still
+  report broker reconnects when broker recovery changes the published snapshot.

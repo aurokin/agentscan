@@ -207,6 +207,52 @@ struct DaemonRuntime<S> {
     next_reconcile_at: Instant,
 }
 
+enum RefreshRequest<'a> {
+    IntervalReconcile,
+    TimeoutReconcile,
+    ControlModeLine(&'a str),
+}
+
+struct RefreshOutcome {
+    should_exit: bool,
+    publish_context: Option<SnapshotPublishContext>,
+    reset_reconcile_timer: bool,
+}
+
+impl RefreshOutcome {
+    fn no_publish() -> Self {
+        Self {
+            should_exit: false,
+            publish_context: None,
+            reset_reconcile_timer: false,
+        }
+    }
+
+    fn exit() -> Self {
+        Self {
+            should_exit: true,
+            publish_context: None,
+            reset_reconcile_timer: false,
+        }
+    }
+
+    fn publish(publish_context: SnapshotPublishContext) -> Self {
+        Self {
+            should_exit: false,
+            publish_context: Some(publish_context),
+            reset_reconcile_timer: false,
+        }
+    }
+
+    fn publish_and_reset_reconcile_timer(publish_context: SnapshotPublishContext) -> Self {
+        Self {
+            should_exit: false,
+            publish_context: Some(publish_context),
+            reset_reconcile_timer: true,
+        }
+    }
+}
+
 impl<S: StartupActions> DaemonRuntime<S> {
     fn from_started(
         startup: S,
@@ -236,9 +282,7 @@ impl<S: StartupActions> DaemonRuntime<S> {
                 break;
             }
             if Instant::now() >= self.next_reconcile_at {
-                self.reconcile_and_publish(
-                    SnapshotPublishContext::new("reconcile").with_detail("interval"),
-                )?;
+                self.apply_refresh_request(RefreshRequest::IntervalReconcile)?;
             }
 
             let timeout = self
@@ -247,14 +291,12 @@ impl<S: StartupActions> DaemonRuntime<S> {
             match self.control_mode.recv_timeout(timeout) {
                 Ok(line) => {
                     let line = line?;
-                    if self.handle_control_mode_line(&line)? {
+                    if self.apply_refresh_request(RefreshRequest::ControlModeLine(&line))? {
                         break;
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    self.reconcile_and_publish(
-                        SnapshotPublishContext::new("reconcile").with_detail("timeout"),
-                    )?;
+                    self.apply_refresh_request(RefreshRequest::TimeoutReconcile)?;
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
@@ -262,31 +304,57 @@ impl<S: StartupActions> DaemonRuntime<S> {
         Ok(())
     }
 
-    fn handle_control_mode_line(&mut self, line: &str) -> Result<bool> {
+    fn apply_refresh_request(&mut self, request: RefreshRequest<'_>) -> Result<bool> {
+        let outcome = match request {
+            RefreshRequest::IntervalReconcile => self.apply_reconcile_refresh(
+                SnapshotPublishContext::new("reconcile").with_detail("interval"),
+            )?,
+            RefreshRequest::TimeoutReconcile => self.apply_reconcile_refresh(
+                SnapshotPublishContext::new("reconcile").with_detail("timeout"),
+            )?,
+            RefreshRequest::ControlModeLine(line) => self.apply_control_mode_refresh(line)?,
+        };
+        if let Some(publish_context) = outcome.publish_context {
+            self.publish_current_snapshot(publish_context);
+        }
+        if outcome.reset_reconcile_timer {
+            self.next_reconcile_at = Instant::now() + RECONCILE_INTERVAL;
+        }
+        Ok(outcome.should_exit)
+    }
+
+    fn apply_control_mode_refresh(&mut self, line: &str) -> Result<RefreshOutcome> {
         let event = control_event_from_line(line);
-        let should_exit = event == ControlEvent::Exit;
-        let publish_context = event.publish_context();
+        if event == ControlEvent::Exit {
+            return Ok(RefreshOutcome::exit());
+        }
+        let event_publish_context = event.publish_context();
         let mut event_tmux_reads = self.control_mode.read_provider();
-        if apply_control_event(
+        let changed = apply_control_event(
             &mut self.snapshot,
             &mut event_tmux_reads,
             line,
             &event,
             &mut self.pane_output_cache,
-        )? {
-            let reconnected = self.recover_broker_and_reconcile_if_needed()?;
-            self.publish_current_snapshot(if reconnected {
-                SnapshotPublishContext::new("reconcile").with_detail("broker_reconnect")
-            } else {
-                publish_context.unwrap_or_else(|| {
-                    SnapshotPublishContext::new("control_event").with_detail("unknown")
-                })
-            });
+        )?;
+        if !changed {
+            return Ok(RefreshOutcome::no_publish());
         }
-        Ok(should_exit)
+
+        let reconnected = self.recover_broker_and_reconcile_if_needed()?;
+        Ok(RefreshOutcome::publish(if reconnected {
+            SnapshotPublishContext::new("reconcile").with_detail("broker_reconnect")
+        } else {
+            event_publish_context.unwrap_or_else(|| {
+                SnapshotPublishContext::new("control_event").with_detail("unknown")
+            })
+        }))
     }
 
-    fn reconcile_and_publish(&mut self, publish_context: SnapshotPublishContext) -> Result<()> {
+    fn apply_reconcile_refresh(
+        &mut self,
+        publish_context: SnapshotPublishContext,
+    ) -> Result<RefreshOutcome> {
         let mut reconcile_tmux_reads = self.control_mode.read_provider();
         reconcile_full_snapshot(
             &mut self.snapshot,
@@ -295,9 +363,9 @@ impl<S: StartupActions> DaemonRuntime<S> {
             &mut self.pane_output_cache,
         )?;
         self.recover_broker_and_reconcile_if_needed()?;
-        self.publish_current_snapshot(publish_context);
-        self.next_reconcile_at = Instant::now() + RECONCILE_INTERVAL;
-        Ok(())
+        Ok(RefreshOutcome::publish_and_reset_reconcile_timer(
+            publish_context,
+        ))
     }
 
     fn recover_broker_and_reconcile_if_needed(&mut self) -> Result<bool> {
