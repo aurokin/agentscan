@@ -97,11 +97,10 @@ include:
 - an interaction among several of the above rather than one isolated cause
 
 Future work should not treat this ADR as proof that macOS auto-start is
-inherently unsafe. It should treat the current product policy as a safety
-rollback made under uncertainty. Reintroducing auto-start may be reasonable if
-it is tested as a controlled experiment with a signed/notarized binary, native
-process inspection, clear pre-spawn logging, no wrapper indirection, and ES
-logger coverage.
+inherently unsafe. The no-implicit-auto-start period was a safety rollback made
+under uncertainty. Signed-only auto-start is reasonable when the parent process
+runs trust preflight before spawning, process inspection avoids shell helper
+churn, wrapper indirection is not required, and users retain a hard opt-out.
 
 ## Evidence
 
@@ -154,19 +153,19 @@ This mitigation was host-local and not a product design. It was removed after
 signed release binaries and a focused EndpointSecurity exec logger replaced the
 wrapper-based attribution path.
 
-## Accepted Interim Decision
+## Accepted Decision
 
 Detached daemon auto-start on macOS currently has a stricter product boundary
 than Linux:
 
-1. A normal foreground command may not silently self-exec a detached daemon on
-   macOS.
+1. A normal foreground command may self-exec a detached daemon on macOS only
+   after parent-side executable trust preflight succeeds.
 2. A macOS child process must not be the first place where unsafe daemon startup
    is rejected; the parent must decide before spawning.
 3. Foreground `agentscan daemon run` remains the recovery and development path
    for macOS users.
-4. Explicit detached `agentscan daemon start` remains available on macOS only
-   for non-ad-hoc, validly signed binaries.
+4. Detached daemon starts remain available on macOS only for non-ad-hoc,
+   validly signed binaries.
 5. The user must have a hard opt-out from auto-start through
    `--no-auto-start` and `AGENTSCAN_NO_AUTO_START=1`.
 
@@ -187,18 +186,16 @@ than Linux:
 
 Option A: signed-only detached daemon on macOS.
 
-This was rejected during the incident as too permissive for implicit starts.
-`daemon start` remains signed-only, but implicit auto-start and TUI subscription
-auto-start are removed on macOS. Given the 2026-05-14 stability evidence, this
-option should be reconsidered through a staged experiment rather than treated as
-permanently closed.
+This is the implemented direction. Explicit starts, one-shot consumer
+auto-start, and TUI subscription auto-start share the same parent-side
+executable trust preflight before any detached child is spawned.
 
 Option B: no implicit auto-start on macOS.
 
 Normal daemon-backed commands connect only to an existing daemon. If no daemon
 is running, they fail with guidance. Users start a daemon explicitly through a
-known-safe path. This reduces invisible behavior and makes invocation ownership
-clear.
+known-safe path. This was the rollback policy during the incident and remains a
+fallback option if signed-only auto-start shows new evidence of risk.
 
 Option C: foreground helper instead of detached self-exec.
 
@@ -224,14 +221,14 @@ kernel bug or by helper-process churn rather than by daemon auto-start alone.
 
 ## Implemented Policy
 
-- macOS signed release binary: explicit detached `agentscan daemon start` is
-  allowed, but implicit auto-start remains disabled.
+- macOS signed release binary: explicit detached `agentscan daemon start`,
+  daemon-backed one-shot command auto-start, and TUI subscription auto-start
+  are allowed after parent-side executable trust preflight succeeds.
 - macOS ad-hoc or locally built binary: detached starts are rejected; users run
   `agentscan daemon run`, `agentscan scan`, or refresh-capable direct paths.
-- `agentscan tui` on macOS requires an already-running daemon and guides users
-  to run `agentscan daemon run` in a long-lived tmux pane when none is running.
+- `agentscan tui` on macOS uses the same signed-only detached auto-start policy
+  as one-shot daemon-backed commands.
 
-This avoids silent background self-exec on macOS while preserving explicit
-daemon workflows. This policy is intentionally reversible if follow-up testing
-shows that signed binaries plus native process inspection make macOS auto-start
-safe enough for normal users.
+This keeps the child process out of the unsafe decision path: the parent logs
+and enforces the macOS assessment before spawn, while local ad-hoc development
+continues to use foreground daemon or direct tmux recovery paths.

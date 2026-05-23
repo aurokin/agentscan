@@ -144,3 +144,16 @@ slices so they can be reviewed together at the end of the work.
   spawning. This preserves the current behavior for this slice: explicit
   lifecycle starts still run the macOS executable trust preflight, while
   implicit macOS auto-start remains disabled.
+
+## Slice 12: Signed macOS Auto-Start
+
+- macOS implicit daemon auto-start now uses the same parent-side executable
+  trust preflight as explicit `agentscan daemon start`.
+- Signed/trusted macOS binaries may auto-start the daemon for one-shot
+  daemon-backed consumers and TUI subscription bootstrap. Ad-hoc, unsigned, or
+  failed `codesign` assessments are rejected before spawning the detached child.
+- The consumer and TUI socket clients no longer short-circuit macOS before the
+  lifecycle coordinator; stale socket cleanup, policy logging, and readiness
+  handling stay centralized in `start_daemon`.
+- `--no-auto-start` and `AGENTSCAN_NO_AUTO_START=1` remain hard opt-outs before
+  any platform-specific start policy runs.

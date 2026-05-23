@@ -607,43 +607,44 @@ fn daemon_auto_start_preserves_explicit_agentscan_tmux_socket() {
 }
 
 #[test]
-fn implicit_macos_auto_start_is_disabled_before_executable_assessment() {
+fn implicit_macos_auto_start_blocks_untrusted_executable() {
     let error = daemon::test_implicit_consumer_macos_auto_start_preflight(
         Some("codesign reports an ad-hoc executable"),
     )
-    .expect_err("implicit auto-start should be disabled on macOS");
+    .expect_err("implicit auto-start should block untrusted macOS executables");
 
     assert!(matches!(
         error,
         daemon::DaemonSnapshotError::AutoStartDisabled { .. }
     ));
     let message = error.to_string();
-    assert!(message.contains("macOS does not implicitly auto-start"));
-    assert!(message.contains("agentscan scan"));
+    assert!(message.contains("macOS executable trust preflight rejected"));
+    assert!(message.contains("codesign reports an ad-hoc executable"));
     assert!(message.contains("agentscan daemon run"));
-    assert!(
-        !message.contains("codesign reports an ad-hoc executable"),
-        "implicit macOS auto-start should reject before assessing the executable"
-    );
 }
 
 #[test]
-fn tui_macos_auto_start_is_disabled_before_executable_assessment() {
+fn tui_macos_auto_start_blocks_untrusted_executable() {
     let error = daemon::test_tui_macos_auto_start_preflight(
         Some("codesign reports an ad-hoc executable"),
     )
-    .expect_err("TUI auto-start should be disabled on macOS");
+    .expect_err("TUI auto-start should block untrusted macOS executables");
 
     assert!(matches!(
         error,
         daemon::DaemonSnapshotError::AutoStartDisabled { .. }
     ));
-    assert!(error.to_string().contains("TUI requires a running daemon"));
-    assert!(error.to_string().contains("agentscan daemon run"));
     assert!(
-        !error.to_string().contains("codesign reports an ad-hoc executable"),
-        "TUI macOS auto-start should reject before assessing the executable"
+        error
+            .to_string()
+            .contains("macOS executable trust preflight rejected")
     );
+    assert!(
+        error
+            .to_string()
+            .contains("codesign reports an ad-hoc executable")
+    );
+    assert!(error.to_string().contains("agentscan daemon run"));
 }
 
 #[test]
@@ -682,18 +683,28 @@ fn daemon_restart_skips_stop_when_start_preflight_fails() {
 }
 
 #[test]
-fn macos_preflight_assesses_only_explicit_detached_starts() {
-    assert!(!daemon::test_macos_preflight_skips_assessment(true, false));
-    assert!(daemon::test_macos_preflight_skips_assessment(false, true));
-    assert!(daemon::test_macos_preflight_skips_assessment(false, false));
+fn macos_preflight_assesses_all_detached_starts() {
+    assert!(daemon::test_macos_start_requires_trust_preflight(
+        true, false
+    ));
+    assert!(daemon::test_macos_start_requires_trust_preflight(
+        false, true
+    ));
+    assert!(daemon::test_macos_start_requires_trust_preflight(
+        false, false
+    ));
 }
 
 #[test]
-fn implicit_macos_auto_start_is_disabled_even_for_trusted_executable() {
-    let error = daemon::test_implicit_consumer_macos_auto_start_preflight(None)
-        .expect_err("implicit auto-start should not be allowed on macOS");
+fn implicit_macos_auto_start_allows_trusted_executable() {
+    daemon::test_implicit_consumer_macos_auto_start_preflight(None)
+        .expect("implicit auto-start should allow trusted macOS executables");
+}
 
-    assert!(error.to_string().contains("macOS does not implicitly auto-start"));
+#[test]
+fn tui_macos_auto_start_allows_trusted_executable() {
+    daemon::test_tui_macos_auto_start_preflight(None)
+        .expect("TUI auto-start should allow trusted macOS executables");
 }
 
 #[test]
@@ -1394,25 +1405,29 @@ fn daemon_snapshot_helper_reports_disabled_auto_start_when_socket_is_missing() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn daemon_snapshot_helper_disables_implicit_auto_start_on_macos() {
+fn daemon_snapshot_helper_blocks_untrusted_implicit_auto_start_on_macos() {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let socket_path = tempdir.path().join("missing.sock");
 
-    let error =
-        daemon::snapshot_via_socket_path(&socket_path, daemon::AutoStartPolicy::enabled_for_tests())
-            .expect_err("missing socket should not auto-start implicitly on macOS");
+    let error = daemon::snapshot_via_socket_path_with_start_command(
+        &socket_path,
+        Path::new("/tmp/agentscan-untrusted"),
+        &[],
+        &[],
+    )
+    .expect_err("missing socket should block untrusted macOS executable");
 
     assert!(matches!(
         error,
         daemon::DaemonSnapshotError::AutoStartDisabled { .. }
     ));
-    assert!(error.to_string().contains("macOS does not implicitly auto-start"));
-    assert!(error.to_string().contains("agentscan daemon run"));
+    assert!(error.to_string().contains("macOS executable trust preflight rejected"));
+    assert!(error.to_string().contains("codesign inspection failed"));
 }
 
 #[cfg(target_os = "macos")]
 #[test]
-fn daemon_snapshot_helper_removes_stale_socket_before_macos_refusal() {
+fn daemon_snapshot_helper_removes_stale_socket_before_untrusted_macos_refusal() {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let socket_path = tempdir.path().join("stale.sock");
     {
@@ -1428,9 +1443,13 @@ fn daemon_snapshot_helper_removes_stale_socket_before_macos_refusal() {
         std::thread::sleep(Duration::from_millis(5));
     }
 
-    let error =
-        daemon::snapshot_via_socket_path(&socket_path, daemon::AutoStartPolicy::enabled_for_tests())
-            .expect_err("stale socket should not auto-start implicitly on macOS");
+    let error = daemon::snapshot_via_socket_path_with_start_command(
+        &socket_path,
+        Path::new("/tmp/agentscan-untrusted"),
+        &[],
+        &[],
+    )
+    .expect_err("stale socket should block untrusted macOS executable");
 
     assert!(matches!(
         error,

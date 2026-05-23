@@ -7,10 +7,9 @@ publishing.
 ## Why This Matters
 
 Signing is part of the macOS daemon lifecycle policy, not just release
-polish. macOS release binaries are signed and notarized so an explicit detached
-`agentscan daemon start` can run through a trusted Apple policy assessment path.
-Implicit daemon auto-start remains disabled on macOS even for signed releases;
-users should start the daemon intentionally.
+polish. macOS release binaries are signed and notarized so detached daemon
+starts, including implicit auto-start from daemon-backed commands, can run
+through a trusted Apple policy assessment path.
 
 Ad-hoc or local development builds should use foreground `agentscan daemon run`
 instead of detached background startup. This boundary exists because this host

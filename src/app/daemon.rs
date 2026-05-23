@@ -43,7 +43,7 @@ pub(crate) use lifecycle::{
     daemon_status_with_socket_path, snapshot_via_socket_path, test_daemon_restart_with_steps,
     test_daemon_start_env_removes_from, test_daemon_start_tmux_envs_from,
     test_explicit_macos_daemon_start_preflight, test_implicit_consumer_macos_auto_start_preflight,
-    test_macos_executable_assessment_for_outputs, test_macos_preflight_skips_assessment,
+    test_macos_executable_assessment_for_outputs, test_macos_start_requires_trust_preflight,
     test_tui_macos_auto_start_preflight,
 };
 use snapshot_store::SnapshotStore;

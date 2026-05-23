@@ -9,9 +9,9 @@ back here only once behavior or contract decisions settle.
 
 The current runtime model is:
 
-1. Normal consumers connect to the daemon socket. On non-macOS platforms they
-   auto-start the daemon when it is not already running; on macOS they require
-   an already-running daemon.
+1. Normal consumers connect to the daemon socket and auto-start the daemon when
+   it is not already running. On macOS, the parent command first runs executable
+   trust preflight and only starts detached signed/trusted binaries.
 2. The daemon subscribes to tmux control-mode updates.
 3. The daemon maintains in-memory pane state keyed by `pane_id`.
 4. The daemon publishes full versioned `SnapshotEnvelope` frames over a
@@ -77,8 +77,8 @@ lifecycle operations:
   recovery scans, focus, metadata helpers, and provider-scoped pane-output
   status fallback
 - detached `agentscan daemon run` self-spawn for explicit daemon start and
-  non-macOS implicit auto-start
-- macOS `codesign` inspection for explicit detached daemon start preflight
+  implicit auto-start
+- macOS `codesign` inspection before detached daemon start
 
 Process inspection itself must not shell out to `ps`, `pgrep`, `grep`, or
 similar helpers. Linux uses procfs directly. macOS uses native `libproc` and
@@ -158,13 +158,11 @@ to wire it up as a service.
 
 Current lifecycle policy:
 
-- auto-start by default for desktop commands on non-macOS platforms
+- auto-start by default for desktop commands
 - explicit `daemon start`, `run`, `stop`, `status`, and `restart` commands
-- on macOS, implicit daemon auto-start is disabled entirely; users should start
-  the daemon explicitly with foreground `agentscan daemon run`
-- on macOS, explicit detached `agentscan daemon start` requires a non-ad-hoc,
-  validly signed executable because detached self-exec can enter
-  AppleSystemPolicy before application guards run; see
+- on macOS, any detached daemon start requires a non-ad-hoc, validly signed
+  executable because detached self-exec can enter AppleSystemPolicy before
+  application guards run; see
   `docs/adr/macos-daemon-autostart-and-executable-assessment.md`
 - `--no-auto-start` and `AGENTSCAN_NO_AUTO_START=1` for scripts and CI
 - `--refresh` for one-shot recovery or forced tmux snapshots

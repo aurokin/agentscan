@@ -39,9 +39,10 @@ The redesign must preserve these current product and integration contracts:
 - TUI subscription keeps receiving live snapshot frames and remains
   interactive-only.
 - `agentscan scan` and refresh-capable flags remain direct tmux recovery paths.
-- macOS daemon-backed commands do not implicitly auto-start the daemon.
+- macOS daemon-backed commands may implicitly auto-start the daemon only after
+  parent-side signed-binary trust preflight succeeds.
 - Explicit detached `agentscan daemon start` on macOS remains signed-binary
-  gated.
+  gated through the same preflight.
 - `--no-auto-start` and `AGENTSCAN_NO_AUTO_START=1` remain hard opt-outs.
 - `AGENTSCAN_SOCKET_PATH` remains the daemon socket override for tests and
   isolated workflows.
@@ -166,7 +167,7 @@ Missing-target parity:
 
 macOS lifecycle:
 
-- The redesign must not reintroduce implicit macOS auto-start or child-process
+- The redesign must not reintroduce unassessed macOS auto-start or child-process
   assessment workarounds.
 
 Harness flake:

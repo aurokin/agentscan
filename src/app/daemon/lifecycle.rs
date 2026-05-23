@@ -63,7 +63,8 @@ enum DaemonStartIntent {
 impl DaemonStartIntent {
     #[cfg(any(test, target_os = "macos"))]
     fn requires_macos_trust_preflight(self) -> bool {
-        matches!(self, Self::ExplicitLifecycleCommand)
+        let _ = self;
+        true
     }
 }
 
@@ -609,39 +610,6 @@ fn subscription_worker_loop(
                 send_subscription_event(events, event)?;
                 break;
             }
-            SubscriptionConnect::NotRunning(reason)
-                if macos_implicit_auto_start_is_disabled(
-                    DaemonStartIntent::TuiSubscriptionAutoStart,
-                ) =>
-            {
-                if let Err(error) = remove_stale_socket_if_present(&socket_path) {
-                    send_subscription_event(
-                        events,
-                        DaemonSubscriptionEvent::Fatal {
-                            message: error.to_string(),
-                        },
-                    )?;
-                    break;
-                }
-                let message = macos_implicit_auto_start_disabled_reason(
-                    DaemonStartIntent::TuiSubscriptionAutoStart,
-                    &reason,
-                );
-                let event = if bootstrapped {
-                    DaemonSubscriptionEvent::Offline {
-                        message,
-                        retrying: true,
-                    }
-                } else {
-                    DaemonSubscriptionEvent::Fatal { message }
-                };
-                send_subscription_event(events, event)?;
-                if !bootstrapped {
-                    break;
-                }
-                sleep_subscription_backoff(cancel, backoff);
-                backoff = next_subscription_backoff(backoff);
-            }
             SubscriptionConnect::NotRunning(reason) if !attempted_start => {
                 attempted_start = true;
                 send_subscription_event(
@@ -656,6 +624,18 @@ fn subscription_worker_loop(
                     DaemonStartIntent::TuiSubscriptionAutoStart,
                 ) {
                     Ok(()) => {}
+                    Err(DaemonSnapshotError::AutoStartDisabled { reason }) if bootstrapped => {
+                        send_subscription_event(
+                            events,
+                            DaemonSubscriptionEvent::Offline {
+                                message: format!("daemon auto-start is disabled: {reason}"),
+                                retrying: true,
+                            },
+                        )?;
+                        sleep_subscription_backoff(cancel, backoff);
+                        backoff = next_subscription_backoff(backoff);
+                        attempted_start = false;
+                    }
                     Err(error) => {
                         send_subscription_event(
                             events,
@@ -1015,23 +995,6 @@ fn snapshot_via_socket_path_with_starter(
             }
             SnapshotQuery::NotRunning(reason) if policy.disabled => {
                 return Err(DaemonSnapshotError::AutoStartDisabled { reason });
-            }
-            SnapshotQuery::NotRunning(reason)
-                if macos_implicit_auto_start_is_disabled(
-                    DaemonStartIntent::ImplicitConsumerAutoStart,
-                ) =>
-            {
-                remove_stale_socket_if_present(socket_path).map_err(|error| {
-                    DaemonSnapshotError::UnexpectedFrame {
-                        message: error.to_string(),
-                    }
-                })?;
-                return Err(DaemonSnapshotError::AutoStartDisabled {
-                    reason: macos_implicit_auto_start_disabled_reason(
-                        DaemonStartIntent::ImplicitConsumerAutoStart,
-                        &reason,
-                    ),
-                });
             }
             SnapshotQuery::NotRunning(reason) if !attempted_start => {
                 attempted_start = true;
@@ -1766,11 +1729,6 @@ fn daemon_start_policy_decision(
     envs: &[(OsString, OsString)],
 ) -> DaemonStartPolicyDecision {
     let _ = envs;
-    if macos_implicit_auto_start_is_disabled(intent) {
-        return DaemonStartPolicyDecision::Blocked(DaemonSnapshotError::AutoStartDisabled {
-            reason: macos_implicit_auto_start_disabled_reason(intent, "daemon is not running"),
-        });
-    }
     if !intent.requires_macos_trust_preflight() {
         return DaemonStartPolicyDecision::Allowed;
     }
@@ -1779,13 +1737,16 @@ fn daemon_start_policy_decision(
 }
 
 #[cfg(test)]
-pub(crate) fn test_macos_preflight_skips_assessment(explicit_start: bool, tui_start: bool) -> bool {
+pub(crate) fn test_macos_start_requires_trust_preflight(
+    explicit_start: bool,
+    tui_start: bool,
+) -> bool {
     let intent = match (explicit_start, tui_start) {
         (true, _) => DaemonStartIntent::ExplicitLifecycleCommand,
         (false, true) => DaemonStartIntent::TuiSubscriptionAutoStart,
         (false, false) => DaemonStartIntent::ImplicitConsumerAutoStart,
     };
-    !intent.requires_macos_trust_preflight()
+    intent.requires_macos_trust_preflight()
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1812,11 +1773,6 @@ fn daemon_start_policy_decision_from_macos_assessment(
     executable_path: &Path,
     assessment: MacExecutableAssessment,
 ) -> DaemonStartPolicyDecision {
-    if macos_implicit_auto_start_is_disabled_for_policy_tests(intent) {
-        return DaemonStartPolicyDecision::Blocked(DaemonSnapshotError::AutoStartDisabled {
-            reason: macos_implicit_auto_start_disabled_reason(intent, "daemon is not running"),
-        });
-    }
     if !intent.requires_macos_trust_preflight() {
         return DaemonStartPolicyDecision::Allowed;
     }
@@ -1833,45 +1789,6 @@ fn daemon_start_policy_decision_from_macos_assessment(
             })
         }
     }
-}
-
-fn macos_daemon_run_guidance() -> &'static str {
-    "Start the daemon in a long-lived tmux pane with `agentscan daemon run`"
-}
-
-fn macos_implicit_auto_start_disabled_reason(intent: DaemonStartIntent, reason: &str) -> String {
-    let recovery = match intent {
-        DaemonStartIntent::ImplicitConsumerAutoStart => {
-            "Use `agentscan scan` or a refresh-capable command for one-shot direct tmux reads."
-        }
-        DaemonStartIntent::TuiSubscriptionAutoStart => {
-            "The TUI requires a running daemon on macOS."
-        }
-        DaemonStartIntent::ExplicitLifecycleCommand => {
-            "Use `agentscan daemon start` with a signed binary or `agentscan daemon run` in the foreground."
-        }
-    };
-    format!(
-        "{reason}; macOS does not implicitly auto-start the agentscan daemon. {} {recovery}",
-        macos_daemon_run_guidance()
-    )
-}
-
-fn macos_implicit_auto_start_is_disabled(intent: DaemonStartIntent) -> bool {
-    cfg!(target_os = "macos")
-        && matches!(
-            intent,
-            DaemonStartIntent::ImplicitConsumerAutoStart
-                | DaemonStartIntent::TuiSubscriptionAutoStart
-        )
-}
-
-#[cfg(any(test, target_os = "macos"))]
-fn macos_implicit_auto_start_is_disabled_for_policy_tests(intent: DaemonStartIntent) -> bool {
-    matches!(
-        intent,
-        DaemonStartIntent::ImplicitConsumerAutoStart | DaemonStartIntent::TuiSubscriptionAutoStart
-    )
 }
 
 #[cfg(any(test, target_os = "macos"))]
