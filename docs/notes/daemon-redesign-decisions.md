@@ -181,3 +181,16 @@ slices so they can be reviewed together at the end of the work.
 - Existing publish context behavior is preserved: interval and timeout
   reconciles keep their reconcile detail, while control-event refreshes still
   report broker reconnects when broker recovery changes the published snapshot.
+
+## Slice 15: TUI Subscription State
+
+- The daemon subscription worker now uses a small `SubscriptionState` helper for
+  bootstrap state, start-attempt tracking, and retry backoff.
+- Socket I/O remains in the worker loop, but repeated transition decisions for
+  connecting messages, auto-start opt-out, post-bootstrap start refusal,
+  retryable offline events, and unexpected pre/post-bootstrap events are owned
+  by the state helper.
+- Behavior is preserved: opt-out before first bootstrap is fatal, opt-out after
+  bootstrap is terminal offline, post-bootstrap start-policy refusal retries and
+  clears the start-attempt flag after backoff, and successful subscription
+  resets retry state.

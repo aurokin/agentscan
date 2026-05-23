@@ -227,6 +227,198 @@ enum SubscriptionConnect {
     Unexpected(String),
 }
 
+struct SubscriptionState {
+    bootstrapped: bool,
+    attempted_start: bool,
+    backoff: Duration,
+}
+
+impl SubscriptionState {
+    fn new() -> Self {
+        Self {
+            bootstrapped: false,
+            attempted_start: false,
+            backoff: TUI_SUBSCRIPTION_INITIAL_BACKOFF,
+        }
+    }
+
+    fn connecting_event(&self, socket_path: &Path) -> DaemonSubscriptionEvent {
+        DaemonSubscriptionEvent::Connecting {
+            message: if self.bootstrapped {
+                format!("reconnecting to daemon at {}", socket_path.display())
+            } else {
+                format!("connecting to daemon at {}", socket_path.display())
+            },
+        }
+    }
+
+    fn mark_subscribed(&mut self) {
+        self.attempted_start = false;
+        self.backoff = TUI_SUBSCRIPTION_INITIAL_BACKOFF;
+        self.bootstrapped = true;
+    }
+
+    fn can_attempt_start(&self) -> bool {
+        !self.attempted_start
+    }
+
+    fn is_bootstrapped(&self) -> bool {
+        self.bootstrapped
+    }
+
+    fn mark_start_attempted(&mut self) {
+        self.attempted_start = true;
+    }
+
+    fn reset_start_attempt_after_retry(&mut self) {
+        self.attempted_start = false;
+    }
+
+    fn auto_start_disabled_event(&self, reason: String) -> DaemonSubscriptionEvent {
+        let message = format!("daemon auto-start is disabled: {reason}");
+        if self.bootstrapped {
+            DaemonSubscriptionEvent::Offline {
+                message,
+                retrying: false,
+            }
+        } else {
+            DaemonSubscriptionEvent::Fatal { message }
+        }
+    }
+
+    fn post_bootstrap_auto_start_refusal_event(&self, reason: String) -> DaemonSubscriptionEvent {
+        let message = format!("daemon auto-start is disabled: {reason}");
+        if self.bootstrapped {
+            DaemonSubscriptionEvent::Offline {
+                message,
+                retrying: true,
+            }
+        } else {
+            DaemonSubscriptionEvent::Fatal { message }
+        }
+    }
+
+    fn offline_retrying_event(message: String) -> DaemonSubscriptionEvent {
+        DaemonSubscriptionEvent::Offline {
+            message,
+            retrying: true,
+        }
+    }
+
+    fn unexpected_event(&self, message: String) -> DaemonSubscriptionEvent {
+        if self.bootstrapped {
+            Self::offline_retrying_event(message)
+        } else {
+            DaemonSubscriptionEvent::Fatal { message }
+        }
+    }
+
+    fn stops_after_unexpected(&self) -> bool {
+        !self.bootstrapped
+    }
+
+    fn sleep_and_advance_backoff(&mut self, cancel: &AtomicBool) {
+        sleep_subscription_backoff(cancel, self.backoff);
+        self.advance_backoff();
+    }
+
+    fn advance_backoff(&mut self) {
+        self.backoff = next_subscription_backoff(self.backoff);
+    }
+}
+
+#[cfg(test)]
+mod subscription_state_tests {
+    use super::*;
+
+    fn assert_fatal(event: DaemonSubscriptionEvent, expected_message: &str) {
+        match event {
+            DaemonSubscriptionEvent::Fatal { message } => {
+                assert!(message.contains(expected_message), "{message}");
+            }
+            other => panic!("expected fatal event, got {other:?}"),
+        }
+    }
+
+    fn assert_offline(
+        event: DaemonSubscriptionEvent,
+        expected_message: &str,
+        expected_retrying: bool,
+    ) {
+        match event {
+            DaemonSubscriptionEvent::Offline { message, retrying } => {
+                assert!(message.contains(expected_message), "{message}");
+                assert_eq!(retrying, expected_retrying);
+            }
+            other => panic!("expected offline event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn subscription_auto_start_disabled_is_fatal_before_bootstrap() {
+        let state = SubscriptionState::new();
+
+        assert_fatal(
+            state.auto_start_disabled_event("socket is missing".to_string()),
+            "daemon auto-start is disabled: socket is missing",
+        );
+    }
+
+    #[test]
+    fn subscription_auto_start_disabled_is_terminal_offline_after_bootstrap() {
+        let mut state = SubscriptionState::new();
+        state.mark_subscribed();
+
+        assert_offline(
+            state.auto_start_disabled_event("socket is missing".to_string()),
+            "daemon auto-start is disabled: socket is missing",
+            false,
+        );
+    }
+
+    #[test]
+    fn subscription_policy_refusal_after_bootstrap_retries_and_can_start_again() {
+        let mut state = SubscriptionState::new();
+        state.mark_subscribed();
+        state.mark_start_attempted();
+
+        assert_offline(
+            state.post_bootstrap_auto_start_refusal_event("codesign failed".to_string()),
+            "daemon auto-start is disabled: codesign failed",
+            true,
+        );
+
+        assert!(!state.can_attempt_start());
+        state.reset_start_attempt_after_retry();
+        assert!(state.can_attempt_start());
+    }
+
+    #[test]
+    fn subscription_mark_subscribed_resets_start_attempt_and_backoff() {
+        let mut state = SubscriptionState::new();
+        state.mark_start_attempted();
+        state.advance_backoff();
+        assert_ne!(state.backoff, TUI_SUBSCRIPTION_INITIAL_BACKOFF);
+
+        state.mark_subscribed();
+
+        assert!(state.can_attempt_start());
+        assert_eq!(state.backoff, TUI_SUBSCRIPTION_INITIAL_BACKOFF);
+        assert!(state.is_bootstrapped());
+    }
+
+    #[test]
+    fn subscription_retry_backoff_caps() {
+        let mut state = SubscriptionState::new();
+
+        for _ in 0..20 {
+            state.advance_backoff();
+        }
+
+        assert_eq!(state.backoff, TUI_SUBSCRIPTION_MAX_BACKOFF);
+    }
+}
+
 struct DaemonStartGuard {
     lock_file: File,
 }
@@ -543,30 +735,17 @@ fn subscription_worker_loop(
 ) -> Result<()> {
     let socket_path = ipc::resolve_socket_path()?;
     let paths = LifecyclePaths::from_socket_path(&socket_path);
-    let mut bootstrapped = false;
-    let mut attempted_start = false;
-    let mut backoff = TUI_SUBSCRIPTION_INITIAL_BACKOFF;
+    let mut state = SubscriptionState::new();
 
     while !cancel.load(Ordering::Relaxed) {
-        send_subscription_event(
-            events,
-            DaemonSubscriptionEvent::Connecting {
-                message: if bootstrapped {
-                    format!("reconnecting to daemon at {}", socket_path.display())
-                } else {
-                    format!("connecting to daemon at {}", socket_path.display())
-                },
-            },
-        )?;
+        send_subscription_event(events, state.connecting_event(&socket_path))?;
 
         match subscribe_once_from_socket(&socket_path)? {
             SubscriptionConnect::Subscribed {
                 mut reader,
                 bootstrap,
             } => {
-                attempted_start = false;
-                backoff = TUI_SUBSCRIPTION_INITIAL_BACKOFF;
-                bootstrapped = true;
+                state.mark_subscribed();
                 send_subscription_event(
                     events,
                     DaemonSubscriptionEvent::Snapshot {
@@ -597,21 +776,11 @@ fn subscription_worker_loop(
                 }
             }
             SubscriptionConnect::NotRunning(reason) if policy.disabled => {
-                let event = if bootstrapped {
-                    DaemonSubscriptionEvent::Offline {
-                        message: format!("daemon auto-start is disabled: {reason}"),
-                        retrying: false,
-                    }
-                } else {
-                    DaemonSubscriptionEvent::Fatal {
-                        message: format!("daemon auto-start is disabled: {reason}"),
-                    }
-                };
-                send_subscription_event(events, event)?;
+                send_subscription_event(events, state.auto_start_disabled_event(reason))?;
                 break;
             }
-            SubscriptionConnect::NotRunning(reason) if !attempted_start => {
-                attempted_start = true;
+            SubscriptionConnect::NotRunning(reason) if state.can_attempt_start() => {
+                state.mark_start_attempted();
                 send_subscription_event(
                     events,
                     DaemonSubscriptionEvent::Connecting {
@@ -624,17 +793,15 @@ fn subscription_worker_loop(
                     DaemonStartIntent::TuiSubscriptionAutoStart,
                 ) {
                     Ok(()) => {}
-                    Err(DaemonSnapshotError::AutoStartDisabled { reason }) if bootstrapped => {
+                    Err(DaemonSnapshotError::AutoStartDisabled { reason })
+                        if state.is_bootstrapped() =>
+                    {
                         send_subscription_event(
                             events,
-                            DaemonSubscriptionEvent::Offline {
-                                message: format!("daemon auto-start is disabled: {reason}"),
-                                retrying: true,
-                            },
+                            state.post_bootstrap_auto_start_refusal_event(reason),
                         )?;
-                        sleep_subscription_backoff(cancel, backoff);
-                        backoff = next_subscription_backoff(backoff);
-                        attempted_start = false;
+                        state.sleep_and_advance_backoff(cancel);
+                        state.reset_start_attempt_after_retry();
                     }
                     Err(error) => {
                         send_subscription_event(
@@ -648,26 +815,15 @@ fn subscription_worker_loop(
                 }
             }
             SubscriptionConnect::NotRunning(reason) => {
-                send_subscription_event(
-                    events,
-                    DaemonSubscriptionEvent::Offline {
-                        message: reason,
-                        retrying: true,
-                    },
-                )?;
-                sleep_subscription_backoff(cancel, backoff);
-                backoff = next_subscription_backoff(backoff);
+                send_subscription_event(events, SubscriptionState::offline_retrying_event(reason))?;
+                state.sleep_and_advance_backoff(cancel);
             }
             SubscriptionConnect::Retryable(message) => {
                 send_subscription_event(
                     events,
-                    DaemonSubscriptionEvent::Offline {
-                        message,
-                        retrying: true,
-                    },
+                    SubscriptionState::offline_retrying_event(message),
                 )?;
-                sleep_subscription_backoff(cancel, backoff);
-                backoff = next_subscription_backoff(backoff);
+                state.sleep_and_advance_backoff(cancel);
             }
             SubscriptionConnect::StartupFailed(message) => {
                 send_subscription_event(
@@ -695,20 +851,11 @@ fn subscription_worker_loop(
                 break;
             }
             SubscriptionConnect::Unexpected(message) => {
-                let event = if bootstrapped {
-                    DaemonSubscriptionEvent::Offline {
-                        message,
-                        retrying: true,
-                    }
-                } else {
-                    DaemonSubscriptionEvent::Fatal { message }
-                };
-                send_subscription_event(events, event)?;
-                if !bootstrapped {
+                send_subscription_event(events, state.unexpected_event(message))?;
+                if state.stops_after_unexpected() {
                     break;
                 }
-                sleep_subscription_backoff(cancel, backoff);
-                backoff = next_subscription_backoff(backoff);
+                state.sleep_and_advance_backoff(cancel);
             }
         }
     }
