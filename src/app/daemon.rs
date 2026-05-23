@@ -1,5 +1,5 @@
 use super::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::Read;
@@ -17,6 +17,7 @@ const RECONCILE_INTERVAL: Duration = Duration::from_secs(1);
 const PANE_OUTPUT_STATUS_CACHE_TTL: Duration = Duration::from_secs(2);
 const STARTUP_FAILURE_OBSERVABILITY_WINDOW: Duration = Duration::from_millis(200);
 const CONTROL_MODE_STARTUP_TIMEOUT: Duration = Duration::from_secs(2);
+const CONTROL_MODE_COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
 const CLIENT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
 const CLIENT_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 const SUBSCRIBER_WRITE_TIMEOUT: Duration = Duration::from_millis(250);
@@ -2289,7 +2290,6 @@ fn daemon_run_with_socket_path_and_startup(
 
     let mut snapshot = pending_snapshot.snapshot.clone();
     let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
-    let tmux_reads = TmuxCommandReadProvider;
     socket_state.publish_prepared_snapshot(pending_snapshot);
     let mut closing_guard = DaemonClosingGuard::new(socket_state.clone());
     let stdout_reader = tmux_client
@@ -2300,10 +2300,11 @@ fn daemon_run_with_socket_path_and_startup(
         .child
         .take()
         .context("tmux control-mode client did not provide child process")?;
-    let mut running_tmux_client = RunningTmuxControlModeClient {
-        child: &mut child,
-        _stdin: tmux_client.stdin.take(),
-    };
+    let mut control_mode_stdin = tmux_client
+        .stdin
+        .take()
+        .context("tmux control-mode client did not provide stdin")?;
+    let mut running_tmux_client = RunningTmuxControlModeClient { child: &mut child };
 
     let (line_tx, line_rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -2325,6 +2326,8 @@ fn daemon_run_with_socket_path_and_startup(
     });
 
     let mut next_reconcile_at = Instant::now() + RECONCILE_INTERVAL;
+    let mut deferred_control_lines = VecDeque::new();
+    let mut broker_health = TmuxBrokerHealth::default();
 
     loop {
         if DAEMON_SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
@@ -2333,9 +2336,20 @@ fn daemon_run_with_socket_path_and_startup(
         let now = Instant::now();
         if now >= next_reconcile_at {
             let publish_context = SnapshotPublishContext::new("reconcile").with_detail("interval");
+            let mut reconcile_tmux_reads = TmuxDaemonReadProvider {
+                fallback: TmuxCommandReadProvider,
+                broker: broker_health
+                    .enabled()
+                    .then_some(TmuxControlModeReadBroker {
+                        stdin: &mut control_mode_stdin,
+                        line_rx: &line_rx,
+                        deferred_lines: &mut deferred_control_lines,
+                        broker_health: &mut broker_health,
+                    }),
+            };
             reconcile_full_snapshot(
                 &mut snapshot,
-                &tmux_reads,
+                &mut reconcile_tmux_reads,
                 tmux_version.as_deref(),
                 &mut pane_output_cache,
             )?;
@@ -2344,15 +2358,31 @@ fn daemon_run_with_socket_path_and_startup(
         }
 
         let timeout = next_reconcile_at.saturating_duration_since(Instant::now());
-        match line_rx.recv_timeout(timeout) {
+        let control_line = if let Some(line) = deferred_control_lines.pop_front() {
+            Ok(Ok(line))
+        } else {
+            line_rx.recv_timeout(timeout)
+        };
+        match control_line {
             Ok(line) => {
                 let line = line?;
                 let event = control_event_from_line(&line);
                 let should_exit = event == ControlEvent::Exit;
                 let publish_context = event.publish_context();
+                let mut event_tmux_reads = TmuxDaemonReadProvider {
+                    fallback: TmuxCommandReadProvider,
+                    broker: broker_health
+                        .enabled()
+                        .then_some(TmuxControlModeReadBroker {
+                            stdin: &mut control_mode_stdin,
+                            line_rx: &line_rx,
+                            deferred_lines: &mut deferred_control_lines,
+                            broker_health: &mut broker_health,
+                        }),
+                };
                 if apply_control_event(
                     &mut snapshot,
-                    &tmux_reads,
+                    &mut event_tmux_reads,
                     &line,
                     &event,
                     &mut pane_output_cache,
@@ -2372,9 +2402,20 @@ fn daemon_run_with_socket_path_and_startup(
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 let publish_context =
                     SnapshotPublishContext::new("reconcile").with_detail("timeout");
+                let mut reconcile_tmux_reads = TmuxDaemonReadProvider {
+                    fallback: TmuxCommandReadProvider,
+                    broker: broker_health
+                        .enabled()
+                        .then_some(TmuxControlModeReadBroker {
+                            stdin: &mut control_mode_stdin,
+                            line_rx: &line_rx,
+                            deferred_lines: &mut deferred_control_lines,
+                            broker_health: &mut broker_health,
+                        }),
+                };
                 reconcile_full_snapshot(
                     &mut snapshot,
-                    &tmux_reads,
+                    &mut reconcile_tmux_reads,
                     tmux_version.as_deref(),
                     &mut pane_output_cache,
                 )?;
@@ -2420,25 +2461,178 @@ impl StartupActions for DaemonStartup {
 }
 
 pub(crate) trait TmuxReadProvider {
-    fn list_all_panes(&self) -> Result<Vec<TmuxPaneRow>>;
-    fn list_target_panes(&self, target: &str) -> Result<Option<Vec<TmuxPaneRow>>>;
-    fn list_pane(&self, pane_id: &str) -> Result<Option<TmuxPaneRow>>;
+    fn list_all_panes(&mut self) -> Result<Vec<TmuxPaneRow>>;
+    fn list_target_panes(&mut self, target: &str) -> Result<Option<Vec<TmuxPaneRow>>>;
+    fn list_pane(&mut self, pane_id: &str) -> Result<Option<TmuxPaneRow>>;
 }
 
 #[derive(Clone, Copy, Debug)]
 struct TmuxCommandReadProvider;
 
 impl TmuxReadProvider for TmuxCommandReadProvider {
-    fn list_all_panes(&self) -> Result<Vec<TmuxPaneRow>> {
+    fn list_all_panes(&mut self) -> Result<Vec<TmuxPaneRow>> {
         tmux::tmux_list_panes()
     }
 
-    fn list_target_panes(&self, target: &str) -> Result<Option<Vec<TmuxPaneRow>>> {
+    fn list_target_panes(&mut self, target: &str) -> Result<Option<Vec<TmuxPaneRow>>> {
         tmux::tmux_list_panes_target(target)
     }
 
-    fn list_pane(&self, pane_id: &str) -> Result<Option<TmuxPaneRow>> {
+    fn list_pane(&mut self, pane_id: &str) -> Result<Option<TmuxPaneRow>> {
         tmux::tmux_list_pane(pane_id)
+    }
+}
+
+struct TmuxDaemonReadProvider<'a> {
+    fallback: TmuxCommandReadProvider,
+    broker: Option<TmuxControlModeReadBroker<'a>>,
+}
+
+impl TmuxReadProvider for TmuxDaemonReadProvider<'_> {
+    fn list_all_panes(&mut self) -> Result<Vec<TmuxPaneRow>> {
+        let Some(broker) = self.broker.as_mut() else {
+            return self.fallback.list_all_panes();
+        };
+
+        match broker.list_all_panes() {
+            Ok(rows) => Ok(rows),
+            Err(error) => {
+                eprintln!(
+                    "agentscan: brokered full reconcile failed; falling back to tmux command: {error:#}"
+                );
+                self.fallback.list_all_panes()
+            }
+        }
+    }
+
+    fn list_target_panes(&mut self, target: &str) -> Result<Option<Vec<TmuxPaneRow>>> {
+        let Some(broker) = self.broker.as_mut() else {
+            return self.fallback.list_target_panes(target);
+        };
+
+        match broker.list_target_panes(target) {
+            Ok(rows) => Ok(rows),
+            Err(error) => {
+                eprintln!(
+                    "agentscan: brokered target refresh failed for {target}; falling back to tmux command: {error:#}"
+                );
+                self.fallback.list_target_panes(target)
+            }
+        }
+    }
+
+    fn list_pane(&mut self, pane_id: &str) -> Result<Option<TmuxPaneRow>> {
+        let Some(broker) = self.broker.as_mut() else {
+            return self.fallback.list_pane(pane_id);
+        };
+
+        match broker.list_pane(pane_id) {
+            Ok(pane) => Ok(pane),
+            Err(error) => {
+                eprintln!(
+                    "agentscan: brokered pane refresh failed for {pane_id}; falling back to tmux command: {error:#}"
+                );
+                self.fallback.list_pane(pane_id)
+            }
+        }
+    }
+}
+
+struct TmuxControlModeReadBroker<'a> {
+    stdin: &'a mut std::process::ChildStdin,
+    line_rx: &'a mpsc::Receiver<Result<String>>,
+    deferred_lines: &'a mut VecDeque<String>,
+    broker_health: &'a mut TmuxBrokerHealth,
+}
+
+impl TmuxControlModeReadBroker<'_> {
+    fn list_all_panes(&mut self) -> Result<Vec<TmuxPaneRow>> {
+        match control_mode_list_all_panes(self.stdin, self.line_rx, self.deferred_lines) {
+            Ok(rows) => Ok(rows),
+            Err(error) => {
+                self.broker_health.disable_after_error(&error);
+                Err(error)
+            }
+        }
+    }
+
+    fn list_target_panes(&mut self, target: &str) -> Result<Option<Vec<TmuxPaneRow>>> {
+        match control_mode_list_panes_target(
+            self.stdin,
+            self.line_rx,
+            target,
+            self.deferred_lines,
+            MissingTargetScope::PaneWindowSession,
+        ) {
+            Ok(rows) => Ok(rows),
+            Err(error) => {
+                self.broker_health.disable_after_error(&error);
+                Err(error)
+            }
+        }
+    }
+
+    fn list_pane(&mut self, pane_id: &str) -> Result<Option<TmuxPaneRow>> {
+        match control_mode_list_panes_target(
+            self.stdin,
+            self.line_rx,
+            pane_id,
+            self.deferred_lines,
+            MissingTargetScope::PaneWindow,
+        ) {
+            Ok(rows) => Ok(rows.and_then(|mut rows| rows.pop())),
+            Err(error) => {
+                self.broker_health.disable_after_error(&error);
+                Err(error)
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct TmuxBrokerHealth {
+    disabled_reason: Option<String>,
+}
+
+impl TmuxBrokerHealth {
+    fn enabled(&self) -> bool {
+        self.disabled_reason.is_none()
+    }
+
+    fn disable_after_error(&mut self, error: &anyhow::Error) {
+        if self.disabled_reason.is_none() {
+            self.disabled_reason = Some(format!("{error:#}"));
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_disabled_reason(&self) -> Option<&str> {
+        self.disabled_reason.as_deref()
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_broker_health_after_error(message: &str) -> (bool, Option<String>) {
+    let mut health = TmuxBrokerHealth::default();
+    let error = anyhow::anyhow!(message.to_string());
+    health.disable_after_error(&error);
+    (
+        health.enabled(),
+        health.test_disabled_reason().map(str::to_string),
+    )
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MissingTargetScope {
+    PaneWindow,
+    PaneWindowSession,
+}
+
+impl MissingTargetScope {
+    fn matches(self, message: &str) -> bool {
+        tmux::tmux_target_is_missing(message.as_bytes())
+            || (self == MissingTargetScope::PaneWindowSession
+                && message.contains("can't find session"))
     }
 }
 
@@ -2475,7 +2669,6 @@ impl StartedTmuxControlModeClient {
 
 struct RunningTmuxControlModeClient<'a> {
     child: &'a mut std::process::Child,
-    _stdin: Option<std::process::ChildStdin>,
 }
 
 impl RunningTmuxControlModeClient<'_> {
@@ -2624,6 +2817,134 @@ fn control_mode_startup_response_from_line(line: &str, context: &str) -> Result<
     Ok(line.starts_with("%end"))
 }
 
+fn control_mode_list_all_panes(
+    stdin: &mut std::process::ChildStdin,
+    line_rx: &mpsc::Receiver<Result<String>>,
+    deferred_lines: &mut VecDeque<String>,
+) -> Result<Vec<TmuxPaneRow>> {
+    writeln!(stdin, "list-panes -a -F '{PANE_FORMAT}'")
+        .context("failed to write brokered tmux list-panes -a")?;
+    stdin
+        .flush()
+        .context("failed to flush brokered tmux list-panes -a")?;
+
+    match collect_control_mode_command_outcome(
+        line_rx,
+        CONTROL_MODE_COMMAND_TIMEOUT,
+        deferred_lines,
+    )? {
+        ControlModeBrokerCommandOutcome::Response(response) => {
+            tmux::parse_pane_rows(&response.output.join("\n"))
+        }
+        ControlModeBrokerCommandOutcome::Error { message, .. } => {
+            bail!("tmux control-mode command failed: {message}");
+        }
+    }
+}
+
+fn control_mode_list_panes_target(
+    stdin: &mut std::process::ChildStdin,
+    line_rx: &mpsc::Receiver<Result<String>>,
+    target: &str,
+    deferred_lines: &mut VecDeque<String>,
+    missing_target_scope: MissingTargetScope,
+) -> Result<Option<Vec<TmuxPaneRow>>> {
+    writeln!(stdin, "list-panes -t {target} -F '{PANE_FORMAT}'")
+        .with_context(|| format!("failed to write brokered tmux list-panes for {target}"))?;
+    stdin
+        .flush()
+        .with_context(|| format!("failed to flush brokered tmux list-panes for {target}"))?;
+
+    match collect_control_mode_command_outcome(
+        line_rx,
+        CONTROL_MODE_COMMAND_TIMEOUT,
+        deferred_lines,
+    )? {
+        ControlModeBrokerCommandOutcome::Response(response) => {
+            let rows = tmux::parse_pane_rows(&response.output.join("\n"))?;
+            Ok(Some(rows))
+        }
+        ControlModeBrokerCommandOutcome::Error {
+            message,
+            deferred_events: _,
+        } if missing_target_scope.matches(&message) => Ok(None),
+        ControlModeBrokerCommandOutcome::Error { message, .. } => {
+            bail!("tmux control-mode command failed: {message}");
+        }
+    }
+}
+
+fn collect_control_mode_command_outcome(
+    line_rx: &mpsc::Receiver<Result<String>>,
+    timeout: Duration,
+    deferred_lines: &mut VecDeque<String>,
+) -> Result<ControlModeBrokerCommandOutcome> {
+    let deadline = Instant::now() + timeout;
+    let mut active_id = None;
+    let mut output = Vec::new();
+
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            bail!("timed out waiting for control-mode command response");
+        }
+        let line = line_rx
+            .recv_timeout(deadline.saturating_duration_since(now))
+            .map_err(|error| match error {
+                mpsc::RecvTimeoutError::Timeout => {
+                    anyhow::anyhow!("timed out waiting for control-mode command response")
+                }
+                mpsc::RecvTimeoutError::Disconnected => {
+                    anyhow::anyhow!(
+                        "tmux control-mode stream ended before command response completed"
+                    )
+                }
+            })??;
+
+        if active_id.is_some() && control_mode_broker_line_is_command_output(&line) {
+            output.push(line);
+            continue;
+        }
+
+        match (active_id.as_ref(), control_mode_command_marker(&line)) {
+            (None, Some(ControlModeCommandMarker::Begin(id))) => active_id = Some(id),
+            (Some(id), Some(ControlModeCommandMarker::End(end_id))) if *id == end_id => {
+                return Ok(ControlModeBrokerCommandOutcome::Response(
+                    ControlModeCommandPrototypeResponse {
+                        output,
+                        deferred_events: Vec::new(),
+                    },
+                ));
+            }
+            (
+                Some(id),
+                Some(ControlModeCommandMarker::Error {
+                    id: error_id,
+                    message,
+                }),
+            ) if *id == error_id => {
+                let message = control_mode_command_error_message(message, &output);
+                return Ok(ControlModeBrokerCommandOutcome::Error {
+                    message,
+                    deferred_events: Vec::new(),
+                });
+            }
+            (Some(_), Some(_)) => {
+                bail!("interleaved control-mode command frame before expected %end");
+            }
+            (Some(_), None) if control_mode_broker_should_defer_line(&line) => {
+                deferred_lines.push_back(line);
+            }
+            (Some(_), None) => output.push(line),
+            (None, Some(_)) | (None, None) => deferred_lines.push_back(line),
+        }
+    }
+}
+
+fn control_mode_broker_line_is_command_output(line: &str) -> bool {
+    line.contains(PANE_DELIM) || line.contains(TMUX_FORMAT_DELIM)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ControlModeCommandFrameId {
     pub(crate) timestamp: String,
@@ -2666,11 +2987,19 @@ pub(crate) fn control_mode_command_marker(line: &str) -> Option<ControlModeComma
     }
 }
 
-#[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ControlModeCommandPrototypeResponse {
     pub(crate) output: Vec<String>,
     pub(crate) deferred_events: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ControlModeBrokerCommandOutcome {
+    Response(ControlModeCommandPrototypeResponse),
+    Error {
+        message: String,
+        deferred_events: Vec<String>,
+    },
 }
 
 #[cfg(test)]
@@ -2710,6 +3039,230 @@ pub(crate) fn test_collect_control_mode_command_response<'a>(
     }
 
     bail!("control-mode command response ended before expected %end")
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ControlModeBrokerTranscriptStep {
+    Line(String),
+    Timeout,
+    Eof,
+}
+
+#[cfg(test)]
+impl ControlModeBrokerTranscriptStep {
+    pub(crate) fn line(line: impl Into<String>) -> Self {
+        Self::Line(line.into())
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct ControlModeBrokerTranscriptHarness {
+    steps: std::collections::VecDeque<ControlModeBrokerTranscriptStep>,
+    written_commands: Vec<String>,
+}
+
+#[cfg(test)]
+impl ControlModeBrokerTranscriptHarness {
+    pub(crate) fn new(steps: impl IntoIterator<Item = ControlModeBrokerTranscriptStep>) -> Self {
+        Self {
+            steps: steps.into_iter().collect(),
+            written_commands: Vec::new(),
+        }
+    }
+
+    pub(crate) fn written_commands(&self) -> &[String] {
+        &self.written_commands
+    }
+
+    pub(crate) fn list_all_panes(
+        &mut self,
+        expected_id: &ControlModeCommandFrameId,
+    ) -> Result<ControlModeBrokerListAllResponse> {
+        self.written_commands
+            .push(format!("list-panes -a -F {PANE_FORMAT}"));
+
+        let response = match self.collect_command_outcome(expected_id)? {
+            ControlModeBrokerCommandOutcome::Response(response) => response,
+            ControlModeBrokerCommandOutcome::Error { message, .. } => {
+                bail!("tmux control-mode command failed: {message}");
+            }
+        };
+        let rows = tmux::parse_pane_rows(&response.output.join("\n"))?;
+        Ok(ControlModeBrokerListAllResponse {
+            rows,
+            deferred_events: response.deferred_events,
+        })
+    }
+
+    pub(crate) fn list_pane(
+        &mut self,
+        pane_id: &str,
+        expected_id: &ControlModeCommandFrameId,
+    ) -> Result<ControlModeBrokerListPaneResponse> {
+        let response = self.list_target_panes_with_scope(
+            pane_id,
+            expected_id,
+            MissingTargetScope::PaneWindow,
+        )?;
+        Ok(ControlModeBrokerListPaneResponse {
+            pane: response.rows.and_then(|mut rows| rows.pop()),
+            deferred_events: response.deferred_events,
+        })
+    }
+
+    pub(crate) fn list_target_panes(
+        &mut self,
+        target: &str,
+        expected_id: &ControlModeCommandFrameId,
+    ) -> Result<ControlModeBrokerListTargetResponse> {
+        self.list_target_panes_with_scope(
+            target,
+            expected_id,
+            MissingTargetScope::PaneWindowSession,
+        )
+    }
+
+    fn list_target_panes_with_scope(
+        &mut self,
+        target: &str,
+        expected_id: &ControlModeCommandFrameId,
+        missing_target_scope: MissingTargetScope,
+    ) -> Result<ControlModeBrokerListTargetResponse> {
+        self.written_commands
+            .push(format!("list-panes -t {target} -F {PANE_FORMAT}"));
+
+        let response = match self.collect_command_outcome(expected_id)? {
+            ControlModeBrokerCommandOutcome::Response(response) => response,
+            ControlModeBrokerCommandOutcome::Error {
+                message,
+                deferred_events,
+            } if missing_target_scope.matches(&message) => {
+                return Ok(ControlModeBrokerListTargetResponse {
+                    rows: None,
+                    deferred_events,
+                });
+            }
+            ControlModeBrokerCommandOutcome::Error { message, .. } => {
+                bail!("tmux control-mode command failed: {message}");
+            }
+        };
+        let rows = tmux::parse_pane_rows(&response.output.join("\n"))?;
+        Ok(ControlModeBrokerListTargetResponse {
+            rows: Some(rows),
+            deferred_events: response.deferred_events,
+        })
+    }
+
+    pub(crate) fn collect_command_response(
+        &mut self,
+        expected_id: &ControlModeCommandFrameId,
+    ) -> Result<ControlModeCommandPrototypeResponse> {
+        match self.collect_command_outcome(expected_id)? {
+            ControlModeBrokerCommandOutcome::Response(response) => Ok(response),
+            ControlModeBrokerCommandOutcome::Error { message, .. } => {
+                bail!("tmux control-mode command failed: {message}");
+            }
+        }
+    }
+
+    fn collect_command_outcome(
+        &mut self,
+        expected_id: &ControlModeCommandFrameId,
+    ) -> Result<ControlModeBrokerCommandOutcome> {
+        let mut started = false;
+        let mut output = Vec::new();
+        let mut deferred_events = Vec::new();
+
+        loop {
+            let Some(line) = self.next_line()? else {
+                bail!("tmux control-mode stream ended before command response completed");
+            };
+
+            if started && control_mode_broker_line_is_command_output(&line) {
+                output.push(line);
+                continue;
+            }
+
+            match control_mode_command_marker(&line) {
+                Some(ControlModeCommandMarker::Begin(id)) if id == *expected_id && !started => {
+                    started = true;
+                }
+                Some(ControlModeCommandMarker::Begin(_)) if started => {
+                    bail!("interleaved control-mode command frame before expected %end");
+                }
+                Some(ControlModeCommandMarker::End(id)) if id == *expected_id && started => {
+                    return Ok(ControlModeBrokerCommandOutcome::Response(
+                        ControlModeCommandPrototypeResponse {
+                            output,
+                            deferred_events,
+                        },
+                    ));
+                }
+                Some(ControlModeCommandMarker::Error { id, message })
+                    if id == *expected_id && started =>
+                {
+                    let message = control_mode_command_error_message(message, &output);
+                    return Ok(ControlModeBrokerCommandOutcome::Error {
+                        message,
+                        deferred_events,
+                    });
+                }
+                Some(_) if started => {
+                    bail!("interleaved control-mode command frame before expected %end");
+                }
+                None if started && control_mode_broker_should_defer_line(&line) => {
+                    deferred_events.push(line);
+                }
+                Some(_) | None if started => output.push(line),
+                Some(_) | None => deferred_events.push(line),
+            }
+        }
+    }
+
+    fn next_line(&mut self) -> Result<Option<String>> {
+        match self.steps.pop_front() {
+            Some(ControlModeBrokerTranscriptStep::Line(line)) => Ok(Some(line)),
+            Some(ControlModeBrokerTranscriptStep::Timeout) => {
+                bail!("timed out waiting for control-mode command response");
+            }
+            Some(ControlModeBrokerTranscriptStep::Eof) | None => Ok(None),
+        }
+    }
+}
+
+fn control_mode_command_error_message(marker_message: String, output: &[String]) -> String {
+    if marker_message.is_empty() {
+        output.last().cloned().unwrap_or_default()
+    } else {
+        marker_message
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct ControlModeBrokerListPaneResponse {
+    pub(crate) pane: Option<TmuxPaneRow>,
+    pub(crate) deferred_events: Vec<String>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct ControlModeBrokerListAllResponse {
+    pub(crate) rows: Vec<TmuxPaneRow>,
+    pub(crate) deferred_events: Vec<String>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct ControlModeBrokerListTargetResponse {
+    pub(crate) rows: Option<Vec<TmuxPaneRow>>,
+    pub(crate) deferred_events: Vec<String>,
+}
+
+fn control_mode_broker_should_defer_line(line: &str) -> bool {
+    !matches!(control_event_from_line(line), ControlEvent::Ignored)
 }
 
 #[cfg(test)]
@@ -2946,9 +3499,7 @@ enum DaemonStartupState {
 struct DaemonSocketStateInner {
     startup_state: DaemonStartupState,
     identity: Option<DaemonRuntimeIdentity>,
-    latest_snapshot: Option<SnapshotEnvelope>,
-    latest_snapshot_frame: Option<EncodedDaemonFrame>,
-    latest_snapshot_update: Option<SnapshotUpdateTelemetry>,
+    snapshots: SnapshotStore,
     pending_handshakes: usize,
     subscribers: HashMap<SubscriberId, SubscriberMailbox>,
     next_subscriber_id: SubscriberId,
@@ -3027,15 +3578,54 @@ impl PreparedSnapshot {
     }
 }
 
+#[derive(Default)]
+struct SnapshotStore {
+    latest_snapshot: Option<SnapshotEnvelope>,
+    latest_snapshot_frame: Option<EncodedDaemonFrame>,
+    latest_snapshot_update: Option<SnapshotUpdateTelemetry>,
+}
+
+impl SnapshotStore {
+    fn publish(
+        &mut self,
+        prepared: PreparedSnapshot,
+        telemetry: SnapshotUpdateTelemetry,
+    ) -> EncodedDaemonFrame {
+        let frame = prepared.frame.clone();
+        self.latest_snapshot = Some(prepared.snapshot);
+        self.latest_snapshot_frame = Some(frame.clone());
+        self.latest_snapshot_update = Some(telemetry);
+        frame
+    }
+
+    fn latest_frame(&self) -> Option<EncodedDaemonFrame> {
+        self.latest_snapshot_frame.clone()
+    }
+
+    fn latest_generated_at(&self) -> Option<String> {
+        self.latest_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.generated_at.clone())
+    }
+
+    fn latest_pane_count(&self) -> Option<usize> {
+        self.latest_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.panes.len())
+    }
+
+    fn latest_update(&self) -> Option<&SnapshotUpdateTelemetry> {
+        self.latest_snapshot_update.as_ref()
+    }
+}
+
 impl DaemonSocketState {
     pub(crate) fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(DaemonSocketStateInner {
                 startup_state: DaemonStartupState::Initializing,
                 identity: None,
-                latest_snapshot: None,
-                latest_snapshot_frame: None,
-                latest_snapshot_update: None,
+                snapshots: SnapshotStore::default(),
                 pending_handshakes: 0,
                 subscribers: HashMap::new(),
                 next_subscriber_id: 1,
@@ -3066,15 +3656,13 @@ impl DaemonSocketState {
         context: SnapshotPublishContext,
     ) {
         let telemetry = context.telemetry();
-        let subscribers = {
+        let (frame, subscribers) = {
             let mut inner = self.lock();
-            inner.latest_snapshot = Some(prepared.snapshot);
-            inner.latest_snapshot_frame = Some(prepared.frame.clone());
-            inner.latest_snapshot_update = Some(telemetry);
+            let frame = inner.snapshots.publish(prepared, telemetry);
             inner.startup_state = DaemonStartupState::Ready;
-            subscriber_mailboxes(&inner)
+            (frame, subscriber_mailboxes(&inner))
         };
-        fan_out_snapshot(prepared.frame, subscribers);
+        fan_out_snapshot(frame, subscribers);
     }
 
     #[cfg(test)]
@@ -3090,13 +3678,12 @@ impl DaemonSocketState {
         let telemetry = context.telemetry();
         match encode_snapshot_frame(&snapshot) {
             Ok(frame) => {
-                let subscribers = {
+                let prepared = PreparedSnapshot { snapshot, frame };
+                let (frame, subscribers) = {
                     let mut inner = self.lock();
-                    inner.latest_snapshot = Some(snapshot);
-                    inner.latest_snapshot_frame = Some(frame.clone());
-                    inner.latest_snapshot_update = Some(telemetry);
+                    let frame = inner.snapshots.publish(prepared, telemetry);
                     inner.startup_state = DaemonStartupState::Ready;
-                    subscriber_mailboxes(&inner)
+                    (frame, subscriber_mailboxes(&inner))
                 };
                 fan_out_snapshot(frame, subscribers);
             }
@@ -3135,8 +3722,8 @@ impl DaemonSocketState {
                 message: message.clone(),
             },
             DaemonStartupState::Ready => {
-                if let Some(frame) = &inner.latest_snapshot_frame {
-                    DaemonSocketResponse::Snapshot(frame.clone())
+                if let Some(frame) = inner.snapshots.latest_frame() {
+                    DaemonSocketResponse::Snapshot(frame)
                 } else {
                     DaemonSocketResponse::Unavailable {
                         reason: ipc::UnavailableReason::StartupFailed,
@@ -3167,7 +3754,7 @@ impl DaemonSocketState {
                 message: "daemon has not published its initial snapshot yet".to_string(),
             },
             DaemonStartupState::Ready => {
-                let Some(bootstrap_frame) = inner.latest_snapshot_frame.clone() else {
+                let Some(bootstrap_frame) = inner.snapshots.latest_frame() else {
                     return SubscribeResponse::Unavailable {
                         reason: ipc::UnavailableReason::StartupFailed,
                         message: "daemon reported ready without a snapshot".to_string(),
@@ -3224,25 +3811,19 @@ impl DaemonSocketState {
             state,
             identity: identity.frame(),
             subscriber_count: inner.subscribers.len(),
-            latest_snapshot_generated_at: inner
-                .latest_snapshot
-                .as_ref()
-                .map(|snapshot| snapshot.generated_at.clone()),
-            latest_snapshot_pane_count: inner
-                .latest_snapshot
-                .as_ref()
-                .map(|snapshot| snapshot.panes.len()),
+            latest_snapshot_generated_at: inner.snapshots.latest_generated_at(),
+            latest_snapshot_pane_count: inner.snapshots.latest_pane_count(),
             latest_snapshot_update_source: inner
-                .latest_snapshot_update
-                .as_ref()
+                .snapshots
+                .latest_update()
                 .map(|update| update.source.to_string()),
             latest_snapshot_update_detail: inner
-                .latest_snapshot_update
-                .as_ref()
+                .snapshots
+                .latest_update()
                 .and_then(|update| update.detail.clone()),
             latest_snapshot_update_duration_ms: inner
-                .latest_snapshot_update
-                .as_ref()
+                .snapshots
+                .latest_update()
                 .and_then(|update| update.duration_ms),
             unavailable_reason,
             message,
@@ -3822,7 +4403,7 @@ fn control_event_from_line(line: &str) -> ControlEvent {
 
 fn apply_control_event(
     snapshot: &mut SnapshotEnvelope,
-    tmux_reads: &impl TmuxReadProvider,
+    tmux_reads: &mut impl TmuxReadProvider,
     line: &str,
     event: &ControlEvent,
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
@@ -4045,7 +4626,7 @@ fn terminal_title_from_decoded_output(output: &str) -> Option<String> {
 
 fn refresh_snapshot_pane(
     snapshot: &mut SnapshotEnvelope,
-    tmux_reads: &impl TmuxReadProvider,
+    tmux_reads: &mut impl TmuxReadProvider,
     pane_id: &str,
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
 ) -> Result<()> {
@@ -4054,7 +4635,7 @@ fn refresh_snapshot_pane(
 
 fn refresh_snapshot_pane_with_title(
     snapshot: &mut SnapshotEnvelope,
-    tmux_reads: &impl TmuxReadProvider,
+    tmux_reads: &mut impl TmuxReadProvider,
     pane_id: &str,
     title_override: Option<&str>,
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
@@ -4095,7 +4676,7 @@ fn refresh_snapshot_pane_with_title(
 
 fn refresh_snapshot_window(
     snapshot: &mut SnapshotEnvelope,
-    tmux_reads: &impl TmuxReadProvider,
+    tmux_reads: &mut impl TmuxReadProvider,
     window_id: &str,
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
 ) -> Result<()> {
@@ -4110,7 +4691,7 @@ fn refresh_snapshot_window(
 
 fn refresh_snapshot_session(
     snapshot: &mut SnapshotEnvelope,
-    tmux_reads: &impl TmuxReadProvider,
+    tmux_reads: &mut impl TmuxReadProvider,
     session_id: &str,
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
 ) -> Result<()> {
@@ -4125,7 +4706,7 @@ fn refresh_snapshot_session(
 
 fn refresh_snapshot_scope(
     snapshot: &mut SnapshotEnvelope,
-    tmux_reads: &impl TmuxReadProvider,
+    tmux_reads: &mut impl TmuxReadProvider,
     scope: TargetScope,
     target_id: &str,
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
@@ -4156,7 +4737,7 @@ fn refresh_snapshot_scope(
 
 fn fallback_to_full_resnapshot(
     snapshot: &mut SnapshotEnvelope,
-    tmux_reads: &impl TmuxReadProvider,
+    tmux_reads: &mut impl TmuxReadProvider,
     line: &str,
     error: anyhow::Error,
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
@@ -4176,7 +4757,7 @@ fn fallback_to_full_resnapshot(
 
 fn reconcile_full_snapshot(
     snapshot: &mut SnapshotEnvelope,
-    tmux_reads: &impl TmuxReadProvider,
+    tmux_reads: &mut impl TmuxReadProvider,
     tmux_version: Option<&str>,
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
 ) -> Result<()> {
@@ -4190,7 +4771,7 @@ fn reconcile_full_snapshot(
 }
 
 fn daemon_snapshot_from_tmux_with_provider(
-    tmux_reads: &impl TmuxReadProvider,
+    tmux_reads: &mut impl TmuxReadProvider,
     tmux_version: Option<&str>,
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
     now: Instant,
@@ -4221,7 +4802,7 @@ fn daemon_snapshot_from_tmux_with_provider(
 #[cfg(test)]
 pub(crate) fn test_refresh_snapshot_pane_with_provider(
     snapshot: &mut SnapshotEnvelope,
-    tmux_reads: &impl TmuxReadProvider,
+    tmux_reads: &mut impl TmuxReadProvider,
     pane_id: &str,
 ) -> Result<()> {
     let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
@@ -4231,7 +4812,7 @@ pub(crate) fn test_refresh_snapshot_pane_with_provider(
 #[cfg(test)]
 pub(crate) fn test_refresh_snapshot_pane_title_with_provider(
     snapshot: &mut SnapshotEnvelope,
-    tmux_reads: &impl TmuxReadProvider,
+    tmux_reads: &mut impl TmuxReadProvider,
     pane_id: &str,
     title_override: &str,
 ) -> Result<()> {
@@ -4248,7 +4829,7 @@ pub(crate) fn test_refresh_snapshot_pane_title_with_provider(
 #[cfg(test)]
 pub(crate) fn test_refresh_snapshot_window_with_provider(
     snapshot: &mut SnapshotEnvelope,
-    tmux_reads: &impl TmuxReadProvider,
+    tmux_reads: &mut impl TmuxReadProvider,
     window_id: &str,
 ) -> Result<()> {
     let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
@@ -4258,7 +4839,7 @@ pub(crate) fn test_refresh_snapshot_window_with_provider(
 #[cfg(test)]
 pub(crate) fn test_refresh_snapshot_session_with_provider(
     snapshot: &mut SnapshotEnvelope,
-    tmux_reads: &impl TmuxReadProvider,
+    tmux_reads: &mut impl TmuxReadProvider,
     session_id: &str,
 ) -> Result<()> {
     let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
@@ -4268,7 +4849,7 @@ pub(crate) fn test_refresh_snapshot_session_with_provider(
 #[cfg(test)]
 pub(crate) fn test_reconcile_full_snapshot_with_provider(
     snapshot: &mut SnapshotEnvelope,
-    tmux_reads: &impl TmuxReadProvider,
+    tmux_reads: &mut impl TmuxReadProvider,
     tmux_version: Option<&str>,
 ) -> Result<()> {
     let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);

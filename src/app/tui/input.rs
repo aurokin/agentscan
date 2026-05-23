@@ -43,7 +43,11 @@ pub(super) fn handle_key_event(
         return Ok(TuiLoopAction::Continue);
     };
 
-    let Some(target_pane_id) = state.key_targets.get(&selection) else {
+    let target_pane_id = state
+        .key_targets
+        .get(&selection)
+        .or_else(|| state.retired_key_targets.get(&selection));
+    let Some(target_pane_id) = target_pane_id else {
         return Ok(TuiLoopAction::Continue);
     };
 

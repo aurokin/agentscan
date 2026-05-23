@@ -242,6 +242,29 @@ fn tui_key_assignments_stay_stable_across_rerenders() {
 }
 
 #[test]
+fn tui_retains_retired_key_targets_for_missing_pane_selection() {
+    let pane_one = tui_test_pane(1);
+    let pane_two = tui_test_pane(2);
+    let mut state = super::tui::TuiState::default();
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 80,
+        height: 12,
+    };
+    state.replace_panes(vec![pane_one.clone(), pane_two]);
+
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(state.test_key_target('2'), Some("%2"));
+
+    state.replace_panes(vec![pane_one]);
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+
+    assert_eq!(
+        state.test_retired_key_target('2'),
+        Some("%2")
+    );
+}
+
+#[test]
 fn tui_error_frame_includes_recovery_guidance() {
     let lines = super::tui::render_error_frame("failed to connect to daemon");
     assert_eq!(lines[0], "agentscan tui unavailable");

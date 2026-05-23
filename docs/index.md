@@ -39,6 +39,8 @@ This repo uses progressively disclosed documentation.
   - `docs/notes/daemon-redesign-brief.md`
     Prepared target shape, migration slices, and harness risks for the future
     daemon redesign.
+  - `docs/notes/daemon-redesign-decisions.md`
+    Running implementation decision log for daemon redesign slices.
 - Linear
   Active milestones, blockers, sequencing, and execution detail.
 

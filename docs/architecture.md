@@ -49,18 +49,29 @@ refresh churn; it is not persisted, not serialized, and not used by direct
 or temporarily unparseable current output does not trigger repeated
 `capture-pane` calls in a burst.
 
-Daemon refresh reads still use short-lived `tmux list-panes` commands. Routing
-those reads through the long-lived control-mode client requires a broker that
-owns the single control-mode stream, correlates `%begin` / `%end` / `%error`
-frames, and preserves event ordering while commands are pending. That belongs
-with the daemon redesign rather than the current scanner cleanup path. The
-design-prep brief is `docs/notes/daemon-redesign-brief.md`.
+Daemon steady-state refresh reads use a brokered tmux control-mode command
+path for `list-panes` inventory:
+
+- targeted pane refreshes use `list-panes -t <pane>`
+- window and session refreshes use `list-panes -t <target>`
+- interval and timeout reconciles use `list-panes -a`
+
+The broker shares the daemon's long-lived control-mode client, owns command
+response collection while a command is pending, and replays unrelated
+control-mode events back into the daemon loop before reading new socket events.
+Expected missing-target responses remain normal refresh outcomes. Unexpected
+broker failures disable brokered reads for the daemon lifetime and fall back to
+short-lived tmux commands so the daemon can keep publishing snapshots.
+
+The initial daemon snapshot still uses a short-lived tmux command before socket
+readiness is published.
 
 The remaining production child processes are intentional product-boundary or
 lifecycle operations:
 
 - one long-lived tmux control-mode client for daemon event subscription
-- short-lived tmux commands for initial snapshots, targeted refreshes, direct
+- brokered control-mode `list-panes` reads for daemon steady-state refreshes
+- short-lived tmux commands for initial snapshots, broker fallback, direct
   recovery scans, focus, metadata helpers, and provider-scoped pane-output
   status fallback
 - detached `agentscan daemon run` self-spawn for explicit daemon start and

@@ -25,13 +25,15 @@ const TMUX_AMBIGUOUS_FIXTURE: &str = include_str!(concat!(
 #[allow(unused_imports)]
 use super::{
     CACHE_SCHEMA_VERSION, CLAUDE_SPINNER_GLYPHS, Cli, DAEMON_SUBSCRIPTION_FORMAT, IDLE_GLYPHS,
-    OutputFormat, PaneRecord, PaneStatus, Provider, SnapshotEnvelope, SourceKind, StatusKind,
-    TMUX_SOCKET_ENV_VAR, TmuxMetadataField, classify, daemon, ipc, output, proc, snapshot, tmux,
+    OutputFormat, PANE_FORMAT, PaneRecord, PaneStatus, Provider, SnapshotEnvelope, SourceKind,
+    StatusKind, TMUX_SOCKET_ENV_VAR, TmuxMetadataField, classify, daemon, ipc, output, proc,
+    snapshot, tmux,
 };
 
 include!("support.rs");
 include!("daemon_socket.rs");
 include!("daemon_refresh.rs");
+include!("daemon_broker.rs");
 include!("classification.rs");
 include!("tmux_cache.rs");
 include!("tui.rs");

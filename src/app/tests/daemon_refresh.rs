@@ -29,15 +29,18 @@ impl FakeTmuxReadProvider {
 }
 
 impl daemon::TmuxReadProvider for FakeTmuxReadProvider {
-    fn list_all_panes(&self) -> anyhow::Result<Vec<super::TmuxPaneRow>> {
+    fn list_all_panes(&mut self) -> anyhow::Result<Vec<super::TmuxPaneRow>> {
         Ok(self.all_panes.clone())
     }
 
-    fn list_target_panes(&self, target: &str) -> anyhow::Result<Option<Vec<super::TmuxPaneRow>>> {
+    fn list_target_panes(
+        &mut self,
+        target: &str,
+    ) -> anyhow::Result<Option<Vec<super::TmuxPaneRow>>> {
         Ok(self.target_panes.get(target).cloned().unwrap_or(None))
     }
 
-    fn list_pane(&self, pane_id: &str) -> anyhow::Result<Option<super::TmuxPaneRow>> {
+    fn list_pane(&mut self, pane_id: &str) -> anyhow::Result<Option<super::TmuxPaneRow>> {
         Ok(self.pane_rows.get(pane_id).cloned().unwrap_or(None))
     }
 }
@@ -86,9 +89,9 @@ fn daemon_refresh_pane_updates_existing_pane_from_provider() {
     let old_row = daemon_refresh_row("%1", "$1", "@1", 0, "old");
     let new_row = daemon_refresh_row("%1", "$1", "@1", 0, "new");
     let mut snapshot = daemon_refresh_snapshot(vec![old_row]);
-    let provider = FakeTmuxReadProvider::default().with_pane("%1", Some(new_row));
+    let mut provider = FakeTmuxReadProvider::default().with_pane("%1", Some(new_row));
 
-    daemon::test_refresh_snapshot_pane_with_provider(&mut snapshot, &provider, "%1")
+    daemon::test_refresh_snapshot_pane_with_provider(&mut snapshot, &mut provider, "%1")
         .expect("pane refresh should succeed");
 
     assert_eq!(snapshot.panes.len(), 1);
@@ -102,9 +105,9 @@ fn daemon_refresh_pane_updates_existing_pane_from_provider() {
 fn daemon_refresh_pane_removes_missing_pane() {
     let mut snapshot =
         daemon_refresh_snapshot(vec![daemon_refresh_row("%1", "$1", "@1", 0, "gone")]);
-    let provider = FakeTmuxReadProvider::default().with_pane("%1", None);
+    let mut provider = FakeTmuxReadProvider::default().with_pane("%1", None);
 
-    daemon::test_refresh_snapshot_pane_with_provider(&mut snapshot, &provider, "%1")
+    daemon::test_refresh_snapshot_pane_with_provider(&mut snapshot, &mut provider, "%1")
         .expect("missing pane refresh should succeed");
 
     assert!(snapshot.panes.is_empty());
@@ -115,11 +118,11 @@ fn daemon_refresh_pane_removes_missing_pane() {
 fn daemon_refresh_pane_title_prefers_control_mode_title() {
     let row = daemon_refresh_row("%1", "$1", "@1", 0, "stale");
     let mut snapshot = daemon_refresh_snapshot(vec![row.clone()]);
-    let provider = FakeTmuxReadProvider::default().with_pane("%1", Some(row));
+    let mut provider = FakeTmuxReadProvider::default().with_pane("%1", Some(row));
 
     daemon::test_refresh_snapshot_pane_title_with_provider(
         &mut snapshot,
-        &provider,
+        &mut provider,
         "%1",
         "from-control-mode",
     )
@@ -134,10 +137,10 @@ fn daemon_refresh_window_replaces_only_matching_scope() {
     let other_window_pane = daemon_refresh_row("%2", "$1", "@2", 0, "other-window");
     let new_window_pane = daemon_refresh_row("%3", "$1", "@1", 1, "new-window");
     let mut snapshot = daemon_refresh_snapshot(vec![old_window_pane, other_window_pane]);
-    let provider = FakeTmuxReadProvider::default()
+    let mut provider = FakeTmuxReadProvider::default()
         .with_target_panes("@1", Some(vec![new_window_pane]));
 
-    daemon::test_refresh_snapshot_window_with_provider(&mut snapshot, &provider, "@1")
+    daemon::test_refresh_snapshot_window_with_provider(&mut snapshot, &mut provider, "@1")
         .expect("window refresh should succeed");
 
     let pane_ids: Vec<_> = snapshot
@@ -160,9 +163,9 @@ fn daemon_refresh_session_removes_missing_scope() {
     let removed_session_pane = daemon_refresh_row("%1", "$1", "@1", 0, "removed");
     let retained_session_pane = daemon_refresh_row("%2", "$2", "@2", 0, "retained");
     let mut snapshot = daemon_refresh_snapshot(vec![removed_session_pane, retained_session_pane]);
-    let provider = FakeTmuxReadProvider::default().with_target_panes("$1", None);
+    let mut provider = FakeTmuxReadProvider::default().with_target_panes("$1", None);
 
-    daemon::test_refresh_snapshot_session_with_provider(&mut snapshot, &provider, "$1")
+    daemon::test_refresh_snapshot_session_with_provider(&mut snapshot, &mut provider, "$1")
         .expect("missing session refresh should succeed");
 
     assert_eq!(snapshot.panes.len(), 1);
@@ -174,9 +177,9 @@ fn daemon_full_reconcile_replaces_snapshot_from_provider() {
     let old_row = daemon_refresh_row("%1", "$1", "@1", 0, "old");
     let new_row = daemon_refresh_row("%2", "$2", "@2", 0, "new");
     let mut snapshot = daemon_refresh_snapshot(vec![old_row]);
-    let provider = FakeTmuxReadProvider::default().with_all_panes(vec![new_row]);
+    let mut provider = FakeTmuxReadProvider::default().with_all_panes(vec![new_row]);
 
-    daemon::test_reconcile_full_snapshot_with_provider(&mut snapshot, &provider, Some("3.4"))
+    daemon::test_reconcile_full_snapshot_with_provider(&mut snapshot, &mut provider, Some("3.4"))
         .expect("full reconcile should succeed");
 
     assert_eq!(snapshot.source.kind, SourceKind::Daemon);

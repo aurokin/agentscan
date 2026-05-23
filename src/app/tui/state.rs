@@ -87,6 +87,7 @@ impl Default for TuiConnectionState {
 #[derive(Debug, Default)]
 pub(crate) struct TuiState {
     pub(super) key_targets: BTreeMap<char, String>,
+    pub(super) retired_key_targets: BTreeMap<char, String>,
     pub(super) panes: Vec<PaneRecord>,
     pub(super) error_message: Option<String>,
     pub(super) connection: TuiConnectionState,
@@ -119,6 +120,7 @@ impl TuiState {
 
     pub(crate) fn set_unavailable(&mut self, message: String) {
         self.key_targets.clear();
+        self.retired_key_targets.clear();
         self.panes.clear();
         self.page_start = 0;
         self.error_message = Some(message.clone());
@@ -135,6 +137,16 @@ impl TuiState {
 
     pub(super) fn set_terminal_size(&mut self, terminal_size: TuiTerminalSize) {
         self.last_terminal_size = Some(terminal_size);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_key_target(&self, key: char) -> Option<&str> {
+        self.key_targets.get(&key).map(String::as_str)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_retired_key_target(&self, key: char) -> Option<&str> {
+        self.retired_key_targets.get(&key).map(String::as_str)
     }
 
     fn page_size(&self) -> usize {
@@ -160,6 +172,7 @@ impl TuiState {
 
         self.page_start = next_page_start.min(self.max_page_start());
         self.key_targets.clear();
+        self.retired_key_targets.clear();
         true
     }
 
@@ -171,6 +184,7 @@ impl TuiState {
 
         self.page_start = self.page_start.saturating_sub(page_size);
         self.key_targets.clear();
+        self.retired_key_targets.clear();
         true
     }
 }

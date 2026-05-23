@@ -134,18 +134,19 @@ Implications:
   procfs directly; macOS reads `libproc` / `sysctl` data directly. Avoidable
   helper process launches such as `ps`, `pgrep`, and `grep` are not part of the
   scanner hot path.
-- tmux subprocesses are an intentional boundary with the tmux server. Reducing
-  short-lived tmux reads is a future daemon architecture improvement, not an
-  incident-mitigation requirement.
+- tmux subprocesses remain an intentional boundary for direct snapshots,
+  initial daemon bootstrap, focus, metadata helpers, and pane-output fallback.
+  Steady-state daemon `list-panes` refreshes use the brokered control-mode
+  command path, with short-lived tmux reads retained as fallback.
 - daemon pane-output status fallback may use a short-lived in-memory cache to
   throttle repeated `capture-pane` reads during refresh bursts. The cache is
   local to the daemon, keyed by pane identity and classification inputs, and is
   not canonical state. Direct `scan` snapshots remain uncached.
-- daemon refresh `list-panes` reads should not be moved onto the existing
-  control-mode event client without a broker that owns response correlation,
-  event buffering, timeouts, and recovery. That transport work belongs with the
-  daemon redesign. See `docs/notes/daemon-redesign-brief.md` for the prepared
-  target shape and migration slices.
+- daemon refresh `list-panes` reads may use the control-mode event client only
+  through the brokered command path that owns response collection, event
+  buffering, timeouts, and fallback. See
+  `docs/notes/daemon-redesign-decisions.md` for the implementation decisions
+  and `docs/notes/daemon-redesign-brief.md` for the original migration slices.
 - provider logs, transcript files, session databases, and other historical
   state stores are not core detection inputs. They may be useful during
   research, but baseline detection must rely on live tmux, process, title, and

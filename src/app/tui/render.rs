@@ -49,6 +49,7 @@ pub(crate) fn render_tui_frame_for_size(
 
     if let Some(error_message) = state.error_message.as_deref() {
         state.key_targets.clear();
+        state.retired_key_targets.clear();
         let lines = render_body_with_footer(
             &render_error_frame(error_message),
             &state.connection,
@@ -65,6 +66,7 @@ pub(crate) fn render_tui_frame_for_size(
 
     if state.panes.is_empty() {
         state.key_targets.clear();
+        state.retired_key_targets.clear();
         state.page_start = 0;
         let body = if state.connection.kind == TuiConnectionKind::Connecting {
             vec![
@@ -89,6 +91,7 @@ pub(crate) fn render_tui_frame_for_size(
     let page_size = page_size_for_terminal(terminal_size);
     if page_size == 0 {
         state.key_targets.clear();
+        state.retired_key_targets.clear();
         return TuiFrame {
             lines: fit_lines_to_terminal(&render_undersized_frame(), terminal_size),
             visible_pane_ids: Vec::new(),
@@ -107,7 +110,16 @@ pub(crate) fn render_tui_frame_for_size(
         .saturating_add(page_size)
         .min(state.panes.len());
     let visible_panes = &state.panes[state.page_start..visible_end];
+    let previous_key_targets = state.key_targets.clone();
     synchronize_key_targets(&mut state.key_targets, visible_panes);
+    for (key, pane_id) in previous_key_targets {
+        if !state.key_targets.contains_key(&key) {
+            state.retired_key_targets.insert(key, pane_id);
+        }
+    }
+    for key in state.key_targets.keys() {
+        state.retired_key_targets.remove(key);
+    }
 
     let visible_pane_ids = visible_panes
         .iter()
