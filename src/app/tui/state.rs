@@ -2,10 +2,6 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use super::*;
 
-pub(super) const TUI_SELECTION_KEYS: [char; 16] = [
-    '1', '2', '3', '4', '5', 'Q', 'E', 'R', 'F', 'G', 'T', 'Z', 'X', 'C', 'V', 'B',
-];
-
 const FOOTER_LINE_COUNT: usize = 2;
 const MIN_SELECTABLE_TUI_HEIGHT: usize = FOOTER_LINE_COUNT + 1;
 
@@ -252,7 +248,7 @@ pub(crate) fn synchronize_key_targets(
     key_targets.retain(|_, pane_id| present_pane_ids.contains(pane_id.as_str()));
 
     let mut assigned_pane_ids: HashSet<String> = key_targets.values().cloned().collect();
-    let free_keys: Vec<char> = TUI_SELECTION_KEYS
+    let free_keys: Vec<char> = picker::PICKER_SELECTION_KEYS
         .iter()
         .copied()
         .filter(|key| !key_targets.contains_key(key))
@@ -279,7 +275,7 @@ pub(super) fn page_size_for_terminal(terminal_size: TuiTerminalSize) -> usize {
 
     available_height
         .saturating_sub(FOOTER_LINE_COUNT)
-        .min(TUI_SELECTION_KEYS.len())
+        .min(picker::PICKER_SELECTION_KEYS.len())
 }
 
 pub(super) fn page_count(total_panes: usize, page_size: usize) -> usize {

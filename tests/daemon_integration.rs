@@ -985,6 +985,107 @@ fn one_shot_refresh_and_scan_refresh_bypass_daemon_socket() -> Result<()> {
 }
 
 #[test]
+fn hotkeys_json_exposes_current_picker_assignments() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let root_pane_id = harness.start_session("hotkeys-json", "sleep 300")?;
+    let split_pane_id = harness.split_window("hotkeys-json:0.0", "sleep 300")?;
+    harness.seed_tui_two_pane_metadata(&root_pane_id, &split_pane_id)?;
+    let mut daemon = harness.start_daemon()?;
+    harness.wait_for_daemon_pane(&mut daemon, &split_pane_id, |_| true)?;
+
+    let stdout = harness.agentscan_output(["hotkeys", "--format", "json"])?;
+    let rows: Value = serde_json::from_str(&stdout).context("hotkeys output should be JSON")?;
+    let rows = rows
+        .as_array()
+        .context("hotkeys output should be an array")?;
+
+    assert_eq!(rows[0]["key"], "1");
+    assert_eq!(rows[0]["pane_id"], root_pane_id);
+    assert_eq!(rows[0]["provider"], "codex");
+    assert_eq!(rows[0]["status"]["kind"], "idle");
+    assert_eq!(rows[0]["display_label"], "Root Task");
+    assert_eq!(rows[0]["location_tag"], "hotkeys-json:0.0");
+    assert_eq!(rows[0]["location"]["session_name"], "hotkeys-json");
+    assert_eq!(rows[1]["key"], "2");
+    assert_eq!(rows[1]["pane_id"], split_pane_id);
+    assert_eq!(rows[1]["provider"], "claude");
+
+    Ok(())
+}
+
+#[test]
+fn hotkey_focuses_assigned_pane_from_current_picker() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let root_pane_id = harness.start_session("hotkey-focus", "sleep 300")?;
+    let split_pane_id = harness.split_window("hotkey-focus:0.0", "sleep 300")?;
+    harness.seed_tui_two_pane_metadata(&root_pane_id, &split_pane_id)?;
+    let mut daemon = harness.start_daemon()?;
+    harness.wait_for_daemon_pane(&mut daemon, &split_pane_id, |_| true)?;
+    let mut client = harness.attach_client("hotkey-focus")?;
+
+    harness.agentscan(["hotkey", "2"])?;
+    harness.wait_for_client_pane(&mut client, &split_pane_id)?;
+
+    Ok(())
+}
+
+#[test]
+fn hotkey_reports_invalid_or_unassigned_keys() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let root_pane_id = harness.start_session("hotkey-invalid", "sleep 300")?;
+    harness.agentscan([
+        "tmux",
+        "set-metadata",
+        "--pane-id",
+        &root_pane_id,
+        "--provider",
+        "codex",
+        "--label",
+        "Root Task",
+        "--state",
+        "idle",
+    ])?;
+    let mut daemon = harness.start_daemon()?;
+    harness.wait_for_daemon_pane(&mut daemon, &root_pane_id, |_| true)?;
+
+    let invalid = harness
+        .agentscan_command()?
+        .args(["hotkey", "a"])
+        .output()
+        .context("failed to run hotkey with invalid key")?;
+    assert!(
+        !invalid.status.success(),
+        "invalid hotkey should fail; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&invalid.stdout),
+        String::from_utf8_lossy(&invalid.stderr)
+    );
+    let stderr = String::from_utf8(invalid.stderr).context("stderr should be UTF-8")?;
+    assert!(
+        stderr.contains("is not supported"),
+        "expected unsupported key error, got:\n{stderr}"
+    );
+
+    let unassigned = harness
+        .agentscan_command()?
+        .args(["hotkey", "q"])
+        .output()
+        .context("failed to run hotkey with unassigned key")?;
+    assert!(
+        !unassigned.status.success(),
+        "unassigned hotkey should fail; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&unassigned.stdout),
+        String::from_utf8_lossy(&unassigned.stderr)
+    );
+    let stderr = String::from_utf8(unassigned.stderr).context("stderr should be UTF-8")?;
+    assert!(
+        stderr.contains("hotkey Q is not assigned"),
+        "expected unassigned key error, got:\n{stderr}"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn focus_refresh_bypasses_daemon_socket() -> Result<()> {
     let harness = TestHarness::new()?;
     let _root_pane_id = harness.start_session("focus-refresh-bypass-daemon", "sleep 300")?;

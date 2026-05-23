@@ -14,6 +14,8 @@ Machine-readable consumers should use:
 - `agentscan daemon status --format json` for daemon lifecycle, socket, and readiness checks
 - `agentscan providers --format json` for supported provider names, display
   markers for all icon modes, marker codepoints, and aliases
+- `agentscan hotkeys --format json` for the shared picker display model used by
+  tmux binds, the terminal TUI, and future desktop picker surfaces
 
 `agentscan tui` is interactive-only. It must not become a TUI-shaped JSON or TSV
 surface, and unsupported formatting requests must not become compatibility
@@ -31,6 +33,8 @@ Migration targets:
 | Inspect schema version or the unfiltered snapshot envelope | `agentscan snapshot --format json` |
 | Check daemon lifecycle or readiness | `agentscan daemon status --format json` |
 | Inspect supported providers, icon modes, and aliases | `agentscan providers --format json` |
+| Render a pane picker with stable selection keys | `agentscan hotkeys --format json` |
+| Activate a picker selection from a simple tmux bind | `agentscan hotkey <key>` |
 | Open a human pane picker from a tmux bind | `agentscan tui` |
 | Force a direct tmux read for recovery or debugging | `agentscan scan` or a supported `--refresh` flag |
 
@@ -72,6 +76,30 @@ If a script needs data that is missing from the documented JSON surfaces, treat
 that as an API gap in `list` or snapshot JSON. Do not add hidden `tui --format`
 paths, TUI-shaped TSV, or parser compatibility branches to preserve legacy
 stdout parsing.
+
+## Picker Hotkey Contract
+
+Picker selection keys are assigned by `agentscan`, not by tmux shell glue or
+desktop UI code. The shared key order is:
+
+```text
+1 2 3 4 5 Q E R F G T Z X C V B
+```
+
+Use `agentscan hotkeys --format json` to render a picker outside the terminal
+TUI. Each row includes the assigned key, pane id, provider, status, display
+metadata, display label, structured location, and location tag. Future desktop
+surfaces should consume these rows directly, or use the returned `pane_id` with
+`agentscan focus <pane-id>` when acting on a row they already rendered.
+
+Use `agentscan hotkey <key>` as the simple tmux-binding action path. It
+normalizes key case, resolves the key against the current picker model, and
+delegates focus through the same pane validation and tmux focus behavior as
+`agentscan focus`.
+
+Both commands are daemon-backed by default and support `--refresh` for direct
+tmux recovery. `hotkeys` also supports `--all`; `hotkey` accepts `--all` when a
+binding intentionally targets a picker model that includes non-agent panes.
 
 Normal consumers are daemon-backed and auto-start the daemon by default so
 desktop workflows do not need service setup. On macOS, detached auto-start is

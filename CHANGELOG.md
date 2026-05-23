@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added
+
+- Added `agentscan hotkeys --format json` and `agentscan hotkey <key>` as the
+  shared picker hotkey contract for tmux binds, the terminal TUI model, and
+  future desktop picker surfaces.
+
 ## 0.2.9 - 2026-05-23
 
 ### Added

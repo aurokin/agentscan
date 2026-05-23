@@ -22,6 +22,14 @@ pub fn run() -> Result<()> {
             merge_providers_args(&mut args, &root_list_args)?;
             command_providers(&args)
         }
+        Some(Commands::Hotkeys(mut args)) => {
+            merge_hotkeys_args(&mut args, &root_list_args)?;
+            command_hotkeys(&args)
+        }
+        Some(Commands::Hotkey(mut args)) => {
+            merge_hotkey_args(&mut args, &root_list_args)?;
+            command_hotkey(&args)
+        }
         Some(Commands::Tui(mut args)) => {
             merge_tui_args(&mut args, &root_list_args)?;
             command_tui(&args)
@@ -110,6 +118,28 @@ pub(super) fn merge_focus_args(args: &mut FocusArgs, root_list_args: &ListArgs) 
     reject_root_icons(root_list_args, "focus")?;
     args.auto_start.no_auto_start |= root_list_args.auto_start.no_auto_start;
     args.refresh.refresh |= root_list_args.refresh.refresh;
+
+    Ok(())
+}
+
+pub(super) fn merge_hotkeys_args(args: &mut HotkeysArgs, root_list_args: &ListArgs) -> Result<()> {
+    reject_root_icons(root_list_args, "hotkeys")?;
+    args.refresh.refresh |= root_list_args.refresh.refresh;
+    args.auto_start.no_auto_start |= root_list_args.auto_start.no_auto_start;
+    args.all |= root_list_args.all;
+    if args.format == OutputFormat::Text {
+        args.format = root_list_args.format;
+    }
+
+    Ok(())
+}
+
+pub(super) fn merge_hotkey_args(args: &mut HotkeyArgs, root_list_args: &ListArgs) -> Result<()> {
+    reject_root_format(root_list_args, "hotkey")?;
+    reject_root_icons(root_list_args, "hotkey")?;
+    args.refresh.refresh |= root_list_args.refresh.refresh;
+    args.auto_start.no_auto_start |= root_list_args.auto_start.no_auto_start;
+    args.all |= root_list_args.all;
 
     Ok(())
 }
@@ -250,6 +280,30 @@ fn command_providers(args: &ProvidersArgs) -> Result<()> {
     output::emit_providers(&provider_summaries(config.icons), args.format, config.icons)
 }
 
+fn command_hotkeys(args: &HotkeysArgs) -> Result<()> {
+    let mut snapshot = snapshot_for_consumer(args.refresh, args.auto_start)?;
+    snapshot::filter_snapshot(&mut snapshot, args.all);
+    output::emit_picker_rows(&picker::picker_rows(&snapshot.panes), args.format)
+}
+
+fn command_hotkey(args: &HotkeyArgs) -> Result<()> {
+    let selected_key = picker::normalize_picker_key(&args.key)?;
+    let mut snapshot = snapshot_for_consumer(args.refresh, args.auto_start)?;
+    snapshot::filter_snapshot(&mut snapshot, args.all);
+    let rows = picker::picker_rows(&snapshot.panes);
+    let row = rows
+        .iter()
+        .find(|row| row.key == selected_key)
+        .with_context(|| format!("hotkey {selected_key} is not assigned in the current picker"))?;
+
+    focus_pane_from_snapshot(
+        &snapshot,
+        &row.pane_id,
+        args.client_tty.as_deref(),
+        snapshot_name(args.refresh),
+    )
+}
+
 fn command_tui(args: &TuiArgs) -> Result<()> {
     let config = resolve_command_config(args.icons)?;
     tui::run(args, config.icons)
@@ -287,23 +341,37 @@ fn command_inspect(args: &InspectArgs) -> Result<()> {
 
 fn command_focus(args: &FocusArgs) -> Result<()> {
     let snapshot = snapshot_for_consumer(args.refresh, args.auto_start)?;
-    let pane_exists = snapshot
-        .panes
-        .iter()
-        .any(|pane| pane.pane_id == args.pane_id);
+    focus_pane_from_snapshot(
+        &snapshot,
+        &args.pane_id,
+        args.client_tty.as_deref(),
+        snapshot_name(args.refresh),
+    )
+}
+
+fn focus_pane_from_snapshot(
+    snapshot: &SnapshotEnvelope,
+    pane_id: &str,
+    client_tty: Option<&str>,
+    snapshot_name: &str,
+) -> Result<()> {
+    let pane_exists = snapshot.panes.iter().any(|pane| pane.pane_id == pane_id);
     if !pane_exists {
-        let snapshot_name = if args.refresh.refresh {
-            "fresh tmux snapshot"
-        } else {
-            "daemon snapshot"
-        };
-        bail!("pane {} not found in {snapshot_name}", args.pane_id);
+        bail!("pane {pane_id} not found in {snapshot_name}");
     }
-    match tmux::focus_tmux_pane(&args.pane_id, args.client_tty.as_deref())? {
+    match tmux::focus_tmux_pane(pane_id, client_tty)? {
         tmux::FocusTmuxPaneResult::Focused => Ok(()),
         tmux::FocusTmuxPaneResult::Missing => {
-            bail!("pane {} is no longer available", args.pane_id)
+            bail!("pane {pane_id} is no longer available")
         }
+    }
+}
+
+fn snapshot_name(refresh: RefreshArgs) -> &'static str {
+    if refresh.refresh {
+        "fresh tmux snapshot"
+    } else {
+        "daemon snapshot"
     }
 }
 

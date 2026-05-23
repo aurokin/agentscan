@@ -21,6 +21,7 @@ mod ipc;
 mod model;
 mod output;
 mod path;
+mod picker;
 mod proc;
 mod provider;
 mod scanner;

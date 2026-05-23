@@ -28,6 +28,16 @@ pub(super) fn emit_providers(
     }
 }
 
+pub(super) fn emit_picker_rows(rows: &[picker::PickerRow], format: OutputFormat) -> Result<()> {
+    match format {
+        OutputFormat::Text => {
+            print_picker_rows_text(rows);
+            Ok(())
+        }
+        OutputFormat::Json => print_json(rows),
+    }
+}
+
 fn print_list_text(panes: &[PaneRecord], icon_mode: IconMode) {
     if panes.is_empty() {
         println!("No matching tmux panes.");
@@ -44,6 +54,28 @@ fn print_list_text(panes: &[PaneRecord], icon_mode: IconMode) {
             pane.location.window_index,
             pane.location.pane_index,
             pane.display_label()
+        );
+    }
+}
+
+fn print_picker_rows_text(rows: &[picker::PickerRow]) {
+    if rows.is_empty() {
+        println!("No matching tmux panes.");
+        return;
+    }
+
+    for row in rows {
+        let provider = row
+            .provider
+            .map(|provider| provider.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        println!(
+            "[{}] {} {} {} - {}",
+            row.key,
+            row.status.kind.as_str(),
+            provider,
+            row.location_tag,
+            row.display_label
         );
     }
 }

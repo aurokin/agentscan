@@ -22,6 +22,10 @@ pub(crate) enum Commands {
     Snapshot(SnapshotArgs),
     /// Print supported coding agent providers and display markers.
     Providers(ProvidersArgs),
+    /// Print current picker hotkeys and their target panes.
+    Hotkeys(HotkeysArgs),
+    /// Focus the pane assigned to a current picker hotkey.
+    Hotkey(HotkeyArgs),
     /// Open the interactive TUI. `tui` is interactive-only; use `list --format json` for automation.
     Tui(TuiArgs),
     /// Inspect one pane by pane id.
@@ -95,6 +99,43 @@ pub(crate) struct ProvidersArgs {
     /// Icon rendering mode for human-facing output.
     #[arg(long, value_enum)]
     pub(crate) icons: Option<IconMode>,
+}
+
+#[derive(Args, Clone, Copy, Debug)]
+pub(crate) struct HotkeysArgs {
+    #[command(flatten)]
+    pub(crate) refresh: RefreshArgs,
+
+    #[command(flatten)]
+    pub(crate) auto_start: AutoStartArgs,
+
+    /// Include all tmux panes, not only likely agent panes, in the picker model.
+    #[arg(long)]
+    pub(crate) all: bool,
+
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    pub(crate) format: OutputFormat,
+}
+
+#[derive(Args, Debug)]
+pub(crate) struct HotkeyArgs {
+    /// The picker hotkey to activate, for example `q`.
+    pub(crate) key: String,
+
+    #[command(flatten)]
+    pub(crate) refresh: RefreshArgs,
+
+    #[command(flatten)]
+    pub(crate) auto_start: AutoStartArgs,
+
+    /// Include all tmux panes, not only likely agent panes, in the picker model.
+    #[arg(long)]
+    pub(crate) all: bool,
+
+    /// The tmux client tty to target when switching panes.
+    #[arg(long)]
+    pub(crate) client_tty: Option<String>,
 }
 
 #[derive(Args, Debug)]

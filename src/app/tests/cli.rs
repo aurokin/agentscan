@@ -59,6 +59,31 @@ fn root_list_args_merge_into_other_refresh_capable_commands() {
         other => panic!("expected focus command, got {other:?}"),
     }
 
+    let cli =
+        <Cli as clap::Parser>::parse_from(["agentscan", "--all", "--format", "json", "hotkeys"]);
+    match cli.command {
+        Some(super::Commands::Hotkeys(mut args)) => {
+            super::commands::merge_hotkeys_args(&mut args, &cli.list_args).unwrap();
+            assert!(!args.refresh.refresh);
+            assert!(!args.auto_start.no_auto_start);
+            assert!(args.all);
+            assert_eq!(args.format, OutputFormat::Json);
+        }
+        other => panic!("expected hotkeys command, got {other:?}"),
+    }
+
+    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "-f", "--all", "hotkey", "q"]);
+    match cli.command {
+        Some(super::Commands::Hotkey(mut args)) => {
+            super::commands::merge_hotkey_args(&mut args, &cli.list_args).unwrap();
+            assert!(args.refresh.refresh);
+            assert!(!args.auto_start.no_auto_start);
+            assert!(args.all);
+            assert_eq!(args.key, "q");
+        }
+        other => panic!("expected hotkey command, got {other:?}"),
+    }
+
     let cli = <Cli as clap::Parser>::parse_from(["agentscan", "--all", "tui"]);
     match cli.command {
         Some(super::Commands::Tui(mut args)) => {
@@ -174,6 +199,14 @@ fn root_icon_mode_is_rejected_for_non_icon_commands() {
             "focus",
         ),
         (
+            ["agentscan", "--icons", "nerd-font", "hotkeys"].as_slice(),
+            "hotkeys",
+        ),
+        (
+            ["agentscan", "--icons", "nerd-font", "hotkey", "q"].as_slice(),
+            "hotkey",
+        ),
+        (
             ["agentscan", "--icons", "nerd-font", "daemon", "status"].as_slice(),
             "daemon",
         ),
@@ -201,6 +234,12 @@ fn root_icon_mode_is_rejected_for_non_icon_commands() {
             }
             Some(super::Commands::Focus(mut args)) => {
                 super::commands::merge_focus_args(&mut args, &cli.list_args).unwrap_err()
+            }
+            Some(super::Commands::Hotkeys(mut args)) => {
+                super::commands::merge_hotkeys_args(&mut args, &cli.list_args).unwrap_err()
+            }
+            Some(super::Commands::Hotkey(mut args)) => {
+                super::commands::merge_hotkey_args(&mut args, &cli.list_args).unwrap_err()
             }
             Some(super::Commands::Daemon(_)) => {
                 super::commands::reject_root_icons(&cli.list_args, command_name).unwrap_err()

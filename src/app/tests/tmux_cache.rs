@@ -453,6 +453,11 @@ fn provider_summaries_expose_display_markers_and_aliases() {
     let summaries = super::provider_summaries(IconMode::Emoji);
 
     assert_eq!(summaries.len(), super::provider_summary_order().count());
+    assert_codex_provider_summary(&summaries);
+    assert_droid_provider_summary(&summaries);
+}
+
+fn assert_codex_provider_summary(summaries: &[super::ProviderSummary]) {
     let codex = summaries
         .iter()
         .find(|summary| summary.provider == Provider::Codex)
@@ -476,7 +481,9 @@ fn provider_summaries_expose_display_markers_and_aliases() {
             .iter()
             .any(|alias| alias.name == "codex" && alias.allow_suffix)
     );
+}
 
+fn assert_droid_provider_summary(summaries: &[super::ProviderSummary]) {
     let droid = summaries
         .iter()
         .find(|summary| summary.provider == Provider::Droid)
@@ -491,6 +498,51 @@ fn provider_summaries_expose_display_markers_and_aliases() {
     assert_eq!(droid.icons.nerd_font.marker, "⛬");
     assert_eq!(droid.icons.nerd_font.codepoints, ["U+26EC"]);
     assert!(droid.metadata_aliases.contains(&"factory-droid"));
+}
+
+#[test]
+fn picker_rows_assign_tui_keys_and_expose_display_contract() {
+    let mut panes = vec![
+        proc_fallback_pane(42, "codex", "Codex"),
+        proc_fallback_pane(43, "claude", "Claude Code"),
+    ];
+    panes[0].provider = Some(Provider::Codex);
+    panes[0].status = PaneStatus::metadata(StatusKind::Idle);
+    panes[0].display.label = "Root Task".to_string();
+    panes[1].provider = Some(Provider::Claude);
+    panes[1].status = PaneStatus::metadata(StatusKind::Busy);
+    panes[1].display.label = "Split Task".to_string();
+
+    let rows = super::picker::picker_rows(&panes);
+
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].key, '1');
+    assert_eq!(rows[0].pane_id, "%42");
+    assert_eq!(rows[0].provider, Some(Provider::Codex));
+    assert_eq!(rows[0].status.kind, StatusKind::Idle);
+    assert_eq!(rows[0].display_label, "Root Task");
+    assert_eq!(rows[0].location_tag, "ambiguous:1.1");
+    assert_eq!(rows[1].key, '2');
+    assert_eq!(rows[1].pane_id, "%43");
+}
+
+#[test]
+fn picker_key_normalization_accepts_supported_keys_only() {
+    assert_eq!(super::picker::normalize_picker_key("q").unwrap(), 'Q');
+    assert_eq!(super::picker::normalize_picker_key("Q").unwrap(), 'Q');
+    assert_eq!(super::picker::normalize_picker_key("1").unwrap(), '1');
+
+    let error = super::picker::normalize_picker_key("a").unwrap_err();
+    assert!(
+        error.to_string().contains("is not supported"),
+        "expected unsupported key error, got {error:#}"
+    );
+
+    let error = super::picker::normalize_picker_key("qq").unwrap_err();
+    assert!(
+        error.to_string().contains("must be a single key"),
+        "expected single-key error, got {error:#}"
+    );
 }
 
 #[test]
