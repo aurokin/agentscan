@@ -59,6 +59,8 @@
 
 - Extracted the live client subscription event model so the terminal TUI and
   JSON Lines subscription stream share the same event vocabulary.
+- Refreshed provider emoji and Nerd Font display markers for Codex, Claude,
+  Gemini, Antigravity, Opencode, Copilot, Cursor CLI, Grok, and Droid.
 - Suppressed no-op reconcile snapshot publications so live subscribers only
   receive reconcile frames when the reconciled state materially changes.
 - Documented the SSH-ready desktop transport contract: desktop clients run the
