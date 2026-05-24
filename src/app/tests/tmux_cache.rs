@@ -1598,10 +1598,11 @@ fn detects_grok_provider_and_working_titles() {
         "⠹ - Running: shell - agentscan - grok",
     )
     .expect("versioned grok command should match");
-    let title_match = classify::classify_provider(None, "zsh", "agentscan - grok")
-        .expect("grok title suffix should match");
-    let home_title = classify::classify_provider(None, "zsh", "grok")
-        .expect("bare grok title should match");
+    let active_title_match =
+        classify::classify_provider(None, "zsh", "⠹ - Running: shell - agentscan - grok")
+            .expect("active grok title suffix should match");
+    let inactive_title_match = classify::classify_provider(None, "zsh", "agentscan - grok");
+    let home_title = classify::classify_provider(None, "zsh", "grok");
     let busy_status = classify::infer_title_status(
         Some(Provider::Grok),
         Some(super::ClassificationMatchKind::PaneTitle),
@@ -1628,8 +1629,15 @@ fn detects_grok_provider_and_working_titles() {
         versioned_command.confidence,
         super::ClassificationConfidence::Medium
     );
-    assert_eq!(title_match.provider, Provider::Grok);
-    assert_eq!(home_title.provider, Provider::Grok);
+    assert_eq!(active_title_match.provider, Provider::Grok);
+    assert!(
+        inactive_title_match.is_none(),
+        "plain grok title suffix without command/process evidence should not match"
+    );
+    assert!(
+        home_title.is_none(),
+        "bare grok title without command/process evidence should not match"
+    );
     assert_eq!(busy_status.kind, StatusKind::Busy);
     assert_eq!(busy_status.source, super::StatusSource::TmuxTitle);
     assert_eq!(idle_title_status.kind, StatusKind::Unknown);

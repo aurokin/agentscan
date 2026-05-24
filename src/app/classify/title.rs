@@ -191,7 +191,11 @@ pub(super) fn analyze_title(raw_title: &str) -> TitleAnalysis<'_> {
     } else if grok_label.is_some() {
         Some(TitleProviderHint {
             provider: Provider::Grok,
-            strength: TitleHintStrength::Strong,
+            strength: if has_spinner_glyph {
+                TitleHintStrength::Strong
+            } else {
+                TitleHintStrength::Weak
+            },
             kind: TitleProviderHintKind::Explicit,
         })
     } else if droid_label.is_some() {
