@@ -252,22 +252,25 @@ Delivered baseline:
 - provider inference from tmux metadata and titles
 - text and JSON output
 - interactive `agentscan tui`
+- shared picker rows and actions through `agentscan hotkeys --format json` and
+  `agentscan hotkey <key>`
+- live client events through `agentscan subscribe --format json`
 - versioned JSON snapshot envelope
 - pane metadata model for explicit tmux user options
 - daemon-backed socket snapshots from tmux control mode
 - targeted process-tree fallback for unresolved `node`, `bun`, and `python3`
   launcher panes, including Claude Code binary-path and teammate-spawn evidence
 - provider-specific plug-and-play hardening for Gemini CLI, GitHub Copilot CLI,
-  Pi, and opencode from upstream source evidence and local probing, while
-  keeping weak status inference conservative
-- provider-specific pane-output status fallback for already-identified GitHub
-  Copilot and Cursor CLI panes, including current idle and busy prompt/footer
-  shapes while ignoring stale output
-- provider-specific plug-and-play support for Factory Droid CLI from local
-  probing, exact command evidence, supporting title labels, and current
-  prompt/footer status fallback after identity is known
+  Cursor CLI, Pi, opencode, Antigravity, Grok, Hermes, and Factory Droid from
+  upstream source evidence or local probing, while keeping weak status inference
+  conservative
+- provider-specific pane-output status fallback for already-identified
+  supported providers, including current idle and busy prompt/footer shapes
+  while ignoring stale output
 - inspect provenance for provider, status, classification, and fallback
   decisions
+- provider icon modes through CLI/env/config, with `emoji` as default and
+  `agentscan providers --format json` exposing all marker data
 
 Delivered daemon architecture:
 
@@ -276,8 +279,22 @@ Delivered daemon architecture:
 - normal consumers auto-start the daemon unless explicitly opted out; macOS
   starts only when executable trust preflight succeeds
 - live state uses a Unix-socket JSON-Lines protocol
+- the daemon is event-driven first, with a reconcile safety loop and telemetry
+  counters for event/reconcile behavior
 - the cache file and `agentscan cache` surface are removed
 - `agentscan tui` is the interactive command; `agentscan popup` is removed
+
+Delivered desktop baseline:
+
+- macOS-first Tauri desktop app in `desktop/`
+- local and SSH profiles over the shared CLI command contract
+- supervised desktop subscription over `agentscan subscribe --format json`
+- picker rendering over `agentscan hotkeys --format json`
+- focus actions delegated to `agentscan focus <pane-id>`
+- app-global `CommandOrControl+Shift+A` summon shortcut
+- cursor-display sidebar placement with primary-display fallback
+- search/filter as client-side UI over returned picker rows
+- local desktop release/smoke workflow and strict version metadata check
 
 Definition of done for the current finish pass:
 

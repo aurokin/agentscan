@@ -1,6 +1,9 @@
 # Desktop Spike Closeout
 
 This note records the stop/go decision for the first macOS desktop spike.
+It is historical: current operator guidance lives in `docs/desktop.md`, the
+local/SSH command contract lives in `docs/desktop-client-contract.md`, and
+release smoke guidance lives in `docs/desktop-release-smoke.md`.
 
 ## Decision
 
@@ -68,7 +71,26 @@ Verification has covered:
 
 ## Known Gaps
 
-The next phase should treat these as product hardening slices:
+This section records what remained after the initial spike and what has changed
+since then.
+
+Resolved or advanced since the spike:
+
+- SSH profiles now include profile management, diagnostics, and a manual
+  client-tty field.
+- Settings now include rename/delete/reset, validation, and safer environment
+  editing.
+- Search/filter is implemented for picker rows.
+- Picker window positioning is cursor-display aware with primary-display
+  fallback.
+- Packaging/release hardening is documented in
+  `docs/desktop-release-smoke.md`; CI/release automation can still grow from
+  that local workflow.
+- Windows and Linux posture is documented in
+  `docs/desktop-platform-posture.md`; macOS local and SSH remote clients remain
+  the near-term path.
+
+Remaining hardening areas:
 
 - SSH profile UX is intentionally minimal: host, binary path, manual client tty,
   and env only.
@@ -84,16 +106,10 @@ The next phase should treat these as product hardening slices:
 - Picker window positioning is cursor-display aware with primary-display
   fallback; future work is further summon polish such as remembered sizing,
   edge preferences, and platform-specific focus behavior.
-- Packaging/release hardening for the desktop app is documented in
-  `docs/desktop-release-smoke.md`; CI/release automation can still grow from
-  that local workflow.
-- Windows and Linux posture is documented in
-  `docs/desktop-platform-posture.md`; macOS local and SSH remote clients remain
-  the near-term path.
 
 ## Follow-Up Issues
 
-The follow-up Linear issues should keep the desktop app out of scanner logic:
+The original follow-up Linear issues kept the desktop app out of scanner logic:
 
 - AUR-414 SSH polish and diagnostics: harden remote profile validation, remote
   client-tty targeting, and failure presentation.
@@ -107,6 +123,9 @@ The follow-up Linear issues should keep the desktop app out of scanner logic:
   placement.
 - AUR-419 cross-platform posture: document what macOS-first implementation
   choices must become platform adapters later.
+
+Use Linear for current status. This list is a historical split map, not the
+active source of truth.
 
 ## Guardrails
 

@@ -39,6 +39,9 @@
   backend, and app bundle metadata.
 - Added desktop platform posture documentation for macOS-specific behavior,
   Linux/Windows deferrals, and future adapter seams.
+- Added daemon operations, desktop operations, desktop client contract, provider
+  evidence ledger, and daemon event/reconcile ADR docs to keep progressive
+  disclosure current.
 - Added an ADR choosing Tauri 2 with a Rust backend and React/TypeScript UI for
   the macOS-first desktop shell, while preserving the shared CLI client contract
   for terminal and desktop consumers.

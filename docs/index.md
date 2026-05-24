@@ -14,6 +14,15 @@ This repo uses progressively disclosed documentation.
   Runtime model, daemon/socket contract, command families, and architectural guardrails.
 - `docs/integration.md`
   Wrapper metadata contract, daemon-backed automation surfaces, shell boundary, and migration posture.
+- `docs/daemon-operations.md`
+  Daemon auto-start, status JSON, telemetry, broker fallback, and operational
+  troubleshooting.
+- `docs/desktop.md`
+  Desktop app operation, local and SSH profiles, picker behavior, hotkey/window
+  behavior, and debug log guidance.
+- `docs/desktop-client-contract.md`
+  Local and SSH desktop command contract, remote compatibility checks, expected
+  failures, and remote smoke plan.
 - `docs/harness-engineering.md`
   Validation posture and the rule for what belongs in repo docs versus Linear.
 - `docs/macos-release-signing.md`
@@ -33,11 +42,17 @@ This repo uses progressively disclosed documentation.
   - `docs/adr/desktop-shell-and-shared-client-contract.md`
     ADR for the desktop shell stack, macOS-first posture, and shared
     TUI/desktop command-runner client contract.
+  - `docs/adr/daemon-event-driven-index-with-reconcile-safety-loop.md`
+    ADR for the daemon's event-first state model, reconcile safety loop, and
+    observability counters.
 - `docs/notes/`
   Narrow follow-up or historical notes that are too specific for the primary docs but still worth keeping in the repo.
   - `docs/notes/provider-evidence-roadmap.md`
     Provider-specific evidence plans, plug-and-play detection policy, and the
     deep-roadmap hook/extension direction.
+  - `docs/notes/provider-evidence-ledger.md`
+    Compact ledger of accepted provider evidence classes and conservative
+    rejection rules.
   - `docs/notes/copilot-cursor-closed-source-probing.md`
     Closed-source Copilot and Cursor probing checklist, evidence matrix, and
     accepted versus rejected classifier signals.

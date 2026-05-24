@@ -147,7 +147,7 @@ The command surface is organized by concern:
 - `agentscan providers`: supported provider names, icon modes, marker
   codepoints, and matching aliases
 - `agentscan hotkeys`: stable picker-row model for tmux binds, terminal
-  surfaces, and future desktop picker surfaces
+  surfaces, and desktop picker surfaces
 - `agentscan hotkey <key>`: activate a stable picker-row key through the shared
   focus path
 - `agentscan tui`: interactive-only pane picker, not a stdout automation API
@@ -199,12 +199,12 @@ Current lifecycle policy:
 
 ## Desktop And SSH Client Boundary
 
-Future desktop surfaces are thin clients over the same command families. A
-local desktop runner executes `agentscan` directly. A remote desktop runner
-executes the same commands through SSH, using the user's normal SSH
-configuration and authentication. Both runners consume stdout JSON/JSONL,
-stderr, exit status, and cancellation; neither runner connects to tmux or the
-daemon Unix socket directly.
+Desktop surfaces are thin clients over the same command families. A local
+desktop runner executes `agentscan` directly. A remote desktop runner executes
+the same commands through SSH, using the user's normal SSH configuration and
+authentication. Both runners consume stdout JSON/JSONL, stderr, exit status,
+and cancellation; neither runner connects to tmux or the daemon Unix socket
+directly.
 
 The scanner contract remains on the machine that owns tmux:
 
@@ -224,13 +224,16 @@ The primary remote design is command execution over SSH, not socket forwarding.
 Remote install/bootstrap UX is outside the scanner contract and should be
 handled as a desktop product follow-up.
 
+See `docs/desktop-client-contract.md` for the detailed command contract,
+failure surfaces, and remote smoke plan.
+
 ## Design Guardrails
 
 - No permanent fast versus full split.
 - The TUI remains interactive-only and not a machine-readable contract.
 - Normal automation should use `agentscan list --format json`; raw snapshot
   consumers should use `agentscan snapshot --format json`.
-- Live automation and future desktop clients should use
+- Live automation and desktop clients should use
   `agentscan subscribe --format json` rather than connecting directly to the
   daemon Unix socket.
 - Daemon health automation should use `agentscan daemon status --format json`.

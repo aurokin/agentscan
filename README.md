@@ -43,7 +43,10 @@ remain unchanged until `agentscan` is ready to replace it.
 - `CHANGELOG.md`: unreleased user-facing changes and migration notes
 - `docs/architecture.md`: runtime model, daemon/socket contract, command families, and guardrails
 - `docs/integration.md`: wrapper metadata, daemon-backed automation surfaces,
-  SSH desktop transport, shell boundary, and migration posture
+  picker/live stream contracts, shell boundary, and migration posture
+- `docs/daemon-operations.md`: daemon auto-start, status, telemetry, and troubleshooting
+- `docs/desktop.md`: desktop app operation, local/SSH profiles, picker behavior, and debug log
+- `docs/desktop-client-contract.md`: local/SSH desktop command contract and failure surfaces
 - `docs/harness-engineering.md`: progressively disclosed harness engineering approach for the repo
 - `docs/macos-release-signing.md`: local and GitHub Actions Developer ID signing/notarization workflow
 - `docs/desktop-release-smoke.md`: macOS desktop build, signing, install, and smoke workflow
@@ -94,8 +97,8 @@ The core architecture is a daemon-required, socket-backed model:
 
 - the daemon is the single source of live pane state
 - normal consumers auto-start the daemon unless explicitly opted out; on macOS,
-  implicit auto-start is disabled and users should run
-  `agentscan daemon run` in a long-lived tmux pane
+  detached auto-start runs only after parent-side executable trust preflight
+  succeeds
 - consumers read full `SnapshotEnvelope` frames over a Unix socket
 - the cache file is removed as an IPC boundary
 - the interactive command is `agentscan tui`
@@ -115,12 +118,13 @@ The current branch centers on:
 - repo-local tmux helpers that stay thin and call the CLI
 - a Mac-first Tauri desktop shell in `desktop/` that talks to the installed
   `agentscan` CLI through a narrow IPC/preflight boundary
+- local and SSH desktop profiles that consume the same CLI command contract
 - a runtime split by concern under `src/app/` rather than a single monolithic application file
 
 It can:
 
-- run the daemon with tmux control mode and auto-start it for normal consumers
-  on non-macOS platforms
+- run the daemon with tmux control mode and auto-start it for normal consumers,
+  including signed/trusted macOS binaries
 - fail fast when the daemon loses tmux, leaving restart policy to an external supervisor
 - preserve raw tmux `session_id` and `window_id` values in the canonical pane model for socket consumers and local daemon updates
 - refresh individual panes on daemon title and metadata updates, refresh affected windows or sessions when tmux emits stable ids for those scopes, and keep a periodic full reconcile as a safety net
@@ -142,8 +146,8 @@ It can:
 - use targeted live process evidence, including pane TTY foreground process
   groups, only for unresolved ambiguous panes
 - use tightly scoped provider-specific pane output parsing as a final status
-  fallback for already-identified Copilot, Cursor CLI, and Droid panes. When
-  this path wins, JSON reports `status.source="pane_output"`.
+  fallback for already-identified supported providers. When this path wins, JSON
+  reports `status.source="pane_output"`.
 - treat Cursor CLI as metadata-first: command detection is enough to identify the provider, but generic tmux titles fall back to conservative pane labels until wrappers publish stronger metadata
 - infer Cursor CLI busy/idle status from the current Cursor footer only after
   provider identity is already established
@@ -154,6 +158,8 @@ It can:
   metadata aliases, treat `⛬ ...` titles as display labels only after provider
   identity is known, and infer busy/idle from the current Droid prompt/footer
   only after identity is established
+- classify Grok and Hermes panes from provider-specific command/title/metadata
+  evidence while keeping pane-output status fallback provider-scoped
 - resolve unresolved Claude Code launcher panes from targeted process evidence, including Claude Code CLI paths and tmux teammate-spawn argv/env markers
 - classify Antigravity CLI panes from the exact native `agy` command while
   keeping status unknown until wrapper metadata or a future provider-scoped
@@ -179,8 +185,12 @@ Automation contract:
 - `agentscan list --format json` is the supported machine-readable command for downstream consumers in normal automation flows
 - `agentscan list --all --format json` is the supported way to include non-agent panes in that machine-readable output
 - `agentscan snapshot --format json` exposes the raw snapshot envelope when a consumer explicitly needs envelope details rather than the normal `list` view
+- `agentscan subscribe --format json` exposes live JSON Lines daemon events for
+  terminal-adjacent tools and desktop clients
 - `agentscan providers --format json` exposes supported provider names,
   display markers for all icon modes, marker codepoints, and matching aliases
+- `agentscan hotkeys --format json` exposes the shared picker row model
+- `agentscan hotkey <key>` activates a shared picker key through the same focus path
 - TUI-shaped TSV or JSON output is not a supported long-term contract
 
 Operational commands:
@@ -196,13 +206,17 @@ Operational commands:
 - `agentscan daemon stop`
 - `agentscan daemon restart`
 - `agentscan snapshot`
+- `agentscan subscribe`
 - `agentscan providers`
+- `agentscan hotkeys`
+- `agentscan hotkey <key>`
 - `agentscan tui`
 - `agentscan tmux set-metadata`
 - `agentscan tmux clear-metadata`
 
 `agentscan` without a subcommand runs the default daemon-backed `list` flow.
-On macOS, start the daemon first in a long-lived tmux pane:
+For local ad-hoc macOS builds or debugging detached-start failures, run the
+daemon in the foreground:
 
 ```sh
 agentscan daemon run
@@ -249,9 +263,12 @@ Use:
 - `agentscan list --format json` for the supported JSON automation surface
 - `agentscan list --all --format json` if the consumer previously depended on interactive `--all`
 - `agentscan snapshot --format json` only when the consumer intentionally needs the raw snapshot envelope
+- `agentscan subscribe --format json` for live JSON Lines daemon events
 - `agentscan daemon status --format json` for daemon lifecycle and readiness checks
 - `agentscan providers --format json` for supported provider names, display
   markers for all icon modes, marker codepoints, and aliases
+- `agentscan hotkeys --format json` for shared picker rows
+- `agentscan hotkey <key>` for simple picker-key activation
 - `agentscan scan` or supported `--refresh` flags when a script intentionally
   needs direct tmux state instead of daemon state
 
@@ -305,6 +322,10 @@ The CLI centers on:
 - `agentscan inspect` for one-pane diagnostics
 - `agentscan focus` for pane targeting
 - `agentscan snapshot` for raw snapshot-envelope output
+- `agentscan subscribe` for live JSON Lines daemon events
+- `agentscan providers` for supported provider/icon metadata
+- `agentscan hotkeys` for the shared picker row model
+- `agentscan hotkey` for picker-key activation
 - `agentscan tui` for interactive pane selection only
 - `agentscan tmux` for tmux-facing integration helpers
 
