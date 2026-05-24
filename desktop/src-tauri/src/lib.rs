@@ -18,6 +18,12 @@ const FOCUS_TIMEOUT: Duration = Duration::from_secs(5);
 const DAEMON_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 const LIVE_RECONNECT_DELAY: Duration = Duration::from_secs(1);
 const LIVE_PICKER_EVENT: &str = "agentscan-live-picker";
+const PICKER_WINDOW_MARGIN: f64 = 16.0;
+const PICKER_WINDOW_TARGET_WIDTH: f64 = 420.0;
+const PICKER_WINDOW_MIN_WIDTH: f64 = 360.0;
+const PICKER_WINDOW_MAX_WIDTH: f64 = 520.0;
+const PICKER_WINDOW_MIN_HEIGHT: f64 = 560.0;
+const PICKER_WINDOW_MAX_HEIGHT: f64 = 960.0;
 
 static LIVE_PICKER: OnceLock<Mutex<Option<LivePickerSupervisor>>> = OnceLock::new();
 
@@ -171,6 +177,22 @@ struct LiveSnapshotSummary {
     source_kind: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LogicalWorkArea {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PickerWindowPlacement {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
 #[tauri::command]
 fn local_profiles() -> Vec<DesktopProfile> {
     vec![DesktopProfile {
@@ -210,6 +232,74 @@ fn start_live_picker(
 #[tauri::command]
 fn stop_live_picker() -> Result<(), String> {
     stop_live_picker_supervisor()
+}
+
+#[tauri::command]
+fn place_picker_window(window: tauri::Window) -> Result<(), String> {
+    let Some(monitor) = summon_monitor(&window)? else {
+        return Ok(());
+    };
+    let placement = sidebar_placement_for_work_area(logical_work_area_for_monitor(&monitor));
+
+    window
+        .set_size(tauri::LogicalSize::new(placement.width, placement.height))
+        .map_err(|error| format!("Unable to size picker window: {error}"))?;
+    window
+        .set_position(tauri::LogicalPosition::new(placement.x, placement.y))
+        .map_err(|error| format!("Unable to position picker window: {error}"))?;
+
+    Ok(())
+}
+
+fn summon_monitor(window: &tauri::Window) -> Result<Option<tauri::Monitor>, String> {
+    if let Ok(cursor) = window.cursor_position()
+        && let Ok(Some(monitor)) = window.monitor_from_point(cursor.x, cursor.y)
+    {
+        return Ok(Some(monitor));
+    }
+
+    window
+        .primary_monitor()
+        .map_err(|error| format!("Unable to resolve primary display: {error}"))
+}
+
+fn logical_work_area_for_monitor(monitor: &tauri::Monitor) -> LogicalWorkArea {
+    let scale_factor = monitor.scale_factor().max(1.0);
+    let work_area = monitor.work_area();
+
+    LogicalWorkArea {
+        x: f64::from(work_area.position.x) / scale_factor,
+        y: f64::from(work_area.position.y) / scale_factor,
+        width: f64::from(work_area.size.width) / scale_factor,
+        height: f64::from(work_area.size.height) / scale_factor,
+    }
+}
+
+fn sidebar_placement_for_work_area(work_area: LogicalWorkArea) -> PickerWindowPlacement {
+    let available_width = (work_area.width - PICKER_WINDOW_MARGIN * 2.0).max(PICKER_WINDOW_MIN_WIDTH);
+    let available_height =
+        (work_area.height - PICKER_WINDOW_MARGIN * 2.0).max(PICKER_WINDOW_MIN_HEIGHT);
+    let width = clamp_f64(
+        PICKER_WINDOW_TARGET_WIDTH.min(available_width),
+        PICKER_WINDOW_MIN_WIDTH,
+        PICKER_WINDOW_MAX_WIDTH,
+    );
+    let height = clamp_f64(
+        available_height,
+        PICKER_WINDOW_MIN_HEIGHT,
+        PICKER_WINDOW_MAX_HEIGHT,
+    );
+
+    PickerWindowPlacement {
+        x: work_area.x + PICKER_WINDOW_MARGIN,
+        y: work_area.y + PICKER_WINDOW_MARGIN,
+        width,
+        height,
+    }
+}
+
+fn clamp_f64(value: f64, min: f64, max: f64) -> f64 {
+    value.max(min).min(max)
 }
 
 fn agentscan_binary() -> OsString {
@@ -1225,6 +1315,7 @@ pub fn run() {
             focus_picker_row,
             local_profiles,
             load_picker_rows,
+            place_picker_window,
             preflight_agentscan,
             start_live_picker,
             stop_live_picker
@@ -1247,6 +1338,56 @@ mod tests {
                 name: "Local",
                 kind: "local"
             }]
+        );
+    }
+
+    #[test]
+    fn sidebar_placement_uses_standard_width_and_work_area_height() {
+        assert_eq!(
+            sidebar_placement_for_work_area(LogicalWorkArea {
+                x: 100.0,
+                y: 24.0,
+                width: 1440.0,
+                height: 900.0,
+            }),
+            PickerWindowPlacement {
+                x: 116.0,
+                y: 40.0,
+                width: 420.0,
+                height: 868.0,
+            }
+        );
+    }
+
+    #[test]
+    fn sidebar_placement_clamps_small_and_large_work_areas() {
+        assert_eq!(
+            sidebar_placement_for_work_area(LogicalWorkArea {
+                x: 0.0,
+                y: 0.0,
+                width: 300.0,
+                height: 420.0,
+            }),
+            PickerWindowPlacement {
+                x: 16.0,
+                y: 16.0,
+                width: 360.0,
+                height: 560.0,
+            }
+        );
+        assert_eq!(
+            sidebar_placement_for_work_area(LogicalWorkArea {
+                x: -1920.0,
+                y: 0.0,
+                width: 2560.0,
+                height: 1600.0,
+            }),
+            PickerWindowPlacement {
+                x: -1904.0,
+                y: 16.0,
+                width: 420.0,
+                height: 960.0,
+            }
         );
     }
 

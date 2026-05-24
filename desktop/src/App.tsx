@@ -182,6 +182,10 @@ function App() {
   );
 
   useEffect(() => {
+    void placePickerWindow();
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
 
     async function loadShellState() {
@@ -1477,6 +1481,7 @@ async function togglePickerWindow(beforeShow: () => void) {
     }
 
     beforeShow();
+    await placePickerWindow();
     await appWindow.show();
     await appWindow.setFocus();
   });
@@ -1491,6 +1496,14 @@ async function hidePickerWindow() {
 function enqueueWindowOperation(operation: () => Promise<void>) {
   windowOperationQueue = windowOperationQueue.then(operation, operation);
   return windowOperationQueue;
+}
+
+async function placePickerWindow() {
+  try {
+    await invoke("place_picker_window");
+  } catch {
+    // Placement is best-effort; showing and focusing the picker is more important.
+  }
 }
 
 function PickerRows({

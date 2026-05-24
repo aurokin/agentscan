@@ -181,6 +181,12 @@ context to register. If macOS privacy behavior changes around global keyboard
 shortcuts, treat Accessibility/Input Monitoring prompts as desktop packaging
 and signing concerns; do not move shortcut handling into tmux or scanner code.
 
+On summon, the macOS desktop picker is sized as a narrow sidebar and placed on
+the work area of the display containing the cursor. If cursor or monitor lookup
+fails, the app falls back to the primary display and still shows/focuses the
+picker. This remains window lifecycle behavior; picker data and focus actions
+continue to flow through the command contract.
+
 For a local target, the desktop command runner executes commands directly:
 
 ```bash

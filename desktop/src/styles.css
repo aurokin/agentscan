@@ -16,6 +16,7 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  overflow-x: hidden;
 }
 
 button,
@@ -26,9 +27,9 @@ select {
 }
 
 .app-shell {
-  width: min(100%, 920px);
+  width: 100%;
   margin: 0 auto;
-  padding: 28px;
+  padding: 20px;
 }
 
 .summary {
@@ -58,7 +59,7 @@ p {
 
 h1 {
   margin-bottom: 0;
-  font-size: 32px;
+  font-size: 24px;
   line-height: 1.1;
   font-weight: 760;
 }
@@ -119,7 +120,7 @@ button:disabled {
 
 .content-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr);
+  grid-template-columns: 1fr;
   gap: 16px;
   padding-top: 24px;
 }
@@ -253,7 +254,7 @@ button:disabled {
 
 .settings-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr);
+  grid-template-columns: 1fr;
   gap: 14px;
 }
 
@@ -300,7 +301,7 @@ button:disabled {
 
 .env-row {
   display: grid;
-  grid-template-columns: minmax(130px, 0.65fr) minmax(160px, 1fr) auto;
+  grid-template-columns: 1fr;
   gap: 8px;
   align-items: center;
 }

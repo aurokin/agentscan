@@ -14,6 +14,8 @@
   `agentscan focus <pane_id>`, keeping focus behavior delegated to the CLI.
 - Added a macOS-first desktop global hotkey (`CommandOrControl+Shift+A`) that
   toggles the picker window while preserving the CLI-backed picker contract.
+- Added sidebar-style desktop picker window placement on the cursor's display,
+  with primary-display fallback for monitor lookup failures.
 - Added a supervised desktop live-picker subscription that consumes
   `agentscan subscribe --format json`, preserves the last visible rows during
   reconnects, and surfaces daemon diagnostics for offline/fatal states.

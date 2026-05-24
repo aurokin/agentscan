@@ -14,10 +14,10 @@
       {
         "label": "main",
         "title": "agentscan",
-        "width": 760,
-        "height": 520,
-        "minWidth": 420,
-        "minHeight": 360,
+        "width": 420,
+        "height": 860,
+        "minWidth": 360,
+        "minHeight": 520,
         "resizable": true,
         "fullscreen": false
       }
