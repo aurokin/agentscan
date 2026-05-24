@@ -50,18 +50,18 @@ fn tui_render_rows_include_location_status_and_key_labels() {
     super::tui::synchronize_key_targets(&mut key_targets, std::slice::from_ref(&pane));
 
     let lines = super::tui::render_rows(&[pane], &key_targets);
-    assert_eq!(lines, vec!["[1] 🟡 🧠 notes:4.1 - Working"]);
+    assert_eq!(lines, vec!["[1] 🟡 👾 notes:4.1 - Working"]);
 }
 
 #[test]
 fn provider_display_marker_uses_emoji_by_default_and_supports_nerd_font_modes() {
     assert_eq!(
         super::provider_display_marker(Some(Provider::Codex), IconMode::Emoji),
-        "🤖"
+        "💭"
     );
     assert_eq!(
         super::provider_display_marker(Some(Provider::Claude), IconMode::Emoji),
-        "🧠"
+        "👾"
     );
     assert_eq!(
         super::provider_display_marker(Some(Provider::Gemini), IconMode::Emoji),
@@ -73,11 +73,11 @@ fn provider_display_marker_uses_emoji_by_default_and_supports_nerd_font_modes() 
     );
     assert_eq!(
         super::provider_display_marker(Some(Provider::Copilot), IconMode::Emoji),
-        "🧭"
+        "🛫"
     );
     assert_eq!(
         super::provider_display_marker(Some(Provider::CursorCli), IconMode::Emoji),
-        "🖱️"
+        "🌐"
     );
     assert_eq!(
         super::provider_display_marker(Some(Provider::Pi), IconMode::Emoji),
@@ -85,7 +85,7 @@ fn provider_display_marker_uses_emoji_by_default_and_supports_nerd_font_modes() 
     );
     assert_eq!(
         super::provider_display_marker(Some(Provider::Grok), IconMode::Emoji),
-        "💡"
+        "🚀"
     );
     assert_eq!(
         super::provider_display_marker(Some(Provider::Hermes), IconMode::Emoji),
@@ -93,24 +93,28 @@ fn provider_display_marker_uses_emoji_by_default_and_supports_nerd_font_modes() 
     );
     assert_eq!(
         super::provider_display_marker(Some(Provider::Opencode), IconMode::Emoji),
-        "🧰"
+        "🔲"
+    );
+    assert_eq!(
+        super::provider_display_marker(Some(Provider::Droid), IconMode::Emoji),
+        "🏭"
     );
 
     assert_eq!(
         super::provider_display_marker(Some(Provider::Codex), IconMode::NerdFont),
-        "\u{f07b5}"
+        "\u{f4ac}"
     );
     assert_eq!(
         super::provider_display_marker(Some(Provider::Claude), IconMode::NerdFont),
-        "\u{e76f}"
+        "\u{f0bc9}"
     );
     assert_eq!(
         super::provider_display_marker(Some(Provider::Gemini), IconMode::NerdFont),
-        "\u{e7f0}"
+        "\u{e370}"
     );
     assert_eq!(
         super::provider_display_marker(Some(Provider::Antigravity), IconMode::NerdFont),
-        "A"
+        "\u{f02af}"
     );
     assert_eq!(
         super::provider_display_marker(Some(Provider::Copilot), IconMode::NerdFont),
@@ -118,7 +122,7 @@ fn provider_display_marker_uses_emoji_by_default_and_supports_nerd_font_modes() 
     );
     assert_eq!(
         super::provider_display_marker(Some(Provider::CursorCli), IconMode::NerdFont),
-        "\u{f12e9}"
+        "\u{f01bf}"
     );
     assert_eq!(
         super::provider_display_marker(Some(Provider::Pi), IconMode::NerdFont),
@@ -126,7 +130,7 @@ fn provider_display_marker_uses_emoji_by_default_and_supports_nerd_font_modes() 
     );
     assert_eq!(
         super::provider_display_marker(Some(Provider::Grok), IconMode::NerdFont),
-        "G"
+        "\u{f14de}"
     );
     assert_eq!(
         super::provider_display_marker(Some(Provider::Hermes), IconMode::NerdFont),
@@ -134,7 +138,11 @@ fn provider_display_marker_uses_emoji_by_default_and_supports_nerd_font_modes() 
     );
     assert_eq!(
         super::provider_display_marker(Some(Provider::Opencode), IconMode::NerdFont),
-        "\u{f07e2}"
+        "\u{f0168}"
+    );
+    assert_eq!(
+        super::provider_display_marker(Some(Provider::Droid), IconMode::NerdFont),
+        "\u{f020f}"
     );
     assert_eq!(super::provider_display_marker(None, IconMode::Emoji), "?");
 }
@@ -166,7 +174,7 @@ fn tui_render_rows_can_use_nerd_font_provider_markers() {
 
     let lines =
         super::tui::render_rows_for_width_with_icons(&[pane], &key_targets, usize::MAX, IconMode::NerdFont);
-    assert_eq!(lines, vec!["[1] 🟡 \u{e76f} notes:4.1 - Working"]);
+    assert_eq!(lines, vec!["[1] 🟡 \u{f0bc9} notes:4.1 - Working"]);
 }
 
 #[test]
@@ -230,7 +238,7 @@ fn tui_render_rows_sanitize_control_characters_and_escape_sequences() {
     let lines = super::tui::render_rows(&[pane], &key_targets);
     assert_eq!(
         lines,
-        vec!["[1] 🟡 🧠 notes:4.1 - Task next step now"]
+        vec!["[1] 🟡 👾 notes:4.1 - Task next step now"]
     );
 }
 
@@ -754,7 +762,7 @@ fn tui_frame_writer_sanitizes_tmux_controlled_labels() {
             height: 3,
         },
     );
-    assert_eq!(frame.lines[0], "[1] 🟡 🧠 notes:4.1 - Task next step");
+    assert_eq!(frame.lines[0], "[1] 🟡 👾 notes:4.1 - Task next step");
     assert!(!frame.lines[0].contains(['\n', '\r', '\t', '\u{1b}']));
 
     let mut rendered = Vec::new();

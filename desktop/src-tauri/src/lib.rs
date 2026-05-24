@@ -1420,7 +1420,7 @@ mod tests {
                 "display_label": "Root Task",
                 "location_tag": "work:0.0",
                 "location": { "session_name": "work" },
-                "display": { "provider_marker": "🤖" }
+                "display": { "provider_marker": "💭" }
               }
             ]"#,
         )
