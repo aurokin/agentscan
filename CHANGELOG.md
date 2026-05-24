@@ -32,6 +32,13 @@
   for focus actions.
 - Added client-side desktop picker search and filtering with stable pane
   selection across filter and refresh changes.
+- Added desktop release smoke documentation for signed/notarized macOS app
+  builds, local install checks, local/SSH smoke coverage, and version metadata
+  consistency.
+- Added a desktop version check helper covering CLI, frontend package, Tauri
+  backend, and app bundle metadata.
+- Added desktop platform posture documentation for macOS-specific behavior,
+  Linux/Windows deferrals, and future adapter seams.
 - Added an ADR choosing Tauri 2 with a Rust backend and React/TypeScript UI for
   the macOS-first desktop shell, while preserving the shared CLI client contract
   for terminal and desktop consumers.

@@ -19,6 +19,11 @@ This repo uses progressively disclosed documentation.
 - `docs/macos-release-signing.md`
   Local and GitHub Actions Developer ID signing/notarization workflow for
   macOS release binaries.
+- `docs/desktop-release-smoke.md`
+  macOS desktop app build, signing, notarization, install, and smoke workflow.
+- `docs/desktop-platform-posture.md`
+  Desktop platform posture, macOS-specific pieces, adapter seams, and deferred
+  Linux/Windows work.
 - `docs/adr/`
   Architecture decision records for durable product and implementation
   decisions.

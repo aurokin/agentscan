@@ -70,19 +70,26 @@ Verification has covered:
 
 The next phase should treat these as product hardening slices:
 
-- SSH profile UX is intentionally minimal: host, binary path, and env only.
+- SSH profile UX is intentionally minimal: host, binary path, manual client tty,
+  and env only.
 - Remote install/bootstrap is not implemented.
-- Remote client-tty targeting is documented but not surfaced in the UI.
+- Remote client-tty targeting is now available as a manual SSH profile field;
+  automatic remote tty discovery remains future work.
 - Failure presentation is command-output driven and needs friendlier grouped
   states for SSH auth/network, missing binary, incompatible remote version,
   daemon auto-start refusal, tmux missing, invalid JSON, and stale focus target.
-- Settings do not yet have validation, delete/reset flows, profile naming, or
-  import/export.
-- Search/filter is not implemented for large picker sets.
-- Picker window positioning is basic and not yet multi-monitor aware.
-- Packaging/release hardening for the desktop app is not complete.
-- Windows and Linux remain future posture work, with macOS local and SSH remote
-  clients as the near-term path.
+- Settings do not yet have import/export or deeper remote bootstrap guidance.
+- Search/filter is implemented for picker rows; future work is larger-list
+  ergonomics such as grouping, quick actions, or saved filters.
+- Picker window positioning is cursor-display aware with primary-display
+  fallback; future work is further summon polish such as remembered sizing,
+  edge preferences, and platform-specific focus behavior.
+- Packaging/release hardening for the desktop app is documented in
+  `docs/desktop-release-smoke.md`; CI/release automation can still grow from
+  that local workflow.
+- Windows and Linux posture is documented in
+  `docs/desktop-platform-posture.md`; macOS local and SSH remote clients remain
+  the near-term path.
 
 ## Follow-Up Issues
 

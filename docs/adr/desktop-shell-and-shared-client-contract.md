@@ -157,6 +157,11 @@ future and connect over SSH to Linux or macOS hosts running `agentscan`. Local
 Windows scanning is not part of the initial design because `agentscan` is built
 around tmux.
 
+`docs/desktop-platform-posture.md` is the working platform posture note. It
+records the macOS-specific pieces in the current desktop app, the adapter seams
+that future Linux and Windows work should extend, and the platform work
+intentionally deferred out of the macOS MVP.
+
 ## Client And Daemon Lifecycle
 
 The desktop app does not own daemon internals. It invokes daemon-backed CLI

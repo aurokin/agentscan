@@ -51,6 +51,26 @@ The notarization helper wraps the CLI in a temporary zip because `notarytool`
 submits archives. Bare CLI binaries and zip archives cannot be stapled; the
 notary ticket is associated with the signed code hash.
 
+## Local Desktop App Signing
+
+The desktop app uses the same Developer ID posture, but signs and notarizes a
+Tauri `.app` bundle instead of a bare CLI binary. The local desktop workflow
+lives in `docs/desktop-release-smoke.md` and uses these helpers:
+
+```sh
+AGENTSCAN_CODESIGN_IDENTITY="Developer ID Application: Hunter Sadler (79S467K965)" \
+  scripts/build-macos-desktop-app.sh
+
+AGENTSCAN_CODESIGN_IDENTITY="Developer ID Application: Hunter Sadler (79S467K965)" \
+AGENTSCAN_APPLE_TEAM_ID=79S467K965 \
+  scripts/build-macos-desktop-app.sh --notarize
+```
+
+`scripts/sign-macos-app.sh` signs nested Mach-O files before signing the outer
+bundle. `scripts/notarize-macos-app.sh` submits a zipped app bundle, waits for
+acceptance, staples the ticket, and validates the staple. Unlike bare CLI
+binaries, notarized `.app` bundles can be stapled.
+
 ## GitHub Actions Secrets
 
 The release workflow signs and notarizes only the `aarch64-apple-darwin`

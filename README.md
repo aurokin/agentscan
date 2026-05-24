@@ -46,6 +46,8 @@ remain unchanged until `agentscan` is ready to replace it.
   SSH desktop transport, shell boundary, and migration posture
 - `docs/harness-engineering.md`: progressively disclosed harness engineering approach for the repo
 - `docs/macos-release-signing.md`: local and GitHub Actions Developer ID signing/notarization workflow
+- `docs/desktop-release-smoke.md`: macOS desktop build, signing, install, and smoke workflow
+- `docs/desktop-platform-posture.md`: desktop platform posture and future adapter seams
 
 Active milestone sequencing lives in Linear. The repo docs are intentionally for
 stable engineering guidance and operator-facing contracts, not live task
@@ -65,6 +67,7 @@ Desktop shell checks:
 - `cd desktop && npm run build`
 - `cargo test --manifest-path desktop/src-tauri/Cargo.toml`
 - `cd desktop && npm run tauri dev`
+- `scripts/check-desktop-version.sh`
 
 Current test coverage also includes committed file-based fixtures for representative
 tmux title snapshots and snapshot envelopes, plus property tests for parser and
