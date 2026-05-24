@@ -155,9 +155,10 @@ function App() {
     status: "connecting",
     message: "Starting live client",
   });
+  const [pickerFilter, setPickerFilter] = useState("");
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isPickerVisible, setIsPickerVisible] = useState(true);
-  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [selectedPaneId, setSelectedPaneId] = useState<string | null>(null);
   const [activation, setActivation] = useState<PickerActivation>({ status: "idle" });
   const validation = useMemo(
     () =>
@@ -420,17 +421,34 @@ function App() {
     }
   }
 
-  const pickerRows =
+  const allPickerRows =
     state.status === "ready" && state.picker.status === "ready" ? state.picker.rows : [];
-  const clampedSelectedIndex =
-    pickerRows.length === 0 ? 0 : Math.min(selectedIndex, pickerRows.length - 1);
-  const selectedRow = pickerRows[clampedSelectedIndex] ?? null;
+  const pickerRows = useMemo(
+    () => filterPickerRows(allPickerRows, pickerFilter),
+    [allPickerRows, pickerFilter],
+  );
+  const pickerStatus = state.status === "ready" ? state.picker.status : state.status;
+  const selectedIndex = selectedPaneId
+    ? Math.max(0, pickerRows.findIndex((row) => row.pane_id === selectedPaneId))
+    : 0;
+  const selectedRow = pickerRows[selectedIndex] ?? null;
 
   useEffect(() => {
-    if (clampedSelectedIndex !== selectedIndex) {
-      setSelectedIndex(clampedSelectedIndex);
+    if (pickerStatus === "loading") {
+      return;
     }
-  }, [clampedSelectedIndex, selectedIndex]);
+
+    if (pickerRows.length === 0) {
+      if (allPickerRows.length === 0 && selectedPaneId !== null) {
+        setSelectedPaneId(null);
+      }
+      return;
+    }
+
+    if (!selectedPaneId || !pickerRows.some((row) => row.pane_id === selectedPaneId)) {
+      setSelectedPaneId(pickerRows[0].pane_id);
+    }
+  }, [allPickerRows.length, pickerRows, pickerStatus, selectedPaneId]);
 
   useEffect(() => {
     setProfileNameDraft(activeProfile.name);
@@ -465,10 +483,9 @@ function App() {
       return;
     }
 
-    setSelectedIndex((current) => {
-      const next = current + delta;
-      return Math.max(0, Math.min(next, pickerRows.length - 1));
-    });
+    const next = selectedIndex + delta;
+    const clamped = Math.max(0, Math.min(next, pickerRows.length - 1));
+    setSelectedPaneId(pickerRows[clamped].pane_id);
   }
 
   function handlePickerKeyDown(event: KeyboardEvent) {
@@ -488,10 +505,10 @@ function App() {
       moveSelection(-1);
     } else if (event.key === "Home") {
       event.preventDefault();
-      setSelectedIndex(0);
+      setSelectedPaneId(pickerRows[0]?.pane_id ?? null);
     } else if (event.key === "End") {
       event.preventDefault();
-      setSelectedIndex(Math.max(0, pickerRows.length - 1));
+      setSelectedPaneId(pickerRows[pickerRows.length - 1]?.pane_id ?? null);
     } else if (event.key === "Enter") {
       event.preventDefault();
       void activateSelectedRow();
@@ -846,6 +863,31 @@ function App() {
 
             <LiveConnectionBanner state={liveState} />
 
+            <div className="picker-toolbar">
+              <label className="picker-search">
+                <span>Search picker rows</span>
+                <input
+                  value={pickerFilter}
+                  onChange={(event) => setPickerFilter(event.target.value)}
+                  placeholder="Filter by agent, status, key, or location"
+                />
+              </label>
+              <div className="picker-filter-actions">
+                <span>
+                  {pickerRows.length} / {allPickerRows.length}
+                </span>
+                {pickerFilter.trim() ? (
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() => setPickerFilter("")}
+                  >
+                    Clear
+                  </button>
+                ) : null}
+              </div>
+            </div>
+
             {activation.status === "failed" ? (
               <div className="error-state activation-error" role="alert">
                 <h3>Unable to focus pane</h3>
@@ -856,10 +898,14 @@ function App() {
             {isPickerVisible ? (
               <PickerRows
                 activation={activation}
-                selectedIndex={clampedSelectedIndex}
+                filterQuery={pickerFilter}
+                rows={pickerRows}
+                selectedPaneId={selectedPaneId}
                 state={state.picker}
+                totalRows={allPickerRows.length}
                 onActivate={activateSelectedRow}
-                onSelect={setSelectedIndex}
+                onClearFilter={() => setPickerFilter("")}
+                onSelect={(row) => setSelectedPaneId(row.pane_id)}
               />
             ) : (
               <p className="muted">Picker hidden.</p>
@@ -1327,6 +1373,33 @@ function normalizeRunnerSettings(settings: Partial<RunnerSettings>): RunnerSetti
   };
 }
 
+function filterPickerRows(rows: PickerRow[], query: string) {
+  const terms = query
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
+
+  if (terms.length === 0) {
+    return rows;
+  }
+
+  return rows.filter((row) => {
+    const searchable = [
+      row.key,
+      row.pane_id,
+      row.provider ?? "unknown",
+      row.status.kind,
+      row.display_label,
+      row.location_tag,
+    ]
+      .join(" ")
+      .toLowerCase();
+
+    return terms.every((term) => searchable.includes(term));
+  });
+}
+
 function liveStateLabelFromEvent(event: LivePickerEvent) {
   if (event.kind === "rows") {
     return "snapshot";
@@ -1422,16 +1495,24 @@ function enqueueWindowOperation(operation: () => Promise<void>) {
 
 function PickerRows({
   activation,
-  selectedIndex,
+  filterQuery,
+  rows,
+  selectedPaneId,
   state,
+  totalRows,
   onActivate,
+  onClearFilter,
   onSelect,
 }: {
   activation: PickerActivation;
-  selectedIndex: number;
+  filterQuery: string;
+  rows: PickerRow[];
+  selectedPaneId: string | null;
   state: PickerState;
+  totalRows: number;
   onActivate: (row: PickerRow) => void;
-  onSelect: (index: number) => void;
+  onClearFilter: () => void;
+  onSelect: (row: PickerRow) => void;
 }) {
   if (state.status === "loading") {
     return <p className="muted">Loading picker rows.</p>;
@@ -1446,18 +1527,29 @@ function PickerRows({
     );
   }
 
-  if (state.rows.length === 0) {
+  if (totalRows > 0 && rows.length === 0 && filterQuery.trim()) {
+    return (
+      <div className="empty-filter-state">
+        <p>No picker rows match this filter.</p>
+        <button className="secondary-button" type="button" onClick={onClearFilter}>
+          Clear
+        </button>
+      </div>
+    );
+  }
+
+  if (rows.length === 0) {
     return <p className="muted">No picker rows are available.</p>;
   }
 
   return (
     <ul className="picker-list">
-      {state.rows.map((row, index) => (
+      {rows.map((row) => (
         <li
-          aria-selected={index === selectedIndex}
-          className={index === selectedIndex ? "selected" : undefined}
+          aria-selected={row.pane_id === selectedPaneId}
+          className={row.pane_id === selectedPaneId ? "selected" : undefined}
           key={`${row.key}-${row.pane_id}`}
-          onClick={() => onSelect(index)}
+          onClick={() => onSelect(row)}
           onDoubleClick={() => onActivate(row)}
         >
           <kbd>{row.key}</kbd>
