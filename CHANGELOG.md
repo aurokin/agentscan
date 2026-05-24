@@ -26,6 +26,8 @@
   configuration.
 - Added desktop profile management controls for renaming, deleting, resetting,
   validating, and editing environment variables in local and SSH profiles.
+- Added SSH desktop runner diagnostics and optional remote client tty targeting
+  for focus actions.
 - Added an ADR choosing Tauri 2 with a Rust backend and React/TypeScript UI for
   the macOS-first desktop shell, while preserving the shared CLI client contract
   for terminal and desktop consumers.

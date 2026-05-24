@@ -37,7 +37,7 @@ type RunnerSettings = {
 
 type DesktopRunnerSettings =
   | ({ kind: "local" } & RunnerSettings)
-  | ({ kind: "ssh"; host: string } & RunnerSettings);
+  | ({ kind: "ssh"; host: string; clientTty: string | null } & RunnerSettings);
 
 type ProfileState = {
   activeProfileId: string;
@@ -58,6 +58,7 @@ type SshProfileConfig = {
   name: string;
   kind: "ssh";
   host: string;
+  clientTty: string;
   runner: RunnerSettings;
   enabled: boolean;
 };
@@ -145,6 +146,10 @@ function App() {
     const profile = getActiveProfile(loadStoredProfiles());
     return profile.kind === "ssh" ? profile.host : "";
   });
+  const [sshClientTtyDraft, setSshClientTtyDraft] = useState(() => {
+    const profile = getActiveProfile(loadStoredProfiles());
+    return profile.kind === "ssh" ? profile.clientTty : "";
+  });
   const [debugEntries, setDebugEntries] = useState<DebugEntry[]>([]);
   const [liveState, setLiveState] = useState<LiveConnectionState>({
     status: "connecting",
@@ -155,15 +160,24 @@ function App() {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [activation, setActivation] = useState<PickerActivation>({ status: "idle" });
   const validation = useMemo(
-    () => validateProfileDraft(activeProfile, profileNameDraft, settingsDraft, sshHostDraft),
-    [activeProfile, profileNameDraft, settingsDraft, sshHostDraft],
+    () =>
+      validateProfileDraft(
+        activeProfile,
+        profileNameDraft,
+        settingsDraft,
+        sshHostDraft,
+        sshClientTtyDraft,
+      ),
+    [activeProfile, profileNameDraft, settingsDraft, sshHostDraft, sshClientTtyDraft],
   );
   const isSettingsDirty = useMemo(
     () =>
       profileNameDraft.trim() !== activeProfile.name ||
       sshHostDraft.trim() !== (activeProfile.kind === "ssh" ? activeProfile.host : "") ||
+      sshClientTtyDraft.trim() !==
+        (activeProfile.kind === "ssh" ? activeProfile.clientTty : "") ||
       !runnerSettingsEqual(settingsDraft, activeProfile.runner),
-    [activeProfile, profileNameDraft, settingsDraft, sshHostDraft],
+    [activeProfile, profileNameDraft, settingsDraft, sshHostDraft, sshClientTtyDraft],
   );
 
   useEffect(() => {
@@ -182,6 +196,7 @@ function App() {
           activeProfile.name,
           activeProfile.runner,
           activeProfile.kind === "ssh" ? activeProfile.host : "",
+          activeProfile.kind === "ssh" ? activeProfile.clientTty : "",
         );
         if (profileValidation.errors.length > 0) {
           const message = profileValidation.errors.join(" ");
@@ -421,6 +436,7 @@ function App() {
     setProfileNameDraft(activeProfile.name);
     setSettingsDraft(activeProfile.runner);
     setSshHostDraft(activeProfile.kind === "ssh" ? activeProfile.host : "");
+    setSshClientTtyDraft(activeProfile.kind === "ssh" ? activeProfile.clientTty : "");
   }, [activeProfile]);
 
   async function activateSelectedRow(row = selectedRow) {
@@ -432,7 +448,7 @@ function App() {
 
     try {
       await runCommand(
-        `${commandPrefix(activeProfile)} focus ${row.pane_id}`,
+        focusCommandLabel(activeProfile, row.pane_id),
         () => invoke("focus_picker_row", { paneId: row.pane_id, settings: runnerSettings }),
         appendDebugEntry,
       );
@@ -492,6 +508,7 @@ function App() {
       profileNameDraft,
       settingsDraft,
       sshHostDraft,
+      sshClientTtyDraft,
     );
     if (validation.errors.length > 0) {
       appendDebugEntry({
@@ -510,6 +527,7 @@ function App() {
         profileNameDraft.trim(),
         normalized,
         sshHostDraft,
+        sshClientTtyDraft,
       );
       storeProfiles(next);
       return next;
@@ -525,6 +543,7 @@ function App() {
     setProfileNameDraft(activeProfile.name);
     setSettingsDraft(activeProfile.runner);
     setSshHostDraft(activeProfile.kind === "ssh" ? activeProfile.host : "");
+    setSshClientTtyDraft(activeProfile.kind === "ssh" ? activeProfile.clientTty : "");
   }
 
   function selectProfile(id: string) {
@@ -547,6 +566,7 @@ function App() {
         name: nextRemoteProfileName(current.profiles),
         kind: "ssh",
         host: "",
+        clientTty: "",
         runner: emptyRunnerSettings(),
         enabled: true,
       };
@@ -735,6 +755,16 @@ function App() {
                     value={sshHostDraft}
                     onChange={(event) => setSshHostDraft(event.target.value)}
                     placeholder="user@host"
+                  />
+                </label>
+              ) : null}
+              {activeProfile.kind === "ssh" ? (
+                <label>
+                  <span>remote client tty</span>
+                  <input
+                    value={sshClientTtyDraft}
+                    onChange={(event) => setSshClientTtyDraft(event.target.value)}
+                    placeholder="Best-effort"
                   />
                 </label>
               ) : null}
@@ -1088,6 +1118,8 @@ function normalizeProfile(value: unknown): DesktopProfileConfig | null {
       name: name || "Remote",
       kind: "ssh",
       host: typeof profile.host === "string" ? profile.host.trim() : "",
+      clientTty:
+        typeof profile.clientTty === "string" ? profile.clientTty.trim() : "",
       runner,
       enabled: profile.enabled === true,
     };
@@ -1115,12 +1147,13 @@ function updateActiveProfileSettings(
   name: string,
   runner: RunnerSettings,
   sshHost: string,
+  sshClientTty: string,
 ): ProfileState {
   return {
     ...state,
     profiles: state.profiles.map((profile) =>
       profile.id === state.activeProfileId
-        ? updateProfileSettings(profile, name, runner, sshHost)
+        ? updateProfileSettings(profile, name, runner, sshHost, sshClientTty)
         : profile,
     ),
   };
@@ -1131,6 +1164,7 @@ function updateProfileSettings(
   name: string,
   runner: RunnerSettings,
   sshHost: string,
+  sshClientTty: string,
 ): DesktopProfileConfig {
   const normalizedRunner = normalizeRunnerSettings(runner);
   const normalizedName = name.trim() || profile.name;
@@ -1140,6 +1174,7 @@ function updateProfileSettings(
       ...profile,
       name: normalizedName,
       host: sshHost.trim(),
+      clientTty: sshClientTty.trim(),
       runner: normalizedRunner,
       enabled: true,
     };
@@ -1165,6 +1200,7 @@ function runnerSettingsForProfile(profile: DesktopProfileConfig): DesktopRunnerS
     return {
       kind: "ssh",
       host: profile.host,
+      clientTty: profile.clientTty.trim() || null,
       ...profile.runner,
     };
   }
@@ -1185,6 +1221,15 @@ function commandPrefix(profile: DesktopProfileConfig) {
   return binary;
 }
 
+function focusCommandLabel(profile: DesktopProfileConfig, paneId: string) {
+  const base = `${commandPrefix(profile)} focus`;
+  if (profile.kind === "ssh" && profile.clientTty.trim()) {
+    return `${base} --client-tty ${profile.clientTty.trim()} ${paneId}`;
+  }
+
+  return `${base} ${paneId}`;
+}
+
 function profileKindLabel(profile: DesktopProfileConfig) {
   return profile.kind === "ssh" ? "SSH" : "Local";
 }
@@ -1194,6 +1239,7 @@ function validateProfileDraft(
   name: string,
   runner: RunnerSettings,
   sshHost: string,
+  sshClientTty: string,
 ): DraftValidation {
   const errors: string[] = [];
 
@@ -1211,6 +1257,11 @@ function validateProfileDraft(
       errors.push("SSH host is required.");
     } else if (host.startsWith("-") || /\s/.test(host) || host.includes("\0")) {
       errors.push("SSH host must be a single host alias and cannot start with '-'.");
+    }
+
+    const clientTty = sshClientTty.trim();
+    if (clientTty && (/\s/.test(clientTty) || clientTty.includes("\0"))) {
+      errors.push("Remote client tty must be a single tty path.");
     }
   }
 

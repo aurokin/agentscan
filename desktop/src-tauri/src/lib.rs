@@ -63,6 +63,7 @@ enum DesktopRunnerSettings {
     },
     Ssh {
         host: String,
+        client_tty: Option<String>,
         binary_path: Option<String>,
         #[serde(default)]
         env: Vec<LocalEnvironmentVariable>,
@@ -78,6 +79,7 @@ enum AgentscanRunner {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SshRunnerSettings {
     host: String,
+    client_tty: Option<String>,
     binary_path: Option<String>,
     env: Vec<LocalEnvironmentVariable>,
 }
@@ -252,10 +254,16 @@ impl AgentscanRunner {
             }
             Some(DesktopRunnerSettings::Ssh {
                 host,
+                client_tty,
                 binary_path,
                 env,
             }) => Self::Ssh(SshRunnerSettings {
                 host: host.trim().to_owned(),
+                client_tty: client_tty
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|tty| !tty.is_empty())
+                    .map(str::to_owned),
                 binary_path,
                 env,
             }),
@@ -294,24 +302,27 @@ fn run_agentscan_preflight(binary: OsString) -> AgentscanPreflight {
 fn run_agentscan_preflight_with_runner(runner: &AgentscanRunner) -> AgentscanPreflight {
     let binary_display = runner.display_binary();
 
-    match run_agentscan_command(runner, ["--version"], PREFLIGHT_TIMEOUT) {
+    match run_agentscan_command(runner, &["--version"], PREFLIGHT_TIMEOUT) {
         Ok(output) if output.status.success() => AgentscanPreflight {
             binary: binary_display,
             ok: true,
             version: Some(String::from_utf8_lossy(&output.stdout).trim().to_owned()),
             error: None,
         },
-        Ok(output) => AgentscanPreflight {
-            binary: binary_display,
-            ok: false,
-            version: None,
-            error: Some(stderr_or_status("agentscan", &output.stderr, output.status)),
-        },
+        Ok(output) => {
+            let error = stderr_or_status("agentscan", &output.stderr, output.status);
+            AgentscanPreflight {
+                binary: binary_display,
+                ok: false,
+                version: None,
+                error: Some(classify_desktop_failure(runner, "preflight", &error)),
+            }
+        }
         Err(error) => AgentscanPreflight {
             binary: binary_display,
             ok: false,
             version: None,
-            error: Some(error.to_string()),
+            error: Some(classify_desktop_failure(runner, "preflight", &error)),
         },
     }
 }
@@ -347,20 +358,29 @@ fn load_picker_rows_with_runner(runner: &AgentscanRunner) -> Result<Vec<PickerRo
 }
 
 fn load_picker_rows_from_runner(runner: &AgentscanRunner) -> Result<Vec<PickerRow>, String> {
-    let output = run_agentscan_command(runner, ["hotkeys", "--format", "json"], HOTKEYS_TIMEOUT)
-        .map_err(|error| format!("Unable to run agentscan hotkeys: {error}"))?;
+    let output = run_agentscan_command(runner, &["hotkeys", "--format", "json"], HOTKEYS_TIMEOUT)
+        .map_err(|error| {
+            classify_desktop_failure(
+                runner,
+                "hotkeys",
+                &format!("Unable to run agentscan hotkeys: {error}"),
+            )
+        })?;
 
     if !output.status.success() {
-        return Err(stderr_or_status(
-            "agentscan hotkeys",
-            &output.stderr,
-            output.status,
-        ));
+        let error = stderr_or_status("agentscan hotkeys", &output.stderr, output.status);
+        return Err(classify_desktop_failure(runner, "hotkeys", &error));
     }
 
-    let rows: Vec<PickerRow> = serde_json::from_slice(&output.stdout)
-        .map_err(|error| format!("Invalid agentscan hotkeys JSON: {error}"))?;
-    validate_picker_rows(&rows)?;
+    let rows: Vec<PickerRow> = serde_json::from_slice(&output.stdout).map_err(|error| {
+        classify_desktop_failure(
+            runner,
+            "hotkeys",
+            &format!("Invalid agentscan hotkeys JSON: {error}"),
+        )
+    })?;
+    validate_picker_rows(&rows)
+        .map_err(|error| classify_desktop_failure(runner, "hotkeys", &error))?;
     Ok(rows)
 }
 
@@ -385,18 +405,38 @@ fn focus_picker_row_with_runner_and_timeout(
         return Err("Cannot focus an empty pane id".to_owned());
     }
 
-    let output = run_agentscan_command(runner, ["focus", pane_id], timeout)
-        .map_err(|error| format!("Unable to run agentscan focus: {error}"))?;
+    let args = focus_args_for_runner(runner, pane_id)?;
+    let output = run_agentscan_command(runner, &args, timeout).map_err(|error| {
+        classify_desktop_failure(
+            runner,
+            "focus",
+            &format!("Unable to run agentscan focus: {error}"),
+        )
+    })?;
 
     if output.status.success() {
         Ok(())
     } else {
-        Err(stderr_or_status(
-            "agentscan focus",
-            &output.stderr,
-            output.status,
-        ))
+        let error = stderr_or_status("agentscan focus", &output.stderr, output.status);
+        Err(classify_desktop_failure(runner, "focus", &error))
     }
+}
+
+fn focus_args_for_runner<'a>(
+    runner: &'a AgentscanRunner,
+    pane_id: &'a str,
+) -> Result<Vec<&'a str>, String> {
+    let mut args = vec!["focus"];
+    if let AgentscanRunner::Ssh(settings) = runner
+        && let Some(client_tty) = settings.client_tty.as_deref()
+    {
+        validate_client_tty(client_tty)
+            .map_err(|error| classify_desktop_failure(runner, "focus", &error))?;
+        args.push("--client-tty");
+        args.push(client_tty);
+    }
+    args.push(pane_id);
+    Ok(args)
 }
 
 fn start_live_picker_with_runner(
@@ -512,13 +552,14 @@ fn run_live_picker_subscription(
     stop: &AtomicBool,
     child_slot: &Arc<Mutex<Option<Child>>>,
 ) -> LivePickerWorkerExit {
-    let mut command = match agentscan_command(runner, ["subscribe", "--format", "json"]) {
+    let mut command = match agentscan_command(runner, &["subscribe", "--format", "json"]) {
         Ok(command) => command,
         Err(error) => {
+            let message = classify_desktop_failure(runner, "subscribe", &error);
             emit_live_picker_event(
                 app,
                 LivePickerEvent::Fatal {
-                    message: error,
+                    message,
                     diagnostics: None,
                 },
             );
@@ -530,10 +571,15 @@ fn run_live_picker_subscription(
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
+            let message = classify_desktop_failure(
+                runner,
+                "subscribe",
+                &format!("Unable to start agentscan subscribe: {error}"),
+            );
             emit_live_picker_event(
                 app,
                 LivePickerEvent::Offline {
-                    message: format!("Unable to start agentscan subscribe: {error}"),
+                    message,
                     retrying: true,
                     diagnostics: load_daemon_status(runner).ok(),
                 },
@@ -593,10 +639,15 @@ fn run_live_picker_subscription(
                     }
                 },
                 Err(error) => {
+                    let message = classify_desktop_failure(
+                        runner,
+                        "subscribe",
+                        &format!("Invalid agentscan subscribe frame: {error}"),
+                    );
                     emit_live_picker_event(
                         app,
                         LivePickerEvent::Offline {
-                            message: format!("Invalid agentscan subscribe frame: {error}"),
+                            message,
                             retrying: true,
                             diagnostics: load_daemon_status(runner).ok(),
                         },
@@ -606,10 +657,15 @@ fn run_live_picker_subscription(
             },
             Err(error) => {
                 if !stop.load(Ordering::SeqCst) {
+                    let message = classify_desktop_failure(
+                        runner,
+                        "subscribe",
+                        &format!("Unable to read agentscan subscribe output: {error}"),
+                    );
                     emit_live_picker_event(
                         app,
                         LivePickerEvent::Offline {
-                            message: format!("Unable to read agentscan subscribe output: {error}"),
+                            message,
                             retrying: true,
                             diagnostics: load_daemon_status(runner).ok(),
                         },
@@ -631,14 +687,19 @@ fn run_live_picker_subscription(
     }
 
     if matches!(exit, LivePickerWorkerExit::Retry) {
+        let message = classify_desktop_failure(
+            runner,
+            "subscribe",
+            &process_exit_message(status_message.as_deref(), &stderr),
+        );
         emit_live_picker_event(
             app,
-                LivePickerEvent::Offline {
-                    message: process_exit_message(status_message.as_deref(), &stderr),
-                    retrying: true,
-                    diagnostics: load_daemon_status(runner).ok(),
-                },
-            );
+            LivePickerEvent::Offline {
+                message,
+                retrying: true,
+                diagnostics: load_daemon_status(runner).ok(),
+            },
+        );
     }
 
     exit
@@ -682,7 +743,7 @@ fn live_event_from_subscribe_frame(
                 Err(message) => {
                     return Ok((
                         LivePickerEvent::Offline {
-                            message,
+                            message: classify_desktop_failure(runner, "hotkeys", &message),
                             retrying: true,
                             diagnostics: load_daemon_status(runner).ok(),
                         },
@@ -739,21 +800,29 @@ fn summarize_snapshot(snapshot: &serde_json::Value) -> LiveSnapshotSummary {
 fn load_daemon_status(runner: &AgentscanRunner) -> Result<serde_json::Value, String> {
     let output = run_agentscan_command(
         runner,
-        ["daemon", "status", "--format", "json"],
+        &["daemon", "status", "--format", "json"],
         DAEMON_STATUS_TIMEOUT,
     )
-    .map_err(|error| format!("Unable to run agentscan daemon status: {error}"))?;
+    .map_err(|error| {
+        classify_desktop_failure(
+            runner,
+            "daemon status",
+            &format!("Unable to run agentscan daemon status: {error}"),
+        )
+    })?;
 
     if !output.status.success() {
-        return Err(stderr_or_status(
-            "agentscan daemon status",
-            &output.stderr,
-            output.status,
-        ));
+        let error = stderr_or_status("agentscan daemon status", &output.stderr, output.status);
+        return Err(classify_desktop_failure(runner, "daemon status", &error));
     }
 
-    serde_json::from_slice(&output.stdout)
-        .map_err(|error| format!("Invalid agentscan daemon status JSON: {error}"))
+    serde_json::from_slice(&output.stdout).map_err(|error| {
+        classify_desktop_failure(
+            runner,
+            "daemon status",
+            &format!("Invalid agentscan daemon status JSON: {error}"),
+        )
+    })
 }
 
 fn read_process_stderr(stderr: impl std::io::Read) -> String {
@@ -861,6 +930,103 @@ fn validate_picker_rows(rows: &[PickerRow]) -> Result<(), String> {
     Ok(())
 }
 
+fn classify_desktop_failure(runner: &AgentscanRunner, operation: &str, message: &str) -> String {
+    let trimmed = message.trim();
+    if trimmed.is_empty() {
+        return format!("agentscan {operation} failed");
+    }
+
+    let lower = trimmed.to_lowercase();
+
+    if matches!(runner, AgentscanRunner::Ssh(_)) {
+        if lower.contains("permission denied")
+            || lower.contains("publickey")
+            || lower.contains("authentication failed")
+        {
+            return format!("SSH authentication failed: {trimmed}");
+        }
+
+        if lower.contains("could not resolve hostname")
+            || lower.contains("name or service not known")
+            || lower.contains("nodename nor servname provided")
+        {
+            return format!("SSH host lookup failed: {trimmed}");
+        }
+
+        if lower.contains("connection timed out")
+            || lower.contains("operation timed out")
+            || lower.contains("connection refused")
+            || lower.contains("no route to host")
+            || lower.contains("network is unreachable")
+        {
+            return format!("SSH connection failed: {trimmed}");
+        }
+
+        if lower.contains("host key verification failed") {
+            return format!("SSH host key verification failed: {trimmed}");
+        }
+
+        if lower.contains("client_tty") || lower.contains("client tty") {
+            return format!("Remote client tty is invalid or unavailable: {trimmed}");
+        }
+    }
+
+    if lower.contains("invalid agentscan")
+        || lower.contains("invalid json")
+        || lower.contains("expected value")
+    {
+        return format!("Invalid JSON from agentscan {operation}: {trimmed}");
+    }
+
+    if lower.contains("incompatible agentscan") || lower.contains("unsupported schema") {
+        return format!("Incompatible agentscan {operation} output: {trimmed}");
+    }
+
+    if lower.contains("auto-start")
+        || lower.contains("autostart")
+        || lower.contains("trusted executable")
+        || lower.contains("untrusted executable")
+    {
+        return format!("Daemon auto-start was refused: {trimmed}");
+    }
+
+    if lower.contains("tmux")
+        && (lower.contains("not found")
+            || lower.contains("no such file or directory")
+            || lower.contains("no server running")
+            || lower.contains("failed to connect")
+            || lower.contains("can't find socket")
+            || lower.contains("cannot find socket"))
+    {
+        return format!("tmux is unavailable: {trimmed}");
+    }
+
+    if (lower.contains("command not found")
+        || lower.contains("not found")
+        || lower.contains("no such file or directory"))
+        && lower.contains("agentscan")
+    {
+        return match runner {
+            AgentscanRunner::Ssh(_) => {
+                format!("Remote agentscan binary was not found: {trimmed}")
+            }
+            AgentscanRunner::Local(_) => format!("agentscan binary was not found: {trimmed}"),
+        };
+    }
+
+    if operation == "focus"
+        && (lower.contains("target pane")
+            || lower.contains("can't find pane")
+            || lower.contains("pane not found")
+            || lower.contains("missing pane")
+            || lower.contains("no such pane"))
+    {
+        return format!("Focus target is stale: {trimmed}");
+    }
+
+    trimmed.to_owned()
+}
+
 #[cfg(test)]
 fn run_agentscan_binary_command<const N: usize>(
     binary: &OsStr,
@@ -870,19 +1036,16 @@ fn run_agentscan_binary_command<const N: usize>(
     run_agentscan_local_command_with_env(binary, args, &[], timeout)
 }
 
-fn run_agentscan_command<const N: usize>(
+fn run_agentscan_command(
     runner: &AgentscanRunner,
-    args: [&str; N],
+    args: &[&str],
     timeout: Duration,
 ) -> Result<CommandOutput, String> {
     let mut command = agentscan_command(runner, args)?;
     run_command_with_timeout(&mut command, timeout)
 }
 
-fn agentscan_command<const N: usize>(
-    runner: &AgentscanRunner,
-    args: [&str; N],
-) -> Result<Command, String> {
+fn agentscan_command(runner: &AgentscanRunner, args: &[&str]) -> Result<Command, String> {
     match runner {
         AgentscanRunner::Local(settings) => {
             let mut command = Command::new(agentscan_binary_for_settings(settings));
@@ -890,7 +1053,7 @@ fn agentscan_command<const N: usize>(
             apply_command_env(&mut command, &settings.env)?;
             Ok(command)
         }
-        AgentscanRunner::Ssh(settings) => ssh_agentscan_command(settings, &args),
+        AgentscanRunner::Ssh(settings) => ssh_agentscan_command(settings, args),
     }
 }
 
@@ -931,6 +1094,24 @@ fn validate_ssh_host(host: &str) -> Result<(), String> {
 
     if host.starts_with('-') || host.contains('\0') {
         return Err(format!("Invalid SSH host: {host}"));
+    }
+
+    if host.chars().any(char::is_whitespace) {
+        return Err(format!("Invalid SSH host: {host}"));
+    }
+
+    Ok(())
+}
+
+fn validate_client_tty(client_tty: &str) -> Result<(), String> {
+    let client_tty = client_tty.trim();
+
+    if client_tty.is_empty() {
+        return Ok(());
+    }
+
+    if client_tty.contains('\0') || client_tty.chars().any(char::is_whitespace) {
+        return Err(format!("Invalid remote client tty: {client_tty}"));
     }
 
     Ok(())
@@ -1370,6 +1551,7 @@ mod tests {
             r#"{
               "kind": "ssh",
               "host": "devbox",
+              "clientTty": "/dev/ttys003",
               "binaryPath": "/opt/agentscan",
               "env": []
             }"#,
@@ -1380,6 +1562,7 @@ mod tests {
             settings,
             DesktopRunnerSettings::Ssh {
                 host: "devbox".to_owned(),
+                client_tty: Some("/dev/ttys003".to_owned()),
                 binary_path: Some("/opt/agentscan".to_owned()),
                 env: Vec::new(),
             }
@@ -1387,9 +1570,41 @@ mod tests {
     }
 
     #[test]
+    fn ssh_focus_args_include_optional_client_tty() {
+        let runner = AgentscanRunner::Ssh(SshRunnerSettings {
+            host: "devbox".to_owned(),
+            client_tty: Some("/dev/ttys003".to_owned()),
+            binary_path: None,
+            env: Vec::new(),
+        });
+
+        assert_eq!(
+            focus_args_for_runner(&runner, "%42").expect("focus args build"),
+            vec!["focus", "--client-tty", "/dev/ttys003", "%42"]
+        );
+    }
+
+    #[test]
+    fn ssh_focus_args_reject_invalid_client_tty() {
+        let runner = AgentscanRunner::Ssh(SshRunnerSettings {
+            host: "devbox".to_owned(),
+            client_tty: Some("/dev/tty bad".to_owned()),
+            binary_path: None,
+            env: Vec::new(),
+        });
+
+        assert!(
+            focus_args_for_runner(&runner, "%42")
+                .unwrap_err()
+                .contains("Remote client tty")
+        );
+    }
+
+    #[test]
     fn ssh_runner_builds_remote_agentscan_script() {
         let settings = SshRunnerSettings {
             host: "devbox".to_owned(),
+            client_tty: None,
             binary_path: Some("/opt/bin/agentscan custom".to_owned()),
             env: vec![
                 LocalEnvironmentVariable {
@@ -1413,6 +1628,7 @@ mod tests {
     fn ssh_runner_wraps_command_with_ssh_destination() {
         let settings = SshRunnerSettings {
             host: "user@devbox".to_owned(),
+            client_tty: None,
             binary_path: None,
             env: Vec::new(),
         };
@@ -1434,6 +1650,7 @@ mod tests {
     fn ssh_runner_rejects_empty_and_option_shaped_hosts() {
         let mut settings = SshRunnerSettings {
             host: " ".to_owned(),
+            client_tty: None,
             binary_path: None,
             env: Vec::new(),
         };
@@ -1450,6 +1667,56 @@ mod tests {
             ssh_agentscan_command(&settings, &["--version"])
                 .unwrap_err()
                 .contains("Invalid SSH host")
+        );
+
+        settings.host = "dev box".to_owned();
+        assert!(
+            ssh_agentscan_command(&settings, &["--version"])
+                .unwrap_err()
+                .contains("Invalid SSH host")
+        );
+    }
+
+    #[test]
+    fn desktop_failure_classification_groups_remote_failures() {
+        let runner = AgentscanRunner::Ssh(SshRunnerSettings {
+            host: "devbox".to_owned(),
+            client_tty: None,
+            binary_path: None,
+            env: Vec::new(),
+        });
+
+        assert!(
+            classify_desktop_failure(&runner, "preflight", "Permission denied (publickey)")
+                .starts_with("SSH authentication failed")
+        );
+        assert!(
+            classify_desktop_failure(
+                &runner,
+                "preflight",
+                "ssh: Could not resolve hostname devbox",
+            )
+            .starts_with("SSH host lookup failed")
+        );
+        assert!(
+            classify_desktop_failure(&runner, "hotkeys", "agentscan: command not found")
+                .starts_with("Remote agentscan binary was not found")
+        );
+        assert!(
+            classify_desktop_failure(
+                &runner,
+                "subscribe",
+                "agentscan subscribe exited with status 1: tmux: No such file or directory",
+            )
+            .starts_with("tmux is unavailable")
+        );
+        assert!(
+            classify_desktop_failure(&runner, "hotkeys", "Invalid agentscan hotkeys JSON")
+                .starts_with("Invalid JSON from agentscan hotkeys")
+        );
+        assert!(
+            classify_desktop_failure(&runner, "focus", "can't find pane: %42")
+                .starts_with("Focus target is stale")
         );
     }
 
