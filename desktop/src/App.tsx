@@ -221,10 +221,6 @@ function App() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isPickerVisible, setIsPickerVisible] = useState(true);
   const [view, setView] = useState<ShellView>("picker");
-  // Latest view, read by async completions (e.g. a slow focus) to avoid acting
-  // on a view the user has since navigated away from.
-  const viewRef = useRef(view);
-  viewRef.current = view;
   // Tracks the active runner config so in-flight refreshes/focus can detect a
   // profile switch OR a settings change and discard results from the previous
   // target. Updated synchronously during render (below) so async completions
@@ -520,10 +516,7 @@ function App() {
         try {
           await register(PICKER_HOTKEY, (event) => {
             if (event.state === "Pressed") {
-              void togglePickerWindow(
-                () => setIsPickerVisible(true),
-                () => setIsPickerVisible(false),
-              );
+              void raisePickerWindow(() => setIsPickerVisible(true));
             }
           });
           registered = true;
@@ -712,14 +705,9 @@ function App() {
         // a newer activation the user started. Also skip the post-focus UI.
         return;
       }
+      // Persistent-window model: focusing a pane must not hide the desktop.
+      // Reset activation to idle and leave the window visible.
       setActivation({ status: "idle" });
-      // Only auto-hide if the user is still in the picker. A slow focus (e.g.
-      // SSH) can complete after they've opened Settings; hiding then would yank
-      // the window out from under them mid-edit.
-      if (viewRef.current === "picker") {
-        setIsPickerVisible(false);
-        await hidePickerWindow();
-      }
     } catch (error) {
       if (activeRunnerKeyRef.current !== requestRunnerKey) {
         return;
@@ -764,9 +752,12 @@ function App() {
       event.preventDefault();
       void activateSelectedRow();
     } else if (event.key === "Escape") {
-      event.preventDefault();
-      setIsPickerVisible(false);
-      void hidePickerWindow();
+      // Persistent-window model: Escape never hides the window. Clear the search
+      // filter if one is active; otherwise it's a no-op.
+      if (pickerFilter) {
+        event.preventDefault();
+        setPickerFilter("");
+      }
     }
   }
 
@@ -1884,26 +1875,15 @@ function liveStateLabel(state: LiveConnectionState) {
   return "Connecting";
 }
 
-async function togglePickerWindow(beforeShow: () => void, onHide: () => void) {
+// Persistent-window model: the global hotkey raises/focuses the window; it
+// never toggles it away.
+async function raisePickerWindow(beforeShow: () => void) {
   await enqueueWindowOperation(async () => {
     const appWindow = getCurrentWindow();
-
-    if (await appWindow.isVisible()) {
-      onHide();
-      await appWindow.hide();
-      return;
-    }
-
     beforeShow();
     await placePickerWindow();
     await appWindow.show();
     await appWindow.setFocus();
-  });
-}
-
-async function hidePickerWindow() {
-  await enqueueWindowOperation(async () => {
-    await getCurrentWindow().hide();
   });
 }
 
