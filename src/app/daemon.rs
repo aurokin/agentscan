@@ -1,5 +1,5 @@
 use super::*;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::Read;
@@ -48,13 +48,17 @@ pub(crate) use lifecycle::{
 };
 use snapshot_store::SnapshotStore;
 pub(crate) use socket_server::DaemonSocketState;
-use socket_server::{DaemonSocketServer, PreparedSnapshot, SnapshotPublishContext};
+use socket_server::{
+    DaemonSocketServer, DaemonSocketServerHandle, PreparedSnapshot, SnapshotPublishContext,
+};
 #[cfg(test)]
 pub(crate) use socket_server::{
     SubscriberMailbox, handle_daemon_socket_client, refuse_server_busy,
 };
 
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(1);
+const CONTROL_MODE_EVENT_BATCH_WINDOW: Duration = Duration::from_millis(50);
+const CONTROL_MODE_MIN_WAIT: Duration = Duration::from_millis(1);
 const PANE_OUTPUT_STATUS_CACHE_TTL: Duration = Duration::from_secs(2);
 const STARTUP_FAILURE_OBSERVABILITY_WINDOW: Duration = Duration::from_millis(200);
 const CONTROL_MODE_STARTUP_TIMEOUT: Duration = Duration::from_secs(2);
@@ -76,6 +80,7 @@ const TUI_SUBSCRIPTION_INITIAL_BACKOFF: Duration = Duration::from_millis(250);
 const TUI_SUBSCRIPTION_INITIAL_BACKOFF: Duration = Duration::from_millis(10);
 const TUI_SUBSCRIPTION_MAX_BACKOFF: Duration = Duration::from_secs(1);
 pub(crate) const NO_AUTO_START_ENV_VAR: &str = "AGENTSCAN_NO_AUTO_START";
+const DEEP_CONTROL_MODE_TELEMETRY_ENV_VAR: &str = "AGENTSCAN_DEEP_CONTROL_MODE_TELEMETRY";
 static DAEMON_SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 type SubscriberId = u64;
@@ -189,7 +194,7 @@ fn daemon_run_with_socket_path_and_startup(
         pending_snapshot,
         tmux_client,
     )?;
-    runtime.run()?;
+    runtime.run(&server_handle)?;
 
     closing_guard.mark_closing();
     runtime.shutdown_control_mode()?;
@@ -206,6 +211,7 @@ struct DaemonRuntime<S> {
     control_mode: RunningTmuxControlModeClient,
     next_reconcile_at: Instant,
     telemetry: RuntimeTelemetry,
+    deep_control_mode_telemetry: bool,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -256,7 +262,7 @@ impl RuntimeTelemetry {
 enum RefreshRequest<'a> {
     IntervalReconcile,
     TimeoutReconcile,
-    ControlModeLine(&'a str),
+    ControlModeLines(&'a [String]),
 }
 
 struct RefreshOutcome {
@@ -331,25 +337,30 @@ impl<S: StartupActions> DaemonRuntime<S> {
             control_mode,
             next_reconcile_at: Instant::now() + RECONCILE_INTERVAL,
             telemetry,
+            deep_control_mode_telemetry: deep_control_mode_telemetry_enabled(),
         })
     }
 
-    fn run(&mut self) -> Result<()> {
+    fn run(&mut self, server_handle: &DaemonSocketServerHandle) -> Result<()> {
         loop {
             if DAEMON_SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
+                break;
+            }
+            if !server_handle.socket_still_matches() {
+                eprintln!("agentscan: daemon socket path no longer matches this daemon; exiting");
+                DAEMON_SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
                 break;
             }
             if Instant::now() >= self.next_reconcile_at {
                 self.apply_refresh_request(RefreshRequest::IntervalReconcile)?;
             }
 
-            let timeout = self
-                .next_reconcile_at
-                .saturating_duration_since(Instant::now());
+            let timeout = self.next_control_mode_wait();
             match self.control_mode.recv_timeout(timeout) {
                 Ok(line) => {
                     let line = line?;
-                    if self.apply_refresh_request(RefreshRequest::ControlModeLine(&line))? {
+                    let lines = self.collect_control_mode_batch(line)?;
+                    if self.apply_refresh_request(RefreshRequest::ControlModeLines(&lines))? {
                         break;
                     }
                 }
@@ -362,6 +373,33 @@ impl<S: StartupActions> DaemonRuntime<S> {
         Ok(())
     }
 
+    fn next_control_mode_wait(&self) -> Duration {
+        self.next_reconcile_at
+            .saturating_duration_since(Instant::now())
+            .max(CONTROL_MODE_MIN_WAIT)
+    }
+
+    fn collect_control_mode_batch(&mut self, first_line: String) -> Result<Vec<String>> {
+        let mut lines = vec![first_line];
+        let deadline = Instant::now() + CONTROL_MODE_EVENT_BATCH_WINDOW;
+        loop {
+            let now = Instant::now();
+            if now >= deadline {
+                break;
+            }
+            match self
+                .control_mode
+                .recv_timeout(deadline.saturating_duration_since(now))
+            {
+                Ok(line) => lines.push(line?),
+                Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {
+                    break;
+                }
+            }
+        }
+        Ok(lines)
+    }
+
     fn apply_refresh_request(&mut self, request: RefreshRequest<'_>) -> Result<bool> {
         let outcome = match request {
             RefreshRequest::IntervalReconcile => self.apply_reconcile_refresh(
@@ -370,7 +408,7 @@ impl<S: StartupActions> DaemonRuntime<S> {
             RefreshRequest::TimeoutReconcile => self.apply_reconcile_refresh(
                 SnapshotPublishContext::new("reconcile").with_detail("timeout"),
             )?,
-            RefreshRequest::ControlModeLine(line) => self.apply_control_mode_refresh(line)?,
+            RefreshRequest::ControlModeLines(lines) => self.apply_control_mode_refresh(lines)?,
         };
         if let Some(publish_context) = outcome.publish_context {
             self.publish_current_snapshot(publish_context);
@@ -381,29 +419,27 @@ impl<S: StartupActions> DaemonRuntime<S> {
         Ok(outcome.should_exit)
     }
 
-    fn apply_control_mode_refresh(&mut self, line: &str) -> Result<RefreshOutcome> {
-        let event = control_event_from_line(line);
-        if event == ControlEvent::Exit {
-            return Ok(RefreshOutcome::exit());
-        }
-        let event_publish_context = event.publish_context();
-        let previous_snapshot = matches!(
-            event,
-            ControlEvent::WindowChanged(_)
-                | ControlEvent::SessionChanged(_)
-                | ControlEvent::Resnapshot
-        )
-        .then(|| self.snapshot.clone());
+    fn apply_control_mode_refresh(&mut self, lines: &[String]) -> Result<RefreshOutcome> {
+        let batch = ControlEventBatch::from_lines(lines);
+        let should_exit = batch.should_exit;
+        let event_publish_context = batch.publish_context();
+        let previous_snapshot = batch
+            .can_refresh_full_snapshot()
+            .then(|| self.snapshot.clone());
         let mut event_tmux_reads = self.control_mode.read_provider();
-        let event_outcome = apply_control_event(
+        let event_outcome = apply_control_event_batch(
             &mut self.snapshot,
             &mut event_tmux_reads,
-            line,
-            &event,
+            &batch,
             &mut self.pane_output_cache,
         )?;
         if !event_outcome.changed {
-            self.update_runtime_telemetry();
+            if self.deep_control_mode_telemetry {
+                self.update_runtime_telemetry();
+            }
+            if should_exit {
+                return Ok(RefreshOutcome::exit());
+            }
             return Ok(RefreshOutcome::no_publish());
         }
         self.telemetry.record_control_event_refresh();
@@ -418,13 +454,15 @@ impl<S: StartupActions> DaemonRuntime<S> {
         }
 
         let reconnected = self.recover_broker_and_reconcile_if_needed()?;
-        Ok(RefreshOutcome::publish(if reconnected {
+        let mut outcome = RefreshOutcome::publish(if reconnected {
             SnapshotPublishContext::new("reconcile").with_detail("broker_reconnect")
         } else {
             event_publish_context.unwrap_or_else(|| {
                 SnapshotPublishContext::new("control_event").with_detail("unknown")
             })
-        }))
+        });
+        outcome.should_exit = should_exit;
+        Ok(outcome)
     }
 
     fn apply_reconcile_refresh(
@@ -647,37 +685,95 @@ struct ControlEventOutcome {
     full_snapshot_refresh: bool,
 }
 
-impl ControlEventOutcome {
-    fn changed() -> Self {
-        Self {
-            changed: true,
-            fallback_to_full: false,
-            full_snapshot_refresh: false,
+#[derive(Debug, Default, Eq, PartialEq)]
+struct ControlEventBatch {
+    should_exit: bool,
+    next_sequence: u64,
+    resnapshot_sequence: Option<u64>,
+    sessions: BTreeMap<String, u64>,
+    windows: BTreeMap<String, u64>,
+    panes: BTreeMap<String, u64>,
+    titles: BTreeMap<String, SequencedTitle>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct SequencedTitle {
+    sequence: u64,
+    title: String,
+}
+
+impl ControlEventBatch {
+    fn from_lines(lines: &[String]) -> Self {
+        let mut batch = Self::default();
+        for line in lines {
+            batch.push(control_event_from_line(line));
+        }
+        batch
+    }
+
+    fn push(&mut self, event: ControlEvent) {
+        let sequence = self.next_sequence;
+        self.next_sequence = self.next_sequence.saturating_add(1);
+        match event {
+            ControlEvent::Exit => self.should_exit = true,
+            ControlEvent::Ignored => {}
+            ControlEvent::Resnapshot => self.resnapshot_sequence = Some(sequence),
+            ControlEvent::SessionChanged(session_id) => {
+                self.sessions.insert(session_id, sequence);
+            }
+            ControlEvent::WindowChanged(window_id) => {
+                self.windows.insert(window_id, sequence);
+            }
+            ControlEvent::PaneChanged(pane_id) => {
+                self.panes.insert(pane_id, sequence);
+            }
+            ControlEvent::TitleChanged { pane_id, title } => {
+                self.titles
+                    .insert(pane_id, SequencedTitle { sequence, title });
+            }
         }
     }
 
-    fn changed_with_full_fallback() -> Self {
-        Self {
-            changed: true,
-            fallback_to_full: true,
-            full_snapshot_refresh: true,
-        }
+    fn can_refresh_full_snapshot(&self) -> bool {
+        self.resnapshot_sequence.is_some() || !self.sessions.is_empty() || !self.windows.is_empty()
     }
 
-    fn changed_with_full_refresh() -> Self {
-        Self {
-            changed: true,
-            fallback_to_full: false,
-            full_snapshot_refresh: true,
+    fn publish_context(&self) -> Option<SnapshotPublishContext> {
+        if self.resnapshot_sequence.is_some() {
+            return ControlEvent::Resnapshot.publish_context();
         }
-    }
 
-    fn unchanged() -> Self {
-        Self {
-            changed: false,
-            fallback_to_full: false,
-            full_snapshot_refresh: false,
+        let event_count = self.sessions.len()
+            + self.windows.len()
+            + self.panes.len()
+            + self
+                .titles
+                .keys()
+                .filter(|pane_id| !self.panes.contains_key(*pane_id))
+                .count();
+        if event_count != 1 {
+            return (event_count > 1)
+                .then(|| SnapshotPublishContext::new("control_event").with_detail("batch"));
         }
+
+        if let Some((session_id, _)) = self.sessions.iter().next() {
+            return ControlEvent::SessionChanged(session_id.clone()).publish_context();
+        }
+        if let Some((window_id, _)) = self.windows.iter().next() {
+            return ControlEvent::WindowChanged(window_id.clone()).publish_context();
+        }
+        if let Some((pane_id, _)) = self.panes.iter().next() {
+            return ControlEvent::PaneChanged(pane_id.clone()).publish_context();
+        }
+        if let Some((pane_id, title)) = self.titles.iter().next() {
+            return ControlEvent::TitleChanged {
+                pane_id: pane_id.clone(),
+                title: title.title.clone(),
+            }
+            .publish_context();
+        }
+
+        None
     }
 }
 
@@ -738,70 +834,182 @@ fn control_event_from_line(line: &str) -> ControlEvent {
     ControlEvent::Ignored
 }
 
-fn apply_control_event(
+fn apply_control_event_batch(
     snapshot: &mut SnapshotEnvelope,
     tmux_reads: &mut impl TmuxReadProvider,
-    line: &str,
-    event: &ControlEvent,
+    batch: &ControlEventBatch,
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
 ) -> Result<ControlEventOutcome> {
-    match event {
-        ControlEvent::PaneChanged(pane_id) => {
-            refresh_snapshot_pane(snapshot, tmux_reads, pane_id, pane_output_cache)?;
-            Ok(ControlEventOutcome::changed())
-        }
-        ControlEvent::TitleChanged { pane_id, title } => {
-            refresh_snapshot_pane_with_title(
-                snapshot,
-                tmux_reads,
-                pane_id,
-                Some(title.as_str()),
-                pane_output_cache,
-            )?;
-            Ok(ControlEventOutcome::changed())
-        }
-        ControlEvent::WindowChanged(window_id) => {
-            match refresh_snapshot_window(snapshot, tmux_reads, window_id, pane_output_cache) {
-                Ok(()) => Ok(ControlEventOutcome::changed()),
-                Err(error) => {
-                    fallback_to_full_resnapshot(
-                        snapshot,
-                        tmux_reads,
-                        line,
-                        error,
-                        pane_output_cache,
-                    )?;
-                    Ok(ControlEventOutcome::changed_with_full_fallback())
-                }
-            }
-        }
-        ControlEvent::SessionChanged(session_id) => {
-            match refresh_snapshot_session(snapshot, tmux_reads, session_id, pane_output_cache) {
-                Ok(()) => Ok(ControlEventOutcome::changed()),
-                Err(error) => {
-                    fallback_to_full_resnapshot(
-                        snapshot,
-                        tmux_reads,
-                        line,
-                        error,
-                        pane_output_cache,
-                    )?;
-                    Ok(ControlEventOutcome::changed_with_full_fallback())
-                }
-            }
-        }
-        ControlEvent::Resnapshot => {
-            let tmux_version = snapshot.source.tmux_version.clone();
-            reconcile_full_snapshot(
-                snapshot,
-                tmux_reads,
-                tmux_version.as_deref(),
-                pane_output_cache,
-            )?;
-            Ok(ControlEventOutcome::changed_with_full_refresh())
-        }
-        ControlEvent::Exit | ControlEvent::Ignored => Ok(ControlEventOutcome::unchanged()),
+    let pane_scopes_before_refresh = pane_scopes_by_id(snapshot);
+    let mut changed = false;
+    let mut fallback_to_full = false;
+    let mut full_snapshot_refresh = false;
+
+    if batch.resnapshot_sequence.is_some() {
+        let tmux_version = snapshot.source.tmux_version.clone();
+        reconcile_full_snapshot(
+            snapshot,
+            tmux_reads,
+            tmux_version.as_deref(),
+            pane_output_cache,
+        )?;
+        changed = true;
+        full_snapshot_refresh = true;
     }
+
+    for (session_id, sequence) in &batch.sessions {
+        if batch
+            .resnapshot_sequence
+            .is_some_and(|resnapshot_sequence| *sequence <= resnapshot_sequence)
+        {
+            continue;
+        }
+        changed = true;
+        if let Err(error) =
+            refresh_snapshot_session(snapshot, tmux_reads, session_id, pane_output_cache)
+        {
+            fallback_to_full_resnapshot(
+                snapshot,
+                tmux_reads,
+                &format!("session:{session_id}"),
+                error,
+                pane_output_cache,
+            )?;
+            fallback_to_full = true;
+            full_snapshot_refresh = true;
+        }
+    }
+
+    for (window_id, sequence) in &batch.windows {
+        if batch
+            .resnapshot_sequence
+            .is_some_and(|resnapshot_sequence| *sequence <= resnapshot_sequence)
+        {
+            continue;
+        }
+        changed = true;
+        if let Err(error) =
+            refresh_snapshot_window(snapshot, tmux_reads, window_id, pane_output_cache)
+        {
+            fallback_to_full_resnapshot(
+                snapshot,
+                tmux_reads,
+                &format!("window:{window_id}"),
+                error,
+                pane_output_cache,
+            )?;
+            fallback_to_full = true;
+            full_snapshot_refresh = true;
+        }
+    }
+
+    let pane_scopes_after_scope_refresh = pane_scopes_by_id(snapshot);
+    let mut pane_ids: BTreeSet<String> = batch.panes.keys().cloned().collect();
+    pane_ids.extend(batch.titles.keys().filter_map(|pane_id| {
+        title_override_after_latest_refresh(
+            batch,
+            &pane_scopes_before_refresh,
+            &pane_scopes_after_scope_refresh,
+            pane_id,
+        )
+        .map(|_| pane_id.clone())
+    }));
+    for pane_id in pane_ids {
+        changed = true;
+        refresh_snapshot_pane_with_title(
+            snapshot,
+            tmux_reads,
+            &pane_id,
+            title_override_after_latest_refresh(
+                batch,
+                &pane_scopes_before_refresh,
+                &pane_scopes_after_scope_refresh,
+                &pane_id,
+            ),
+            pane_output_cache,
+        )?;
+    }
+
+    Ok(ControlEventOutcome {
+        changed,
+        fallback_to_full,
+        full_snapshot_refresh,
+    })
+}
+
+fn pane_scopes_by_id(
+    snapshot: &SnapshotEnvelope,
+) -> HashMap<String, (Option<String>, Option<String>)> {
+    snapshot
+        .panes
+        .iter()
+        .map(|pane| {
+            (
+                pane.pane_id.clone(),
+                (pane.tmux.session_id.clone(), pane.tmux.window_id.clone()),
+            )
+        })
+        .collect()
+}
+
+fn title_override_after_latest_refresh<'a>(
+    batch: &'a ControlEventBatch,
+    pane_scopes_before_refresh: &HashMap<String, (Option<String>, Option<String>)>,
+    pane_scopes_after_scope_refresh: &HashMap<String, (Option<String>, Option<String>)>,
+    pane_id: &str,
+) -> Option<&'a str> {
+    let title = batch.titles.get(pane_id)?;
+    let mut latest_refresh_sequence = batch
+        .resnapshot_sequence
+        .into_iter()
+        .chain(batch.panes.get(pane_id).copied())
+        .max();
+
+    for pane_scopes in [
+        pane_scopes_before_refresh.get(pane_id),
+        pane_scopes_after_scope_refresh.get(pane_id),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        latest_refresh_sequence =
+            latest_refresh_sequence_for_scopes(batch, pane_scopes, latest_refresh_sequence);
+    }
+
+    latest_refresh_sequence
+        .is_none_or(|latest_refresh_sequence| title.sequence > latest_refresh_sequence)
+        .then_some(title.title.as_str())
+}
+
+fn latest_refresh_sequence_for_scopes(
+    batch: &ControlEventBatch,
+    pane_scopes: &(Option<String>, Option<String>),
+    latest_refresh_sequence: Option<u64>,
+) -> Option<u64> {
+    let mut latest_refresh_sequence = latest_refresh_sequence;
+    if let Some(sequence) = pane_scopes
+        .0
+        .as_deref()
+        .and_then(|session_id| batch.sessions.get(session_id))
+    {
+        latest_refresh_sequence = Some(
+            latest_refresh_sequence
+                .map(|latest| latest.max(*sequence))
+                .unwrap_or(*sequence),
+        );
+    }
+    if let Some(sequence) = pane_scopes
+        .1
+        .as_deref()
+        .and_then(|window_id| batch.windows.get(window_id))
+    {
+        latest_refresh_sequence = Some(
+            latest_refresh_sequence
+                .map(|latest| latest.max(*sequence))
+                .unwrap_or(*sequence),
+        );
+    }
+    latest_refresh_sequence
 }
 
 pub(crate) fn read_control_mode_line(reader: &mut impl BufRead) -> Result<Option<String>> {
@@ -886,8 +1094,18 @@ fn output_title_change(line: &str) -> Option<OutputTitleChange<'_>> {
 }
 
 fn terminal_title_from_control_payload(payload: &str) -> Option<String> {
+    if !payload_may_contain_terminal_title(payload) {
+        return None;
+    }
     let decoded = decode_tmux_control_payload(payload);
     terminal_title_from_decoded_output(&decoded)
+}
+
+fn payload_may_contain_terminal_title(payload: &str) -> bool {
+    payload.contains("\\033]0;")
+        || payload.contains("\\033]2;")
+        || payload.contains("\u{1b}]0;")
+        || payload.contains("\u{1b}]2;")
 }
 
 fn decode_tmux_control_payload(payload: &str) -> String {
@@ -961,15 +1179,6 @@ fn terminal_title_from_decoded_output(output: &str) -> Option<String> {
     }
 
     title
-}
-
-fn refresh_snapshot_pane(
-    snapshot: &mut SnapshotEnvelope,
-    tmux_reads: &mut impl TmuxReadProvider,
-    pane_id: &str,
-    pane_output_cache: &mut scanner::PaneOutputStatusCache,
-) -> Result<()> {
-    refresh_snapshot_pane_with_title(snapshot, tmux_reads, pane_id, None, pane_output_cache)
 }
 
 fn refresh_snapshot_pane_with_title(
@@ -1077,13 +1286,12 @@ fn refresh_snapshot_scope(
 fn fallback_to_full_resnapshot(
     snapshot: &mut SnapshotEnvelope,
     tmux_reads: &mut impl TmuxReadProvider,
-    line: &str,
+    event_context: &str,
     error: anyhow::Error,
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
 ) -> Result<()> {
     eprintln!(
-        "agentscan: targeted refresh failed for control-mode line {:?}: {error:#}",
-        line
+        "agentscan: targeted refresh failed for control-mode event {event_context:?}: {error:#}"
     );
     let tmux_version = snapshot.source.tmux_version.clone();
     reconcile_full_snapshot(
@@ -1166,6 +1374,22 @@ fn daemon_snapshot_from_tmux_with_provider(
     Ok(snapshot)
 }
 
+fn deep_control_mode_telemetry_enabled() -> bool {
+    env::var_os(DEEP_CONTROL_MODE_TELEMETRY_ENV_VAR)
+        .as_deref()
+        .is_some_and(deep_control_mode_telemetry_value_enabled)
+}
+
+fn deep_control_mode_telemetry_value_enabled(value: &std::ffi::OsStr) -> bool {
+    let value = value.to_string_lossy();
+    let value = value.trim();
+    !value.is_empty()
+        && !matches!(
+            value.to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        )
+}
+
 #[cfg(test)]
 pub(crate) fn test_refresh_snapshot_pane_with_provider(
     snapshot: &mut SnapshotEnvelope,
@@ -1173,7 +1397,7 @@ pub(crate) fn test_refresh_snapshot_pane_with_provider(
     pane_id: &str,
 ) -> Result<()> {
     let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
-    refresh_snapshot_pane(snapshot, tmux_reads, pane_id, &mut pane_output_cache)
+    refresh_snapshot_pane_with_title(snapshot, tmux_reads, pane_id, None, &mut pane_output_cache)
 }
 
 #[cfg(test)]
@@ -1182,14 +1406,31 @@ pub(crate) fn test_apply_resnapshot_control_event_with_provider(
     tmux_reads: &mut impl TmuxReadProvider,
 ) -> Result<(bool, bool)> {
     let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
-    let outcome = apply_control_event(
-        snapshot,
-        tmux_reads,
-        "%layout-change @1",
-        &ControlEvent::Resnapshot,
-        &mut pane_output_cache,
-    )?;
+    let mut batch = ControlEventBatch::default();
+    batch.push(ControlEvent::Resnapshot);
+    let outcome = apply_control_event_batch(snapshot, tmux_reads, &batch, &mut pane_output_cache)?;
     Ok((outcome.changed, outcome.full_snapshot_refresh))
+}
+
+#[cfg(test)]
+pub(crate) fn test_apply_control_event_lines_with_provider(
+    snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &mut impl TmuxReadProvider,
+    lines: &[String],
+) -> Result<(bool, bool, bool)> {
+    let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
+    let batch = ControlEventBatch::from_lines(lines);
+    let outcome = apply_control_event_batch(snapshot, tmux_reads, &batch, &mut pane_output_cache)?;
+    Ok((
+        outcome.changed,
+        outcome.full_snapshot_refresh,
+        outcome.fallback_to_full,
+    ))
+}
+
+#[cfg(test)]
+pub(crate) fn test_deep_control_mode_telemetry_value_enabled(value: &str) -> bool {
+    deep_control_mode_telemetry_value_enabled(std::ffi::OsStr::new(value))
 }
 
 #[cfg(test)]

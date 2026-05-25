@@ -5,6 +5,9 @@ struct FakeTmuxReadProvider {
     all_panes: Vec<super::TmuxPaneRow>,
     target_panes: HashMap<String, Option<Vec<super::TmuxPaneRow>>>,
     pane_rows: HashMap<String, Option<super::TmuxPaneRow>>,
+    list_all_count: usize,
+    list_target_count: usize,
+    list_pane_count: usize,
 }
 
 impl FakeTmuxReadProvider {
@@ -30,6 +33,7 @@ impl FakeTmuxReadProvider {
 
 impl daemon::TmuxReadProvider for FakeTmuxReadProvider {
     fn list_all_panes(&mut self) -> anyhow::Result<Vec<super::TmuxPaneRow>> {
+        self.list_all_count += 1;
         Ok(self.all_panes.clone())
     }
 
@@ -37,10 +41,12 @@ impl daemon::TmuxReadProvider for FakeTmuxReadProvider {
         &mut self,
         target: &str,
     ) -> anyhow::Result<Option<Vec<super::TmuxPaneRow>>> {
+        self.list_target_count += 1;
         Ok(self.target_panes.get(target).cloned().unwrap_or(None))
     }
 
     fn list_pane(&mut self, pane_id: &str) -> anyhow::Result<Option<super::TmuxPaneRow>> {
+        self.list_pane_count += 1;
         Ok(self.pane_rows.get(pane_id).cloned().unwrap_or(None))
     }
 }
@@ -204,6 +210,261 @@ fn daemon_resnapshot_control_event_marks_full_snapshot_refresh() {
     assert!(full_snapshot_refresh);
     assert_eq!(snapshot.panes.len(), 1);
     assert_eq!(snapshot.panes[0].pane_id, "%2");
+}
+
+#[test]
+fn daemon_control_event_batch_ignores_raw_output_without_reads() {
+    let row = daemon_refresh_row("%1", "$1", "@1", 0, "unchanged");
+    let mut snapshot = daemon_refresh_snapshot(vec![row.clone()]);
+    let mut provider = FakeTmuxReadProvider::default().with_pane("%1", Some(row));
+    let lines = vec![
+        "%output %1 plain shell output".to_string(),
+        "%output %1 printf '\\134033]0;Working\\134007'".to_string(),
+    ];
+
+    let (changed, full_snapshot_refresh, fallback_to_full) =
+        daemon::test_apply_control_event_lines_with_provider(&mut snapshot, &mut provider, &lines)
+            .expect("ignored control output should not refresh panes");
+
+    assert!(!changed);
+    assert!(!full_snapshot_refresh);
+    assert!(!fallback_to_full);
+    assert_eq!(provider.list_all_count, 0);
+    assert_eq!(provider.list_target_count, 0);
+    assert_eq!(provider.list_pane_count, 0);
+    assert_eq!(snapshot.panes[0].tmux.pane_title_raw, "unchanged");
+}
+
+#[test]
+fn daemon_control_event_batch_coalesces_latest_title_per_pane() {
+    let row = daemon_refresh_row("%1", "$1", "@1", 0, "stale");
+    let mut snapshot = daemon_refresh_snapshot(vec![row.clone()]);
+    let mut provider = FakeTmuxReadProvider::default().with_pane("%1", Some(row));
+    let lines = vec![
+        "%output %1 \\033]0;first\\007".to_string(),
+        "%subscription-changed agentscan $1 @1 0 %1 : %1:Codex:codex::::".to_string(),
+        "%output %1 \\033]2;second\\033\\\\".to_string(),
+    ];
+
+    let (changed, full_snapshot_refresh, fallback_to_full) =
+        daemon::test_apply_control_event_lines_with_provider(&mut snapshot, &mut provider, &lines)
+            .expect("batched pane control events should refresh once");
+
+    assert!(changed);
+    assert!(!full_snapshot_refresh);
+    assert!(!fallback_to_full);
+    assert_eq!(provider.list_all_count, 0);
+    assert_eq!(provider.list_target_count, 0);
+    assert_eq!(provider.list_pane_count, 1);
+    assert_eq!(snapshot.panes[0].tmux.pane_title_raw, "second");
+}
+
+#[test]
+fn daemon_control_event_batch_applies_standalone_title() {
+    let row = daemon_refresh_row("%1", "$1", "@1", 0, "stale");
+    let mut snapshot = daemon_refresh_snapshot(vec![row.clone()]);
+    let mut provider = FakeTmuxReadProvider::default().with_pane("%1", Some(row));
+    let lines = vec!["%output %1 \\033]0;from-control-mode\\007".to_string()];
+
+    let (changed, full_snapshot_refresh, fallback_to_full) =
+        daemon::test_apply_control_event_lines_with_provider(&mut snapshot, &mut provider, &lines)
+            .expect("standalone title event should refresh pane");
+
+    assert!(changed);
+    assert!(!full_snapshot_refresh);
+    assert!(!fallback_to_full);
+    assert_eq!(provider.list_pane_count, 1);
+    assert_eq!(snapshot.panes[0].tmux.pane_title_raw, "from-control-mode");
+}
+
+#[test]
+fn daemon_control_event_batch_applies_title_after_resnapshot() {
+    let old_row = daemon_refresh_row("%1", "$1", "@1", 0, "old");
+    let full_row = daemon_refresh_row("%1", "$1", "@1", 0, "from-full-snapshot");
+    let pane_row = daemon_refresh_row("%1", "$1", "@1", 0, "from-pane-read");
+    let mut snapshot = daemon_refresh_snapshot(vec![old_row]);
+    let mut provider = FakeTmuxReadProvider::default()
+        .with_all_panes(vec![full_row])
+        .with_pane("%1", Some(pane_row));
+    let lines = vec![
+        "%sessions-changed".to_string(),
+        "%output %1 \\033]0;from-control-mode\\007".to_string(),
+    ];
+
+    let (changed, full_snapshot_refresh, fallback_to_full) =
+        daemon::test_apply_control_event_lines_with_provider(&mut snapshot, &mut provider, &lines)
+            .expect("batched resnapshot and title events should both apply");
+
+    assert!(changed);
+    assert!(full_snapshot_refresh);
+    assert!(!fallback_to_full);
+    assert_eq!(provider.list_all_count, 1);
+    assert_eq!(provider.list_target_count, 0);
+    assert_eq!(provider.list_pane_count, 1);
+    assert_eq!(snapshot.panes[0].tmux.pane_title_raw, "from-control-mode");
+}
+
+#[test]
+fn daemon_control_event_batch_applies_window_refresh_after_resnapshot() {
+    let old_row = daemon_refresh_row("%1", "$1", "@1", 0, "old");
+    let full_row = daemon_refresh_row("%1", "$1", "@1", 0, "from-full-snapshot");
+    let window_row = daemon_refresh_row("%1", "$1", "@1", 0, "from-window-refresh");
+    let mut snapshot = daemon_refresh_snapshot(vec![old_row]);
+    let mut provider = FakeTmuxReadProvider::default()
+        .with_all_panes(vec![full_row])
+        .with_target_panes("@1", Some(vec![window_row]));
+    let lines = vec!["%sessions-changed".to_string(), "%window-add @1".to_string()];
+
+    let (changed, full_snapshot_refresh, fallback_to_full) =
+        daemon::test_apply_control_event_lines_with_provider(&mut snapshot, &mut provider, &lines)
+            .expect("later window event should refresh after resnapshot");
+
+    assert!(changed);
+    assert!(full_snapshot_refresh);
+    assert!(!fallback_to_full);
+    assert_eq!(provider.list_all_count, 1);
+    assert_eq!(provider.list_target_count, 1);
+    assert_eq!(snapshot.panes[0].tmux.pane_title_raw, "from-window-refresh");
+}
+
+#[test]
+fn daemon_control_event_batch_drops_stale_title_before_new_window_pane() {
+    let window_row = daemon_refresh_row("%1", "$1", "@1", 0, "from-window-refresh");
+    let mut snapshot = daemon_refresh_snapshot(Vec::new());
+    let mut provider =
+        FakeTmuxReadProvider::default().with_target_panes("@1", Some(vec![window_row]));
+    let lines = vec![
+        "%output %1 \\033]0;stale-control-title\\007".to_string(),
+        "%window-add @1".to_string(),
+    ];
+
+    let (changed, full_snapshot_refresh, fallback_to_full) =
+        daemon::test_apply_control_event_lines_with_provider(&mut snapshot, &mut provider, &lines)
+            .expect("later window refresh should win for newly discovered pane");
+
+    assert!(changed);
+    assert!(!full_snapshot_refresh);
+    assert!(!fallback_to_full);
+    assert_eq!(provider.list_target_count, 1);
+    assert_eq!(provider.list_pane_count, 0);
+    assert_eq!(snapshot.panes[0].tmux.pane_title_raw, "from-window-refresh");
+}
+
+#[test]
+fn daemon_control_event_batch_keeps_unknown_title_before_unrelated_window_refresh() {
+    let titled_row = daemon_refresh_row("%1", "$1", "@1", 0, "from-pane-read");
+    let window_row = daemon_refresh_row("%2", "$1", "@2", 0, "other-window");
+    let mut snapshot = daemon_refresh_snapshot(Vec::new());
+    let mut provider = FakeTmuxReadProvider::default()
+        .with_pane("%1", Some(titled_row))
+        .with_target_panes("@2", Some(vec![window_row]));
+    let lines = vec![
+        "%output %1 \\033]0;from-control-mode\\007".to_string(),
+        "%window-add @2".to_string(),
+    ];
+
+    let (changed, full_snapshot_refresh, fallback_to_full) =
+        daemon::test_apply_control_event_lines_with_provider(&mut snapshot, &mut provider, &lines)
+            .expect("unrelated window refresh should not suppress unknown pane title");
+
+    assert!(changed);
+    assert!(!full_snapshot_refresh);
+    assert!(!fallback_to_full);
+    assert_eq!(provider.list_target_count, 1);
+    assert_eq!(provider.list_pane_count, 1);
+    let titled = snapshot
+        .panes
+        .iter()
+        .find(|pane| pane.pane_id == "%1")
+        .expect("title event should discover pane");
+    assert_eq!(titled.tmux.pane_title_raw, "from-control-mode");
+}
+
+#[test]
+fn daemon_control_event_batch_keeps_title_before_unrelated_window_refresh() {
+    let titled_row = daemon_refresh_row("%1", "$1", "@1", 0, "old-title");
+    let pane_row = daemon_refresh_row("%1", "$1", "@1", 0, "from-pane-read");
+    let window_row = daemon_refresh_row("%2", "$1", "@2", 0, "other-window");
+    let mut snapshot = daemon_refresh_snapshot(vec![titled_row]);
+    let mut provider = FakeTmuxReadProvider::default()
+        .with_pane("%1", Some(pane_row))
+        .with_target_panes("@2", Some(vec![window_row]));
+    let lines = vec![
+        "%output %1 \\033]0;from-control-mode\\007".to_string(),
+        "%window-add @2".to_string(),
+    ];
+
+    let (changed, full_snapshot_refresh, fallback_to_full) =
+        daemon::test_apply_control_event_lines_with_provider(&mut snapshot, &mut provider, &lines)
+            .expect("unrelated window refresh should not discard pane title");
+
+    assert!(changed);
+    assert!(!full_snapshot_refresh);
+    assert!(!fallback_to_full);
+    assert_eq!(provider.list_target_count, 1);
+    assert_eq!(provider.list_pane_count, 1);
+    let titled = snapshot
+        .panes
+        .iter()
+        .find(|pane| pane.pane_id == "%1")
+        .expect("titled pane should remain");
+    assert_eq!(titled.tmux.pane_title_raw, "from-control-mode");
+}
+
+#[test]
+fn daemon_control_event_batch_does_not_apply_stale_title_before_pane_refresh() {
+    let row = daemon_refresh_row("%1", "$1", "@1", 0, "old");
+    let refreshed_row = daemon_refresh_row("%1", "$1", "@1", 0, "from-pane-read");
+    let mut snapshot = daemon_refresh_snapshot(vec![row]);
+    let mut provider = FakeTmuxReadProvider::default().with_pane("%1", Some(refreshed_row));
+    let lines = vec![
+        "%output %1 \\033]0;stale-control-title\\007".to_string(),
+        "%subscription-changed agentscan $1 @1 0 %1 : %1:Codex:codex::::".to_string(),
+    ];
+
+    let (changed, full_snapshot_refresh, fallback_to_full) =
+        daemon::test_apply_control_event_lines_with_provider(&mut snapshot, &mut provider, &lines)
+            .expect("later pane refresh should win over earlier title event");
+
+    assert!(changed);
+    assert!(!full_snapshot_refresh);
+    assert!(!fallback_to_full);
+    assert_eq!(provider.list_pane_count, 1);
+    assert_eq!(snapshot.panes[0].tmux.pane_title_raw, "from-pane-read");
+}
+
+#[test]
+fn daemon_control_event_batch_does_not_refresh_for_stale_title_before_resnapshot() {
+    let old_row = daemon_refresh_row("%1", "$1", "@1", 0, "old");
+    let full_row = daemon_refresh_row("%1", "$1", "@1", 0, "from-full-snapshot");
+    let mut snapshot = daemon_refresh_snapshot(vec![old_row]);
+    let mut provider = FakeTmuxReadProvider::default().with_all_panes(vec![full_row]);
+    let lines = vec![
+        "%output %1 \\033]0;stale-control-title\\007".to_string(),
+        "%sessions-changed".to_string(),
+    ];
+
+    let (changed, full_snapshot_refresh, fallback_to_full) =
+        daemon::test_apply_control_event_lines_with_provider(&mut snapshot, &mut provider, &lines)
+            .expect("later resnapshot should win over earlier title event");
+
+    assert!(changed);
+    assert!(full_snapshot_refresh);
+    assert!(!fallback_to_full);
+    assert_eq!(provider.list_all_count, 1);
+    assert_eq!(provider.list_pane_count, 0);
+    assert_eq!(snapshot.panes[0].tmux.pane_title_raw, "from-full-snapshot");
+}
+
+#[test]
+fn daemon_deep_control_mode_telemetry_env_value_parser() {
+    assert!(daemon::test_deep_control_mode_telemetry_value_enabled("1"));
+    assert!(daemon::test_deep_control_mode_telemetry_value_enabled("true"));
+    assert!(daemon::test_deep_control_mode_telemetry_value_enabled(" yes "));
+    assert!(!daemon::test_deep_control_mode_telemetry_value_enabled(""));
+    assert!(!daemon::test_deep_control_mode_telemetry_value_enabled("0"));
+    assert!(!daemon::test_deep_control_mode_telemetry_value_enabled("false"));
+    assert!(!daemon::test_deep_control_mode_telemetry_value_enabled("off"));
 }
 
 #[test]

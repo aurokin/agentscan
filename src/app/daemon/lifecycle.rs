@@ -1254,7 +1254,10 @@ fn read_subscription_frames(
             }
             Err(error)
                 if error_chain_contains_io_kind(&error, std::io::ErrorKind::TimedOut)
-                    || error_chain_contains_io_kind(&error, std::io::ErrorKind::WouldBlock) => {}
+                    || error_chain_contains_io_kind(&error, std::io::ErrorKind::WouldBlock) =>
+            {
+                sleep_subscription_backoff(cancel, Duration::from_millis(10));
+            }
             Err(error) => {
                 return SubscriptionReadResult::Reconnect(format!(
                     "daemon subscription read failed: {error:#}"

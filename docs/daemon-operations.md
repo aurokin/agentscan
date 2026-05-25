@@ -88,6 +88,11 @@ No-op reconcile passes are intentionally silent on the subscription stream. Use
 daemon status counters for observability; do not treat periodic snapshot frames
 as heartbeats.
 
+Ignored control-mode lines are also telemetry-silent by default so high-volume
+pane output does not churn daemon status state. Set
+`AGENTSCAN_DEEP_CONTROL_MODE_TELEMETRY=1` when investigating raw control-mode
+event volume and no-op daemon wakeups.
+
 ## Broker Fallback
 
 Steady-state daemon `list-panes` reads use the brokered tmux control-mode

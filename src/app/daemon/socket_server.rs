@@ -108,6 +108,13 @@ pub(super) struct DaemonSocketServerHandle {
     socket_identity: Option<SocketFileIdentity>,
 }
 
+impl DaemonSocketServerHandle {
+    pub(super) fn socket_still_matches(&self) -> bool {
+        self.socket_identity
+            .is_none_or(|identity| identity.still_matches(&self.socket_path))
+    }
+}
+
 impl Drop for DaemonSocketServerHandle {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);

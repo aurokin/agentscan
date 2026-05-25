@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.1 - 2026-05-24
+
+### Fixed
+
+- Batched tmux control-mode event handling so high-volume pane output no longer
+  wakes the daemon and refreshes telemetry once per ignored line.
+- Preserved ordered pane, title, window, session, resnapshot, and exit behavior
+  across coalesced control-mode batches.
+- Added a guarded daemon socket identity check so orphaned daemons whose socket
+  path disappears can self-exit instead of lingering after interrupted tests.
+- Added defensive subscription read backoff for transient timeout or
+  `WouldBlock` errors.
+
+### Diagnostics
+
+- Added `AGENTSCAN_DEEP_CONTROL_MODE_TELEMETRY=1` for investigating ignored
+  control-mode event volume without making that telemetry churn the default.
+
 ## 0.3.0 - 2026-05-23
 
 ### Added
