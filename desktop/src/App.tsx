@@ -219,7 +219,6 @@ function App() {
   });
   const [pickerFilter, setPickerFilter] = useState("");
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [isPickerVisible, setIsPickerVisible] = useState(true);
   const [view, setView] = useState<ShellView>("picker");
   // Tracks the active runner config so in-flight refreshes/focus can detect a
   // profile switch OR a settings change and discard results from the previous
@@ -516,7 +515,7 @@ function App() {
         try {
           await register(PICKER_HOTKEY, (event) => {
             if (event.state === "Pressed") {
-              void raisePickerWindow(() => setIsPickerVisible(true));
+              void raisePickerWindow();
             }
           });
           registered = true;
@@ -728,7 +727,7 @@ function App() {
   }
 
   function handlePickerKeyDown(event: KeyboardEvent) {
-    if (view !== "picker" || !isPickerVisible) {
+    if (view !== "picker") {
       return;
     }
 
@@ -911,33 +910,6 @@ function App() {
     const handler = (event: KeyboardEvent) => pickerKeyDownRef.current(event);
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, []);
-
-  // Keep isPickerVisible in sync when the window is revealed outside our own
-  // hide/show paths (e.g. dock click after a hotkey hide). Gaining focus implies
-  // the picker is on screen, so re-enable keyboard navigation.
-  useEffect(() => {
-    let unlisten: UnlistenFn | undefined;
-    let disposed = false;
-    void getCurrentWindow()
-      .onFocusChanged(({ payload: focused }) => {
-        if (focused) {
-          setIsPickerVisible(true);
-        }
-      })
-      .then((fn) => {
-        // Cleanup may run before this resolves (StrictMode/unmount); detach
-        // immediately so the listener isn't leaked.
-        if (disposed) {
-          fn();
-          return;
-        }
-        unlisten = fn;
-      });
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
   }, []);
 
   // Settings must be reachable even when the daemon/IPC is unreachable: that is
@@ -1877,10 +1849,9 @@ function liveStateLabel(state: LiveConnectionState) {
 
 // Persistent-window model: the global hotkey raises/focuses the window; it
 // never toggles it away.
-async function raisePickerWindow(beforeShow: () => void) {
+async function raisePickerWindow() {
   await enqueueWindowOperation(async () => {
     const appWindow = getCurrentWindow();
-    beforeShow();
     await placePickerWindow();
     await appWindow.show();
     await appWindow.setFocus();
