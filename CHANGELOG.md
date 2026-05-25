@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.3 - 2026-05-25
+
 ### Changed
 
 - Limited daemon proc/libproc fallback to full snapshot reconcile paths; targeted
