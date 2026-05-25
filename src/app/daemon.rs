@@ -60,7 +60,6 @@ const CONTROL_MODE_ACTIVE_RECONCILE_INTERVAL: Duration = Duration::from_secs(30)
 const CONTROL_MODE_FALLBACK_RECONCILE_INTERVAL: Duration = Duration::from_secs(1);
 const CONTROL_MODE_ACTIVE_RECONCILE_INTERVAL_ENV_VAR: &str =
     "AGENTSCAN_CONTROL_MODE_ACTIVE_RECONCILE_INTERVAL_MS";
-const DISABLE_RECONCILE_ENV_VAR: &str = "AGENTSCAN_DISABLE_RECONCILE";
 const TRACE_EVENTS_ENV_VAR: &str = "AGENTSCAN_TRACE_EVENTS";
 const TRACE_EVENT_LIMIT_ENV_VAR: &str = "AGENTSCAN_TRACE_EVENT_LIMIT";
 const DEFAULT_TRACE_EVENT_LIMIT: usize = 1000;
@@ -166,6 +165,7 @@ fn daemon_run_with_socket_path_and_startup(
     let socket_state = server.state();
     socket_state.set_identity(identity);
     let server_handle = server.spawn();
+    let runtime_options = config::resolve_runtime_options()?;
 
     let tmux_version = startup.tmux_version();
 
@@ -201,6 +201,7 @@ fn daemon_run_with_socket_path_and_startup(
         tmux_version,
         pending_snapshot,
         tmux_client,
+        runtime_options,
         DaemonEventTrace::from_socket_path(socket_path),
     )?;
     runtime.run(&server_handle)?;
@@ -221,6 +222,8 @@ struct DaemonRuntime<S> {
     next_reconcile_at: Instant,
     telemetry: RuntimeTelemetry,
     deep_control_mode_telemetry: bool,
+    disable_reconcile: bool,
+    disable_proc_fallback: bool,
     event_trace: Option<DaemonEventTrace>,
 }
 
@@ -481,6 +484,7 @@ impl<S: StartupActions> DaemonRuntime<S> {
         tmux_version: Option<String>,
         pending_snapshot: PreparedSnapshot,
         tmux_client: StartedTmuxControlModeClient,
+        runtime_options: config::ResolvedRuntimeOptions,
         event_trace: Option<DaemonEventTrace>,
     ) -> Result<Self> {
         let snapshot = pending_snapshot.snapshot.clone();
@@ -502,6 +506,8 @@ impl<S: StartupActions> DaemonRuntime<S> {
             next_reconcile_at,
             telemetry,
             deep_control_mode_telemetry: deep_control_mode_telemetry_enabled(),
+            disable_reconcile: runtime_options.disable_reconcile,
+            disable_proc_fallback: runtime_options.disable_proc_fallback,
             event_trace,
         })
     }
@@ -516,7 +522,7 @@ impl<S: StartupActions> DaemonRuntime<S> {
                 DAEMON_SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
                 break;
             }
-            if !reconcile_disabled() && Instant::now() >= self.next_reconcile_at {
+            if !self.disable_reconcile && Instant::now() >= self.next_reconcile_at {
                 self.apply_refresh_request(RefreshRequest::IntervalReconcile)?;
             }
 
@@ -530,7 +536,7 @@ impl<S: StartupActions> DaemonRuntime<S> {
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    if !reconcile_disabled() && Instant::now() >= self.next_reconcile_at {
+                    if !self.disable_reconcile && Instant::now() >= self.next_reconcile_at {
                         self.apply_refresh_request(RefreshRequest::TimeoutReconcile)?;
                     }
                 }
@@ -541,7 +547,7 @@ impl<S: StartupActions> DaemonRuntime<S> {
     }
 
     fn next_control_mode_wait(&self) -> Duration {
-        if reconcile_disabled() {
+        if self.disable_reconcile {
             return CONTROL_MODE_MAX_WAIT;
         }
         self.next_reconcile_at
@@ -664,6 +670,7 @@ impl<S: StartupActions> DaemonRuntime<S> {
             &mut event_tmux_reads,
             &batch,
             &mut self.pane_output_cache,
+            self.disable_proc_fallback,
         )?;
         if !event_outcome.changed {
             let (reconnected, reset_reconcile_timer) =
@@ -735,6 +742,7 @@ impl<S: StartupActions> DaemonRuntime<S> {
             &mut reconcile_tmux_reads,
             self.tmux_version.as_deref(),
             &mut self.pane_output_cache,
+            self.disable_proc_fallback,
         )?;
         self.telemetry
             .record_reconcile_result(&previous_snapshot, &self.snapshot);
@@ -760,6 +768,7 @@ impl<S: StartupActions> DaemonRuntime<S> {
                 &mut reconnect_tmux_reads,
                 tmux_version.as_deref(),
                 &mut self.pane_output_cache,
+                self.disable_proc_fallback,
             )?;
             self.telemetry
                 .record_reconcile_result(&previous_snapshot, &self.snapshot);
@@ -1168,6 +1177,7 @@ fn apply_control_event_batch(
     tmux_reads: &mut impl TmuxReadProvider,
     batch: &ControlEventBatch,
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
+    disable_proc_fallback: bool,
 ) -> Result<ControlEventOutcome> {
     let pane_scopes_before_refresh = pane_scopes_by_id(snapshot);
     let mut changed = false;
@@ -1184,6 +1194,7 @@ fn apply_control_event_batch(
             tmux_reads,
             tmux_version.as_deref(),
             pane_output_cache,
+            disable_proc_fallback,
         )?;
         changed = true;
         full_snapshot_refresh = true;
@@ -1207,6 +1218,7 @@ fn apply_control_event_batch(
                 &format!("session:{session_id}"),
                 error,
                 pane_output_cache,
+                disable_proc_fallback,
             )?;
             fallback_to_full = true;
             full_snapshot_refresh = true;
@@ -1231,6 +1243,7 @@ fn apply_control_event_batch(
                 &format!("window:{window_id}"),
                 error,
                 pane_output_cache,
+                disable_proc_fallback,
             )?;
             fallback_to_full = true;
             full_snapshot_refresh = true;
@@ -1755,6 +1768,7 @@ fn fallback_to_full_resnapshot(
     event_context: &str,
     error: anyhow::Error,
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
+    disable_proc_fallback: bool,
 ) -> Result<()> {
     eprintln!(
         "agentscan: targeted refresh failed for control-mode event {event_context:?}: {error:#}"
@@ -1765,6 +1779,7 @@ fn fallback_to_full_resnapshot(
         tmux_reads,
         tmux_version.as_deref(),
         pane_output_cache,
+        disable_proc_fallback,
     )
 }
 
@@ -1773,12 +1788,14 @@ fn reconcile_full_snapshot(
     tmux_reads: &mut impl TmuxReadProvider,
     tmux_version: Option<&str>,
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
+    disable_proc_fallback: bool,
 ) -> Result<()> {
     *snapshot = daemon_snapshot_from_tmux_with_provider(
         tmux_reads,
         tmux_version,
         pane_output_cache,
         Instant::now(),
+        disable_proc_fallback,
     )?;
     Ok(())
 }
@@ -1904,10 +1921,15 @@ fn daemon_snapshot_from_tmux_with_provider(
     tmux_version: Option<&str>,
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
     now: Instant,
+    disable_proc_fallback: bool,
 ) -> Result<SnapshotEnvelope> {
     let rows = tmux_reads.list_all_panes()?;
     let proc_inspector = proc::ProcProcessInspector;
-    let mut panes = classify::panes_from_rows_with_proc_fallback(rows, &proc_inspector);
+    let mut panes = classify::panes_from_rows_with_proc_fallback_options(
+        rows,
+        &proc_inspector,
+        disable_proc_fallback,
+    );
     scanner::apply_pane_output_status_fallbacks_with_cache(&mut panes, pane_output_cache, now);
 
     let mut snapshot = SnapshotEnvelope {
@@ -1930,10 +1952,6 @@ fn daemon_snapshot_from_tmux_with_provider(
 
 fn deep_control_mode_telemetry_enabled() -> bool {
     env_value_enabled(DEEP_CONTROL_MODE_TELEMETRY_ENV_VAR)
-}
-
-fn reconcile_disabled() -> bool {
-    env_value_enabled(DISABLE_RECONCILE_ENV_VAR)
 }
 
 fn control_mode_active_reconcile_interval() -> Duration {
@@ -1989,7 +2007,8 @@ pub(crate) fn test_apply_resnapshot_control_event_with_provider(
     let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
     let mut batch = ControlEventBatch::default();
     batch.push(ControlEvent::Resnapshot);
-    let outcome = apply_control_event_batch(snapshot, tmux_reads, &batch, &mut pane_output_cache)?;
+    let outcome =
+        apply_control_event_batch(snapshot, tmux_reads, &batch, &mut pane_output_cache, false)?;
     Ok((outcome.changed, outcome.full_snapshot_refresh))
 }
 
@@ -2001,7 +2020,8 @@ pub(crate) fn test_apply_control_event_lines_with_provider(
 ) -> Result<(bool, bool, bool)> {
     let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
     let batch = ControlEventBatch::from_lines(lines);
-    let outcome = apply_control_event_batch(snapshot, tmux_reads, &batch, &mut pane_output_cache)?;
+    let outcome =
+        apply_control_event_batch(snapshot, tmux_reads, &batch, &mut pane_output_cache, false)?;
     Ok((
         outcome.changed,
         outcome.full_snapshot_refresh,
@@ -2017,7 +2037,8 @@ pub(crate) fn test_apply_control_event_lines_with_provider_counts(
 ) -> Result<(bool, bool, bool, u64, u64, u64)> {
     let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
     let batch = ControlEventBatch::from_lines(lines);
-    let outcome = apply_control_event_batch(snapshot, tmux_reads, &batch, &mut pane_output_cache)?;
+    let outcome =
+        apply_control_event_batch(snapshot, tmux_reads, &batch, &mut pane_output_cache, false)?;
     Ok((
         outcome.changed,
         outcome.full_snapshot_refresh,
@@ -2159,7 +2180,13 @@ pub(crate) fn test_reconcile_full_snapshot_with_provider(
     tmux_version: Option<&str>,
 ) -> Result<()> {
     let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
-    reconcile_full_snapshot(snapshot, tmux_reads, tmux_version, &mut pane_output_cache)
+    reconcile_full_snapshot(
+        snapshot,
+        tmux_reads,
+        tmux_version,
+        &mut pane_output_cache,
+        false,
+    )
 }
 
 pub(crate) fn window_notification_target(line: &str) -> Option<&str> {

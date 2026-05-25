@@ -15,7 +15,9 @@ pub(crate) use display::{display_metadata, normalize_title_for_display};
 pub(crate) use pane_output::{
     apply_pane_output_status_fallback, pane_output_status_fallback_candidate,
 };
+#[cfg(test)]
 pub(crate) use proc_fallback::apply_proc_fallback;
+pub(crate) use proc_fallback::apply_proc_fallback_with_options;
 #[cfg(test)]
 pub(crate) use provider_match::classify_provider;
 use provider_match::{
@@ -83,14 +85,23 @@ pub(crate) fn pane_from_row(row: TmuxPaneRow) -> PaneRecord {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn panes_from_rows_with_proc_fallback(
     rows: Vec<TmuxPaneRow>,
     inspector: &impl proc::ProcessInspector,
 ) -> Vec<PaneRecord> {
+    panes_from_rows_with_proc_fallback_options(rows, inspector, false)
+}
+
+pub(crate) fn panes_from_rows_with_proc_fallback_options(
+    rows: Vec<TmuxPaneRow>,
+    inspector: &impl proc::ProcessInspector,
+    disable_proc_fallback: bool,
+) -> Vec<PaneRecord> {
     rows.into_iter()
         .map(|row| {
             let mut pane = pane_from_row(row);
-            apply_proc_fallback(&mut pane, inspector);
+            apply_proc_fallback_with_options(&mut pane, inspector, disable_proc_fallback);
             pane
         })
         .collect()

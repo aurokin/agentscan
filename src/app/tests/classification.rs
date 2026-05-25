@@ -99,6 +99,27 @@ fn proc_fallback_resolves_only_targeted_ambiguous_candidates() {
 }
 
 #[test]
+fn proc_fallback_options_can_skip_process_inspection() {
+    let rows =
+        tmux::parse_pane_rows(TMUX_AMBIGUOUS_FIXTURE).expect("ambiguous fixture should parse");
+    let inspector = FakeProcessInspector::new([(602001, vec!["codex".to_string()])]);
+    let panes = classify::panes_from_rows_with_proc_fallback_options(rows, &inspector, true);
+
+    let node_launcher = pane_by_id(&panes, "%601");
+    assert_eq!(node_launcher.provider, None);
+    assert_eq!(
+        node_launcher.diagnostics.proc_fallback.outcome,
+        super::ProcFallbackOutcome::Skipped
+    );
+    assert_eq!(
+        node_launcher.diagnostics.proc_fallback.reason,
+        "proc fallback disabled by configuration"
+    );
+    assert!(node_launcher.diagnostics.proc_fallback.commands.is_empty());
+    assert!(inspector.calls().is_empty());
+}
+
+#[test]
 fn proc_fallback_leaves_candidate_unknown_without_provider_evidence() {
     let mut pane = classify::pane_from_row(super::TmuxPaneRow {
         session_name: "ambiguous".to_string(),

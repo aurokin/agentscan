@@ -281,6 +281,8 @@ Delivered daemon architecture:
 - live state uses a Unix-socket JSON-Lines protocol
 - the daemon is event-driven first, with a reconcile safety loop and telemetry
   counters for event/reconcile behavior
+- diagnostic config can disable the reconcile safety loop or proc fallback for
+  observability investigations, with environment variables as runtime overrides
 - the cache file and `agentscan cache` surface are removed
 - `agentscan tui` is the interactive command; `agentscan popup` is removed
 

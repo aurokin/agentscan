@@ -233,6 +233,8 @@ building once.
 ```toml
 # ${XDG_CONFIG_HOME:-~/.config}/agentscan/config.toml
 icons = "emoji"
+disable_reconcile = false
+disable_proc_fallback = false
 ```
 
 Supported icon modes:
@@ -248,6 +250,19 @@ Icon mode precedence is CLI, then environment, then config file, then default:
 agentscan list --icons nerd-font
 AGENTSCAN_ICONS=nerd-font agentscan tui
 ```
+
+Diagnostic toggles use environment values first, then config file values, then
+the built-in `false` default:
+
+```sh
+AGENTSCAN_DISABLE_RECONCILE=1 agentscan daemon run
+AGENTSCAN_DISABLE_PROC_FALLBACK=1 agentscan daemon run
+```
+
+`disable_reconcile` turns off the daemon's periodic/timeout reconcile safety
+loop. `disable_proc_fallback` skips process-tree inspection for ambiguous panes.
+The daemon reads these runtime options on startup. Both are intended for
+debugging and observability, not as recommended defaults.
 
 `agentscan providers` previews the active text icon mode, and
 `agentscan providers --format json` exposes every icon mode and codepoint for

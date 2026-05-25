@@ -11,9 +11,14 @@ pub(crate) fn snapshot_from_tmux() -> Result<SnapshotEnvelope> {
 pub(crate) fn snapshot_from_tmux_with_version(
     tmux_version: Option<String>,
 ) -> Result<SnapshotEnvelope> {
+    let runtime_options = config::resolve_runtime_options()?;
     let rows = tmux::tmux_list_panes()?;
     let proc_inspector = proc::ProcProcessInspector;
-    let mut panes = classify::panes_from_rows_with_proc_fallback(rows, &proc_inspector);
+    let mut panes = classify::panes_from_rows_with_proc_fallback_options(
+        rows,
+        &proc_inspector,
+        runtime_options.disable_proc_fallback,
+    );
     apply_pane_output_status_fallbacks(&mut panes);
 
     let mut snapshot = SnapshotEnvelope {

@@ -1,12 +1,19 @@
 use super::*;
 
-const DISABLE_PROC_FALLBACK_ENV_VAR: &str = "AGENTSCAN_DISABLE_PROC_FALLBACK";
-
+#[cfg(test)]
 pub(crate) fn apply_proc_fallback(pane: &mut PaneRecord, inspector: &impl proc::ProcessInspector) {
-    if proc_fallback_disabled() {
+    apply_proc_fallback_with_options(pane, inspector, false);
+}
+
+pub(crate) fn apply_proc_fallback_with_options(
+    pane: &mut PaneRecord,
+    inspector: &impl proc::ProcessInspector,
+    disabled: bool,
+) {
+    if disabled {
         pane.diagnostics.proc_fallback = ProcFallbackDiagnostics {
             outcome: ProcFallbackOutcome::Skipped,
-            reason: format!("proc fallback disabled by {DISABLE_PROC_FALLBACK_ENV_VAR}"),
+            reason: "proc fallback disabled by configuration".to_string(),
             commands: Vec::new(),
         };
         return;
@@ -57,22 +64,6 @@ pub(crate) fn apply_proc_fallback(pane: &mut PaneRecord, inspector: &impl proc::
         reason: "resolved provider from process evidence".to_string(),
         commands,
     };
-}
-
-fn proc_fallback_disabled() -> bool {
-    std::env::var_os(DISABLE_PROC_FALLBACK_ENV_VAR)
-        .as_deref()
-        .is_some_and(env_value_enabled)
-}
-
-fn env_value_enabled(value: &std::ffi::OsStr) -> bool {
-    let value = value.to_string_lossy();
-    let value = value.trim();
-    !value.is_empty()
-        && !matches!(
-            value.to_ascii_lowercase().as_str(),
-            "0" | "false" | "no" | "off"
-        )
 }
 
 struct ProcFallbackEvidence {

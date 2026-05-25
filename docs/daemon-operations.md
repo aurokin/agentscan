@@ -134,16 +134,23 @@ event volume and no-op daemon wakeups.
 
 Diagnostic-only knobs can isolate expensive or safety-net behavior:
 
+```toml
+# ${XDG_CONFIG_HOME:-~/.config}/agentscan/config.toml
+disable_reconcile = true
+disable_proc_fallback = true
+```
+
 ```sh
 AGENTSCAN_DISABLE_RECONCILE=1 agentscan daemon run
 AGENTSCAN_DISABLE_PROC_FALLBACK=1 agentscan daemon run
 ```
 
-`AGENTSCAN_DISABLE_RECONCILE=1` disables the periodic/timeout reconcile safety
-loop, but event-triggered full resnapshots can still occur when tmux emits a
-broad structural event. `AGENTSCAN_DISABLE_PROC_FALLBACK=1` marks proc fallback
-diagnostics as skipped with a clear reason. These are debugging controls, not
-recommended defaults.
+The environment variables override config file values. `disable_reconcile`
+disables the periodic/timeout reconcile safety loop, but event-triggered full
+resnapshots can still occur when tmux emits a broad structural event.
+`disable_proc_fallback` marks proc fallback diagnostics as skipped with a clear
+reason. The daemon reads these runtime options on startup, so restart the daemon
+after changing config. These are debugging controls, not recommended defaults.
 
 
 ## Broker Fallback

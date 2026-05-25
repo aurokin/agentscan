@@ -110,6 +110,71 @@ fn config_reads_icon_mode_from_file() {
 }
 
 #[test]
+fn runtime_options_default_to_enabled_safety_paths_when_file_is_missing() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let source = config::ConfigSource {
+        xdg_config_home: Some(tempdir.path().to_path_buf()),
+        ..config::ConfigSource::default()
+    };
+
+    let resolved = config::resolve_runtime_options_from_source(&source)
+        .expect("missing config should be accepted");
+
+    assert!(!resolved.disable_reconcile);
+    assert!(!resolved.disable_proc_fallback);
+    assert_eq!(
+        resolved.config_path.as_deref(),
+        Some(tempdir.path().join("agentscan/config.toml").as_path())
+    );
+}
+
+#[test]
+fn runtime_options_read_diagnostic_toggles_from_file() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let config_dir = tempdir.path().join("agentscan");
+    std::fs::create_dir_all(&config_dir).expect("config dir should be created");
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "disable_reconcile = true\ndisable_proc_fallback = true\n",
+    )
+    .expect("config file should be written");
+    let source = config::ConfigSource {
+        xdg_config_home: Some(tempdir.path().to_path_buf()),
+        ..config::ConfigSource::default()
+    };
+
+    let resolved =
+        config::resolve_runtime_options_from_source(&source).expect("config should be parsed");
+
+    assert!(resolved.disable_reconcile);
+    assert!(resolved.disable_proc_fallback);
+}
+
+#[test]
+fn runtime_options_env_overrides_file_toggles() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let config_dir = tempdir.path().join("agentscan");
+    std::fs::create_dir_all(&config_dir).expect("config dir should be created");
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "disable_reconcile = true\ndisable_proc_fallback = true\n",
+    )
+    .expect("config file should be written");
+    let source = config::ConfigSource {
+        env_disable_reconcile: Some("false".to_string()),
+        env_disable_proc_fallback: Some("0".to_string()),
+        xdg_config_home: Some(tempdir.path().to_path_buf()),
+        ..config::ConfigSource::default()
+    };
+
+    let resolved =
+        config::resolve_runtime_options_from_source(&source).expect("config should be parsed");
+
+    assert!(!resolved.disable_reconcile);
+    assert!(!resolved.disable_proc_fallback);
+}
+
+#[test]
 fn icon_mode_precedence_is_cli_env_config_default() {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let config_dir = tempdir.path().join("agentscan");

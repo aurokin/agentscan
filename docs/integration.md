@@ -73,7 +73,13 @@ The config file shape is:
 
 ```toml
 icons = "emoji"
+disable_reconcile = false
+disable_proc_fallback = false
 ```
+
+`disable_reconcile` and `disable_proc_fallback` are diagnostic runtime knobs.
+Their environment variables, `AGENTSCAN_DISABLE_RECONCILE` and
+`AGENTSCAN_DISABLE_PROC_FALLBACK`, override config file values.
 
 If a script needs data that is missing from the documented JSON surfaces, treat
 that as an API gap in `list` or snapshot JSON. Do not add hidden `tui --format`
