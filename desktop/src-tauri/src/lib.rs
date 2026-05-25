@@ -6,7 +6,7 @@ use std::{
     process::{Child, Command, ExitStatus, Stdio},
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -17,6 +17,10 @@ const HOTKEYS_TIMEOUT: Duration = Duration::from_secs(5);
 const FOCUS_TIMEOUT: Duration = Duration::from_secs(5);
 const DAEMON_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 const LIVE_RECONNECT_DELAY: Duration = Duration::from_secs(1);
+// Grace period to let a subscribe child exit on its own after its stdout signals
+// termination (EOF or a terminal frame) before we kill it, so a child that
+// lingers can't park the worker thread on an unbounded wait().
+const LIVE_CHILD_EXIT_GRACE: Duration = Duration::from_millis(500);
 const LIVE_PICKER_EVENT: &str = "agentscan-live-picker";
 const PICKER_WINDOW_MARGIN: f64 = 16.0;
 const PICKER_WINDOW_TARGET_WIDTH: f64 = 420.0;
@@ -26,6 +30,16 @@ const PICKER_WINDOW_MIN_HEIGHT: f64 = 560.0;
 const PICKER_WINDOW_MAX_HEIGHT: f64 = 960.0;
 
 static LIVE_PICKER: OnceLock<Mutex<Option<LivePickerSupervisor>>> = OnceLock::new();
+// Serializes whole start operations (stop + spawn + install) so overlapping
+// starts cannot interleave and leave a newer start silently no-op'ing while an
+// older one wins the install race.
+static LIVE_PICKER_START: OnceLock<Mutex<()>> = OnceLock::new();
+// Highest subscription epoch we have honored with a start. The frontend issues
+// strictly-increasing epochs (persisted across reload/HMR), so a late start()
+// from a torn-down page carries a lower epoch; rejecting it here keeps that
+// stale start from replacing the live page's worker. Read/written only under
+// the start lock.
+static LIVE_PICKER_LAST_STARTED: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -60,7 +74,11 @@ struct LocalEnvironmentVariable {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 enum DesktopRunnerSettings {
     Local {
         binary_path: Option<String>,
@@ -126,6 +144,7 @@ struct PickerLocation {
 
 #[derive(Debug)]
 struct LivePickerSupervisor {
+    epoch: u64,
     stop: Arc<AtomicBool>,
     child: Arc<Mutex<Option<Child>>>,
     worker: Option<JoinHandle<()>>,
@@ -139,6 +158,17 @@ enum SubscribeFrame {
     Offline { message: String, retrying: bool },
     Shutdown { message: String },
     Fatal { message: String },
+}
+
+// Wraps every emitted event with the epoch of the subscription that produced
+// it. The live event channel is global, so on a profile switch a late frame
+// from the previous worker can still arrive; the frontend compares the epoch to
+// the subscription it requested and drops events from a superseded worker.
+#[derive(Clone, Debug, serde::Serialize)]
+struct LivePickerEnvelope {
+    epoch: u64,
+    #[serde(flatten)]
+    event: LivePickerEvent,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
@@ -215,7 +245,10 @@ fn load_picker_rows(settings: Option<DesktopRunnerSettings>) -> Result<Vec<Picke
 }
 
 #[tauri::command]
-fn focus_picker_row(pane_id: String, settings: Option<DesktopRunnerSettings>) -> Result<(), String> {
+fn focus_picker_row(
+    pane_id: String,
+    settings: Option<DesktopRunnerSettings>,
+) -> Result<(), String> {
     let runner = AgentscanRunner::from_settings(settings);
     focus_picker_row_with_runner(&runner, &pane_id)
 }
@@ -224,14 +257,18 @@ fn focus_picker_row(pane_id: String, settings: Option<DesktopRunnerSettings>) ->
 fn start_live_picker(
     app: tauri::AppHandle,
     settings: Option<DesktopRunnerSettings>,
+    epoch: u64,
 ) -> Result<(), String> {
     let runner = AgentscanRunner::from_settings(settings);
-    start_live_picker_with_runner(app, runner)
+    start_live_picker_with_runner(app, runner, epoch)
 }
 
 #[tauri::command]
-fn stop_live_picker() -> Result<(), String> {
-    stop_live_picker_supervisor()
+fn stop_live_picker(epoch: u64) -> Result<(), String> {
+    // Epoch-guarded so a stale stop (e.g. from a reloaded/HMR'd frontend whose
+    // async cleanup arrives after a newer subscription has started) cannot tear
+    // down the current worker. Only stop if the running supervisor is this epoch.
+    stop_live_picker_supervisor_for_epoch(Some(epoch))
 }
 
 #[tauri::command]
@@ -276,7 +313,8 @@ fn logical_work_area_for_monitor(monitor: &tauri::Monitor) -> LogicalWorkArea {
 }
 
 fn sidebar_placement_for_work_area(work_area: LogicalWorkArea) -> PickerWindowPlacement {
-    let available_width = (work_area.width - PICKER_WINDOW_MARGIN * 2.0).max(PICKER_WINDOW_MIN_WIDTH);
+    let available_width =
+        (work_area.width - PICKER_WINDOW_MARGIN * 2.0).max(PICKER_WINDOW_MIN_WIDTH);
     let available_height =
         (work_area.height - PICKER_WINDOW_MARGIN * 2.0).max(PICKER_WINDOW_MIN_HEIGHT);
     let width = clamp_f64(
@@ -448,7 +486,16 @@ fn load_picker_rows_with_runner(runner: &AgentscanRunner) -> Result<Vec<PickerRo
 }
 
 fn load_picker_rows_from_runner(runner: &AgentscanRunner) -> Result<Vec<PickerRow>, String> {
-    let output = run_agentscan_command(runner, &["hotkeys", "--format", "json"], HOTKEYS_TIMEOUT)
+    load_picker_rows_from_runner_interruptible(runner, None)
+}
+
+fn load_picker_rows_from_runner_interruptible(
+    runner: &AgentscanRunner,
+    stop: Option<&AtomicBool>,
+) -> Result<Vec<PickerRow>, String> {
+    let mut command = agentscan_command(runner, &["hotkeys", "--format", "json"])
+        .map_err(|error| classify_desktop_failure(runner, "hotkeys", &error))?;
+    let output = run_command_with_timeout_interruptible(&mut command, HOTKEYS_TIMEOUT, stop)
         .map_err(|error| {
             classify_desktop_failure(
                 runner,
@@ -480,10 +527,13 @@ fn focus_picker_row_with_runner(runner: &AgentscanRunner, pane_id: &str) -> Resu
 
 #[cfg(test)]
 fn focus_picker_row_with_binary(binary: OsString, pane_id: &str) -> Result<(), String> {
-    focus_picker_row_with_runner(&AgentscanRunner::Local(LocalRunnerSettings {
-        binary_path: Some(binary.to_string_lossy().into_owned()),
-        env: Vec::new(),
-    }), pane_id)
+    focus_picker_row_with_runner(
+        &AgentscanRunner::Local(LocalRunnerSettings {
+            binary_path: Some(binary.to_string_lossy().into_owned()),
+            env: Vec::new(),
+        }),
+        pane_id,
+    )
 }
 
 fn focus_picker_row_with_runner_and_timeout(
@@ -532,14 +582,35 @@ fn focus_args_for_runner<'a>(
 fn start_live_picker_with_runner(
     app: tauri::AppHandle,
     runner: AgentscanRunner,
+    epoch: u64,
 ) -> Result<(), String> {
+    // Hold the start lock across the whole stop+spawn+install so overlapping
+    // starts can't interleave; the loser would otherwise see a supervisor
+    // installed between our stop and re-lock and silently no-op.
+    let _start_guard = live_picker_start_lock()
+        .lock()
+        .map_err(|_| "live picker start lock poisoned".to_owned())?;
+
+    // Ignore a stale start whose epoch does not advance past the last one we
+    // honored. Epochs increase strictly across reloads/HMR, so a lower-or-equal
+    // epoch here means this start came from a torn-down page; installing it
+    // would stop the live page's worker and the live page (filtering on its own
+    // higher epoch) would then drop every frame. We only *commit* the epoch
+    // after the worker is installed (below), so a failed start does not advance
+    // the guard and silently reject the frontend's retry of the same epoch.
+    if epoch <= LIVE_PICKER_LAST_STARTED.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+
+    // Replace any running supervisor so the requested subscription (and its
+    // epoch) always starts. stop joins the old worker without holding the
+    // supervisor lock, so re-locking below is safe and (under the start lock)
+    // no other start can install in between.
+    stop_live_picker_supervisor()?;
+
     let mut supervisor = live_picker_supervisor()
         .lock()
         .map_err(|_| "live picker supervisor lock poisoned".to_owned())?;
-
-    if supervisor.is_some() {
-        return Ok(());
-    }
 
     let stop = Arc::new(AtomicBool::new(false));
     let child = Arc::new(Mutex::new(None));
@@ -547,23 +618,41 @@ fn start_live_picker_with_runner(
     let worker_child = Arc::clone(&child);
     let worker = thread::Builder::new()
         .name("agentscan-live-picker".to_owned())
-        .spawn(move || run_live_picker_worker(app, runner, worker_stop, worker_child))
+        .spawn(move || run_live_picker_worker(app, runner, worker_stop, worker_child, epoch))
         .map_err(|error| format!("Unable to start live picker worker: {error}"))?;
 
     *supervisor = Some(LivePickerSupervisor {
+        epoch,
         stop,
         child,
         worker: Some(worker),
     });
 
+    // Commit the epoch only now that the worker is installed.
+    LIVE_PICKER_LAST_STARTED.store(epoch, Ordering::SeqCst);
+
     Ok(())
 }
 
 fn stop_live_picker_supervisor() -> Result<(), String> {
-    let supervisor = live_picker_supervisor()
-        .lock()
-        .map_err(|_| "live picker supervisor lock poisoned".to_owned())?
-        .take();
+    stop_live_picker_supervisor_for_epoch(None)
+}
+
+// Take and tear down the current supervisor. When `target` is Some, only stop
+// if the running supervisor's epoch matches (used by the epoch-guarded command);
+// when None, stop unconditionally (used by start to replace any prior worker).
+// The worker is joined after the lock guard is dropped to avoid deadlocking with
+// the worker's own supervisor cleanup.
+fn stop_live_picker_supervisor_for_epoch(target: Option<u64>) -> Result<(), String> {
+    let supervisor = {
+        let mut guard = live_picker_supervisor()
+            .lock()
+            .map_err(|_| "live picker supervisor lock poisoned".to_owned())?;
+        let matches = guard
+            .as_ref()
+            .is_some_and(|current| target.is_none_or(|epoch| current.epoch == epoch));
+        if matches { guard.take() } else { None }
+    };
 
     if let Some(mut supervisor) = supervisor {
         supervisor.stop.store(true, Ordering::SeqCst);
@@ -581,11 +670,16 @@ fn live_picker_supervisor() -> &'static Mutex<Option<LivePickerSupervisor>> {
     LIVE_PICKER.get_or_init(|| Mutex::new(None))
 }
 
+fn live_picker_start_lock() -> &'static Mutex<()> {
+    LIVE_PICKER_START.get_or_init(|| Mutex::new(()))
+}
+
 fn run_live_picker_worker(
     app: tauri::AppHandle,
     runner: AgentscanRunner,
     stop: Arc<AtomicBool>,
     child_slot: Arc<Mutex<Option<Child>>>,
+    epoch: u64,
 ) {
     let mut has_connected = false;
 
@@ -593,6 +687,7 @@ fn run_live_picker_worker(
         if has_connected {
             emit_live_picker_event(
                 &app,
+                epoch,
                 LivePickerEvent::Reconnecting {
                     message: "Reconnecting to agentscan subscribe".to_owned(),
                     diagnostics: load_daemon_status(&runner).ok(),
@@ -601,13 +696,14 @@ fn run_live_picker_worker(
         } else {
             emit_live_picker_event(
                 &app,
+                epoch,
                 LivePickerEvent::Connecting {
                     message: "Connecting to agentscan subscribe".to_owned(),
                 },
             );
         }
 
-        match run_live_picker_subscription(&app, &runner, &stop, &child_slot) {
+        match run_live_picker_subscription(&app, &runner, &stop, &child_slot, epoch) {
             LivePickerWorkerExit::Stopped | LivePickerWorkerExit::Shutdown => break,
             LivePickerWorkerExit::Fatal => break,
             LivePickerWorkerExit::Retry => {
@@ -641,6 +737,7 @@ fn run_live_picker_subscription(
     runner: &AgentscanRunner,
     stop: &AtomicBool,
     child_slot: &Arc<Mutex<Option<Child>>>,
+    epoch: u64,
 ) -> LivePickerWorkerExit {
     let mut command = match agentscan_command(runner, &["subscribe", "--format", "json"]) {
         Ok(command) => command,
@@ -648,6 +745,7 @@ fn run_live_picker_subscription(
             let message = classify_desktop_failure(runner, "subscribe", &error);
             emit_live_picker_event(
                 app,
+                epoch,
                 LivePickerEvent::Fatal {
                     message,
                     diagnostics: None,
@@ -668,6 +766,7 @@ fn run_live_picker_subscription(
             );
             emit_live_picker_event(
                 app,
+                epoch,
                 LivePickerEvent::Offline {
                     message,
                     retrying: true,
@@ -685,6 +784,7 @@ fn run_live_picker_subscription(
             let _ = child.wait();
             emit_live_picker_event(
                 app,
+                epoch,
                 LivePickerEvent::Offline {
                     message: "agentscan subscribe did not expose stdout".to_owned(),
                     retrying: true,
@@ -696,21 +796,39 @@ fn run_live_picker_subscription(
     };
 
     let stderr = child.stderr.take();
-    if let Ok(mut slot) = child_slot.lock() {
-        *slot = Some(child);
-    } else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return LivePickerWorkerExit::Retry;
+    match child_slot.lock() {
+        Ok(mut slot) => {
+            // A stop that raced ahead of us already ran its kill against an empty
+            // slot (the child wasn't stored yet), so re-check the flag under the
+            // lock. Otherwise we'd store the child and block in the read loop on a
+            // process nobody will kill, wedging the stop that joins this worker.
+            if stop.load(Ordering::SeqCst) {
+                drop(slot);
+                let _ = child.kill();
+                let _ = child.wait();
+                return LivePickerWorkerExit::Stopped;
+            }
+            *slot = Some(child);
+        }
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return LivePickerWorkerExit::Retry;
+        }
     }
 
-    let stderr_reader = stderr.map(|stderr| {
-        thread::Builder::new()
-            .name("agentscan-live-picker-stderr".to_owned())
-            .spawn(move || read_process_stderr(stderr))
-            .ok()
-    });
+    // Drain stderr on its own thread, accumulating into a shared buffer rather
+    // than joining the thread directly: a descendant that inherited this pipe
+    // (e.g. an auto-started daemon) can hold it open after the subscribe child
+    // exits, so an unbounded join would wedge the worker — and any stop joining
+    // it — forever. The shared buffer also means the bounded collection below
+    // still returns the stderr the thread already read instead of discarding it.
+    let stderr_collector = spawn_pipe_collector(stderr);
     let mut exit = LivePickerWorkerExit::Retry;
+    // Set when the loop already emitted an Offline describing why it ended, so
+    // the generic exit-reason emit below doesn't overwrite it with a vaguer
+    // (or, after we kill the child, misleading) message.
+    let mut reported_offline = false;
 
     for line in BufReader::new(stdout).lines() {
         if stop.load(Ordering::SeqCst) {
@@ -721,7 +839,7 @@ fn run_live_picker_subscription(
         match line {
             Ok(line) if line.trim().is_empty() => {}
             Ok(line) => match serde_json::from_str::<SubscribeFrame>(&line) {
-                Ok(frame) => match handle_subscribe_frame(app, runner, frame) {
+                Ok(frame) => match handle_subscribe_frame(app, runner, frame, epoch, stop) {
                     LivePickerWorkerExit::Retry => {}
                     terminal_exit => {
                         exit = terminal_exit;
@@ -736,12 +854,18 @@ fn run_live_picker_subscription(
                     );
                     emit_live_picker_event(
                         app,
+                        epoch,
                         LivePickerEvent::Offline {
                             message,
                             retrying: true,
                             diagnostics: load_daemon_status(runner).ok(),
                         },
                     );
+                    // A malformed frame is a protocol error, not a process exit:
+                    // the child keeps stdout open and would block the wait below
+                    // forever. Kill it so the worker can fall through to retry.
+                    kill_live_picker_child(child_slot);
+                    reported_offline = true;
                     break;
                 }
             },
@@ -754,12 +878,14 @@ fn run_live_picker_subscription(
                     );
                     emit_live_picker_event(
                         app,
+                        epoch,
                         LivePickerEvent::Offline {
                             message,
                             retrying: true,
                             diagnostics: load_daemon_status(runner).ok(),
                         },
                     );
+                    reported_offline = true;
                 }
                 break;
             }
@@ -767,16 +893,13 @@ fn run_live_picker_subscription(
     }
 
     let status_message = wait_for_live_picker_child(child_slot);
-    let stderr = stderr_reader
-        .flatten()
-        .and_then(|worker| worker.join().ok())
-        .unwrap_or_default();
+    let stderr = filter_stderr_text(&collect_pipe(stderr_collector, LIVE_CHILD_EXIT_GRACE));
 
     if stop.load(Ordering::SeqCst) {
         return LivePickerWorkerExit::Stopped;
     }
 
-    if matches!(exit, LivePickerWorkerExit::Retry) {
+    if matches!(exit, LivePickerWorkerExit::Retry) && !reported_offline {
         let message = classify_desktop_failure(
             runner,
             "subscribe",
@@ -784,6 +907,7 @@ fn run_live_picker_subscription(
         );
         emit_live_picker_event(
             app,
+            epoch,
             LivePickerEvent::Offline {
                 message,
                 retrying: true,
@@ -799,15 +923,18 @@ fn handle_subscribe_frame(
     app: &tauri::AppHandle,
     runner: &AgentscanRunner,
     frame: SubscribeFrame,
+    epoch: u64,
+    stop: &AtomicBool,
 ) -> LivePickerWorkerExit {
-    match live_event_from_subscribe_frame(runner, frame) {
+    match live_event_from_subscribe_frame(runner, frame, stop) {
         Ok((event, exit)) => {
-            emit_live_picker_event(app, event);
+            emit_live_picker_event(app, epoch, event);
             exit
         }
         Err(message) => {
             emit_live_picker_event(
                 app,
+                epoch,
                 LivePickerEvent::Fatal {
                     message,
                     diagnostics: load_daemon_status(runner).ok(),
@@ -821,6 +948,7 @@ fn handle_subscribe_frame(
 fn live_event_from_subscribe_frame(
     runner: &AgentscanRunner,
     frame: SubscribeFrame,
+    stop: &AtomicBool,
 ) -> Result<(LivePickerEvent, LivePickerWorkerExit), String> {
     match frame {
         SubscribeFrame::Connecting { message } => Ok((
@@ -828,7 +956,9 @@ fn live_event_from_subscribe_frame(
             LivePickerWorkerExit::Retry,
         )),
         SubscribeFrame::Snapshot { snapshot } => {
-            let rows = match load_picker_rows_from_runner(runner) {
+            // Pass the worker's stop flag so a profile/runner switch isn't blocked
+            // for the full hotkeys timeout while this snapshot fetch is in flight.
+            let rows = match load_picker_rows_from_runner_interruptible(runner, Some(stop)) {
                 Ok(rows) => rows,
                 Err(message) => {
                     return Ok((
@@ -853,7 +983,14 @@ fn live_event_from_subscribe_frame(
                 retrying,
                 diagnostics: load_daemon_status(runner).ok(),
             },
-            LivePickerWorkerExit::Retry,
+            // Honor the daemon's own retry decision: a terminal offline frame
+            // (retrying:false, e.g. auto-start disabled) must settle, not loop
+            // the subscription forever.
+            if retrying {
+                LivePickerWorkerExit::Retry
+            } else {
+                LivePickerWorkerExit::Shutdown
+            },
         )),
         SubscribeFrame::Shutdown { message } => Ok((
             LivePickerEvent::Shutdown { message },
@@ -915,28 +1052,53 @@ fn load_daemon_status(runner: &AgentscanRunner) -> Result<serde_json::Value, Str
     })
 }
 
-fn read_process_stderr(stderr: impl std::io::Read) -> String {
-    let mut lines = Vec::new();
-    for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-        if !line.trim().is_empty() {
-            lines.push(line);
-        }
-    }
-    lines.join("\n")
+// Render collected stderr bytes into a compact message, dropping blank lines.
+// Takes already-buffered bytes (from a pipe collector) so partial diagnostics
+// survive even when the pipe never reaches EOF because a descendant holds it.
+fn filter_stderr_text(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn wait_for_live_picker_child(child_slot: &Arc<Mutex<Option<Child>>>) -> Option<String> {
-    let mut child = child_slot.lock().ok()?.take()?;
-    Some(match child.wait() {
-        Ok(status) => format!("agentscan subscribe exited with status {status}"),
-        Err(error) => format!("Unable to wait for agentscan subscribe: {error}"),
-    })
+    // Take the child out and drop the slot guard before blocking, so a
+    // concurrent kill (profile switch / shutdown) can always reach the slot
+    // while we reap. (If that kill ran first it already took the child, and
+    // this returns None.)
+    let mut child = child_slot.lock().ok().and_then(|mut slot| slot.take())?;
+
+    // The child has almost always exited already (that is why stdout reached
+    // EOF). If it lingers after signaling termination, give it a short grace
+    // period and then kill it rather than waiting unbounded.
+    let deadline = Instant::now() + LIVE_CHILD_EXIT_GRACE;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return Some(format!("agentscan subscribe exited with status {status}"));
+            }
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                return Some(match child.wait() {
+                    Ok(status) => {
+                        format!("agentscan subscribe did not exit; terminated ({status})")
+                    }
+                    Err(error) => format!("Unable to wait for agentscan subscribe: {error}"),
+                });
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(25)),
+            Err(error) => return Some(format!("Unable to wait for agentscan subscribe: {error}")),
+        }
+    }
 }
 
 fn kill_live_picker_child(child_slot: &Arc<Mutex<Option<Child>>>) {
-    if let Ok(mut slot) = child_slot.lock()
-        && let Some(mut child) = slot.take()
-    {
+    // Take the child out and release the slot lock before blocking in wait(),
+    // so other lifecycle paths can still acquire the slot while we reap.
+    let child = child_slot.lock().ok().and_then(|mut slot| slot.take());
+    if let Some(mut child) = child {
         let _ = child.kill();
         let _ = child.wait();
     }
@@ -960,8 +1122,8 @@ fn sleep_until_retry_or_stop(stop: &AtomicBool) {
     }
 }
 
-fn emit_live_picker_event(app: &tauri::AppHandle, event: LivePickerEvent) {
-    let _ = tauri::Emitter::emit(app, LIVE_PICKER_EVENT, event);
+fn emit_live_picker_event(app: &tauri::AppHandle, epoch: u64, event: LivePickerEvent) {
+    let _ = tauri::Emitter::emit(app, LIVE_PICKER_EVENT, LivePickerEnvelope { epoch, event });
 }
 
 fn validate_picker_rows(rows: &[PickerRow]) -> Result<(), String> {
@@ -1161,7 +1323,14 @@ fn ssh_agentscan_command(settings: &SshRunnerSettings, args: &[&str]) -> Result<
 fn remote_agentscan_script(settings: &SshRunnerSettings, args: &[&str]) -> Result<String, String> {
     validate_command_env(&settings.env)?;
 
-    let mut parts = Vec::with_capacity(settings.env.len() + args.len() + 2);
+    let mut parts = Vec::with_capacity(settings.env.len() + args.len() + 3);
+    // Run via `exec env NAME=VALUE ... binary args` rather than the POSIX
+    // `NAME=VALUE exec binary` prefix form. SSH hands this string to the remote
+    // user's login shell, and the inline assignment prefix is not portable
+    // (csh/tcsh reject it). `env` is an external command parsed identically by
+    // every shell, so env-bearing SSH profiles work regardless of remote shell.
+    parts.push("exec".to_owned());
+    parts.push("env".to_owned());
     for variable in &settings.env {
         parts.push(format!(
             "{}={}",
@@ -1169,7 +1338,6 @@ fn remote_agentscan_script(settings: &SshRunnerSettings, args: &[&str]) -> Resul
             shell_quote(&variable.value)
         ));
     }
-    parts.push("exec".to_owned());
     parts.push(shell_quote(&remote_agentscan_binary_for_settings(settings)));
     parts.extend(args.iter().map(|arg| shell_quote(arg)));
     Ok(parts.join(" "))
@@ -1235,13 +1403,46 @@ fn run_command_with_timeout(
     command: &mut Command,
     timeout: Duration,
 ) -> Result<CommandOutput, String> {
+    run_command_with_timeout_interruptible(command, timeout, None)
+}
+
+fn run_command_with_timeout_interruptible(
+    command: &mut Command,
+    timeout: Duration,
+    stop: Option<&AtomicBool>,
+) -> Result<CommandOutput, String> {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command.spawn().map_err(|error| error.to_string())?;
 
+    // Drain stdout/stderr on their own threads so the timeout governs the whole
+    // operation. `wait_with_output` reads the pipes to EOF, which never arrives
+    // if a descendant (e.g. an auto-started agentscan daemon) inherited and is
+    // holding these pipes open after the direct child exits — that would hang
+    // the command past its timeout. Collecting via channels lets us cap the
+    // post-exit drain instead of blocking forever.
+    let stdout_rx = spawn_pipe_collector(child.stdout.take());
+    let stderr_rx = spawn_pipe_collector(child.stderr.take());
+
     let start = Instant::now();
     loop {
+        // Bail promptly when a caller (e.g. the live picker worker on a profile
+        // switch) signals stop, so it isn't blocked for the full timeout.
+        if stop.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("agentscan command canceled".to_owned());
+        }
+
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(status)) => {
+                // The child exited; its own output is already written. Drain the
+                // buffered bytes but don't wait out a descendant holding the pipe.
+                return Ok(CommandOutput {
+                    status,
+                    stdout: collect_pipe(stdout_rx, LIVE_CHILD_EXIT_GRACE),
+                    stderr: collect_pipe(stderr_rx, LIVE_CHILD_EXIT_GRACE),
+                });
+            }
             Ok(None) if start.elapsed() >= timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -1258,15 +1459,60 @@ fn run_command_with_timeout(
             }
         }
     }
+}
 
-    let output = child
-        .wait_with_output()
-        .map_err(|error| error.to_string())?;
-    Ok(CommandOutput {
-        status: output.status,
-        stdout: output.stdout,
-        stderr: output.stderr,
+// A child pipe being drained on a detached background thread. Bytes read so far
+// accumulate in a shared buffer, and `done` fires once the reader reaches EOF.
+// Detached so a descendant holding the pipe open can't block callers; see
+// run_command_with_timeout.
+struct PipeCollector {
+    buf: Arc<Mutex<Vec<u8>>>,
+    done: std::sync::mpsc::Receiver<()>,
+}
+
+fn spawn_pipe_collector<R: std::io::Read + Send + 'static>(
+    reader: Option<R>,
+) -> Option<PipeCollector> {
+    reader.map(|mut reader| {
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let writer = Arc::clone(&buf);
+        let (done_tx, done) = std::sync::mpsc::channel();
+        let _ = thread::Builder::new()
+            .name("agentscan-command-pipe".to_owned())
+            .spawn(move || {
+                let mut chunk = [0u8; 8192];
+                loop {
+                    match std::io::Read::read(&mut reader, &mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => {
+                            if let Ok(mut guard) = writer.lock() {
+                                guard.extend_from_slice(&chunk[..read]);
+                            }
+                        }
+                    }
+                }
+                let _ = done_tx.send(());
+            });
+        PipeCollector { buf, done }
     })
+}
+
+// Wait up to `timeout` for the pipe to reach EOF, then return whatever was read.
+// A descendant holding the pipe open means EOF never arrives, but the direct
+// child's own output is already buffered — so we return it rather than dropping
+// it on a timeout (which would make a successful command look like blank output).
+fn collect_pipe(collector: Option<PipeCollector>, timeout: Duration) -> Vec<u8> {
+    match collector {
+        Some(collector) => {
+            let _ = collector.done.recv_timeout(timeout);
+            collector
+                .buf
+                .lock()
+                .map(|guard| guard.clone())
+                .unwrap_or_default()
+        }
+        None => Vec::new(),
+    }
 }
 
 fn apply_command_env(
@@ -1290,7 +1536,13 @@ fn validate_command_env(env: &[LocalEnvironmentVariable]) -> Result<(), String> 
             return Err("Environment variable names cannot be empty".to_owned());
         }
 
-        if name.contains('=') || name.contains('\0') {
+        // Names are interpolated unquoted into the remote SSH shell script
+        // (`NAME=value`), so restrict them to POSIX shell identifiers to avoid
+        // breaking the command or injecting shell syntax.
+        let mut chars = name.chars();
+        let valid = matches!(chars.next(), Some(first) if first == '_' || first.is_ascii_alphabetic())
+            && chars.all(|c| c == '_' || c.is_ascii_alphanumeric());
+        if !valid {
             return Err(format!("Invalid environment variable name: {name}"));
         }
     }
@@ -1761,7 +2013,7 @@ mod tests {
 
         assert_eq!(
             remote_agentscan_script(&settings, &["hotkeys", "--format", "json"]).unwrap(),
-            "AGENTSCAN_TMUX_SOCKET='/tmp/tmux socket' QUOTE='can'\\''t' exec '/opt/bin/agentscan custom' 'hotkeys' '--format' 'json'"
+            "exec env AGENTSCAN_TMUX_SOCKET='/tmp/tmux socket' QUOTE='can'\\''t' '/opt/bin/agentscan custom' 'hotkeys' '--format' 'json'"
         );
     }
 
@@ -1782,7 +2034,7 @@ mod tests {
             vec![
                 OsStr::new("--"),
                 OsStr::new("user@devbox"),
-                OsStr::new("exec 'agentscan' 'subscribe' '--format' 'json'")
+                OsStr::new("exec env 'agentscan' 'subscribe' '--format' 'json'")
             ]
         );
     }
