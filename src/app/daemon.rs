@@ -60,6 +60,10 @@ const CONTROL_MODE_ACTIVE_RECONCILE_INTERVAL: Duration = Duration::from_secs(30)
 const CONTROL_MODE_FALLBACK_RECONCILE_INTERVAL: Duration = Duration::from_secs(1);
 const CONTROL_MODE_ACTIVE_RECONCILE_INTERVAL_ENV_VAR: &str =
     "AGENTSCAN_CONTROL_MODE_ACTIVE_RECONCILE_INTERVAL_MS";
+const DISABLE_RECONCILE_ENV_VAR: &str = "AGENTSCAN_DISABLE_RECONCILE";
+const TRACE_EVENTS_ENV_VAR: &str = "AGENTSCAN_TRACE_EVENTS";
+const TRACE_EVENT_LIMIT_ENV_VAR: &str = "AGENTSCAN_TRACE_EVENT_LIMIT";
+const DEFAULT_TRACE_EVENT_LIMIT: usize = 1000;
 const CONTROL_MODE_EVENT_BATCH_WINDOW: Duration = Duration::from_millis(100);
 const CONTROL_MODE_MIN_WAIT: Duration = Duration::from_millis(1);
 const CONTROL_MODE_MAX_WAIT: Duration = Duration::from_millis(500);
@@ -197,6 +201,7 @@ fn daemon_run_with_socket_path_and_startup(
         tmux_version,
         pending_snapshot,
         tmux_client,
+        DaemonEventTrace::from_socket_path(socket_path),
     )?;
     runtime.run(&server_handle)?;
 
@@ -216,6 +221,7 @@ struct DaemonRuntime<S> {
     next_reconcile_at: Instant,
     telemetry: RuntimeTelemetry,
     deep_control_mode_telemetry: bool,
+    event_trace: Option<DaemonEventTrace>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -223,6 +229,12 @@ struct RuntimeTelemetry {
     control_event_refresh_count: u64,
     control_event_batch_count: u64,
     control_event_line_count: u64,
+    control_event_pane_count: u64,
+    control_event_title_count: u64,
+    control_event_window_count: u64,
+    control_event_session_count: u64,
+    control_event_resnapshot_count: u64,
+    control_event_ignored_count: u64,
     reconcile_attempt_count: u64,
     reconcile_noop_count: u64,
     reconcile_changed_snapshot_count: u64,
@@ -239,6 +251,28 @@ impl RuntimeTelemetry {
         self.control_event_line_count = self
             .control_event_line_count
             .saturating_add(line_count.try_into().unwrap_or(u64::MAX));
+    }
+
+    fn record_control_event_kinds(&mut self, batch: &ControlEventBatch) {
+        self.control_event_pane_count = self
+            .control_event_pane_count
+            .saturating_add(batch.panes.len().try_into().unwrap_or(u64::MAX));
+        self.control_event_title_count = self
+            .control_event_title_count
+            .saturating_add(batch.titles.len().try_into().unwrap_or(u64::MAX));
+        self.control_event_window_count = self
+            .control_event_window_count
+            .saturating_add(batch.windows.len().try_into().unwrap_or(u64::MAX));
+        self.control_event_session_count = self
+            .control_event_session_count
+            .saturating_add(batch.sessions.len().try_into().unwrap_or(u64::MAX));
+        if batch.resnapshot_sequence.is_some() {
+            self.control_event_resnapshot_count =
+                self.control_event_resnapshot_count.saturating_add(1);
+        }
+        self.control_event_ignored_count = self
+            .control_event_ignored_count
+            .saturating_add(batch.ignored_count);
     }
 
     fn record_control_event_refresh(&mut self, outcome: &ControlEventOutcome) {
@@ -281,6 +315,12 @@ impl RuntimeTelemetry {
             control_event_refresh_count: self.control_event_refresh_count,
             control_event_batch_count: self.control_event_batch_count,
             control_event_line_count: self.control_event_line_count,
+            control_event_pane_count: self.control_event_pane_count,
+            control_event_title_count: self.control_event_title_count,
+            control_event_window_count: self.control_event_window_count,
+            control_event_session_count: self.control_event_session_count,
+            control_event_resnapshot_count: self.control_event_resnapshot_count,
+            control_event_ignored_count: self.control_event_ignored_count,
             reconcile_attempt_count: self.reconcile_attempt_count,
             reconcile_noop_count: self.reconcile_noop_count,
             reconcile_changed_snapshot_count: self.reconcile_changed_snapshot_count,
@@ -290,6 +330,61 @@ impl RuntimeTelemetry {
             full_snapshot_refresh_count: self.full_snapshot_refresh_count,
             targeted_refresh_fallback_to_full_count: self.targeted_refresh_fallback_to_full_count,
             broker_fallback_count: broker_status.fallback_count.unwrap_or_default(),
+        }
+    }
+}
+
+struct DaemonEventTrace {
+    path: PathBuf,
+    limit: usize,
+    written_since_truncate: usize,
+}
+
+impl DaemonEventTrace {
+    fn from_socket_path(socket_path: &Path) -> Option<Self> {
+        if !env_value_enabled(TRACE_EVENTS_ENV_VAR) {
+            return None;
+        }
+        let path = socket_path.with_extension("sock.events.jsonl");
+        if let Err(error) = File::create(&path) {
+            eprintln!(
+                "agentscan: failed to initialize daemon event trace {}: {error}",
+                path.display()
+            );
+            return None;
+        }
+        Some(Self {
+            path,
+            limit: env::var(TRACE_EVENT_LIMIT_ENV_VAR)
+                .ok()
+                .and_then(|value| value.trim().parse().ok())
+                .filter(|limit| *limit > 0)
+                .unwrap_or(DEFAULT_TRACE_EVENT_LIMIT),
+            written_since_truncate: 0,
+        })
+    }
+
+    fn write(&mut self, event: &ipc::DaemonObservabilityEventFrame) {
+        if self.written_since_truncate >= self.limit {
+            if let Err(error) = File::create(&self.path) {
+                eprintln!(
+                    "agentscan: failed to rotate daemon event trace {}: {error}",
+                    self.path.display()
+                );
+                return;
+            }
+            self.written_since_truncate = 0;
+        }
+
+        let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+        else {
+            return;
+        };
+        if serde_json::to_writer(&mut file, event).is_ok() && writeln!(file).is_ok() {
+            self.written_since_truncate = self.written_since_truncate.saturating_add(1);
         }
     }
 }
@@ -304,6 +399,45 @@ struct RefreshOutcome {
     should_exit: bool,
     publish_context: Option<SnapshotPublishContext>,
     reset_reconcile_timer: bool,
+}
+
+struct RefreshObservability {
+    source: String,
+    detail: Option<String>,
+    refresh: String,
+    should_record: bool,
+}
+
+impl RefreshObservability {
+    fn from_request(request: &RefreshRequest<'_>) -> Self {
+        match request {
+            RefreshRequest::IntervalReconcile => Self {
+                source: "reconcile".to_string(),
+                detail: Some("interval".to_string()),
+                refresh: "full_snapshot".to_string(),
+                should_record: true,
+            },
+            RefreshRequest::TimeoutReconcile => Self {
+                source: "reconcile".to_string(),
+                detail: Some("timeout".to_string()),
+                refresh: "full_snapshot".to_string(),
+                should_record: true,
+            },
+            RefreshRequest::ControlModeLines(lines) => {
+                let batch = ControlEventBatch::from_lines(lines);
+                Self {
+                    source: "control_event".to_string(),
+                    detail: batch.observability_detail(),
+                    refresh: batch.observability_refresh(),
+                    should_record: batch.has_telemetry_event(),
+                }
+            }
+        }
+    }
+
+    fn should_capture_snapshot_diff(&self) -> bool {
+        self.should_record || self.refresh != "none"
+    }
 }
 
 impl RefreshOutcome {
@@ -347,6 +481,7 @@ impl<S: StartupActions> DaemonRuntime<S> {
         tmux_version: Option<String>,
         pending_snapshot: PreparedSnapshot,
         tmux_client: StartedTmuxControlModeClient,
+        event_trace: Option<DaemonEventTrace>,
     ) -> Result<Self> {
         let snapshot = pending_snapshot.snapshot.clone();
         socket_state.publish_prepared_snapshot(pending_snapshot);
@@ -367,6 +502,7 @@ impl<S: StartupActions> DaemonRuntime<S> {
             next_reconcile_at,
             telemetry,
             deep_control_mode_telemetry: deep_control_mode_telemetry_enabled(),
+            event_trace,
         })
     }
 
@@ -380,7 +516,7 @@ impl<S: StartupActions> DaemonRuntime<S> {
                 DAEMON_SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
                 break;
             }
-            if Instant::now() >= self.next_reconcile_at {
+            if !reconcile_disabled() && Instant::now() >= self.next_reconcile_at {
                 self.apply_refresh_request(RefreshRequest::IntervalReconcile)?;
             }
 
@@ -394,7 +530,7 @@ impl<S: StartupActions> DaemonRuntime<S> {
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    if Instant::now() >= self.next_reconcile_at {
+                    if !reconcile_disabled() && Instant::now() >= self.next_reconcile_at {
                         self.apply_refresh_request(RefreshRequest::TimeoutReconcile)?;
                     }
                 }
@@ -405,6 +541,9 @@ impl<S: StartupActions> DaemonRuntime<S> {
     }
 
     fn next_control_mode_wait(&self) -> Duration {
+        if reconcile_disabled() {
+            return CONTROL_MODE_MAX_WAIT;
+        }
         self.next_reconcile_at
             .saturating_duration_since(Instant::now())
             .max(CONTROL_MODE_MIN_WAIT)
@@ -433,7 +572,12 @@ impl<S: StartupActions> DaemonRuntime<S> {
     }
 
     fn apply_refresh_request(&mut self, request: RefreshRequest<'_>) -> Result<bool> {
-        let outcome = match request {
+        let started_at = Instant::now();
+        let observability = RefreshObservability::from_request(&request);
+        let previous_snapshot = observability
+            .should_capture_snapshot_diff()
+            .then(|| self.snapshot.clone());
+        let mut outcome = match request {
             RefreshRequest::IntervalReconcile => self.apply_reconcile_refresh(
                 SnapshotPublishContext::new("reconcile").with_detail("interval"),
             )?,
@@ -442,13 +586,58 @@ impl<S: StartupActions> DaemonRuntime<S> {
             )?,
             RefreshRequest::ControlModeLines(lines) => self.apply_control_mode_refresh(lines)?,
         };
-        if let Some(publish_context) = outcome.publish_context {
-            self.publish_current_snapshot(publish_context);
-        }
+        let publish_context = outcome.publish_context.take();
+        let published = if let Some(publish_context) = publish_context {
+            self.publish_current_snapshot(publish_context)
+        } else {
+            false
+        };
+        let current_snapshot = previous_snapshot.as_ref().map(|_| self.snapshot.clone());
+        self.record_observability_event(
+            observability,
+            previous_snapshot.as_ref(),
+            current_snapshot.as_ref(),
+            &outcome,
+            published,
+            started_at.elapsed(),
+        );
         if outcome.reset_reconcile_timer {
             self.next_reconcile_at = Instant::now() + self.reconcile_interval();
         }
         Ok(outcome.should_exit)
+    }
+
+    fn record_observability_event(
+        &mut self,
+        observability: RefreshObservability,
+        previous_snapshot: Option<&SnapshotEnvelope>,
+        current_snapshot: Option<&SnapshotEnvelope>,
+        outcome: &RefreshOutcome,
+        published: bool,
+        duration: Duration,
+    ) {
+        if !observability.should_record && !outcome.reset_reconcile_timer && !published {
+            return;
+        }
+        let changed = previous_snapshot
+            .zip(current_snapshot)
+            .is_some_and(|(previous, current)| !snapshots_are_materially_equal(previous, current));
+        let event = ipc::DaemonObservabilityEventFrame {
+            at: snapshot::now_rfc3339().unwrap_or_else(|_| "unknown".to_string()),
+            source: observability.source,
+            detail: observability.detail,
+            refresh: observability.refresh,
+            changed,
+            published,
+            duration_ms: Some(elapsed_millis_u64(duration)),
+            diff: previous_snapshot
+                .zip(current_snapshot)
+                .and_then(|(previous, current)| changed.then(|| snapshot_diff(previous, current))),
+        };
+        self.socket_state.record_observability_event(event.clone());
+        if let Some(trace) = &mut self.event_trace {
+            trace.write(&event);
+        }
     }
 
     fn reconcile_interval(&self) -> Duration {
@@ -461,6 +650,7 @@ impl<S: StartupActions> DaemonRuntime<S> {
             batch.has_telemetry_event() || self.deep_control_mode_telemetry;
         if should_record_batch_telemetry {
             self.telemetry.record_control_event_batch(lines.len());
+            self.telemetry.record_control_event_kinds(&batch);
         }
         let should_exit = batch.should_exit;
         let event_publish_context = batch.publish_context();
@@ -577,10 +767,10 @@ impl<S: StartupActions> DaemonRuntime<S> {
         Ok(reconnected)
     }
 
-    fn publish_current_snapshot(&self, publish_context: SnapshotPublishContext) {
+    fn publish_current_snapshot(&self, publish_context: SnapshotPublishContext) -> bool {
         self.update_runtime_telemetry();
         self.socket_state
-            .publish_later_snapshot_with_context(self.snapshot.clone(), publish_context);
+            .publish_later_snapshot_with_context(self.snapshot.clone(), publish_context)
     }
 
     fn update_runtime_telemetry(&self) {
@@ -781,6 +971,7 @@ struct ControlEventOutcome {
 struct ControlEventBatch {
     should_exit: bool,
     next_sequence: u64,
+    ignored_count: u64,
     resnapshot_sequence: Option<u64>,
     sessions: BTreeMap<String, u64>,
     windows: BTreeMap<String, u64>,
@@ -808,7 +999,7 @@ impl ControlEventBatch {
         self.next_sequence = self.next_sequence.saturating_add(1);
         match event {
             ControlEvent::Exit => self.should_exit = true,
-            ControlEvent::Ignored => {}
+            ControlEvent::Ignored => self.ignored_count = self.ignored_count.saturating_add(1),
             ControlEvent::Resnapshot => self.resnapshot_sequence = Some(sequence),
             ControlEvent::SessionChanged(session_id) => {
                 self.sessions.insert(session_id, sequence);
@@ -875,6 +1066,43 @@ impl ControlEventBatch {
             || !self.windows.is_empty()
             || !self.panes.is_empty()
             || !self.titles.is_empty()
+    }
+
+    fn observability_refresh(&self) -> String {
+        if self.resnapshot_sequence.is_some() {
+            return "full_snapshot".to_string();
+        }
+        if !self.sessions.is_empty() || !self.windows.is_empty() {
+            return "targeted_scope".to_string();
+        }
+        if !self.panes.is_empty() || !self.titles.is_empty() {
+            return "targeted_pane".to_string();
+        }
+        "none".to_string()
+    }
+
+    fn observability_detail(&self) -> Option<String> {
+        if self.resnapshot_sequence.is_some() {
+            return Some("resnapshot".to_string());
+        }
+        let event_count =
+            self.sessions.len() + self.windows.len() + self.panes.len() + self.titles.len();
+        if event_count > 1 {
+            return Some("batch".to_string());
+        }
+        if let Some(session_id) = self.sessions.keys().next() {
+            return Some(format!("session:{session_id}"));
+        }
+        if let Some(window_id) = self.windows.keys().next() {
+            return Some(format!("window:{window_id}"));
+        }
+        if let Some(pane_id) = self.panes.keys().next() {
+            return Some(format!("pane:{pane_id}"));
+        }
+        if let Some(pane_id) = self.titles.keys().next() {
+            return Some(format!("title:{pane_id}"));
+        }
+        (self.ignored_count > 0).then(|| format!("ignored:{}", self.ignored_count))
     }
 }
 
@@ -1575,6 +1803,94 @@ fn snapshots_are_materially_equal(left: &SnapshotEnvelope, right: &SnapshotEnvel
     left == right
 }
 
+fn snapshot_diff(left: &SnapshotEnvelope, right: &SnapshotEnvelope) -> ipc::SnapshotDiffFrame {
+    const MAX_DIFF_ITEMS: usize = 24;
+    let left_by_id = left
+        .panes
+        .iter()
+        .map(|pane| (pane.pane_id.as_str(), pane))
+        .collect::<HashMap<_, _>>();
+    let right_by_id = right
+        .panes
+        .iter()
+        .map(|pane| (pane.pane_id.as_str(), pane))
+        .collect::<HashMap<_, _>>();
+    let mut diff = ipc::SnapshotDiffFrame::default();
+
+    for pane_id in left_by_id.keys() {
+        if !right_by_id.contains_key(pane_id) {
+            push_bounded(
+                &mut diff.removed_pane_ids,
+                (*pane_id).to_string(),
+                &mut diff.truncated,
+            );
+        }
+    }
+    for pane_id in right_by_id.keys() {
+        if !left_by_id.contains_key(pane_id) {
+            push_bounded(
+                &mut diff.added_pane_ids,
+                (*pane_id).to_string(),
+                &mut diff.truncated,
+            );
+        }
+    }
+    for (pane_id, left_pane) in &left_by_id {
+        let Some(right_pane) = right_by_id.get(pane_id) else {
+            continue;
+        };
+        let fields = pane_diff_fields(left_pane, right_pane);
+        if fields.is_empty() {
+            continue;
+        }
+        if diff.changed_panes.len() >= MAX_DIFF_ITEMS {
+            diff.truncated = true;
+            continue;
+        }
+        diff.changed_panes.push(ipc::SnapshotPaneDiffFrame {
+            pane_id: (*pane_id).to_string(),
+            fields,
+        });
+    }
+
+    diff
+}
+
+fn push_bounded(items: &mut Vec<String>, item: String, truncated: &mut bool) {
+    const MAX_DIFF_ITEMS: usize = 24;
+    if items.len() >= MAX_DIFF_ITEMS {
+        *truncated = true;
+    } else {
+        items.push(item);
+    }
+}
+
+fn pane_diff_fields(left: &PaneRecord, right: &PaneRecord) -> Vec<String> {
+    let mut fields = Vec::new();
+    if left.provider != right.provider {
+        fields.push("provider".to_string());
+    }
+    if left.status != right.status {
+        fields.push("status".to_string());
+    }
+    if left.tmux.pane_title_raw != right.tmux.pane_title_raw {
+        fields.push("title".to_string());
+    }
+    if left.location != right.location {
+        fields.push("location".to_string());
+    }
+    if left.agent_metadata != right.agent_metadata {
+        fields.push("metadata".to_string());
+    }
+    if left.display != right.display {
+        fields.push("display".to_string());
+    }
+    if left.classification != right.classification {
+        fields.push("classification".to_string());
+    }
+    fields
+}
+
 fn normalize_snapshot_for_material_comparison(snapshot: &mut SnapshotEnvelope) {
     snapshot.generated_at.clear();
     snapshot.source.daemon_generated_at = None;
@@ -1613,9 +1929,11 @@ fn daemon_snapshot_from_tmux_with_provider(
 }
 
 fn deep_control_mode_telemetry_enabled() -> bool {
-    env::var_os(DEEP_CONTROL_MODE_TELEMETRY_ENV_VAR)
-        .as_deref()
-        .is_some_and(deep_control_mode_telemetry_value_enabled)
+    env_value_enabled(DEEP_CONTROL_MODE_TELEMETRY_ENV_VAR)
+}
+
+fn reconcile_disabled() -> bool {
+    env_value_enabled(DISABLE_RECONCILE_ENV_VAR)
 }
 
 fn control_mode_active_reconcile_interval() -> Duration {
@@ -1627,7 +1945,18 @@ fn control_mode_active_reconcile_interval() -> Duration {
         .unwrap_or(CONTROL_MODE_ACTIVE_RECONCILE_INTERVAL)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn deep_control_mode_telemetry_value_enabled(value: &std::ffi::OsStr) -> bool {
+    env_os_value_enabled(value)
+}
+
+fn env_value_enabled(name: &str) -> bool {
+    env::var_os(name)
+        .as_deref()
+        .is_some_and(env_os_value_enabled)
+}
+
+fn env_os_value_enabled(value: &std::ffi::OsStr) -> bool {
     let value = value.to_string_lossy();
     let value = value.trim();
     !value.is_empty()
@@ -1635,6 +1964,10 @@ fn deep_control_mode_telemetry_value_enabled(value: &std::ffi::OsStr) -> bool {
             value.to_ascii_lowercase().as_str(),
             "0" | "false" | "no" | "off"
         )
+}
+
+fn elapsed_millis_u64(duration: Duration) -> u64 {
+    duration.as_millis().try_into().unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]
@@ -1698,6 +2031,20 @@ pub(crate) fn test_apply_control_event_lines_with_provider_counts(
 #[cfg(test)]
 pub(crate) fn test_deep_control_mode_telemetry_value_enabled(value: &str) -> bool {
     deep_control_mode_telemetry_value_enabled(std::ffi::OsStr::new(value))
+}
+
+#[cfg(test)]
+pub(crate) fn test_control_event_observability_for_lines(
+    lines: &[String],
+) -> (bool, bool, String, Option<String>) {
+    let request = RefreshRequest::ControlModeLines(lines);
+    let observability = RefreshObservability::from_request(&request);
+    (
+        observability.should_record,
+        observability.should_capture_snapshot_diff(),
+        observability.refresh,
+        observability.detail,
+    )
 }
 
 #[cfg(test)]

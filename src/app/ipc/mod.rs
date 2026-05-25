@@ -145,6 +145,10 @@ pub(crate) struct LifecycleStatusFrame {
     pub(crate) control_mode_broker: Option<ControlModeBrokerStatusFrame>,
     #[serde(default)]
     pub(crate) runtime_telemetry: Option<RuntimeTelemetryFrame>,
+    #[serde(default)]
+    pub(crate) latest_snapshot_observability: Option<SnapshotObservabilityFrame>,
+    #[serde(default)]
+    pub(crate) recent_events: Vec<DaemonObservabilityEventFrame>,
     pub(crate) unavailable_reason: Option<UnavailableReason>,
     pub(crate) message: Option<String>,
 }
@@ -156,6 +160,18 @@ pub(crate) struct RuntimeTelemetryFrame {
     pub(crate) control_event_batch_count: u64,
     #[serde(default)]
     pub(crate) control_event_line_count: u64,
+    #[serde(default)]
+    pub(crate) control_event_pane_count: u64,
+    #[serde(default)]
+    pub(crate) control_event_title_count: u64,
+    #[serde(default)]
+    pub(crate) control_event_window_count: u64,
+    #[serde(default)]
+    pub(crate) control_event_session_count: u64,
+    #[serde(default)]
+    pub(crate) control_event_resnapshot_count: u64,
+    #[serde(default)]
+    pub(crate) control_event_ignored_count: u64,
     pub(crate) reconcile_attempt_count: u64,
     pub(crate) reconcile_noop_count: u64,
     pub(crate) reconcile_changed_snapshot_count: u64,
@@ -169,6 +185,48 @@ pub(crate) struct RuntimeTelemetryFrame {
     pub(crate) full_snapshot_refresh_count: u64,
     pub(crate) targeted_refresh_fallback_to_full_count: u64,
     pub(crate) broker_fallback_count: u64,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct SnapshotObservabilityFrame {
+    pub(crate) provider_known_count: usize,
+    pub(crate) provider_unknown_count: usize,
+    pub(crate) status_source_pane_metadata_count: usize,
+    pub(crate) status_source_tmux_title_count: usize,
+    pub(crate) status_source_pane_output_count: usize,
+    pub(crate) status_source_not_checked_count: usize,
+    pub(crate) proc_fallback_not_run_count: usize,
+    pub(crate) proc_fallback_skipped_count: usize,
+    pub(crate) proc_fallback_no_match_count: usize,
+    pub(crate) proc_fallback_error_count: usize,
+    pub(crate) proc_fallback_resolved_count: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct DaemonObservabilityEventFrame {
+    pub(crate) at: String,
+    pub(crate) source: String,
+    pub(crate) detail: Option<String>,
+    pub(crate) refresh: String,
+    pub(crate) changed: bool,
+    pub(crate) published: bool,
+    pub(crate) duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) diff: Option<SnapshotDiffFrame>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct SnapshotDiffFrame {
+    pub(crate) added_pane_ids: Vec<String>,
+    pub(crate) removed_pane_ids: Vec<String>,
+    pub(crate) changed_panes: Vec<SnapshotPaneDiffFrame>,
+    pub(crate) truncated: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct SnapshotPaneDiffFrame {
+    pub(crate) pane_id: String,
+    pub(crate) fields: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

@@ -86,6 +86,8 @@ Runtime telemetry counters in `daemon status --format json` include:
   snapshot
 - `control_event_line_count` for the control-mode lines received across processed
   batches
+- per-kind control-mode counters for pane, title, window, session, resnapshot,
+  and ignored events
 - `reconcile_attempt_count`
 - `reconcile_noop_count`
 - `reconcile_changed_snapshot_count`
@@ -103,10 +105,46 @@ No-op reconcile passes are intentionally silent on the subscription stream. Use
 daemon status counters for observability; do not treat periodic snapshot frames
 as heartbeats.
 
+`agentscan daemon status --events --format json` includes the daemon's bounded
+in-memory recent event ring. These records summarize recent control-event and
+reconcile work, whether the snapshot materially changed, whether a frame was
+published, duration, and a compact pane-level diff when available. The ring is
+bounded and is not part of normal list, snapshot, subscribe, TUI, or desktop
+consumer payloads.
+
+Status JSON also includes `latest_snapshot_observability`, a cheap summary of
+the latest snapshot's provider-known/unknown counts, status-source counts, and
+proc-fallback outcomes. Use this to see whether proc fallback is resolving
+current panes without scraping individual pane diagnostics.
+
+For opt-in durable event tracing, run the daemon with:
+
+```sh
+AGENTSCAN_TRACE_EVENTS=1 AGENTSCAN_TRACE_EVENT_LIMIT=1000 agentscan daemon run
+```
+
+Trace events are written as bounded JSON Lines to the `event_log_path` reported
+by `agentscan daemon status`. The file is truncated on daemon start and rotated
+by line count, so tracing is intentionally not an unbounded append-only log.
+
 Ignored control-mode lines are also telemetry-silent by default so high-volume
 pane output does not churn daemon status state. Set
 `AGENTSCAN_DEEP_CONTROL_MODE_TELEMETRY=1` when investigating raw control-mode
 event volume and no-op daemon wakeups.
+
+Diagnostic-only knobs can isolate expensive or safety-net behavior:
+
+```sh
+AGENTSCAN_DISABLE_RECONCILE=1 agentscan daemon run
+AGENTSCAN_DISABLE_PROC_FALLBACK=1 agentscan daemon run
+```
+
+`AGENTSCAN_DISABLE_RECONCILE=1` disables the periodic/timeout reconcile safety
+loop, but event-triggered full resnapshots can still occur when tmux emits a
+broad structural event. `AGENTSCAN_DISABLE_PROC_FALLBACK=1` marks proc fallback
+diagnostics as skipped with a clear reason. These are debugging controls, not
+recommended defaults.
+
 
 ## Broker Fallback
 

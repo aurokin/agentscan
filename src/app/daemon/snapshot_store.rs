@@ -6,6 +6,7 @@ pub(super) struct SnapshotStore {
     latest_snapshot: Option<SnapshotEnvelope>,
     latest_snapshot_frame: Option<EncodedDaemonFrame>,
     latest_snapshot_update: Option<SnapshotUpdateTelemetry>,
+    latest_observability: Option<ipc::SnapshotObservabilityFrame>,
 }
 
 impl SnapshotStore {
@@ -15,6 +16,7 @@ impl SnapshotStore {
         telemetry: SnapshotUpdateTelemetry,
     ) -> EncodedDaemonFrame {
         let frame = prepared.frame.clone();
+        self.latest_observability = Some(snapshot_observability(&prepared.snapshot));
         self.latest_snapshot = Some(prepared.snapshot);
         self.latest_snapshot_frame = Some(frame.clone());
         self.latest_snapshot_update = Some(telemetry);
@@ -40,4 +42,35 @@ impl SnapshotStore {
     pub(super) fn latest_update(&self) -> Option<&SnapshotUpdateTelemetry> {
         self.latest_snapshot_update.as_ref()
     }
+
+    pub(super) fn latest_observability(&self) -> Option<ipc::SnapshotObservabilityFrame> {
+        self.latest_observability.clone()
+    }
+}
+
+fn snapshot_observability(snapshot: &SnapshotEnvelope) -> ipc::SnapshotObservabilityFrame {
+    let mut observability = ipc::SnapshotObservabilityFrame::default();
+    for pane in &snapshot.panes {
+        if pane.provider.is_some() {
+            observability.provider_known_count += 1;
+        } else {
+            observability.provider_unknown_count += 1;
+        }
+
+        match pane.status.source {
+            StatusSource::PaneMetadata => observability.status_source_pane_metadata_count += 1,
+            StatusSource::TmuxTitle => observability.status_source_tmux_title_count += 1,
+            StatusSource::PaneOutput => observability.status_source_pane_output_count += 1,
+            StatusSource::NotChecked => observability.status_source_not_checked_count += 1,
+        }
+
+        match pane.diagnostics.proc_fallback.outcome {
+            ProcFallbackOutcome::NotRun => observability.proc_fallback_not_run_count += 1,
+            ProcFallbackOutcome::Skipped => observability.proc_fallback_skipped_count += 1,
+            ProcFallbackOutcome::NoMatch => observability.proc_fallback_no_match_count += 1,
+            ProcFallbackOutcome::Error => observability.proc_fallback_error_count += 1,
+            ProcFallbackOutcome::Resolved => observability.proc_fallback_resolved_count += 1,
+        }
+    }
+    observability
 }

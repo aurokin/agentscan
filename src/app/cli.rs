@@ -227,6 +227,10 @@ pub(crate) struct DaemonStatusArgs {
     /// Output format.
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     pub(crate) format: OutputFormat,
+
+    /// Include the bounded recent daemon observability event ring.
+    #[arg(long)]
+    pub(crate) events: bool,
 }
 
 #[derive(Subcommand, Debug)]

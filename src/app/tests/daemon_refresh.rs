@@ -842,6 +842,19 @@ fn daemon_deep_control_mode_telemetry_env_value_parser() {
 }
 
 #[test]
+fn daemon_observability_skips_snapshot_diff_for_ignored_control_output() {
+    let lines = vec!["%output %1 ordinary pane bytes".to_string()];
+
+    let (should_record, should_capture_snapshot_diff, refresh, detail) =
+        daemon::test_control_event_observability_for_lines(&lines);
+
+    assert!(!should_record);
+    assert!(!should_capture_snapshot_diff);
+    assert_eq!(refresh, "none");
+    assert_eq!(detail.as_deref(), Some("ignored:1"));
+}
+
+#[test]
 fn daemon_reconcile_publish_decision_suppresses_timestamp_only_changes() {
     let previous = empty_socket_snapshot("2026-05-23T18:00:00Z");
     let mut current = previous.clone();
