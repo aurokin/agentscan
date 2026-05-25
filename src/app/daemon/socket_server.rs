@@ -1,4 +1,7 @@
 use super::*;
+use std::collections::VecDeque;
+
+const OBSERVABILITY_EVENT_RING_CAPACITY: usize = 256;
 
 pub(super) struct DaemonSocketServer {
     listener: std::os::unix::net::UnixListener,
@@ -154,6 +157,7 @@ struct DaemonSocketStateInner {
     snapshots: SnapshotStore,
     control_mode_broker: Option<ipc::ControlModeBrokerStatusFrame>,
     runtime_telemetry: Option<ipc::RuntimeTelemetryFrame>,
+    recent_events: VecDeque<ipc::DaemonObservabilityEventFrame>,
     pending_handshakes: usize,
     subscribers: HashMap<SubscriberId, SubscriberMailbox>,
     next_subscriber_id: SubscriberId,
@@ -241,6 +245,7 @@ impl DaemonSocketState {
                 snapshots: SnapshotStore::default(),
                 control_mode_broker: None,
                 runtime_telemetry: None,
+                recent_events: VecDeque::with_capacity(OBSERVABILITY_EVENT_RING_CAPACITY),
                 pending_handshakes: 0,
                 subscribers: HashMap::new(),
                 next_subscriber_id: 1,
@@ -281,15 +286,15 @@ impl DaemonSocketState {
     }
 
     #[cfg(test)]
-    pub(crate) fn publish_later_snapshot(&self, snapshot: SnapshotEnvelope) {
-        self.publish_later_snapshot_with_context(snapshot, SnapshotPublishContext::manual());
+    pub(crate) fn publish_later_snapshot(&self, snapshot: SnapshotEnvelope) -> bool {
+        self.publish_later_snapshot_with_context(snapshot, SnapshotPublishContext::manual())
     }
 
     pub(super) fn publish_later_snapshot_with_context(
         &self,
         snapshot: SnapshotEnvelope,
         context: SnapshotPublishContext,
-    ) {
+    ) -> bool {
         let telemetry = context.telemetry();
         match encode_snapshot_frame(&snapshot) {
             Ok(frame) => {
@@ -301,12 +306,14 @@ impl DaemonSocketState {
                     (frame, subscriber_mailboxes(&inner))
                 };
                 fan_out_snapshot(frame, subscribers);
+                true
             }
             Err(error) => {
                 eprintln!(
                     "agentscan: skipped daemon socket snapshot update because encoded frame exceeded {} bytes; previous good snapshot remains active: {error:#}",
                     ipc::DAEMON_FRAME_MAX_BYTES
                 );
+                false
             }
         }
     }
@@ -442,6 +449,8 @@ impl DaemonSocketState {
                 .and_then(|update| update.duration_ms),
             control_mode_broker: inner.control_mode_broker.clone(),
             runtime_telemetry: inner.runtime_telemetry.clone(),
+            latest_snapshot_observability: inner.snapshots.latest_observability(),
+            recent_events: inner.recent_events.iter().cloned().collect(),
             unavailable_reason,
             message,
         }
@@ -458,6 +467,14 @@ impl DaemonSocketState {
     pub(super) fn update_runtime_telemetry(&self, telemetry: ipc::RuntimeTelemetryFrame) {
         let mut inner = self.lock();
         inner.runtime_telemetry = Some(telemetry);
+    }
+
+    pub(super) fn record_observability_event(&self, event: ipc::DaemonObservabilityEventFrame) {
+        let mut inner = self.lock();
+        if inner.recent_events.len() >= OBSERVABILITY_EVENT_RING_CAPACITY {
+            inner.recent_events.pop_front();
+        }
+        inner.recent_events.push_back(event);
     }
 
     pub(crate) fn try_acquire_pending_handshake(&self) -> Option<PendingHandshake> {
@@ -515,6 +532,19 @@ impl DaemonSocketState {
     #[cfg(test)]
     pub(crate) fn test_retire_subscriber(&self, id: SubscriberId) -> bool {
         self.retire_subscriber(id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_record_observability_event(
+        &self,
+        event: ipc::DaemonObservabilityEventFrame,
+    ) {
+        self.record_observability_event(event);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_recent_event_count(&self) -> usize {
+        self.lock().recent_events.len()
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, DaemonSocketStateInner> {

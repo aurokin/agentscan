@@ -6,6 +6,7 @@ pub(super) struct LifecyclePaths {
     start_lock_path: PathBuf,
     identity_path: PathBuf,
     log_path: PathBuf,
+    event_log_path: PathBuf,
 }
 
 impl LifecyclePaths {
@@ -15,6 +16,7 @@ impl LifecyclePaths {
             start_lock_path: socket_path.with_extension("sock.start.lock"),
             identity_path: socket_path.with_extension("sock.identity.json"),
             log_path: socket_path.with_extension("sock.log"),
+            event_log_path: socket_path.with_extension("sock.events.jsonl"),
         }
     }
 }
@@ -1411,6 +1413,7 @@ fn print_lifecycle_not_running(socket_path: &Path, paths: &LifecyclePaths, reaso
     println!("lock_path: {}", paths.lock_path.display());
     println!("start_lock_path: {}", paths.start_lock_path.display());
     println!("log_path: {}", paths.log_path.display());
+    println!("event_log_path: {}", paths.event_log_path.display());
     println!("reason: {reason}");
 }
 
@@ -1421,6 +1424,7 @@ struct DaemonStatusJson {
     lock_path: String,
     start_lock_path: String,
     log_path: String,
+    event_log_path: String,
     reason: Option<String>,
     pid: Option<u32>,
     daemon_start_time: Option<String>,
@@ -1441,6 +1445,12 @@ struct DaemonStatusJson {
     control_event_refresh_count: Option<u64>,
     control_event_batch_count: Option<u64>,
     control_event_line_count: Option<u64>,
+    control_event_pane_count: Option<u64>,
+    control_event_title_count: Option<u64>,
+    control_event_window_count: Option<u64>,
+    control_event_session_count: Option<u64>,
+    control_event_resnapshot_count: Option<u64>,
+    control_event_ignored_count: Option<u64>,
     reconcile_attempt_count: Option<u64>,
     reconcile_noop_count: Option<u64>,
     reconcile_changed_snapshot_count: Option<u64>,
@@ -1450,6 +1460,8 @@ struct DaemonStatusJson {
     full_snapshot_refresh_count: Option<u64>,
     targeted_refresh_fallback_to_full_count: Option<u64>,
     broker_fallback_count: Option<u64>,
+    latest_snapshot_observability: Option<ipc::SnapshotObservabilityFrame>,
+    recent_events: Option<Vec<ipc::DaemonObservabilityEventFrame>>,
     unavailable_reason: Option<String>,
     message: Option<String>,
 }
@@ -1458,6 +1470,7 @@ fn lifecycle_not_running_json(
     socket_path: &Path,
     paths: &LifecyclePaths,
     reason: &str,
+    include_events: bool,
 ) -> DaemonStatusJson {
     DaemonStatusJson {
         daemon_state: "not_running".to_string(),
@@ -1465,6 +1478,7 @@ fn lifecycle_not_running_json(
         lock_path: paths.lock_path.display().to_string(),
         start_lock_path: paths.start_lock_path.display().to_string(),
         log_path: paths.log_path.display().to_string(),
+        event_log_path: paths.event_log_path.display().to_string(),
         reason: Some(reason.to_string()),
         pid: None,
         daemon_start_time: None,
@@ -1485,6 +1499,12 @@ fn lifecycle_not_running_json(
         control_event_refresh_count: None,
         control_event_batch_count: None,
         control_event_line_count: None,
+        control_event_pane_count: None,
+        control_event_title_count: None,
+        control_event_window_count: None,
+        control_event_session_count: None,
+        control_event_resnapshot_count: None,
+        control_event_ignored_count: None,
         reconcile_attempt_count: None,
         reconcile_noop_count: None,
         reconcile_changed_snapshot_count: None,
@@ -1494,6 +1514,8 @@ fn lifecycle_not_running_json(
         full_snapshot_refresh_count: None,
         targeted_refresh_fallback_to_full_count: None,
         broker_fallback_count: None,
+        latest_snapshot_observability: None,
+        recent_events: include_events.then(Vec::new),
         unavailable_reason: None,
         message: None,
     }
@@ -1502,6 +1524,7 @@ fn lifecycle_not_running_json(
 fn lifecycle_status_json(
     paths: &LifecyclePaths,
     status: &ipc::LifecycleStatusFrame,
+    include_events: bool,
 ) -> DaemonStatusJson {
     DaemonStatusJson {
         daemon_state: lifecycle_state_label(status.state).to_string(),
@@ -1509,6 +1532,7 @@ fn lifecycle_status_json(
         lock_path: paths.lock_path.display().to_string(),
         start_lock_path: paths.start_lock_path.display().to_string(),
         log_path: paths.log_path.display().to_string(),
+        event_log_path: paths.event_log_path.display().to_string(),
         reason: None,
         pid: Some(status.identity.pid),
         daemon_start_time: Some(status.identity.daemon_start_time.clone()),
@@ -1550,6 +1574,30 @@ fn lifecycle_status_json(
             .runtime_telemetry
             .as_ref()
             .map(|telemetry| telemetry.control_event_line_count),
+        control_event_pane_count: status
+            .runtime_telemetry
+            .as_ref()
+            .map(|telemetry| telemetry.control_event_pane_count),
+        control_event_title_count: status
+            .runtime_telemetry
+            .as_ref()
+            .map(|telemetry| telemetry.control_event_title_count),
+        control_event_window_count: status
+            .runtime_telemetry
+            .as_ref()
+            .map(|telemetry| telemetry.control_event_window_count),
+        control_event_session_count: status
+            .runtime_telemetry
+            .as_ref()
+            .map(|telemetry| telemetry.control_event_session_count),
+        control_event_resnapshot_count: status
+            .runtime_telemetry
+            .as_ref()
+            .map(|telemetry| telemetry.control_event_resnapshot_count),
+        control_event_ignored_count: status
+            .runtime_telemetry
+            .as_ref()
+            .map(|telemetry| telemetry.control_event_ignored_count),
         reconcile_attempt_count: status
             .runtime_telemetry
             .as_ref()
@@ -1586,6 +1634,8 @@ fn lifecycle_status_json(
             .runtime_telemetry
             .as_ref()
             .map(|telemetry| telemetry.broker_fallback_count),
+        latest_snapshot_observability: status.latest_snapshot_observability.clone(),
+        recent_events: include_events.then(|| status.recent_events.clone()),
         unavailable_reason: status
             .unavailable_reason
             .map(unavailable_reason_label)
@@ -1599,15 +1649,19 @@ fn emit_lifecycle_not_running(
     paths: &LifecyclePaths,
     reason: &str,
     format: OutputFormat,
+    include_events: bool,
 ) -> Result<()> {
     match format {
         OutputFormat::Text => {
             print_lifecycle_not_running(socket_path, paths, reason);
             Ok(())
         }
-        OutputFormat::Json => {
-            output::print_json(&lifecycle_not_running_json(socket_path, paths, reason))
-        }
+        OutputFormat::Json => output::print_json(&lifecycle_not_running_json(
+            socket_path,
+            paths,
+            reason,
+            include_events,
+        )),
     }
 }
 
@@ -1615,13 +1669,19 @@ fn emit_lifecycle_status(
     paths: &LifecyclePaths,
     status: &ipc::LifecycleStatusFrame,
     format: OutputFormat,
+    include_events: bool,
 ) -> Result<()> {
     match format {
         OutputFormat::Text => {
             print_lifecycle_status(paths, status);
+            if include_events {
+                print_recent_observability_events(&status.recent_events);
+            }
             Ok(())
         }
-        OutputFormat::Json => output::print_json(&lifecycle_status_json(paths, status)),
+        OutputFormat::Json => {
+            output::print_json(&lifecycle_status_json(paths, status, include_events))
+        }
     }
 }
 
@@ -1663,6 +1723,7 @@ fn print_lifecycle_status(paths: &LifecyclePaths, status: &ipc::LifecycleStatusF
     println!("lock_path: {}", paths.lock_path.display());
     println!("start_lock_path: {}", paths.start_lock_path.display());
     println!("log_path: {}", paths.log_path.display());
+    println!("event_log_path: {}", paths.event_log_path.display());
     println!("pid: {}", status.identity.pid);
     println!("daemon_start_time: {}", status.identity.daemon_start_time);
     println!("executable: {}", status.identity.executable);
@@ -1722,6 +1783,30 @@ fn print_lifecycle_status(paths: &LifecyclePaths, status: &ipc::LifecycleStatusF
             telemetry.control_event_line_count
         );
         println!(
+            "control_event_pane_count: {}",
+            telemetry.control_event_pane_count
+        );
+        println!(
+            "control_event_title_count: {}",
+            telemetry.control_event_title_count
+        );
+        println!(
+            "control_event_window_count: {}",
+            telemetry.control_event_window_count
+        );
+        println!(
+            "control_event_session_count: {}",
+            telemetry.control_event_session_count
+        );
+        println!(
+            "control_event_resnapshot_count: {}",
+            telemetry.control_event_resnapshot_count
+        );
+        println!(
+            "control_event_ignored_count: {}",
+            telemetry.control_event_ignored_count
+        );
+        println!(
             "reconcile_attempt_count: {}",
             telemetry.reconcile_attempt_count
         );
@@ -1754,11 +1839,80 @@ fn print_lifecycle_status(paths: &LifecyclePaths, status: &ipc::LifecycleStatusF
     } else {
         println!("runtime_telemetry: unavailable");
     }
+    if let Some(observability) = &status.latest_snapshot_observability {
+        println!(
+            "latest_snapshot_provider_known_count: {}",
+            observability.provider_known_count
+        );
+        println!(
+            "latest_snapshot_provider_unknown_count: {}",
+            observability.provider_unknown_count
+        );
+        println!(
+            "latest_snapshot_status_source_pane_metadata_count: {}",
+            observability.status_source_pane_metadata_count
+        );
+        println!(
+            "latest_snapshot_status_source_tmux_title_count: {}",
+            observability.status_source_tmux_title_count
+        );
+        println!(
+            "latest_snapshot_status_source_pane_output_count: {}",
+            observability.status_source_pane_output_count
+        );
+        println!(
+            "latest_snapshot_status_source_not_checked_count: {}",
+            observability.status_source_not_checked_count
+        );
+        println!(
+            "latest_snapshot_proc_fallback_not_run_count: {}",
+            observability.proc_fallback_not_run_count
+        );
+        println!(
+            "latest_snapshot_proc_fallback_skipped_count: {}",
+            observability.proc_fallback_skipped_count
+        );
+        println!(
+            "latest_snapshot_proc_fallback_no_match_count: {}",
+            observability.proc_fallback_no_match_count
+        );
+        println!(
+            "latest_snapshot_proc_fallback_error_count: {}",
+            observability.proc_fallback_error_count
+        );
+        println!(
+            "latest_snapshot_proc_fallback_resolved_count: {}",
+            observability.proc_fallback_resolved_count
+        );
+    }
     if let Some(reason) = status.unavailable_reason {
         println!("unavailable_reason: {}", unavailable_reason_label(reason));
     }
     if let Some(message) = &status.message {
         println!("message: {message}");
+    }
+}
+
+fn print_recent_observability_events(events: &[ipc::DaemonObservabilityEventFrame]) {
+    println!("recent_events:");
+    if events.is_empty() {
+        println!("  <empty>");
+        return;
+    }
+    for event in events {
+        println!(
+            "  {} source={} detail={} refresh={} changed={} published={} duration_ms={}",
+            event.at,
+            event.source,
+            event.detail.as_deref().unwrap_or("<none>"),
+            event.refresh,
+            event.changed,
+            event.published,
+            event
+                .duration_ms
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "<none>".to_string())
+        );
     }
 }
 
@@ -2040,21 +2194,24 @@ pub(crate) fn daemon_run() -> Result<()> {
     daemon_run_with_socket_path_and_startup(&socket_path, DaemonStartup)
 }
 
-pub(crate) fn daemon_status(format: OutputFormat) -> Result<()> {
+pub(crate) fn daemon_status(format: OutputFormat, include_events: bool) -> Result<()> {
     let socket_path = ipc::resolve_socket_path()?;
-    daemon_status_with_socket_path(&socket_path, format)
+    daemon_status_with_socket_path(&socket_path, format, include_events)
 }
 
 pub(crate) fn daemon_status_with_socket_path(
     socket_path: &Path,
     format: OutputFormat,
+    include_events: bool,
 ) -> Result<()> {
     let paths = LifecyclePaths::from_socket_path(socket_path);
     match lifecycle_status_from_socket(socket_path, LIFECYCLE_CONNECT_TIMEOUT)? {
         LifecycleQuery::NotRunning(reason) => {
-            emit_lifecycle_not_running(socket_path, &paths, &reason, format)
+            emit_lifecycle_not_running(socket_path, &paths, &reason, format, include_events)
         }
-        LifecycleQuery::Status(status) => emit_lifecycle_status(&paths, &status, format),
+        LifecycleQuery::Status(status) => {
+            emit_lifecycle_status(&paths, &status, format, include_events)
+        }
         LifecycleQuery::Incompatible(message) => {
             bail!("{}", incompatible_daemon_guidance(&message))
         }

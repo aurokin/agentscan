@@ -521,10 +521,34 @@ fn daemon_socket_lifecycle_status_reports_ready_identity_and_counts() {
             assert_eq!(status.latest_snapshot_update_duration_ms, None);
             assert_eq!(status.control_mode_broker, None);
             assert_eq!(status.runtime_telemetry, None);
+            assert_eq!(
+                status.latest_snapshot_observability,
+                Some(ipc::SnapshotObservabilityFrame::default())
+            );
+            assert!(status.recent_events.is_empty());
             assert_eq!(status.unavailable_reason, None);
         }
         other => panic!("expected lifecycle status frames, got {other:?}"),
     }
+}
+
+#[test]
+fn daemon_socket_observability_event_ring_is_bounded() {
+    let state = daemon::DaemonSocketState::new();
+    for index in 0..300 {
+        state.test_record_observability_event(ipc::DaemonObservabilityEventFrame {
+            at: format!("2026-05-03T00:00:{:02}Z", index % 60),
+            source: "control_event".to_string(),
+            detail: Some(format!("pane:%{index}")),
+            refresh: "targeted_pane".to_string(),
+            changed: index % 2 == 0,
+            published: index % 2 == 0,
+            duration_ms: Some(index),
+            diff: None,
+        });
+    }
+
+    assert_eq!(state.test_recent_event_count(), 256);
 }
 
 #[test]
@@ -558,6 +582,12 @@ fn daemon_lifecycle_query_rejects_incompatible_hello_ack() {
             control_event_refresh_count: 4,
             control_event_batch_count: 5,
             control_event_line_count: 6,
+            control_event_pane_count: 7,
+            control_event_title_count: 8,
+            control_event_window_count: 9,
+            control_event_session_count: 10,
+            control_event_resnapshot_count: 11,
+            control_event_ignored_count: 12,
             reconcile_attempt_count: 5,
             reconcile_noop_count: 6,
             reconcile_changed_snapshot_count: 7,
@@ -568,6 +598,8 @@ fn daemon_lifecycle_query_rejects_incompatible_hello_ack() {
             targeted_refresh_fallback_to_full_count: 8,
             broker_fallback_count: 3,
         }),
+        latest_snapshot_observability: None,
+        recent_events: Vec::new(),
         unavailable_reason: None,
         message: None,
     };
@@ -584,7 +616,7 @@ fn daemon_lifecycle_query_rejects_incompatible_hello_ack() {
         ],
     );
 
-    let error = daemon::daemon_status_with_socket_path(&socket_path, OutputFormat::Text)
+    let error = daemon::daemon_status_with_socket_path(&socket_path, OutputFormat::Text, false)
         .expect_err("incompatible lifecycle ack should fail");
 
     assert!(error.to_string().contains("incompatible lifecycle handshake"));
@@ -812,7 +844,7 @@ fn daemon_socket_subscribe_client_receives_bootstrap_and_update() {
     wait_for_subscriber_count(&state, 1);
 
     let updated = empty_socket_snapshot("2026-05-03T00:00:01Z");
-    state.publish_later_snapshot(updated.clone());
+    assert!(state.publish_later_snapshot(updated.clone()));
 
     assert_eq!(
         subscriber.read_frame(),
@@ -866,7 +898,7 @@ fn daemon_socket_oversized_later_snapshot_preserves_last_good_frame() {
 
     let mut oversized = empty_socket_snapshot("2026-05-03T00:00:01Z");
     oversized.generated_at = "x".repeat(ipc::DAEMON_FRAME_MAX_BYTES);
-    state.publish_later_snapshot(oversized);
+    assert!(!state.publish_later_snapshot(oversized));
 
     let frames = exchange_daemon_frames(state, socket_hello(ipc::ClientMode::Snapshot));
 
@@ -1025,10 +1057,10 @@ fn daemon_socket_oversized_update_is_skipped_for_subscribers() {
 
     let mut oversized = empty_socket_snapshot("2026-05-03T00:00:01Z");
     oversized.generated_at = "x".repeat(ipc::DAEMON_FRAME_MAX_BYTES);
-    state.publish_later_snapshot(oversized);
+    assert!(!state.publish_later_snapshot(oversized));
 
     let next_good = empty_socket_snapshot("2026-05-03T00:00:02Z");
-    state.publish_later_snapshot(next_good.clone());
+    assert!(state.publish_later_snapshot(next_good.clone()));
     assert_eq!(
         subscriber.read_frame(),
         ipc::DaemonFrame::Snapshot {
