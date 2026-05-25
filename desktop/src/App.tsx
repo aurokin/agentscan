@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type SetStateAction } from "react";
+import { useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -14,6 +14,47 @@ const LOCAL_PROFILE_ID = "local";
 let hotkeyOperationQueue = Promise.resolve();
 let liveOperationQueue = Promise.resolve();
 let windowOperationQueue = Promise.resolve();
+
+// Monotonic id assigned to each live-picker subscription. The backend stamps
+// every emitted event with the epoch of the worker that produced it so the
+// frontend can drop late frames from a superseded subscription after a switch.
+//
+// Epochs must be *strictly increasing across reloads/HMR*, not merely unique:
+// after a window reload (which restarts the JS but leaves the Rust worker
+// running) a late start() invoke from the torn-down page could otherwise
+// replace the freshly reloaded page's worker, which filters events by its own
+// epoch and would then drop every frame. The backend rejects a start whose
+// epoch is not greater than the last one it honored, so the counter is
+// persisted and seeded from wall-clock time — guaranteeing each page load
+// produces higher epochs than any prior load even if the stored value is lost.
+const LIVE_EPOCH_STORAGE_KEY = "agentscan.liveEpochSeq";
+// Bounded self-heal for a failed live-picker start (transient IPC/spawn errors):
+// retry a few times with a short delay, then stay fatal until the profile or
+// settings change. Prevents a persistently bad config from retrying forever.
+const LIVE_START_MAX_RETRIES = 4;
+const LIVE_START_RETRY_DELAY_MS = 1500;
+let liveEpochSeq = Date.now();
+function nextLiveEpoch() {
+  let base = liveEpochSeq;
+  try {
+    const stored = Number.parseInt(
+      window.localStorage.getItem(LIVE_EPOCH_STORAGE_KEY) ?? "",
+      10,
+    );
+    if (Number.isFinite(stored) && stored >= base) {
+      base = stored;
+    }
+  } catch {
+    // localStorage unavailable; the in-memory counter still increases per page.
+  }
+  liveEpochSeq = base + 1;
+  try {
+    window.localStorage.setItem(LIVE_EPOCH_STORAGE_KEY, String(liveEpochSeq));
+  } catch {
+    // Persistence is best-effort; monotonicity within this page still holds.
+  }
+  return liveEpochSeq;
+}
 
 type DesktopProfile = {
   id: string;
@@ -85,6 +126,13 @@ type PickerRow = {
   location_tag: string;
 };
 
+type ShellView = "picker" | "settings";
+
+type PickerGroup = {
+  project: string;
+  rows: PickerRow[];
+};
+
 type LiveSnapshotSummary = {
   paneCount: number;
   generatedAt: string | null;
@@ -99,6 +147,10 @@ type LivePickerEvent =
   | { kind: "shutdown"; message: string }
   | { kind: "fatal"; message: string; diagnostics: unknown | null };
 
+// Wire payload: a LivePickerEvent plus the epoch of the subscription that
+// produced it (see backend LivePickerEnvelope).
+type LivePickerEnvelope = LivePickerEvent & { epoch: number };
+
 type LiveConnectionState =
   | { status: "connecting"; message: string }
   | { status: "online"; message: string; snapshot: LiveSnapshotSummary }
@@ -111,6 +163,11 @@ type LoadState =
   | { status: "loading" }
   | {
       status: "ready";
+      // The runner config this resolved state describes (see runnerKeyForProfile).
+      // `state` lags the active runner by one async cycle on a switch or settings
+      // apply, so consumers compare this to the active runnerKey before trusting
+      // preflight/picker for live decisions.
+      runnerKey: string;
       profiles: DesktopProfile[];
       preflight: AgentscanPreflight;
       picker: PickerState;
@@ -136,6 +193,11 @@ function App() {
   const [profileState, setProfileState] = useState<ProfileState>(() => loadStoredProfiles());
   const activeProfile = useMemo(() => getActiveProfile(profileState), [profileState]);
   const runnerSettings = useMemo(() => runnerSettingsForProfile(activeProfile), [activeProfile]);
+  // Identity of the exact runner configuration a resolved state describes. It
+  // changes on a profile switch AND on any settings edit (binary/env/host/tty)
+  // to the active profile, so resolved preflight/picker data is invalidated
+  // whenever the underlying target changes, not just when the profile id does.
+  const runnerKey = useMemo(() => runnerKeyForProfile(activeProfile), [activeProfile]);
   const [profileNameDraft, setProfileNameDraft] = useState(() =>
     getActiveProfile(loadStoredProfiles()).name,
   );
@@ -158,6 +220,27 @@ function App() {
   const [pickerFilter, setPickerFilter] = useState("");
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isPickerVisible, setIsPickerVisible] = useState(true);
+  const [view, setView] = useState<ShellView>("picker");
+  // Latest view, read by async completions (e.g. a slow focus) to avoid acting
+  // on a view the user has since navigated away from.
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  // Tracks the active runner config so in-flight refreshes/focus can detect a
+  // profile switch OR a settings change and discard results from the previous
+  // target. Updated synchronously during render (below) so async completions
+  // never observe a stale key through a late-running effect.
+  const activeRunnerKeyRef = useRef(runnerKey);
+  activeRunnerKeyRef.current = runnerKey;
+  // Identifies the latest refresh request so a superseded refresh neither
+  // applies its rows nor clears the spinner out from under a newer one.
+  const refreshTokenRef = useRef(0);
+  // Bumped each time a live snapshot applies rows, so a slower manual refresh
+  // can detect that fresher live rows landed mid-flight and skip overwriting.
+  const liveRowsSeqRef = useRef(0);
+  // Bumped to re-run the live effect and re-attempt a failed start; the attempt
+  // counter bounds retries so a persistently failing config settles into fatal.
+  const [liveRetryToken, setLiveRetryToken] = useState(0);
+  const liveRetryAttemptRef = useRef(0);
   const [selectedPaneId, setSelectedPaneId] = useState<string | null>(null);
   const [activation, setActivation] = useState<PickerActivation>({ status: "idle" });
   const validation = useMemo(
@@ -189,7 +272,11 @@ function App() {
     let cancelled = false;
 
     async function loadShellState() {
-      setState({ status: "loading" });
+      // Keep any existing ready state so a profile/runner reload stays in the
+      // picker (gated to a "Switching profile…" state via activeReadyState)
+      // instead of dropping to the boot screen. Only the very first load, with
+      // no ready state yet, shows the boot "Connecting" screen.
+      setState((current) => (current.status === "ready" ? current : { status: "loading" }));
       setLiveState({
         status: "connecting",
         message: "Starting live client",
@@ -207,6 +294,7 @@ function App() {
           const message = profileValidation.errors.join(" ");
           setState({
             status: "ready",
+            runnerKey,
             profiles: profileState.profiles.map(profileSummary),
             preflight: {
               binary: commandPrefix(activeProfile),
@@ -233,12 +321,33 @@ function App() {
         ]);
 
         if (!cancelled) {
-          setState({
-            status: "ready",
-            profiles,
-            preflight,
-            picker: { status: "loading" },
+          const failureMessage = preflight.error ?? "agentscan is unavailable";
+          setState((current) => {
+            // If the restarted live subscription already delivered rows for this
+            // profile, keep them rather than clobbering back to "loading" (which
+            // would wedge until the next daemon snapshot).
+            const keepLiveRows =
+              preflight.ok &&
+              current.status === "ready" &&
+              current.runnerKey === runnerKey &&
+              current.picker.status === "ready";
+            return {
+              status: "ready",
+              runnerKey,
+              profiles,
+              preflight,
+              picker: !preflight.ok
+                ? { status: "failed", message: failureMessage }
+                : keepLiveRows
+                  ? current.picker
+                  : { status: "loading" },
+            };
           });
+          if (!preflight.ok) {
+            // The live effect won't run (liveReady is false), so settle the live
+            // state instead of leaving it stuck on "Starting live client".
+            setLiveState({ status: "fatal", message: failureMessage, diagnostics: null });
+          }
         }
 
       } catch (error) {
@@ -258,24 +367,74 @@ function App() {
     };
   }, [profileState, runnerSettings]);
 
+  // Derived directly from the active profile (not from async preflight state) so
+  // a switch to a synchronously-invalid profile immediately gates the live
+  // picker off in the same render, rather than briefly subscribing the bad
+  // target before loadShellState resolves.
+  const activeProfileValid = useMemo(
+    () =>
+      validateProfileDraft(
+        activeProfile,
+        activeProfile.name,
+        activeProfile.runner,
+        activeProfile.kind === "ssh" ? activeProfile.host : "",
+        activeProfile.kind === "ssh" ? activeProfile.clientTty : "",
+      ).errors.length === 0,
+    [activeProfile],
+  );
+  const liveReady =
+    state.status === "ready" &&
+    state.runnerKey === runnerKey &&
+    state.preflight.ok &&
+    activeProfileValid;
+
   useEffect(() => {
-    if (state.status !== "ready" || !state.preflight.ok) {
+    if (!liveReady) {
       return;
     }
 
     let disposed = false;
+    // The live event channel is global and shared across profiles. On a profile
+    // switch a late frame from the previous worker can still arrive on the
+    // channel, so the backend stamps every event with the epoch of the worker
+    // that produced it and we accept only events matching this subscription's
+    // epoch. This rejects superseded frames while still applying our own first
+    // snapshot immediately.
+    const epoch = nextLiveEpoch();
+    const subscriptionRunnerKey = runnerKey;
     let unlisten: UnlistenFn | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
 
     function enqueueLiveOperation(operation: () => Promise<void>) {
       liveOperationQueue = liveOperationQueue.then(operation, operation);
       return liveOperationQueue;
     }
 
+    // Re-arm the live effect after a failed start so transient IPC/spawn errors
+    // self-heal without a manual profile switch. Bounded by the attempt counter.
+    function scheduleLiveRetry() {
+      if (disposed || liveRetryAttemptRef.current >= LIVE_START_MAX_RETRIES) {
+        return;
+      }
+      liveRetryAttemptRef.current += 1;
+      retryTimer = setTimeout(() => {
+        if (!disposed) {
+          setLiveRetryToken((token) => token + 1);
+        }
+      }, LIVE_START_RETRY_DELAY_MS);
+    }
+
     async function startLivePicker() {
       try {
-        unlisten = await listen<LivePickerEvent>(LIVE_PICKER_EVENT, (event) => {
-          if (!disposed) {
-            applyLivePickerEvent(event.payload, setLiveState, setState);
+        unlisten = await listen<LivePickerEnvelope>(LIVE_PICKER_EVENT, (event) => {
+          if (!disposed && event.payload.epoch === epoch) {
+            if (liveEventChangesPickerRows(event.payload)) {
+              // Mark that the picker rows changed (new live snapshot, or a
+              // terminal event that cleared them) so an in-flight manual refresh
+              // detects the supersession and won't overwrite/resurrect rows.
+              liveRowsSeqRef.current += 1;
+            }
+            applyLivePickerEvent(event.payload, subscriptionRunnerKey, setLiveState, setState);
             appendDebugEntry({
               kind: "stream",
               label: liveStateLabelFromEvent(event.payload),
@@ -287,7 +446,8 @@ function App() {
         if (!disposed) {
           const message = errorMessage(error);
           setLiveState({ status: "fatal", message, diagnostics: null });
-          markPickerFailedIfEmpty(setState, message);
+          markPickerFailedIfEmpty(setState, subscriptionRunnerKey, message);
+          scheduleLiveRetry();
         }
         return;
       }
@@ -303,16 +463,21 @@ function App() {
           if (!disposed) {
             await runCommand(
               `${commandPrefix(activeProfile)} subscribe --format json`,
-              () => invoke("start_live_picker", { settings: runnerSettings }),
+              () => invoke("start_live_picker", { settings: runnerSettings, epoch }),
               appendDebugEntry,
             );
           }
         });
+        // The worker is installed; clear the retry budget for this runner.
+        if (!disposed) {
+          liveRetryAttemptRef.current = 0;
+        }
       } catch (error) {
         if (!disposed) {
           const message = errorMessage(error);
           setLiveState({ status: "fatal", message, diagnostics: null });
-          markPickerFailedIfEmpty(setState, message);
+          markPickerFailedIfEmpty(setState, subscriptionRunnerKey, message);
+          scheduleLiveRetry();
         }
       }
     }
@@ -321,12 +486,21 @@ function App() {
 
     return () => {
       disposed = true;
+      if (retryTimer !== undefined) {
+        clearTimeout(retryTimer);
+      }
       unlisten?.();
       void enqueueLiveOperation(async () => {
-        await runCommand("stop live picker", () => invoke("stop_live_picker"), appendDebugEntry);
+        // Pass this subscription's epoch so a stale cleanup (after reload/HMR)
+        // can't stop a newer worker; the backend only stops if the epoch matches.
+        await runCommand(
+          "stop live picker",
+          () => invoke("stop_live_picker", { epoch }),
+          appendDebugEntry,
+        );
       });
     };
-  }, [activeProfile, runnerSettings, state.status]);
+  }, [activeProfile, runnerSettings, liveReady, liveRetryToken]);
 
   useEffect(() => {
     let disposed = false;
@@ -346,7 +520,10 @@ function App() {
         try {
           await register(PICKER_HOTKEY, (event) => {
             if (event.state === "Pressed") {
-              void togglePickerWindow(() => setIsPickerVisible(true));
+              void togglePickerWindow(
+                () => setIsPickerVisible(true),
+                () => setIsPickerVisible(false),
+              );
             }
           });
           registered = true;
@@ -382,7 +559,9 @@ function App() {
   }, []);
 
   const statusText = useMemo(() => {
-    if (state.status === "loading") {
+    // Preflight from a not-yet-refreshed previous profile is untrustworthy, so
+    // report "Checking" until the resolved state matches the active profile.
+    if (state.status === "loading" || (state.status === "ready" && state.runnerKey !== runnerKey)) {
       return `Checking ${profileKindLabel(activeProfile)} CLI`;
     }
 
@@ -400,8 +579,19 @@ function App() {
       return;
     }
 
+    const requestRunnerKey = runnerKey;
+    const token = (refreshTokenRef.current += 1);
+    const liveSeqAtStart = liveRowsSeqRef.current;
+    const isCurrent = () =>
+      refreshTokenRef.current === token && activeRunnerKeyRef.current === requestRunnerKey;
     setIsRefreshing(true);
-    setState({ ...state, picker: { status: "loading" } });
+    // Functional + runner-guarded so a stale closure can never resurrect the
+    // previous target's resolved state into the active one.
+    setState((current) =>
+      current.status === "ready" && current.runnerKey === requestRunnerKey
+        ? { ...current, picker: { status: "loading" } }
+        : current,
+    );
 
     try {
       const rows = await runCommand<PickerRow[]>(
@@ -409,29 +599,61 @@ function App() {
         () => invoke<PickerRow[]>("load_picker_rows", { settings: runnerSettings }),
         appendDebugEntry,
       );
+      if (!isCurrent()) {
+        return; // Superseded by a profile switch, settings apply, or newer refresh.
+      }
+      if (liveRowsSeqRef.current !== liveSeqAtStart) {
+        return; // A fresher live snapshot landed mid-flight; don't overwrite it.
+      }
       setState((current) =>
-        current.status === "ready"
+        current.status === "ready" && current.runnerKey === requestRunnerKey
           ? { ...current, picker: { status: "ready", rows } }
           : current,
       );
     } catch (error) {
+      if (!isCurrent()) {
+        return;
+      }
+      if (liveRowsSeqRef.current !== liveSeqAtStart) {
+        return; // Fresher live rows already displayed; don't replace them with an error.
+      }
       setState((current) =>
-        current.status === "ready"
+        current.status === "ready" && current.runnerKey === requestRunnerKey
           ? { ...current, picker: { status: "failed", message: errorMessage(error) } }
           : current,
       );
     } finally {
-      setIsRefreshing(false);
+      // Only the latest refresh clears the spinner, so a superseded request
+      // can't re-enable the button while a newer one is still running.
+      if (refreshTokenRef.current === token) {
+        setIsRefreshing(false);
+      }
     }
   }
 
+  // `state` lags the active runner by one async cycle after a switch or settings
+  // apply (loadShellState resets it in an effect, after paint). Until the resolved
+  // state's runnerKey matches the active runner, its preflight/picker rows belong
+  // to the previous target, so treat that window as "loading" everywhere ready
+  // data is consumed.
+  const activeReadyState =
+    state.status === "ready" && state.runnerKey === runnerKey ? state : null;
+  const pickerDataState: PickerState = activeReadyState
+    ? activeReadyState.picker
+    : { status: "loading" };
+  // liveState lags the active profile the same way; show a neutral switching
+  // banner rather than the previous profile's stale offline/fatal state.
+  const displayLiveState: LiveConnectionState = activeReadyState
+    ? liveState
+    : { status: "connecting", message: "Switching profile…" };
   const allPickerRows =
-    state.status === "ready" && state.picker.status === "ready" ? state.picker.rows : [];
+    pickerDataState.status === "ready" ? pickerDataState.rows : [];
   const pickerRows = useMemo(
-    () => filterPickerRows(allPickerRows, pickerFilter),
+    () => groupRowsByProject(filterPickerRows(allPickerRows, pickerFilter)).flatMap((g) => g.rows),
     [allPickerRows, pickerFilter],
   );
-  const pickerStatus = state.status === "ready" ? state.picker.status : state.status;
+  const pickerGroups = useMemo(() => groupRowsByProject(pickerRows), [pickerRows]);
+  const pickerStatus = pickerDataState.status;
   const selectedIndex = selectedPaneId
     ? Math.max(0, pickerRows.findIndex((row) => row.pane_id === selectedPaneId))
     : 0;
@@ -455,10 +677,19 @@ function App() {
   }, [allPickerRows.length, pickerRows, pickerStatus, selectedPaneId]);
 
   useEffect(() => {
+    // activeRunnerKeyRef is updated synchronously during render; here we reset
+    // per-profile UI so nothing leaks across a switch: editable drafts, the
+    // search filter, stale activation error, and the pane selection (tmux pane
+    // ids like %1 collide across hosts/sessions, so a carried-over selectedPaneId
+    // would silently highlight/activate a different agent on the new profile).
     setProfileNameDraft(activeProfile.name);
     setSettingsDraft(activeProfile.runner);
     setSshHostDraft(activeProfile.kind === "ssh" ? activeProfile.host : "");
     setSshClientTtyDraft(activeProfile.kind === "ssh" ? activeProfile.clientTty : "");
+    setPickerFilter("");
+    setActivation({ status: "idle" });
+    setSelectedPaneId(null);
+    liveRetryAttemptRef.current = 0;
   }, [activeProfile]);
 
   async function activateSelectedRow(row = selectedRow) {
@@ -466,6 +697,7 @@ function App() {
       return;
     }
 
+    const requestRunnerKey = runnerKey;
     setActivation({ status: "running", paneId: row.pane_id });
 
     try {
@@ -474,9 +706,24 @@ function App() {
         () => invoke("focus_picker_row", { paneId: row.pane_id, settings: runnerSettings }),
         appendDebugEntry,
       );
+      if (activeRunnerKeyRef.current !== requestRunnerKey) {
+        // Target switched mid-flight (profile or settings). The profile-switch
+        // effect already reset activation; don't touch it here or we could clear
+        // a newer activation the user started. Also skip the post-focus UI.
+        return;
+      }
       setActivation({ status: "idle" });
-      await hidePickerWindow();
+      // Only auto-hide if the user is still in the picker. A slow focus (e.g.
+      // SSH) can complete after they've opened Settings; hiding then would yank
+      // the window out from under them mid-edit.
+      if (viewRef.current === "picker") {
+        setIsPickerVisible(false);
+        await hidePickerWindow();
+      }
     } catch (error) {
+      if (activeRunnerKeyRef.current !== requestRunnerKey) {
+        return;
+      }
       setActivation({ status: "failed", message: errorMessage(error) });
       await refreshPickerRows();
     }
@@ -493,7 +740,7 @@ function App() {
   }
 
   function handlePickerKeyDown(event: KeyboardEvent) {
-    if (!isPickerVisible) {
+    if (view !== "picker" || !isPickerVisible) {
       return;
     }
 
@@ -569,6 +816,13 @@ function App() {
 
   function selectProfile(id: string) {
     setProfileState((current) => {
+      // No-op if already active: re-selecting would still bump loadShellState
+      // (resetting liveState to "connecting") without re-running the live effect
+      // (activeProfile identity is unchanged), wedging the live strip.
+      if (id === current.activeProfileId) {
+        return current;
+      }
+
       const profile = current.profiles.find((candidate) => candidate.id === id);
       if (!profile || !isRunnableProfile(profile)) {
         return current;
@@ -658,76 +912,118 @@ function App() {
     );
   }
 
+  // Hold the latest handler in a ref so the global listener binds once instead
+  // of churning on every render (live row updates re-render frequently).
+  const pickerKeyDownRef = useRef(handlePickerKeyDown);
+  pickerKeyDownRef.current = handlePickerKeyDown;
   useEffect(() => {
-    window.addEventListener("keydown", handlePickerKeyDown);
-    return () => window.removeEventListener("keydown", handlePickerKeyDown);
-  });
+    const handler = (event: KeyboardEvent) => pickerKeyDownRef.current(event);
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
 
-  return (
-    <main className="app-shell">
-      <section className="summary">
-        <div>
-          <p className="eyebrow">agentscan desktop</p>
-          <h1>Local agent workspace</h1>
+  // Keep isPickerVisible in sync when the window is revealed outside our own
+  // hide/show paths (e.g. dock click after a hotkey hide). Gaining focus implies
+  // the picker is on screen, so re-enable keyboard navigation.
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    let disposed = false;
+    void getCurrentWindow()
+      .onFocusChanged(({ payload: focused }) => {
+        if (focused) {
+          setIsPickerVisible(true);
+        }
+      })
+      .then((fn) => {
+        // Cleanup may run before this resolves (StrictMode/unmount); detach
+        // immediately so the listener isn't leaked.
+        if (disposed) {
+          fn();
+          return;
+        }
+        unlisten = fn;
+      });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  // Settings must be reachable even when the daemon/IPC is unreachable: that is
+  // exactly when the user needs to fix the binary path or SSH host. So the
+  // settings view wins before the unready boot screen returns.
+  if (view !== "settings" && state.status !== "ready") {
+    return (
+      <main className="sidebar">
+        <div className="boot-state" aria-live="polite">
+          <span className="boot-spinner" aria-hidden="true" />
+          <h1>{state.status === "loading" ? "Connecting" : "Can’t reach agentscan"}</h1>
+          <p>{state.status === "failed" ? state.message : "Waiting for the daemon…"}</p>
+          {/* Always offer a path into settings: a hung "loading" (e.g. a stalled
+              profile/SSH preflight) otherwise traps the user with no way to fix
+              the binary path or host. */}
+          <button type="button" onClick={() => setView("settings")}>
+            Open settings
+          </button>
         </div>
-        <span className="status-pill">{statusText}</span>
-      </section>
+      </main>
+    );
+  }
 
-      {state.status === "ready" ? (
-        <>
-          <section className="content-grid" aria-label="Desktop shell state">
-            <div className="panel">
-              <div className="panel-heading compact">
-                <h2>Profiles</h2>
-                <button type="button" onClick={addSshProfile}>
-                  Add SSH
-                </button>
-              </div>
-              <ul className="profile-list">
-                {state.profiles.map((profile) => (
-                  <li key={profile.id}>
-                    <button
-                      aria-pressed={profile.id === activeProfile.id}
-                      className={profile.id === activeProfile.id ? "active" : undefined}
-                      type="button"
-                      onClick={() => selectProfile(profile.id)}
-                    >
-                      <span>{profile.name}</span>
-                      <small>{profile.kind === "ssh" ? "ssh" : profile.kind}</small>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </div>
+  if (view === "settings") {
+    // The profile list comes from profileState (the live source of truth) so
+    // add/delete/switch are reflected immediately, even while a kept-ready
+    // `state` still describes the previous profile during a reload. Preflight is
+    // only trusted when the resolved state matches the active profile.
+    const settingsProfiles = profileState.profiles.map(profileSummary);
+    const preflight =
+      state.status === "ready" && state.runnerKey === runnerKey ? state.preflight : null;
+    return (
+      <main className="sidebar">
+        <header className="topbar settings-topbar">
+          <button
+            className="icon-button back"
+            type="button"
+            aria-label="Back to picker"
+            onClick={() => setView("picker")}
+          >
+            {"←"}
+          </button>
+          <h1>Settings</h1>
+        </header>
 
-            <div className="panel">
-              <h2>Preflight</h2>
-              <dl className="preflight">
-                <div>
-                  <dt>Binary</dt>
-                  <dd>{state.preflight.binary}</dd>
-                </div>
-                <div>
-                  <dt>Version</dt>
-                  <dd>{state.preflight.version ?? "Unavailable"}</dd>
-                </div>
-                {!state.preflight.ok ? (
-                  <div>
-                    <dt>Error</dt>
-                    <dd>{state.preflight.error ?? "Unknown failure"}</dd>
-                  </div>
-                ) : null}
-              </dl>
+        <div className="settings-scroll">
+          <section className="settings-block" aria-label="Profiles">
+            <div className="block-heading">
+              <h2>Profiles</h2>
+              <button className="ghost-button" type="button" onClick={addSshProfile}>
+                + SSH
+              </button>
             </div>
+            <ul className="profile-list">
+              {settingsProfiles.map((profile) => (
+                <li key={profile.id}>
+                  <button
+                    aria-pressed={profile.id === activeProfile.id}
+                    className={profile.id === activeProfile.id ? "active" : undefined}
+                    type="button"
+                    onClick={() => selectProfile(profile.id)}
+                  >
+                    <span>{profile.name}</span>
+                    <small>{profile.kind === "ssh" ? "ssh" : "local"}</small>
+                  </button>
+                </li>
+              ))}
+            </ul>
           </section>
 
-          <section className="settings-panel" aria-label="Local runner settings">
-            <div className="panel-heading">
-              <h2>{activeProfile.name} Runner</h2>
-              <div className="panel-actions">
+          <section className="settings-block" aria-label="Runner">
+            <div className="block-heading">
+              <h2>{activeProfile.name} runner</h2>
+              <div className="block-actions">
                 {activeProfile.kind === "ssh" ? (
                   <button
-                    className="secondary-button danger"
+                    className="ghost-button danger"
                     type="button"
                     onClick={deleteActiveProfile}
                   >
@@ -735,7 +1031,7 @@ function App() {
                   </button>
                 ) : null}
                 <button
-                  className="secondary-button"
+                  className="ghost-button"
                   type="button"
                   onClick={resetProfileSettings}
                   disabled={!isSettingsDirty}
@@ -751,6 +1047,23 @@ function App() {
                 </button>
               </div>
             </div>
+
+            <div className={`preflight-line ${!preflight ? "" : preflight.ok ? "ok" : "bad"}`}>
+              <span
+                className="status-dot"
+                data-tone={!preflight ? "unknown" : preflight.ok ? "idle" : "error"}
+              />
+              <span className="preflight-text">
+                {!preflight
+                  ? state.status !== "failed"
+                    ? "Checking agentscan…"
+                    : "agentscan unreachable"
+                  : preflight.ok
+                    ? `${preflight.binary} · ${preflight.version ?? "ready"}`
+                    : (preflight.error ?? "agentscan unavailable")}
+              </span>
+            </div>
+
             {validation.errors.length > 0 ? (
               <div className="error-state settings-error" role="alert">
                 <h3>Invalid settings</h3>
@@ -761,6 +1074,7 @@ function App() {
                 </ul>
               </div>
             ) : null}
+
             <div className="settings-grid">
               <label>
                 <span>profile name</span>
@@ -826,7 +1140,7 @@ function App() {
                         spellCheck={false}
                       />
                       <button
-                        className="secondary-button"
+                        className="ghost-button"
                         type="button"
                         onClick={() => removeEnvironmentVariable(index)}
                       >
@@ -835,109 +1149,123 @@ function App() {
                     </div>
                   ))}
                 </div>
-                <button
-                  className="secondary-button"
-                  type="button"
-                  onClick={addEnvironmentVariable}
-                >
+                <button className="ghost-button" type="button" onClick={addEnvironmentVariable}>
                   Add env
                 </button>
               </div>
             </div>
           </section>
 
-          <section className="picker-panel" aria-label="Local picker rows" tabIndex={-1}>
-            <div className="panel-heading">
-              <h2>Picker</h2>
-              <div className="panel-actions">
-                {!isPickerVisible ? (
-                  <button type="button" onClick={() => setIsPickerVisible(true)}>
-                    Show
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  onClick={refreshPickerRows}
-                  disabled={isRefreshing || isSettingsDirty || validation.errors.length > 0}
-                >
-                  {isRefreshing ? "Refreshing" : "Refresh"}
-                </button>
-              </div>
-            </div>
-
-            <LiveConnectionBanner state={liveState} />
-
-            <div className="picker-toolbar">
-              <label className="picker-search">
-                <span>Search picker rows</span>
-                <input
-                  value={pickerFilter}
-                  onChange={(event) => setPickerFilter(event.target.value)}
-                  placeholder="Filter by agent, status, key, or location"
-                />
-              </label>
-              <div className="picker-filter-actions">
-                <span>
-                  {pickerRows.length} / {allPickerRows.length}
-                </span>
-                {pickerFilter.trim() ? (
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    onClick={() => setPickerFilter("")}
-                  >
-                    Clear
-                  </button>
-                ) : null}
-              </div>
-            </div>
-
-            {activation.status === "failed" ? (
-              <div className="error-state activation-error" role="alert">
-                <h3>Unable to focus pane</h3>
-                <p>{activation.message}</p>
-              </div>
-            ) : null}
-
-            {isPickerVisible ? (
-              <PickerRows
-                activation={activation}
-                filterQuery={pickerFilter}
-                rows={pickerRows}
-                selectedPaneId={selectedPaneId}
-                state={state.picker}
-                totalRows={allPickerRows.length}
-                onActivate={activateSelectedRow}
-                onClearFilter={() => setPickerFilter("")}
-                onSelect={(row) => setSelectedPaneId(row.pane_id)}
-              />
-            ) : (
-              <p className="muted">Picker hidden.</p>
-            )}
-          </section>
-
-          <section className="debug-panel" aria-label="Command debug log">
-            <div className="panel-heading">
-              <h2>Debug</h2>
-              <button type="button" onClick={() => setDebugEntries([])}>
+          <section className="settings-block" aria-label="Debug log">
+            <div className="block-heading">
+              <h2>Debug log</h2>
+              <button className="ghost-button" type="button" onClick={() => setDebugEntries([])}>
                 Clear
               </button>
             </div>
             <DebugLog entries={debugEntries} />
           </section>
-        </>
-      ) : (
-        <section className="panel" aria-live="polite">
-          <h2>{state.status === "loading" ? "Loading" : "Unable to load"}</h2>
-          <p>{state.status === "failed" ? state.message : "Waiting for backend response."}</p>
-        </section>
-      )}
+        </div>
+      </main>
+    );
+  }
+
+  // Unreachable: the guards above return for every not-ready picker case. This
+  // narrows `state` to "ready" so the picker can read state.picker/preflight.
+  if (state.status !== "ready") {
+    return null;
+  }
+
+  return (
+    <main className="sidebar">
+      <header className="topbar">
+        <div className="search-field">
+          <span className="search-icon" aria-hidden="true">
+            {"⌕"}
+          </span>
+          <input
+            aria-label="Search agents"
+            value={pickerFilter}
+            onChange={(event) => setPickerFilter(event.target.value)}
+            placeholder="Search agents"
+          />
+          {pickerFilter.trim() ? (
+            <button
+              className="search-clear"
+              type="button"
+              aria-label="Clear search"
+              onClick={() => setPickerFilter("")}
+            >
+              {"×"}
+            </button>
+          ) : null}
+        </div>
+        <button
+          className="icon-button"
+          type="button"
+          aria-label="Refresh"
+          title="Refresh"
+          onClick={refreshPickerRows}
+          disabled={isRefreshing}
+        >
+          <span className={isRefreshing ? "spin" : undefined}>{"↻"}</span>
+        </button>
+      </header>
+
+      {displayLiveState.status !== "online" ? <LiveStrip state={displayLiveState} /> : null}
+
+      {activation.status === "failed" ? (
+        <div className="inline-error" role="alert">
+          {activation.message}
+        </div>
+      ) : null}
+
+      <div className="picker-scroll" aria-label="Agents" tabIndex={-1}>
+        <GroupedPicker
+          activation={activation}
+          filterQuery={pickerFilter}
+          groups={pickerGroups}
+          selectedPaneId={selectedPaneId}
+          state={pickerDataState}
+          totalRows={allPickerRows.length}
+          onActivate={activateSelectedRow}
+          onClearFilter={() => setPickerFilter("")}
+          onSelect={(row) => setSelectedPaneId(row.pane_id)}
+        />
+      </div>
+
+      <footer className="bottombar">
+        <button
+          className="profile-chip"
+          type="button"
+          onClick={() => setView("settings")}
+          title="Open settings"
+        >
+          <span className="avatar">{profileInitials(activeProfile.name)}</span>
+          <span className="profile-meta">
+            <span className="profile-name">{activeProfile.name}</span>
+            <small>
+              {activeReadyState?.preflight.ok ? profileKindLabel(activeProfile) : statusText}
+            </small>
+          </span>
+        </button>
+        <button
+          className="icon-button"
+          type="button"
+          aria-label="Settings"
+          title="Settings"
+          onClick={() => setView("settings")}
+        >
+          {"⚙"}
+        </button>
+      </footer>
     </main>
   );
 }
 
 function applyLivePickerEvent(
   event: LivePickerEvent,
+  runnerKey: string,
   setLiveState: (value: SetStateAction<LiveConnectionState>) => void,
   setState: (value: SetStateAction<LoadState>) => void,
 ) {
@@ -948,7 +1276,9 @@ function applyLivePickerEvent(
       snapshot: event.snapshot,
     });
     setState((current) =>
-      current.status === "ready"
+      // Only persist rows into the state blob that still belongs to this
+      // subscription's runner, matching the activeReadyState/refresh guards.
+      current.status === "ready" && current.runnerKey === runnerKey
         ? { ...current, picker: { status: "ready", rows: event.rows } }
         : current,
     );
@@ -976,13 +1306,20 @@ function applyLivePickerEvent(
       retrying: event.retrying,
       diagnostics: event.diagnostics,
     });
-    markPickerFailedIfEmpty(setState, event.message);
+    // A retrying offline is transient (daemon will reconnect), so keep any rows
+    // we already have; a terminal offline means the current rows belong to a
+    // dead subscription and must not stay selectable.
+    if (event.retrying) {
+      markPickerFailedIfEmpty(setState, runnerKey, event.message);
+    } else {
+      markPickerFailed(setState, runnerKey, event.message);
+    }
     return;
   }
 
   if (event.kind === "shutdown") {
     setLiveState({ status: "shutdown", message: event.message });
-    markPickerFailedIfEmpty(setState, event.message);
+    markPickerFailed(setState, runnerKey, event.message);
     return;
   }
 
@@ -991,15 +1328,55 @@ function applyLivePickerEvent(
     message: event.message,
     diagnostics: event.diagnostics,
   });
-  markPickerFailedIfEmpty(setState, event.message);
+  markPickerFailed(setState, runnerKey, event.message);
 }
 
 function markPickerFailedIfEmpty(
   setState: (value: SetStateAction<LoadState>) => void,
+  runnerKey: string,
   message: string,
 ) {
   setState((current) => {
-    if (current.status !== "ready" || current.picker.status === "ready") {
+    if (
+      current.status !== "ready" ||
+      current.runnerKey !== runnerKey ||
+      current.picker.status === "ready"
+    ) {
+      return current;
+    }
+
+    return { ...current, picker: { status: "failed", message } };
+  });
+}
+
+// Whether a live event mutates the picker rows: a fresh snapshot ("rows") or a
+// terminal event that clears them (fatal/shutdown/terminal-offline). Used to
+// bump the live sequence so an in-flight manual refresh detects the change and
+// neither overwrites fresh rows nor resurrects rows a terminal event cleared.
+function liveEventChangesPickerRows(event: LivePickerEvent): boolean {
+  switch (event.kind) {
+    case "rows":
+    case "shutdown":
+    case "fatal":
+      return true;
+    case "offline":
+      return !event.retrying;
+    default:
+      return false;
+  }
+}
+
+// Terminal live events (fatal/shutdown/terminal-offline) mean any rows we are
+// showing belong to a dead subscription. Replace them with the failure even if
+// the picker is currently "ready", so stale rows can't be selected and focused
+// against panes that may no longer exist.
+function markPickerFailed(
+  setState: (value: SetStateAction<LoadState>) => void,
+  runnerKey: string,
+  message: string,
+) {
+  setState((current) => {
+    if (current.status !== "ready" || current.runnerKey !== runnerKey) {
       return current;
     }
 
@@ -1028,23 +1405,14 @@ async function runCommand<T>(
   }
 }
 
-function LiveConnectionBanner({ state }: { state: LiveConnectionState }) {
-  const tone = state.status === "online" ? "ready" : state.status === "fatal" ? "error" : "warn";
+function LiveStrip({ state }: { state: LiveConnectionState }) {
+  const tone = state.status === "fatal" || state.status === "offline" ? "error" : "warn";
 
   return (
-    <div className={`live-banner ${tone}`} aria-live="polite">
-      <div>
-        <span>{liveStateLabel(state)}</span>
-        <p>{state.message}</p>
-      </div>
-      {state.status === "online" ? (
-        <small>
-          {state.snapshot.paneCount} panes
-          {state.snapshot.sourceKind ? ` · ${state.snapshot.sourceKind}` : ""}
-        </small>
-      ) : isDiagnosticState(state) && state.diagnostics ? (
-        <small>{formatDiagnostics(state.diagnostics)}</small>
-      ) : null}
+    <div className={`live-strip ${tone}`} aria-live="polite">
+      <span className="status-dot" data-tone={tone === "error" ? "error" : "busy"} />
+      <span className="live-label">{liveStateLabel(state)}</span>
+      <span className="live-message">{state.message}</span>
     </div>
   );
 }
@@ -1171,7 +1539,10 @@ function normalizeProfile(value: unknown): DesktopProfileConfig | null {
       clientTty:
         typeof profile.clientTty === "string" ? profile.clientTty.trim() : "",
       runner,
-      enabled: profile.enabled === true,
+      // Default to enabled so profiles persisted before the `enabled` field (or
+      // partial profiles missing it) remain selectable; only an explicit false
+      // disables a profile.
+      enabled: profile.enabled !== false,
     };
   }
 
@@ -1243,6 +1614,13 @@ function profileSummary(profile: DesktopProfileConfig): DesktopProfile {
 
 function runnerSummary(settings: RunnerSettings) {
   return settings.binaryPath.trim() || "auto-detected agentscan";
+}
+
+// Stable string identity of a profile's full runner configuration. Used to
+// invalidate resolved preflight/picker state when the target changes, including
+// same-profile settings edits (which keep the same id).
+function runnerKeyForProfile(profile: DesktopProfileConfig): string {
+  return JSON.stringify(runnerSettingsForProfile(profile));
 }
 
 function runnerSettingsForProfile(profile: DesktopProfileConfig): DesktopRunnerSettings {
@@ -1323,8 +1701,10 @@ function validateProfileDraft(
       return;
     }
 
-    if (name.includes("=") || name.includes("\0")) {
-      errors.push(`Environment row ${index + 1} has an invalid name.`);
+    // Must be a POSIX shell identifier: names are interpolated unquoted into
+    // the remote SSH command, so spaces/hyphens/metacharacters are rejected.
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+      errors.push(`Environment row ${index + 1} name must be a valid shell identifier.`);
       return;
     }
 
@@ -1375,6 +1755,62 @@ function normalizeRunnerSettings(settings: Partial<RunnerSettings>): RunnerSetti
     binaryPath: String(settings.binaryPath ?? "").trim(),
     env,
   };
+}
+
+function projectOf(row: PickerRow): string {
+  const tag = row.location_tag.trim();
+  const session = tag.split(":", 1)[0]?.trim();
+  return session || "ungrouped";
+}
+
+function paneSuffix(row: PickerRow): string {
+  const tag = row.location_tag.trim();
+  const colon = tag.indexOf(":");
+  return colon >= 0 ? tag.slice(colon + 1) : "";
+}
+
+// Group rows by tmux session (the project), preserving first-seen order both
+// across groups and within each group so keyboard nav matches what's rendered.
+function groupRowsByProject(rows: PickerRow[]): PickerGroup[] {
+  const groups: PickerGroup[] = [];
+  const byProject = new Map<string, PickerGroup>();
+
+  for (const row of rows) {
+    const project = projectOf(row);
+    let group = byProject.get(project);
+    if (!group) {
+      group = { project, rows: [] };
+      byProject.set(project, group);
+      groups.push(group);
+    }
+    group.rows.push(row);
+  }
+
+  return groups;
+}
+
+function statusTone(kind: string): string {
+  switch (kind) {
+    case "busy":
+      return "busy";
+    case "idle":
+      return "idle";
+    case "error":
+      return "error";
+    default:
+      return "unknown";
+  }
+}
+
+function profileInitials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) {
+    return "?";
+  }
+  if (parts.length === 1) {
+    return parts[0].slice(0, 2).toUpperCase();
+  }
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
 function filterPickerRows(rows: PickerRow[], query: string) {
@@ -1448,34 +1884,12 @@ function liveStateLabel(state: LiveConnectionState) {
   return "Connecting";
 }
 
-function isDiagnosticState(
-  state: LiveConnectionState,
-): state is Extract<LiveConnectionState, { diagnostics: unknown | null }> {
-  return "diagnostics" in state;
-}
-
-function formatDiagnostics(diagnostics: unknown) {
-  if (!diagnostics || typeof diagnostics !== "object") {
-    return String(diagnostics);
-  }
-
-  const status = diagnostics as { state?: unknown; message?: unknown; subscriber_count?: unknown };
-  const parts = [
-    typeof status.state === "string" ? status.state : null,
-    typeof status.message === "string" ? status.message : null,
-    typeof status.subscriber_count === "number"
-      ? `${status.subscriber_count} subscribers`
-      : null,
-  ].filter(Boolean);
-
-  return parts.length > 0 ? parts.join(" · ") : "Daemon diagnostics available";
-}
-
-async function togglePickerWindow(beforeShow: () => void) {
+async function togglePickerWindow(beforeShow: () => void, onHide: () => void) {
   await enqueueWindowOperation(async () => {
     const appWindow = getCurrentWindow();
 
     if (await appWindow.isVisible()) {
+      onHide();
       await appWindow.hide();
       return;
     }
@@ -1506,10 +1920,10 @@ async function placePickerWindow() {
   }
 }
 
-function PickerRows({
+function GroupedPicker({
   activation,
   filterQuery,
-  rows,
+  groups,
   selectedPaneId,
   state,
   totalRows,
@@ -1519,7 +1933,7 @@ function PickerRows({
 }: {
   activation: PickerActivation;
   filterQuery: string;
-  rows: PickerRow[];
+  groups: PickerGroup[];
   selectedPaneId: string | null;
   state: PickerState;
   totalRows: number;
@@ -1527,60 +1941,70 @@ function PickerRows({
   onClearFilter: () => void;
   onSelect: (row: PickerRow) => void;
 }) {
-  if (state.status === "loading") {
-    return <p className="muted">Loading picker rows.</p>;
+  const rowCount = groups.reduce((total, group) => total + group.rows.length, 0);
+
+  if (state.status === "loading" && rowCount === 0) {
+    return <p className="empty-note">Loading agents…</p>;
   }
 
   if (state.status === "failed") {
     return (
       <div className="error-state" role="alert">
-        <h3>Unable to load picker rows</h3>
+        <h3>Unable to load agents</h3>
         <p>{state.message}</p>
       </div>
     );
   }
 
-  if (totalRows > 0 && rows.length === 0 && filterQuery.trim()) {
+  if (totalRows > 0 && rowCount === 0 && filterQuery.trim()) {
     return (
       <div className="empty-filter-state">
-        <p>No picker rows match this filter.</p>
-        <button className="secondary-button" type="button" onClick={onClearFilter}>
-          Clear
+        <p>No agents match “{filterQuery.trim()}”.</p>
+        <button className="ghost-button" type="button" onClick={onClearFilter}>
+          Clear search
         </button>
       </div>
     );
   }
 
-  if (rows.length === 0) {
-    return <p className="muted">No picker rows are available.</p>;
+  if (rowCount === 0) {
+    return <p className="empty-note">No agents detected.</p>;
   }
 
   return (
-    <ul className="picker-list">
-      {rows.map((row) => (
-        <li
-          aria-selected={row.pane_id === selectedPaneId}
-          className={row.pane_id === selectedPaneId ? "selected" : undefined}
-          key={`${row.key}-${row.pane_id}`}
-          onClick={() => onSelect(row)}
-          onDoubleClick={() => onActivate(row)}
-        >
-          <kbd>{row.key}</kbd>
-          <div className="picker-row-main">
-            <span>{row.display_label}</span>
-            <small>{row.location_tag}</small>
-          </div>
-          <div className="picker-row-meta">
-            <span>{row.provider ?? "unknown"}</span>
-            <small>
-              {activation.status === "running" && activation.paneId === row.pane_id
-                ? "focusing"
-                : row.status.kind}
-            </small>
-          </div>
-        </li>
+    <div className="picker-groups">
+      {groups.map((group) => (
+        <section className="picker-group" key={group.project}>
+          <h2 className="group-header">{group.project}</h2>
+          <ul className="agent-list">
+            {group.rows.map((row) => {
+              const isSelected = row.pane_id === selectedPaneId;
+              const isFocusing =
+                activation.status === "running" && activation.paneId === row.pane_id;
+              return (
+                <li
+                  aria-selected={isSelected}
+                  className={`agent-row${isSelected ? " selected" : ""}`}
+                  key={`${row.key}-${row.pane_id}`}
+                  onClick={() => onSelect(row)}
+                  onDoubleClick={() => onActivate(row)}
+                  title={`${row.display_label} · ${row.provider ?? "unknown"} · ${row.location_tag}`}
+                >
+                  <span
+                    className={`status-dot${isFocusing ? " pulsing" : ""}`}
+                    data-tone={isFocusing ? "busy" : statusTone(row.status.kind)}
+                    aria-hidden="true"
+                  />
+                  <span className="agent-label">{row.display_label}</span>
+                  <span className="agent-suffix">{paneSuffix(row)}</span>
+                  <kbd>{row.key}</kbd>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
       ))}
-    </ul>
+    </div>
   );
 }
 

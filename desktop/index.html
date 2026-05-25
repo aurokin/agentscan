@@ -3,7 +3,17 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
     <title>agentscan</title>
+    <!-- Paint the dark background before styles.css loads so cold start doesn't
+         flash the WebView's default white background. Keep in sync with --bg. -->
+    <style>
+      html,
+      body {
+        margin: 0;
+        background: #1a1a1c;
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>
