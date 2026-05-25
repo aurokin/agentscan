@@ -104,6 +104,10 @@ fn daemon_refresh_pane_updates_existing_pane_from_provider() {
     assert_eq!(snapshot.panes[0].pane_id, "%1");
     assert_eq!(snapshot.panes[0].tmux.pane_title_raw, "new");
     assert_eq!(snapshot.panes[0].diagnostics.cache_origin, "daemon_update");
+    assert_eq!(
+        snapshot.panes[0].diagnostics.proc_fallback.outcome,
+        ProcFallbackOutcome::NotRun
+    );
     assert_eq!(snapshot.source.kind, SourceKind::Daemon);
 }
 
@@ -135,6 +139,10 @@ fn daemon_refresh_pane_title_prefers_control_mode_title() {
     .expect("title refresh should succeed");
 
     assert_eq!(snapshot.panes[0].tmux.pane_title_raw, "from-control-mode");
+    assert_eq!(
+        snapshot.panes[0].diagnostics.proc_fallback.outcome,
+        ProcFallbackOutcome::NotRun
+    );
 }
 
 #[test]
@@ -161,6 +169,220 @@ fn daemon_refresh_window_replaces_only_matching_scope() {
             .iter()
             .filter(|pane| pane.location.window_name == "window-@1")
             .all(|pane| pane.diagnostics.cache_origin == "daemon_update")
+    );
+    assert!(
+        snapshot
+            .panes
+            .iter()
+            .filter(|pane| pane.location.window_name == "window-@1")
+            .all(|pane| pane.diagnostics.proc_fallback.outcome == ProcFallbackOutcome::NotRun)
+    );
+}
+
+#[test]
+fn daemon_refresh_window_preserves_proc_identity_for_same_pid() {
+    let old_row = daemon_refresh_row("%42", "$1", "@1", 0, "old-window");
+    let mut proc_pane = classify::pane_from_row(old_row);
+    proc_pane.provider = Some(Provider::Claude);
+    proc_pane.diagnostics.proc_fallback.outcome = ProcFallbackOutcome::Resolved;
+    proc_pane.diagnostics.proc_fallback.reason =
+        "resolved provider from process evidence".to_string();
+    proc_pane.diagnostics.proc_fallback.commands = vec!["claude".to_string()];
+    let mut snapshot = empty_socket_snapshot("2026-05-03T00:00:00Z");
+    snapshot.panes = vec![proc_pane];
+
+    let mut new_row = daemon_refresh_row("%42", "$1", "@1", 0, "Claude Code | Working");
+    new_row.pane_current_command = "node".to_string();
+    let mut provider = FakeTmuxReadProvider::default().with_target_panes("@1", Some(vec![new_row]));
+
+    daemon::test_refresh_snapshot_window_with_provider(&mut snapshot, &mut provider, "@1")
+        .expect("window refresh should preserve proc identity");
+
+    assert_eq!(snapshot.panes[0].provider, Some(Provider::Claude));
+    assert_eq!(snapshot.panes[0].status.kind, StatusKind::Busy);
+    assert_eq!(snapshot.panes[0].display.label, "Working");
+    assert_eq!(
+        snapshot.panes[0].diagnostics.proc_fallback.outcome,
+        ProcFallbackOutcome::Resolved
+    );
+}
+
+#[test]
+fn daemon_refresh_window_preserves_proc_identity_for_moved_pane() {
+    let old_row = daemon_refresh_row("%42", "$1", "@2", 0, "old-window");
+    let mut proc_pane = classify::pane_from_row(old_row);
+    proc_pane.provider = Some(Provider::Claude);
+    proc_pane.diagnostics.proc_fallback.outcome = ProcFallbackOutcome::Resolved;
+    proc_pane.diagnostics.proc_fallback.reason =
+        "resolved provider from process evidence".to_string();
+    proc_pane.diagnostics.proc_fallback.commands = vec!["claude".to_string()];
+    let mut snapshot = empty_socket_snapshot("2026-05-03T00:00:00Z");
+    snapshot.panes = vec![proc_pane];
+
+    let mut moved_row = daemon_refresh_row("%42", "$1", "@1", 0, "Claude Code | Working");
+    moved_row.pane_current_command = "node".to_string();
+    let mut provider =
+        FakeTmuxReadProvider::default().with_target_panes("@1", Some(vec![moved_row]));
+
+    daemon::test_refresh_snapshot_window_with_provider(&mut snapshot, &mut provider, "@1")
+        .expect("window refresh should preserve moved proc identity");
+
+    assert_eq!(snapshot.panes.len(), 1);
+    assert_eq!(snapshot.panes[0].tmux.window_id.as_deref(), Some("@1"));
+    assert_eq!(snapshot.panes[0].provider, Some(Provider::Claude));
+    assert_eq!(snapshot.panes[0].status.kind, StatusKind::Busy);
+    assert_eq!(
+        snapshot.panes[0].diagnostics.proc_fallback.outcome,
+        ProcFallbackOutcome::Resolved
+    );
+}
+
+#[test]
+fn daemon_refresh_window_prefers_new_metadata_over_old_proc_identity() {
+    let old_row = daemon_refresh_row("%42", "$1", "@1", 0, "old-window");
+    let mut proc_pane = classify::pane_from_row(old_row);
+    proc_pane.provider = Some(Provider::Claude);
+    proc_pane.diagnostics.proc_fallback.outcome = ProcFallbackOutcome::Resolved;
+    proc_pane.diagnostics.proc_fallback.reason =
+        "resolved provider from process evidence".to_string();
+    proc_pane.diagnostics.proc_fallback.commands = vec!["claude".to_string()];
+    let mut snapshot = empty_socket_snapshot("2026-05-03T00:00:00Z");
+    snapshot.panes = vec![proc_pane];
+
+    let mut new_row = daemon_refresh_row("%42", "$1", "@1", 0, "Claude Code | Working");
+    new_row.pane_current_command = "node".to_string();
+    new_row.agent_provider = Some("codex".to_string());
+    new_row.agent_label = Some("Explicit Codex Task".to_string());
+    let mut provider = FakeTmuxReadProvider::default().with_target_panes("@1", Some(vec![new_row]));
+
+    daemon::test_refresh_snapshot_window_with_provider(&mut snapshot, &mut provider, "@1")
+        .expect("window refresh should prefer fresh metadata");
+
+    assert_eq!(snapshot.panes[0].provider, Some(Provider::Codex));
+    assert_eq!(
+        snapshot.panes[0].agent_metadata.provider.as_deref(),
+        Some("codex")
+    );
+    assert_eq!(snapshot.panes[0].display.label, "Explicit Codex Task");
+    assert_eq!(
+        snapshot.panes[0].diagnostics.proc_fallback.outcome,
+        ProcFallbackOutcome::NotRun
+    );
+}
+
+#[test]
+fn daemon_refresh_window_prefers_conflicting_title_provider_over_old_proc_identity() {
+    let old_row = daemon_refresh_row("%42", "$1", "@1", 0, "old-window");
+    let mut proc_pane = classify::pane_from_row(old_row);
+    proc_pane.provider = Some(Provider::Claude);
+    proc_pane.diagnostics.proc_fallback.outcome = ProcFallbackOutcome::Resolved;
+    proc_pane.diagnostics.proc_fallback.reason =
+        "resolved provider from process evidence".to_string();
+    proc_pane.diagnostics.proc_fallback.commands = vec!["claude".to_string()];
+    let mut snapshot = empty_socket_snapshot("2026-05-03T00:00:00Z");
+    snapshot.panes = vec![proc_pane];
+
+    let mut new_row =
+        daemon_refresh_row("%42", "$1", "@1", 0, "pi - refactor - agentscan: codex");
+    new_row.pane_current_command = "node".to_string();
+    let mut provider = FakeTmuxReadProvider::default().with_target_panes("@1", Some(vec![new_row]));
+
+    daemon::test_refresh_snapshot_window_with_provider(&mut snapshot, &mut provider, "@1")
+        .expect("window refresh should prefer fresh title provider");
+
+    assert_eq!(snapshot.panes[0].provider, Some(Provider::Codex));
+    assert_eq!(
+        snapshot.panes[0].diagnostics.proc_fallback.outcome,
+        ProcFallbackOutcome::NotRun
+    );
+}
+
+#[test]
+fn daemon_refresh_window_clears_proc_identity_without_fresh_provider_signal() {
+    let old_row = daemon_refresh_row("%42", "$1", "@1", 0, "old-window");
+    let mut proc_pane = classify::pane_from_row(old_row);
+    proc_pane.provider = Some(Provider::Claude);
+    proc_pane.diagnostics.proc_fallback.outcome = ProcFallbackOutcome::Resolved;
+    proc_pane.diagnostics.proc_fallback.reason =
+        "resolved provider from process evidence".to_string();
+    proc_pane.diagnostics.proc_fallback.commands = vec!["claude".to_string()];
+    let mut snapshot = empty_socket_snapshot("2026-05-03T00:00:00Z");
+    snapshot.panes = vec![proc_pane];
+
+    let mut new_row = daemon_refresh_row("%42", "$1", "@1", 0, "shell");
+    new_row.pane_current_command = "node".to_string();
+    let mut provider = FakeTmuxReadProvider::default().with_target_panes("@1", Some(vec![new_row]));
+
+    daemon::test_refresh_snapshot_window_with_provider(&mut snapshot, &mut provider, "@1")
+        .expect("window refresh should clear stale proc identity");
+
+    assert_eq!(snapshot.panes[0].provider, None);
+    assert_eq!(
+        snapshot.panes[0].diagnostics.proc_fallback.outcome,
+        ProcFallbackOutcome::NotRun
+    );
+}
+
+#[test]
+fn daemon_refresh_window_preserves_proc_identity_for_unchanged_generic_row() {
+    let mut old_row = daemon_refresh_row("%42", "$1", "@1", 0, "generic");
+    old_row.pane_current_command = "node".to_string();
+    let mut proc_pane = classify::pane_from_row(old_row.clone());
+    proc_pane.provider = Some(Provider::Claude);
+    proc_pane.diagnostics.proc_fallback.outcome = ProcFallbackOutcome::Resolved;
+    proc_pane.diagnostics.proc_fallback.reason =
+        "resolved provider from process evidence".to_string();
+    proc_pane.diagnostics.proc_fallback.commands = vec!["claude".to_string()];
+    let mut snapshot = empty_socket_snapshot("2026-05-03T00:00:00Z");
+    snapshot.panes = vec![proc_pane];
+
+    let mut provider = FakeTmuxReadProvider::default().with_target_panes("@1", Some(vec![old_row]));
+
+    daemon::test_refresh_snapshot_window_with_provider(&mut snapshot, &mut provider, "@1")
+        .expect("unchanged pane refresh should preserve proc identity");
+
+    assert_eq!(snapshot.panes[0].provider, Some(Provider::Claude));
+    assert_eq!(
+        snapshot.panes[0].diagnostics.proc_fallback.outcome,
+        ProcFallbackOutcome::Resolved
+    );
+}
+
+#[test]
+fn daemon_refresh_window_preserves_fresh_metadata_with_old_proc_identity() {
+    let old_row = daemon_refresh_row("%42", "$1", "@1", 0, "old-window");
+    let mut proc_pane = classify::pane_from_row(old_row);
+    proc_pane.provider = Some(Provider::Claude);
+    proc_pane.diagnostics.proc_fallback.outcome = ProcFallbackOutcome::Resolved;
+    proc_pane.diagnostics.proc_fallback.reason =
+        "resolved provider from process evidence".to_string();
+    proc_pane.diagnostics.proc_fallback.commands = vec!["claude".to_string()];
+    let mut snapshot = empty_socket_snapshot("2026-05-03T00:00:00Z");
+    snapshot.panes = vec![proc_pane];
+
+    let mut new_row = daemon_refresh_row("%42", "$1", "@1", 0, "Claude Code | Working");
+    new_row.pane_current_command = "node".to_string();
+    new_row.agent_label = Some("Fresh Label".to_string());
+    new_row.agent_state = Some("busy".to_string());
+    let mut provider = FakeTmuxReadProvider::default().with_target_panes("@1", Some(vec![new_row]));
+
+    daemon::test_refresh_snapshot_window_with_provider(&mut snapshot, &mut provider, "@1")
+        .expect("window refresh should preserve fresh metadata");
+
+    assert_eq!(snapshot.panes[0].provider, Some(Provider::Claude));
+    assert_eq!(snapshot.panes[0].agent_metadata.provider, None);
+    assert_eq!(
+        snapshot.panes[0].agent_metadata.label.as_deref(),
+        Some("Fresh Label")
+    );
+    assert_eq!(
+        snapshot.panes[0].agent_metadata.state.as_deref(),
+        Some("busy")
+    );
+    assert_eq!(snapshot.panes[0].display.label, "Fresh Label");
+    assert_eq!(
+        snapshot.panes[0].diagnostics.proc_fallback.outcome,
+        ProcFallbackOutcome::Resolved
     );
 }
 
@@ -193,6 +415,10 @@ fn daemon_full_reconcile_replaces_snapshot_from_provider() {
     assert_eq!(snapshot.panes.len(), 1);
     assert_eq!(snapshot.panes[0].pane_id, "%2");
     assert_eq!(snapshot.panes[0].diagnostics.cache_origin, "daemon_snapshot");
+    assert_ne!(
+        snapshot.panes[0].diagnostics.proc_fallback.outcome,
+        ProcFallbackOutcome::NotRun
+    );
 }
 
 #[test]
@@ -246,13 +472,26 @@ fn daemon_control_event_batch_coalesces_latest_title_per_pane() {
         "%output %1 \\033]2;second\\033\\\\".to_string(),
     ];
 
-    let (changed, full_snapshot_refresh, fallback_to_full) =
-        daemon::test_apply_control_event_lines_with_provider(&mut snapshot, &mut provider, &lines)
-            .expect("batched pane control events should refresh once");
+    let (
+        changed,
+        full_snapshot_refresh,
+        fallback_to_full,
+        targeted_title_updates,
+        targeted_pane_refreshes,
+        targeted_scope_refreshes,
+    ) = daemon::test_apply_control_event_lines_with_provider_counts(
+        &mut snapshot,
+        &mut provider,
+        &lines,
+    )
+    .expect("batched pane control events should refresh once");
 
     assert!(changed);
     assert!(!full_snapshot_refresh);
     assert!(!fallback_to_full);
+    assert_eq!(targeted_title_updates, 1);
+    assert_eq!(targeted_pane_refreshes, 1);
+    assert_eq!(targeted_scope_refreshes, 0);
     assert_eq!(provider.list_all_count, 0);
     assert_eq!(provider.list_target_count, 0);
     assert_eq!(provider.list_pane_count, 1);
@@ -275,6 +514,111 @@ fn daemon_control_event_batch_applies_standalone_title() {
     assert!(!fallback_to_full);
     assert_eq!(provider.list_pane_count, 1);
     assert_eq!(snapshot.panes[0].tmux.pane_title_raw, "from-control-mode");
+}
+
+#[test]
+fn daemon_control_event_batch_preserves_proc_identity_on_title_update() {
+    let mut pane = proc_fallback_pane(42, "node", "old-title");
+    pane.provider = Some(Provider::Claude);
+    pane.diagnostics.proc_fallback.outcome = ProcFallbackOutcome::Resolved;
+    pane.diagnostics.proc_fallback.reason = "resolved provider from process evidence".to_string();
+    pane.diagnostics.proc_fallback.commands = vec!["claude".to_string()];
+    let mut snapshot = empty_socket_snapshot("2026-05-03T00:00:00Z");
+    snapshot.panes = vec![pane];
+    let mut row = daemon_refresh_row("%42", "$1", "@1", 0, "old-title");
+    row.pane_pid = 42;
+    row.pane_current_command = "node".to_string();
+    row.pane_tty = "/dev/pts/42".to_string();
+    row.pane_current_path = "/tmp/proc-wrapper".to_string();
+    let mut provider = FakeTmuxReadProvider::default().with_pane("%42", Some(row));
+    let lines = vec!["%output %42 \\033]0;Claude Code | Working\\007".to_string()];
+
+    let (changed, full_snapshot_refresh, fallback_to_full) =
+        daemon::test_apply_control_event_lines_with_provider(&mut snapshot, &mut provider, &lines)
+            .expect("title event should update existing proc-resolved pane");
+
+    assert!(changed);
+    assert!(!full_snapshot_refresh);
+    assert!(!fallback_to_full);
+    assert_eq!(provider.list_pane_count, 1);
+    assert_eq!(snapshot.panes[0].provider, Some(Provider::Claude));
+    assert_eq!(
+        snapshot.panes[0].diagnostics.proc_fallback.outcome,
+        ProcFallbackOutcome::Resolved
+    );
+    assert_eq!(snapshot.panes[0].status.kind, StatusKind::Busy);
+    assert_eq!(snapshot.panes[0].display.label, "Working");
+    assert_eq!(snapshot.panes[0].tmux.pane_title_raw, "Claude Code | Working");
+}
+
+#[test]
+fn daemon_control_event_batch_preserves_proc_identity_on_generic_title_update() {
+    let mut pane = proc_fallback_pane(42, "node", "old-title");
+    pane.provider = Some(Provider::Claude);
+    pane.diagnostics.proc_fallback.outcome = ProcFallbackOutcome::Resolved;
+    pane.diagnostics.proc_fallback.reason = "resolved provider from process evidence".to_string();
+    pane.diagnostics.proc_fallback.commands = vec!["claude".to_string()];
+    let mut snapshot = empty_socket_snapshot("2026-05-03T00:00:00Z");
+    snapshot.panes = vec![pane];
+    let mut row = daemon_refresh_row("%42", "$1", "@1", 0, "old-title");
+    row.pane_pid = 42;
+    row.pane_current_command = "node".to_string();
+    row.pane_tty = "/dev/pts/42".to_string();
+    row.pane_current_path = "/tmp/proc-wrapper".to_string();
+    let mut provider = FakeTmuxReadProvider::default().with_pane("%42", Some(row));
+    let lines = vec!["%output %42 \\033]0;Working\\007".to_string()];
+
+    let (changed, full_snapshot_refresh, fallback_to_full) =
+        daemon::test_apply_control_event_lines_with_provider(&mut snapshot, &mut provider, &lines)
+            .expect("generic title event should keep unchanged proc-resolved pane");
+
+    assert!(changed);
+    assert!(!full_snapshot_refresh);
+    assert!(!fallback_to_full);
+    assert_eq!(provider.list_pane_count, 1);
+    assert_eq!(snapshot.panes[0].provider, Some(Provider::Claude));
+    assert_eq!(
+        snapshot.panes[0].diagnostics.proc_fallback.outcome,
+        ProcFallbackOutcome::Resolved
+    );
+    assert_eq!(snapshot.panes[0].tmux.pane_title_raw, "Working");
+}
+
+#[test]
+fn daemon_control_event_batch_preserves_proc_identity_on_coalesced_pane_title_update() {
+    let mut pane = proc_fallback_pane(42, "node", "old-title");
+    pane.provider = Some(Provider::Claude);
+    pane.diagnostics.proc_fallback.outcome = ProcFallbackOutcome::Resolved;
+    pane.diagnostics.proc_fallback.reason = "resolved provider from process evidence".to_string();
+    pane.diagnostics.proc_fallback.commands = vec!["claude".to_string()];
+    let mut snapshot = empty_socket_snapshot("2026-05-03T00:00:00Z");
+    snapshot.panes = vec![pane];
+
+    let mut pane_row = daemon_refresh_row("%42", "$1", "@1", 0, "Claude Code | Working");
+    pane_row.pane_pid = 42;
+    pane_row.pane_current_command = "node".to_string();
+    let mut provider = FakeTmuxReadProvider::default().with_pane("%42", Some(pane_row));
+    let lines = vec![
+        "%output %42 \\033]0;coalesced-title\\007".to_string(),
+        "%subscription-changed agentscan $1 @1 0 %42 : %42:node:::::".to_string(),
+    ];
+
+    let (changed, full_snapshot_refresh, fallback_to_full) =
+        daemon::test_apply_control_event_lines_with_provider(&mut snapshot, &mut provider, &lines)
+            .expect("coalesced pane and title event should preserve proc identity");
+
+    assert!(changed);
+    assert!(!full_snapshot_refresh);
+    assert!(!fallback_to_full);
+    assert_eq!(provider.list_pane_count, 1);
+    assert_eq!(snapshot.panes[0].provider, Some(Provider::Claude));
+    assert_eq!(
+        snapshot.panes[0].diagnostics.proc_fallback.outcome,
+        ProcFallbackOutcome::Resolved
+    );
+    assert_eq!(snapshot.panes[0].status.kind, StatusKind::Busy);
+    assert_eq!(snapshot.panes[0].display.label, "Working");
+    assert_eq!(snapshot.panes[0].tmux.pane_title_raw, "Claude Code | Working");
 }
 
 #[test]
@@ -457,6 +801,36 @@ fn daemon_control_event_batch_does_not_refresh_for_stale_title_before_resnapshot
 }
 
 #[test]
+fn daemon_control_event_batch_ignores_title_for_missing_pane() {
+    let mut snapshot = daemon_refresh_snapshot(Vec::new());
+    let mut provider = FakeTmuxReadProvider::default().with_pane("%404", None);
+    let lines = vec!["%output %404 \\033]0;missing\\007".to_string()];
+
+    let (
+        changed,
+        full_snapshot_refresh,
+        fallback_to_full,
+        targeted_title_updates,
+        targeted_pane_refreshes,
+        targeted_scope_refreshes,
+    ) = daemon::test_apply_control_event_lines_with_provider_counts(
+        &mut snapshot,
+        &mut provider,
+        &lines,
+    )
+    .expect("missing title pane should not fail");
+
+    assert!(!changed);
+    assert!(!full_snapshot_refresh);
+    assert!(!fallback_to_full);
+    assert_eq!(targeted_title_updates, 0);
+    assert_eq!(targeted_pane_refreshes, 0);
+    assert_eq!(targeted_scope_refreshes, 0);
+    assert_eq!(provider.list_pane_count, 1);
+    assert!(snapshot.panes.is_empty());
+}
+
+#[test]
 fn daemon_deep_control_mode_telemetry_env_value_parser() {
     assert!(daemon::test_deep_control_mode_telemetry_value_enabled("1"));
     assert!(daemon::test_deep_control_mode_telemetry_value_enabled("true"));
@@ -495,6 +869,36 @@ fn daemon_reconcile_publish_decision_publishes_material_changes() {
 }
 
 #[test]
+fn daemon_control_event_timer_reset_tracks_broker_recovery_and_fallback() {
+    assert!(daemon::test_control_event_refresh_should_reset_reconcile_timer(
+        true, true, true
+    ));
+    assert!(daemon::test_control_event_refresh_should_reset_reconcile_timer(
+        true, false, false
+    ));
+    assert!(!daemon::test_control_event_refresh_should_reset_reconcile_timer(
+        false, false, false
+    ));
+    assert!(!daemon::test_control_event_refresh_should_reset_reconcile_timer(
+        true, false, true
+    ));
+}
+
+#[test]
+fn daemon_control_exit_event_skips_broker_recovery() {
+    assert!(daemon::test_control_event_should_recover_broker(false));
+    assert!(!daemon::test_control_event_should_recover_broker(true));
+}
+
+#[test]
+fn daemon_reconcile_interval_uses_fallback_when_broker_is_disabled() {
+    assert_eq!(
+        daemon::test_reconcile_interval_for_broker_enabled(false),
+        std::time::Duration::from_secs(1)
+    );
+}
+
+#[test]
 fn daemon_runtime_telemetry_counts_reconcile_results_and_fallbacks() {
     let previous = empty_socket_snapshot("2026-05-23T18:00:00Z");
     let mut noop_current = previous.clone();
@@ -511,6 +915,12 @@ fn daemon_runtime_telemetry_counts_reconcile_results_and_fallbacks() {
     );
 
     assert_eq!(telemetry.control_event_refresh_count, 1);
+    assert_eq!(telemetry.control_event_batch_count, 2);
+    assert_eq!(telemetry.control_event_line_count, 5);
+    assert_eq!(telemetry.targeted_title_update_count, 1);
+    assert_eq!(telemetry.targeted_pane_refresh_count, 2);
+    assert_eq!(telemetry.targeted_scope_refresh_count, 1);
+    assert_eq!(telemetry.full_snapshot_refresh_count, 1);
     assert_eq!(telemetry.targeted_refresh_fallback_to_full_count, 1);
     assert_eq!(telemetry.reconcile_attempt_count, 2);
     assert_eq!(telemetry.reconcile_noop_count, 1);

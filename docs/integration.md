@@ -143,7 +143,9 @@ and stale historical lines in the pane tail should not drive current status.
 `agentscan daemon status --format json` includes runtime telemetry counters for
 clients and developers that need to evaluate event-driven behavior:
 
+- `control_event_batch_count`
 - `control_event_refresh_count`
+- `control_event_line_count`
 - `reconcile_attempt_count`
 - `reconcile_noop_count`
 - `reconcile_changed_snapshot_count`

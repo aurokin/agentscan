@@ -1439,9 +1439,15 @@ struct DaemonStatusJson {
     control_mode_broker_reconnect_count: Option<u32>,
     control_mode_broker_fallback_count: Option<u64>,
     control_event_refresh_count: Option<u64>,
+    control_event_batch_count: Option<u64>,
+    control_event_line_count: Option<u64>,
     reconcile_attempt_count: Option<u64>,
     reconcile_noop_count: Option<u64>,
     reconcile_changed_snapshot_count: Option<u64>,
+    targeted_title_update_count: Option<u64>,
+    targeted_pane_refresh_count: Option<u64>,
+    targeted_scope_refresh_count: Option<u64>,
+    full_snapshot_refresh_count: Option<u64>,
     targeted_refresh_fallback_to_full_count: Option<u64>,
     broker_fallback_count: Option<u64>,
     unavailable_reason: Option<String>,
@@ -1477,9 +1483,15 @@ fn lifecycle_not_running_json(
         control_mode_broker_reconnect_count: None,
         control_mode_broker_fallback_count: None,
         control_event_refresh_count: None,
+        control_event_batch_count: None,
+        control_event_line_count: None,
         reconcile_attempt_count: None,
         reconcile_noop_count: None,
         reconcile_changed_snapshot_count: None,
+        targeted_title_update_count: None,
+        targeted_pane_refresh_count: None,
+        targeted_scope_refresh_count: None,
+        full_snapshot_refresh_count: None,
         targeted_refresh_fallback_to_full_count: None,
         broker_fallback_count: None,
         unavailable_reason: None,
@@ -1530,6 +1542,14 @@ fn lifecycle_status_json(
             .runtime_telemetry
             .as_ref()
             .map(|telemetry| telemetry.control_event_refresh_count),
+        control_event_batch_count: status
+            .runtime_telemetry
+            .as_ref()
+            .map(|telemetry| telemetry.control_event_batch_count),
+        control_event_line_count: status
+            .runtime_telemetry
+            .as_ref()
+            .map(|telemetry| telemetry.control_event_line_count),
         reconcile_attempt_count: status
             .runtime_telemetry
             .as_ref()
@@ -1542,6 +1562,22 @@ fn lifecycle_status_json(
             .runtime_telemetry
             .as_ref()
             .map(|telemetry| telemetry.reconcile_changed_snapshot_count),
+        targeted_title_update_count: status
+            .runtime_telemetry
+            .as_ref()
+            .map(|telemetry| telemetry.targeted_title_update_count),
+        targeted_pane_refresh_count: status
+            .runtime_telemetry
+            .as_ref()
+            .map(|telemetry| telemetry.targeted_pane_refresh_count),
+        targeted_scope_refresh_count: status
+            .runtime_telemetry
+            .as_ref()
+            .map(|telemetry| telemetry.targeted_scope_refresh_count),
+        full_snapshot_refresh_count: status
+            .runtime_telemetry
+            .as_ref()
+            .map(|telemetry| telemetry.full_snapshot_refresh_count),
         targeted_refresh_fallback_to_full_count: status
             .runtime_telemetry
             .as_ref()
@@ -1678,6 +1714,14 @@ fn print_lifecycle_status(paths: &LifecyclePaths, status: &ipc::LifecycleStatusF
             telemetry.control_event_refresh_count
         );
         println!(
+            "control_event_batch_count: {}",
+            telemetry.control_event_batch_count
+        );
+        println!(
+            "control_event_line_count: {}",
+            telemetry.control_event_line_count
+        );
+        println!(
             "reconcile_attempt_count: {}",
             telemetry.reconcile_attempt_count
         );
@@ -1685,6 +1729,22 @@ fn print_lifecycle_status(paths: &LifecyclePaths, status: &ipc::LifecycleStatusF
         println!(
             "reconcile_changed_snapshot_count: {}",
             telemetry.reconcile_changed_snapshot_count
+        );
+        println!(
+            "targeted_title_update_count: {}",
+            telemetry.targeted_title_update_count
+        );
+        println!(
+            "targeted_pane_refresh_count: {}",
+            telemetry.targeted_pane_refresh_count
+        );
+        println!(
+            "targeted_scope_refresh_count: {}",
+            telemetry.targeted_scope_refresh_count
+        );
+        println!(
+            "full_snapshot_refresh_count: {}",
+            telemetry.full_snapshot_refresh_count
         );
         println!(
             "targeted_refresh_fallback_to_full_count: {}",

@@ -68,16 +68,31 @@ refreshes targeted pane, window, or session scopes when tmux gives enough
 identity.
 
 A reconcile loop remains as a safety net until control-mode events have proven
-sufficient across real workflows. Reconcile materiality ignores timestamp-only
-differences and cache-origin churn so telemetry can show whether the safety loop
-is finding actual missed state.
+sufficient across real workflows. When the control-mode broker is active, the
+safety reconcile interval is 30 seconds; broker fallback keeps the shorter
+interval so command-backed reads can recover promptly. Reconcile materiality
+ignores timestamp-only differences and cache-origin churn so telemetry can show
+whether the safety loop is finding actual missed state.
+
+`AGENTSCAN_CONTROL_MODE_ACTIVE_RECONCILE_INTERVAL_MS` can override the active
+broker safety interval for tests and diagnostics. Leave it unset in normal use.
 
 Runtime telemetry counters in `daemon status --format json` include:
 
-- `control_event_refresh_count`
+- `control_event_batch_count` for processed control-mode batches that contain a
+  control event, including no-op batches; raw ignored output is counted only
+  when `AGENTSCAN_DEEP_CONTROL_MODE_TELEMETRY=1` is set
+- `control_event_refresh_count` for control-mode batches that refreshed the daemon
+  snapshot
+- `control_event_line_count` for the control-mode lines received across processed
+  batches
 - `reconcile_attempt_count`
 - `reconcile_noop_count`
 - `reconcile_changed_snapshot_count`
+- `targeted_title_update_count`
+- `targeted_pane_refresh_count`
+- `targeted_scope_refresh_count`
+- `full_snapshot_refresh_count`
 - `targeted_refresh_fallback_to_full_count`
 - `broker_fallback_count`
 

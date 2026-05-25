@@ -1,5 +1,5 @@
 use super::*;
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::Read;
@@ -56,9 +56,13 @@ pub(crate) use socket_server::{
     SubscriberMailbox, handle_daemon_socket_client, refuse_server_busy,
 };
 
-const RECONCILE_INTERVAL: Duration = Duration::from_secs(1);
-const CONTROL_MODE_EVENT_BATCH_WINDOW: Duration = Duration::from_millis(50);
+const CONTROL_MODE_ACTIVE_RECONCILE_INTERVAL: Duration = Duration::from_secs(30);
+const CONTROL_MODE_FALLBACK_RECONCILE_INTERVAL: Duration = Duration::from_secs(1);
+const CONTROL_MODE_ACTIVE_RECONCILE_INTERVAL_ENV_VAR: &str =
+    "AGENTSCAN_CONTROL_MODE_ACTIVE_RECONCILE_INTERVAL_MS";
+const CONTROL_MODE_EVENT_BATCH_WINDOW: Duration = Duration::from_millis(100);
 const CONTROL_MODE_MIN_WAIT: Duration = Duration::from_millis(1);
+const CONTROL_MODE_MAX_WAIT: Duration = Duration::from_millis(500);
 const PANE_OUTPUT_STATUS_CACHE_TTL: Duration = Duration::from_secs(2);
 const STARTUP_FAILURE_OBSERVABILITY_WINDOW: Duration = Duration::from_millis(200);
 const CONTROL_MODE_STARTUP_TIMEOUT: Duration = Duration::from_secs(2);
@@ -217,15 +221,40 @@ struct DaemonRuntime<S> {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct RuntimeTelemetry {
     control_event_refresh_count: u64,
+    control_event_batch_count: u64,
+    control_event_line_count: u64,
     reconcile_attempt_count: u64,
     reconcile_noop_count: u64,
     reconcile_changed_snapshot_count: u64,
+    targeted_title_update_count: u64,
+    targeted_pane_refresh_count: u64,
+    targeted_scope_refresh_count: u64,
+    full_snapshot_refresh_count: u64,
     targeted_refresh_fallback_to_full_count: u64,
 }
 
 impl RuntimeTelemetry {
-    fn record_control_event_refresh(&mut self) {
+    fn record_control_event_batch(&mut self, line_count: usize) {
+        self.control_event_batch_count = self.control_event_batch_count.saturating_add(1);
+        self.control_event_line_count = self
+            .control_event_line_count
+            .saturating_add(line_count.try_into().unwrap_or(u64::MAX));
+    }
+
+    fn record_control_event_refresh(&mut self, outcome: &ControlEventOutcome) {
         self.control_event_refresh_count = self.control_event_refresh_count.saturating_add(1);
+        self.targeted_title_update_count = self
+            .targeted_title_update_count
+            .saturating_add(outcome.targeted_title_updates);
+        self.targeted_pane_refresh_count = self
+            .targeted_pane_refresh_count
+            .saturating_add(outcome.targeted_pane_refreshes);
+        self.targeted_scope_refresh_count = self
+            .targeted_scope_refresh_count
+            .saturating_add(outcome.targeted_scope_refreshes);
+        if outcome.full_snapshot_refresh {
+            self.full_snapshot_refresh_count = self.full_snapshot_refresh_count.saturating_add(1);
+        }
     }
 
     fn record_targeted_refresh_fallback_to_full(&mut self) {
@@ -250,9 +279,15 @@ impl RuntimeTelemetry {
     ) -> ipc::RuntimeTelemetryFrame {
         ipc::RuntimeTelemetryFrame {
             control_event_refresh_count: self.control_event_refresh_count,
+            control_event_batch_count: self.control_event_batch_count,
+            control_event_line_count: self.control_event_line_count,
             reconcile_attempt_count: self.reconcile_attempt_count,
             reconcile_noop_count: self.reconcile_noop_count,
             reconcile_changed_snapshot_count: self.reconcile_changed_snapshot_count,
+            targeted_title_update_count: self.targeted_title_update_count,
+            targeted_pane_refresh_count: self.targeted_pane_refresh_count,
+            targeted_scope_refresh_count: self.targeted_scope_refresh_count,
+            full_snapshot_refresh_count: self.full_snapshot_refresh_count,
             targeted_refresh_fallback_to_full_count: self.targeted_refresh_fallback_to_full_count,
             broker_fallback_count: broker_status.fallback_count.unwrap_or_default(),
         }
@@ -288,14 +323,6 @@ impl RefreshOutcome {
         }
     }
 
-    fn exit() -> Self {
-        Self {
-            should_exit: true,
-            publish_context: None,
-            reset_reconcile_timer: false,
-        }
-    }
-
     fn publish(publish_context: SnapshotPublishContext) -> Self {
         Self {
             should_exit: false,
@@ -326,6 +353,8 @@ impl<S: StartupActions> DaemonRuntime<S> {
         let control_mode = RunningTmuxControlModeClient::from_started(tmux_client)?;
         let telemetry = RuntimeTelemetry::default();
         let broker_status = control_mode.broker_status_frame();
+        let next_reconcile_at =
+            Instant::now() + reconcile_interval_for_broker_enabled(control_mode.broker_enabled());
         socket_state.update_control_mode_broker_status(broker_status.clone());
         socket_state.update_runtime_telemetry(telemetry.frame(&broker_status));
         Ok(Self {
@@ -335,7 +364,7 @@ impl<S: StartupActions> DaemonRuntime<S> {
             snapshot,
             pane_output_cache: scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL),
             control_mode,
-            next_reconcile_at: Instant::now() + RECONCILE_INTERVAL,
+            next_reconcile_at,
             telemetry,
             deep_control_mode_telemetry: deep_control_mode_telemetry_enabled(),
         })
@@ -365,7 +394,9 @@ impl<S: StartupActions> DaemonRuntime<S> {
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    self.apply_refresh_request(RefreshRequest::TimeoutReconcile)?;
+                    if Instant::now() >= self.next_reconcile_at {
+                        self.apply_refresh_request(RefreshRequest::TimeoutReconcile)?;
+                    }
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
@@ -377,6 +408,7 @@ impl<S: StartupActions> DaemonRuntime<S> {
         self.next_reconcile_at
             .saturating_duration_since(Instant::now())
             .max(CONTROL_MODE_MIN_WAIT)
+            .min(CONTROL_MODE_MAX_WAIT)
     }
 
     fn collect_control_mode_batch(&mut self, first_line: String) -> Result<Vec<String>> {
@@ -414,18 +446,28 @@ impl<S: StartupActions> DaemonRuntime<S> {
             self.publish_current_snapshot(publish_context);
         }
         if outcome.reset_reconcile_timer {
-            self.next_reconcile_at = Instant::now() + RECONCILE_INTERVAL;
+            self.next_reconcile_at = Instant::now() + self.reconcile_interval();
         }
         Ok(outcome.should_exit)
     }
 
+    fn reconcile_interval(&self) -> Duration {
+        reconcile_interval_for_broker_enabled(self.control_mode.broker_enabled())
+    }
+
     fn apply_control_mode_refresh(&mut self, lines: &[String]) -> Result<RefreshOutcome> {
         let batch = ControlEventBatch::from_lines(lines);
+        let should_record_batch_telemetry =
+            batch.has_telemetry_event() || self.deep_control_mode_telemetry;
+        if should_record_batch_telemetry {
+            self.telemetry.record_control_event_batch(lines.len());
+        }
         let should_exit = batch.should_exit;
         let event_publish_context = batch.publish_context();
         let previous_snapshot = batch
             .can_refresh_full_snapshot()
             .then(|| self.snapshot.clone());
+        let broker_enabled_before_refresh = self.control_mode.broker_enabled();
         let mut event_tmux_reads = self.control_mode.read_provider();
         let event_outcome = apply_control_event_batch(
             &mut self.snapshot,
@@ -434,15 +476,35 @@ impl<S: StartupActions> DaemonRuntime<S> {
             &mut self.pane_output_cache,
         )?;
         if !event_outcome.changed {
-            if self.deep_control_mode_telemetry {
+            let (reconnected, reset_reconcile_timer) =
+                if control_event_should_recover_broker(should_exit) {
+                    let reconnected = self.recover_broker_and_reconcile_if_needed()?;
+                    let reset_reconcile_timer = control_event_refresh_should_reset_reconcile_timer(
+                        broker_enabled_before_refresh,
+                        reconnected,
+                        self.control_mode.broker_enabled(),
+                    );
+                    (reconnected, reset_reconcile_timer)
+                } else {
+                    (false, false)
+                };
+            if should_record_batch_telemetry {
                 self.update_runtime_telemetry();
             }
-            if should_exit {
-                return Ok(RefreshOutcome::exit());
-            }
-            return Ok(RefreshOutcome::no_publish());
+            let mut outcome = if reconnected {
+                RefreshOutcome::publish(
+                    SnapshotPublishContext::new("reconcile").with_detail("broker_reconnect"),
+                )
+            } else if reset_reconcile_timer {
+                RefreshOutcome::no_publish_and_reset_reconcile_timer()
+            } else {
+                RefreshOutcome::no_publish()
+            };
+            outcome.should_exit = should_exit;
+            outcome.reset_reconcile_timer = reset_reconcile_timer;
+            return Ok(outcome);
         }
-        self.telemetry.record_control_event_refresh();
+        self.telemetry.record_control_event_refresh(&event_outcome);
         if event_outcome.full_snapshot_refresh
             && let Some(previous_snapshot) = previous_snapshot
         {
@@ -462,6 +524,13 @@ impl<S: StartupActions> DaemonRuntime<S> {
             })
         });
         outcome.should_exit = should_exit;
+        if control_event_refresh_should_reset_reconcile_timer(
+            broker_enabled_before_refresh,
+            reconnected,
+            self.control_mode.broker_enabled(),
+        ) {
+            outcome.reset_reconcile_timer = true;
+        }
         Ok(outcome)
     }
 
@@ -529,6 +598,26 @@ impl<S: StartupActions> DaemonRuntime<S> {
             self.control_mode.wait_for_exit()?;
         }
         Ok(())
+    }
+}
+
+fn control_event_refresh_should_reset_reconcile_timer(
+    broker_enabled_before_refresh: bool,
+    reconnected: bool,
+    broker_enabled: bool,
+) -> bool {
+    reconnected || (broker_enabled_before_refresh && !broker_enabled)
+}
+
+fn control_event_should_recover_broker(should_exit: bool) -> bool {
+    !should_exit
+}
+
+fn reconcile_interval_for_broker_enabled(broker_enabled: bool) -> Duration {
+    if broker_enabled {
+        control_mode_active_reconcile_interval()
+    } else {
+        CONTROL_MODE_FALLBACK_RECONCILE_INTERVAL
     }
 }
 
@@ -683,6 +772,9 @@ struct ControlEventOutcome {
     changed: bool,
     fallback_to_full: bool,
     full_snapshot_refresh: bool,
+    targeted_title_updates: u64,
+    targeted_pane_refreshes: u64,
+    targeted_scope_refreshes: u64,
 }
 
 #[derive(Debug, Default, Eq, PartialEq)]
@@ -775,6 +867,15 @@ impl ControlEventBatch {
 
         None
     }
+
+    fn has_telemetry_event(&self) -> bool {
+        self.should_exit
+            || self.resnapshot_sequence.is_some()
+            || !self.sessions.is_empty()
+            || !self.windows.is_empty()
+            || !self.panes.is_empty()
+            || !self.titles.is_empty()
+    }
 }
 
 impl ControlEvent {
@@ -844,6 +945,9 @@ fn apply_control_event_batch(
     let mut changed = false;
     let mut fallback_to_full = false;
     let mut full_snapshot_refresh = false;
+    let mut targeted_title_updates = 0_u64;
+    let mut targeted_pane_refreshes = 0_u64;
+    let mut targeted_scope_refreshes = 0_u64;
 
     if batch.resnapshot_sequence.is_some() {
         let tmux_version = snapshot.source.tmux_version.clone();
@@ -865,6 +969,7 @@ fn apply_control_event_batch(
             continue;
         }
         changed = true;
+        targeted_scope_refreshes = targeted_scope_refreshes.saturating_add(1);
         if let Err(error) =
             refresh_snapshot_session(snapshot, tmux_reads, session_id, pane_output_cache)
         {
@@ -888,6 +993,7 @@ fn apply_control_event_batch(
             continue;
         }
         changed = true;
+        targeted_scope_refreshes = targeted_scope_refreshes.saturating_add(1);
         if let Err(error) =
             refresh_snapshot_window(snapshot, tmux_reads, window_id, pane_output_cache)
         {
@@ -904,36 +1010,61 @@ fn apply_control_event_batch(
     }
 
     let pane_scopes_after_scope_refresh = pane_scopes_by_id(snapshot);
-    let mut pane_ids: BTreeSet<String> = batch.panes.keys().cloned().collect();
-    pane_ids.extend(batch.titles.keys().filter_map(|pane_id| {
-        title_override_after_latest_refresh(
+    for pane_id in batch.panes.keys() {
+        let title_override = title_override_after_latest_refresh(
             batch,
             &pane_scopes_before_refresh,
             &pane_scopes_after_scope_refresh,
             pane_id,
-        )
-        .map(|_| pane_id.clone())
-    }));
-    for pane_id in pane_ids {
-        changed = true;
-        refresh_snapshot_pane_with_title(
+        );
+        let has_title_override = title_override.is_some();
+        if refresh_snapshot_pane_with_title(
             snapshot,
             tmux_reads,
-            &pane_id,
-            title_override_after_latest_refresh(
-                batch,
-                &pane_scopes_before_refresh,
-                &pane_scopes_after_scope_refresh,
-                &pane_id,
-            ),
+            pane_id,
+            title_override,
             pane_output_cache,
-        )?;
+        )? {
+            changed = true;
+            targeted_pane_refreshes = targeted_pane_refreshes.saturating_add(1);
+            if has_title_override {
+                targeted_title_updates = targeted_title_updates.saturating_add(1);
+            }
+        }
+    }
+
+    for pane_id in batch.titles.keys() {
+        let Some(title) = title_override_after_latest_refresh(
+            batch,
+            &pane_scopes_before_refresh,
+            &pane_scopes_after_scope_refresh,
+            pane_id,
+        ) else {
+            continue;
+        };
+        if batch.panes.contains_key(pane_id) {
+            continue;
+        }
+        if refresh_snapshot_pane_with_title(
+            snapshot,
+            tmux_reads,
+            pane_id,
+            Some(title),
+            pane_output_cache,
+        )? {
+            changed = true;
+            targeted_pane_refreshes = targeted_pane_refreshes.saturating_add(1);
+            targeted_title_updates = targeted_title_updates.saturating_add(1);
+        }
     }
 
     Ok(ControlEventOutcome {
         changed,
         fallback_to_full,
         full_snapshot_refresh,
+        targeted_title_updates,
+        targeted_pane_refreshes,
+        targeted_scope_refreshes,
     })
 }
 
@@ -1187,14 +1318,22 @@ fn refresh_snapshot_pane_with_title(
     pane_id: &str,
     title_override: Option<&str>,
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
-) -> Result<()> {
+) -> Result<bool> {
+    let previous = snapshot
+        .panes
+        .iter()
+        .find(|existing| existing.pane_id == pane_id)
+        .cloned();
+    let allow_title_change_for_identity = title_override.is_some();
     let pane = tmux_reads.list_pane(pane_id)?.map(|mut row| {
         if let Some(title) = title_override {
             row.pane_title_raw = title.to_string();
         }
-        let mut pane = classify::pane_from_row(row);
-        let proc_inspector = proc::ProcProcessInspector;
-        classify::apply_proc_fallback(&mut pane, &proc_inspector);
+        let mut pane = pane_from_targeted_row_preserving_proc_identity(
+            row,
+            previous.as_ref(),
+            allow_title_change_for_identity,
+        );
         scanner::apply_pane_output_status_fallbacks_with_cache(
             std::slice::from_mut(&mut pane),
             pane_output_cache,
@@ -1214,12 +1353,93 @@ fn refresh_snapshot_pane_with_title(
         } else {
             snapshot.panes.remove(index);
         }
+    } else if pane.is_none() {
+        return Ok(false);
     } else if let Some(pane) = pane {
         snapshot.panes.push(pane);
     }
 
     snapshot::sort_snapshot_panes(snapshot);
-    snapshot::mark_snapshot_as_daemon(snapshot)
+    snapshot::mark_snapshot_as_daemon(snapshot)?;
+    Ok(true)
+}
+
+fn preserve_proc_identity_for_targeted_update(pane: &mut PaneRecord, previous: &PaneRecord) {
+    pane.provider = previous.provider;
+    pane.classification = previous.classification.clone();
+    pane.diagnostics.proc_fallback = previous.diagnostics.proc_fallback.clone();
+}
+
+fn pane_from_targeted_row_preserving_proc_identity(
+    mut row: TmuxPaneRow,
+    previous: Option<&PaneRecord>,
+    allow_title_change_for_identity: bool,
+) -> PaneRecord {
+    let should_preserve = previous.is_some_and(|previous| {
+        should_preserve_proc_identity_for_targeted_update(
+            previous,
+            &row,
+            allow_title_change_for_identity,
+        )
+    });
+    let fresh_agent_metadata = should_preserve.then(|| agent_metadata_from_row(&row));
+    if should_preserve {
+        row.agent_provider = previous
+            .and_then(|previous| previous.provider)
+            .map(|provider| provider.to_string());
+    }
+
+    let mut pane = classify::pane_from_row(row);
+    if should_preserve && let Some(previous) = previous {
+        if let Some(fresh_agent_metadata) = fresh_agent_metadata {
+            pane.agent_metadata = fresh_agent_metadata;
+        }
+        preserve_proc_identity_for_targeted_update(&mut pane, previous);
+    }
+    pane
+}
+
+fn agent_metadata_from_row(row: &TmuxPaneRow) -> AgentMetadata {
+    AgentMetadata {
+        provider: row.agent_provider.clone(),
+        label: row.agent_label.clone(),
+        cwd: row.agent_cwd.clone(),
+        state: row.agent_state.clone(),
+        session_id: row.agent_session_id.clone(),
+    }
+}
+
+fn should_preserve_proc_identity_for_targeted_update(
+    previous: &PaneRecord,
+    row: &TmuxPaneRow,
+    allow_title_change: bool,
+) -> bool {
+    previous.diagnostics.proc_fallback.outcome == ProcFallbackOutcome::Resolved
+        && previous.provider.is_some()
+        && previous.agent_metadata.provider.is_none()
+        && row.agent_provider.is_none()
+        && previous.tmux.pane_pid == row.pane_pid
+        && {
+            let fresh_provider = fresh_row_provider(row);
+            fresh_provider == previous.provider
+                || (fresh_provider.is_none()
+                    && row_matches_previous_tmux_identity(previous, row, allow_title_change))
+        }
+}
+
+fn fresh_row_provider(row: &TmuxPaneRow) -> Option<Provider> {
+    classify::pane_from_row(row.clone()).provider
+}
+
+fn row_matches_previous_tmux_identity(
+    previous: &PaneRecord,
+    row: &TmuxPaneRow,
+    allow_title_change: bool,
+) -> bool {
+    previous.tmux.pane_current_command == row.pane_current_command
+        && (allow_title_change || previous.tmux.pane_title_raw == row.pane_title_raw)
+        && previous.tmux.pane_current_path == row.pane_current_path
+        && previous.tmux.pane_tty == row.pane_tty
 }
 
 fn refresh_snapshot_window(
@@ -1260,14 +1480,32 @@ fn refresh_snapshot_scope(
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
 ) -> Result<()> {
     let rows = tmux_reads.list_target_panes(target_id)?;
-
-    snapshot
+    let previous_by_pane_id = snapshot
         .panes
-        .retain(|pane| !scope.matches(pane, target_id));
+        .iter()
+        .map(|pane| (pane.pane_id.clone(), pane.clone()))
+        .collect::<HashMap<_, _>>();
+    let refreshed_pane_ids = rows
+        .as_ref()
+        .map(|rows| {
+            rows.iter()
+                .map(|row| row.pane_id.clone())
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default();
+
+    snapshot.panes.retain(|pane| {
+        !scope.matches(pane, target_id) && !refreshed_pane_ids.contains(&pane.pane_id)
+    });
 
     if let Some(rows) = rows {
-        let proc_inspector = proc::ProcProcessInspector;
-        let mut panes = classify::panes_from_rows_with_proc_fallback(rows, &proc_inspector);
+        let mut panes = rows
+            .into_iter()
+            .map(|row| {
+                let previous = previous_by_pane_id.get(&row.pane_id);
+                pane_from_targeted_row_preserving_proc_identity(row, previous, false)
+            })
+            .collect::<Vec<_>>();
         scanner::apply_pane_output_status_fallbacks_with_cache(
             &mut panes,
             pane_output_cache,
@@ -1380,6 +1618,15 @@ fn deep_control_mode_telemetry_enabled() -> bool {
         .is_some_and(deep_control_mode_telemetry_value_enabled)
 }
 
+fn control_mode_active_reconcile_interval() -> Duration {
+    env::var(CONTROL_MODE_ACTIVE_RECONCILE_INTERVAL_ENV_VAR)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|millis| *millis > 0)
+        .map(Duration::from_millis)
+        .unwrap_or(CONTROL_MODE_ACTIVE_RECONCILE_INTERVAL)
+}
+
 fn deep_control_mode_telemetry_value_enabled(value: &std::ffi::OsStr) -> bool {
     let value = value.to_string_lossy();
     let value = value.trim();
@@ -1398,6 +1645,7 @@ pub(crate) fn test_refresh_snapshot_pane_with_provider(
 ) -> Result<()> {
     let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
     refresh_snapshot_pane_with_title(snapshot, tmux_reads, pane_id, None, &mut pane_output_cache)
+        .map(|_| ())
 }
 
 #[cfg(test)]
@@ -1429,6 +1677,25 @@ pub(crate) fn test_apply_control_event_lines_with_provider(
 }
 
 #[cfg(test)]
+pub(crate) fn test_apply_control_event_lines_with_provider_counts(
+    snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &mut impl TmuxReadProvider,
+    lines: &[String],
+) -> Result<(bool, bool, bool, u64, u64, u64)> {
+    let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
+    let batch = ControlEventBatch::from_lines(lines);
+    let outcome = apply_control_event_batch(snapshot, tmux_reads, &batch, &mut pane_output_cache)?;
+    Ok((
+        outcome.changed,
+        outcome.full_snapshot_refresh,
+        outcome.fallback_to_full,
+        outcome.targeted_title_updates,
+        outcome.targeted_pane_refreshes,
+        outcome.targeted_scope_refreshes,
+    ))
+}
+
+#[cfg(test)]
 pub(crate) fn test_deep_control_mode_telemetry_value_enabled(value: &str) -> bool {
     deep_control_mode_telemetry_value_enabled(std::ffi::OsStr::new(value))
 }
@@ -1450,13 +1717,45 @@ pub(crate) fn test_reconcile_refresh_publish_decision(
 }
 
 #[cfg(test)]
+pub(crate) fn test_control_event_refresh_should_reset_reconcile_timer(
+    broker_enabled_before_refresh: bool,
+    reconnected: bool,
+    broker_enabled: bool,
+) -> bool {
+    control_event_refresh_should_reset_reconcile_timer(
+        broker_enabled_before_refresh,
+        reconnected,
+        broker_enabled,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn test_control_event_should_recover_broker(should_exit: bool) -> bool {
+    control_event_should_recover_broker(should_exit)
+}
+
+#[cfg(test)]
+pub(crate) fn test_reconcile_interval_for_broker_enabled(broker_enabled: bool) -> Duration {
+    reconcile_interval_for_broker_enabled(broker_enabled)
+}
+
+#[cfg(test)]
 pub(crate) fn test_runtime_telemetry_after_reconcile_results(
     previous: &SnapshotEnvelope,
     noop_current: &SnapshotEnvelope,
     changed_current: &SnapshotEnvelope,
 ) -> ipc::RuntimeTelemetryFrame {
     let mut telemetry = RuntimeTelemetry::default();
-    telemetry.record_control_event_refresh();
+    telemetry.record_control_event_batch(2);
+    telemetry.record_control_event_batch(3);
+    telemetry.record_control_event_refresh(&ControlEventOutcome {
+        changed: true,
+        fallback_to_full: true,
+        full_snapshot_refresh: true,
+        targeted_title_updates: 1,
+        targeted_pane_refreshes: 2,
+        targeted_scope_refreshes: 1,
+    });
     telemetry.record_targeted_refresh_fallback_to_full();
     telemetry.record_reconcile_result(previous, noop_current);
     telemetry.record_reconcile_result(noop_current, changed_current);
@@ -1483,6 +1782,7 @@ pub(crate) fn test_refresh_snapshot_pane_title_with_provider(
         Some(title_override),
         &mut pane_output_cache,
     )
+    .map(|_| ())
 }
 
 #[cfg(test)]

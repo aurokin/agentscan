@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Limited daemon proc/libproc fallback to full snapshot reconcile paths; targeted
+  control-mode refreshes now avoid process inspection.
+- Slowed the safety reconcile interval to 30 seconds while control-mode broker
+  reads are healthy, keeping the shorter interval for broker fallback and an
+  env override for tests/diagnostics.
+- Applied control-mode title updates as targeted pane refreshes, preserving
+  existing proc-derived identity on coalesced pane/title updates while still
+  removing panes that exited before the title event was processed.
+- Increased control-mode batch coalescing to 100ms so bursty event groups fan
+  out as fewer subscriber updates.
+- Expanded daemon runtime telemetry for control-event batches, targeted refresh
+  kinds, and full snapshot refreshes.
+- Re-armed the safety reconcile timer when the control-mode broker recovers, so
+  successful recovery returns to the active broker interval immediately.
+- Capped the daemon control-mode receive wait so idle shutdown stays responsive
+  even when the active safety reconcile interval is long.
+
 ## 0.3.2 - 2026-05-24
 
 ### Fixed

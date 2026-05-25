@@ -26,8 +26,8 @@ const TMUX_AMBIGUOUS_FIXTURE: &str = include_str!(concat!(
 use super::{
     CACHE_SCHEMA_VERSION, CLAUDE_SPINNER_GLYPHS, Cli, DAEMON_SUBSCRIPTION_FORMAT, ICONS_ENV_VAR,
     IDLE_GLYPHS, IconMode, LiveClientEvent, OutputFormat, PANE_FORMAT, PaneRecord, PaneStatus,
-    Provider, SnapshotEnvelope, SourceKind, StatusKind, TMUX_SOCKET_ENV_VAR, TmuxMetadataField,
-    classify, config, daemon, ipc, output, proc, snapshot, tmux,
+    ProcFallbackOutcome, Provider, SnapshotEnvelope, SourceKind, StatusKind, TMUX_SOCKET_ENV_VAR,
+    TmuxMetadataField, classify, config, daemon, ipc, output, proc, snapshot, tmux,
 };
 
 include!("support.rs");

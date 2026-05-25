@@ -292,6 +292,10 @@ impl RunningTmuxControlModeClient {
         self.broker_health.status_frame()
     }
 
+    pub(super) fn broker_enabled(&self) -> bool {
+        self.broker_health.enabled()
+    }
+
     pub(super) fn recover_broker_if_disabled(
         &mut self,
         startup: &impl StartupActions,

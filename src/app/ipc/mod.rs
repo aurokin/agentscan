@@ -152,9 +152,21 @@ pub(crate) struct LifecycleStatusFrame {
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct RuntimeTelemetryFrame {
     pub(crate) control_event_refresh_count: u64,
+    #[serde(default)]
+    pub(crate) control_event_batch_count: u64,
+    #[serde(default)]
+    pub(crate) control_event_line_count: u64,
     pub(crate) reconcile_attempt_count: u64,
     pub(crate) reconcile_noop_count: u64,
     pub(crate) reconcile_changed_snapshot_count: u64,
+    #[serde(default)]
+    pub(crate) targeted_title_update_count: u64,
+    #[serde(default)]
+    pub(crate) targeted_pane_refresh_count: u64,
+    #[serde(default)]
+    pub(crate) targeted_scope_refresh_count: u64,
+    #[serde(default)]
+    pub(crate) full_snapshot_refresh_count: u64,
     pub(crate) targeted_refresh_fallback_to_full_count: u64,
     pub(crate) broker_fallback_count: u64,
 }

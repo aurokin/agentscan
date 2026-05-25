@@ -139,6 +139,7 @@ impl TestHarness {
             .env("TMUX_TMPDIR", &self.tmux_tmpdir)
             .env(AGENTSCAN_TMUX_SOCKET_ENV_VAR, &self.tmux_socket_path)
             .env("AGENTSCAN_SOCKET_PATH", &self.agentscan_socket_path)
+            .env("AGENTSCAN_CONTROL_MODE_ACTIVE_RECONCILE_INTERVAL_MS", "1000")
             .env("XDG_CACHE_HOME", &self.cache_home)
             .env("HOME", &self.home_dir)
             .stdout(Stdio::from(stdout))
@@ -304,6 +305,7 @@ impl TestHarness {
         command.env("TMUX_TMPDIR", &self.tmux_tmpdir);
         command.env(AGENTSCAN_TMUX_SOCKET_ENV_VAR, &self.tmux_socket_path);
         command.env("AGENTSCAN_SOCKET_PATH", &self.agentscan_socket_path);
+        command.env("AGENTSCAN_CONTROL_MODE_ACTIVE_RECONCILE_INTERVAL_MS", "1000");
         command.env("XDG_CACHE_HOME", &self.cache_home);
         command.env("HOME", &self.home_dir);
         Ok(command)
@@ -425,7 +427,7 @@ impl TestHarness {
 
     fn agentscan_tui_command(&self, extra_args: &[&str]) -> Result<String> {
         let mut command = format!(
-            "TMUX_TMPDIR={} AGENTSCAN_TMUX_SOCKET={} AGENTSCAN_SOCKET_PATH={} XDG_CACHE_HOME={} HOME={} {} tui",
+            "TMUX_TMPDIR={} AGENTSCAN_TMUX_SOCKET={} AGENTSCAN_SOCKET_PATH={} AGENTSCAN_CONTROL_MODE_ACTIVE_RECONCILE_INTERVAL_MS=1000 XDG_CACHE_HOME={} HOME={} {} tui",
             shell_escape_path(&self.tmux_tmpdir),
             shell_escape_path(&self.tmux_socket_path),
             shell_escape_path(&self.agentscan_socket_path),
@@ -447,7 +449,7 @@ impl TestHarness {
         done_path: &Path,
     ) -> Result<String> {
         let mut command = format!(
-            "TMUX_TMPDIR={} AGENTSCAN_TMUX_SOCKET={} AGENTSCAN_SOCKET_PATH={} XDG_CACHE_HOME={} HOME={} AGENTSCAN_TUI_READY_PATH={} AGENTSCAN_TUI_DONE_PATH={} {} tui",
+            "TMUX_TMPDIR={} AGENTSCAN_TMUX_SOCKET={} AGENTSCAN_SOCKET_PATH={} AGENTSCAN_CONTROL_MODE_ACTIVE_RECONCILE_INTERVAL_MS=1000 XDG_CACHE_HOME={} HOME={} AGENTSCAN_TUI_READY_PATH={} AGENTSCAN_TUI_DONE_PATH={} {} tui",
             shell_escape_path(&self.tmux_tmpdir),
             shell_escape_path(&self.tmux_socket_path),
             shell_escape_path(&self.agentscan_socket_path),
