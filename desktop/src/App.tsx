@@ -238,6 +238,13 @@ function App() {
   const liveRetryAttemptRef = useRef(0);
   const [selectedPaneId, setSelectedPaneId] = useState<string | null>(null);
   const [activation, setActivation] = useState<PickerActivation>({ status: "idle" });
+  // Synchronous in-flight guard for activation. The `activation` state alone
+  // can't gate concurrent activations: a double-click (or two rapid clicks)
+  // dispatches both click events before React re-renders, so each handler reads
+  // the same stale "idle" activation and a state-based guard lets both through —
+  // firing focus_picker_row twice. A ref updates synchronously, so the second
+  // click sees the in-flight activation and bails.
+  const activationInFlightRef = useRef(false);
   const validation = useMemo(
     () =>
       validateProfileDraft(
@@ -680,14 +687,20 @@ function App() {
     setSshClientTtyDraft(activeProfile.kind === "ssh" ? activeProfile.clientTty : "");
     setPickerFilter("");
     setActivation({ status: "idle" });
+    // Free the in-flight activation guard too: an old focus_picker_row from the
+    // previous target may still be running, but activeRunnerKeyRef already
+    // discards its completion, so the new profile must be able to activate
+    // immediately rather than waiting on the stale call's finally.
+    activationInFlightRef.current = false;
     setSelectedPaneId(null);
     liveRetryAttemptRef.current = 0;
   }, [activeProfile]);
 
   async function activateSelectedRow(row = selectedRow) {
-    if (!row || activation.status === "running") {
+    if (!row || activationInFlightRef.current) {
       return;
     }
+    activationInFlightRef.current = true;
 
     const requestRunnerKey = runnerKey;
     setActivation({ status: "running", paneId: row.pane_id });
@@ -713,6 +726,14 @@ function App() {
       }
       setActivation({ status: "failed", message: errorMessage(error) });
       await refreshPickerRows();
+    } finally {
+      // Only release the guard if this is still the active target. After a
+      // profile/settings switch the effect already cleared the ref (and a newer
+      // activation may have re-set it), so a stale completion must not clear a
+      // guard that now belongs to a different in-flight activation.
+      if (activeRunnerKeyRef.current === requestRunnerKey) {
+        activationInFlightRef.current = false;
+      }
     }
   }
 
@@ -1937,8 +1958,13 @@ function GroupedPicker({
                   aria-selected={isSelected}
                   className={`agent-row${isSelected ? " selected" : ""}`}
                   key={`${row.key}-${row.pane_id}`}
-                  onClick={() => onSelect(row)}
-                  onDoubleClick={() => onActivate(row)}
+                  onClick={() => {
+                    // Single-click selects and switches the active tmux pane.
+                    // Enter still activates the keyboard selection; double-click
+                    // is gone (redundant under single-click activation).
+                    onSelect(row);
+                    onActivate(row);
+                  }}
                   title={`${row.display_label} · ${row.provider ?? "unknown"} · ${row.location_tag}`}
                 >
                   <span
