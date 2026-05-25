@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.2 - 2026-05-24
+
+### Fixed
+
+- Forced accepted daemon socket client streams back to blocking mode so macOS
+  subscribers do not spin on inherited nonblocking `WouldBlock` reads.
+- Added a regression test covering delayed client handshakes on nonblocking
+  accepted streams.
+
 ## 0.3.1 - 2026-05-24
 
 ### Fixed

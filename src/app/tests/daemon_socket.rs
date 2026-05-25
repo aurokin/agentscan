@@ -1206,6 +1206,44 @@ fn daemon_socket_client_handler_works_over_real_unix_socket_path() {
 }
 
 #[test]
+fn daemon_socket_client_handler_waits_on_nonblocking_accepted_stream() {
+    let state = daemon::DaemonSocketState::new();
+    let snapshot = empty_socket_snapshot("2026-05-03T00:00:00Z");
+    state
+        .publish_initial_snapshot(snapshot.clone())
+        .expect("snapshot should publish");
+
+    let (mut client, server) = UnixStream::pair().expect("socket pair should be created");
+    server
+        .set_nonblocking(true)
+        .expect("server stream should be configurable as nonblocking");
+    let handle = std::thread::spawn(move || {
+        daemon::handle_daemon_socket_client(server, &state).expect("client should handle");
+    });
+
+    std::thread::sleep(Duration::from_millis(25));
+    client
+        .write_all(
+            &ipc::encode_frame(&socket_hello(ipc::ClientMode::Snapshot))
+                .expect("hello should encode"),
+        )
+        .expect("hello should write after delayed client startup");
+    let frames = read_all_daemon_frames(client);
+
+    handle.join().expect("server should join");
+    assert_eq!(
+        frames,
+        vec![
+            ipc::DaemonFrame::HelloAck {
+                protocol_version: ipc::WIRE_PROTOCOL_VERSION,
+                snapshot_schema_version: CACHE_SCHEMA_VERSION,
+            },
+            ipc::DaemonFrame::Snapshot { snapshot },
+        ]
+    );
+}
+
+#[test]
 fn daemon_snapshot_helper_reads_ready_socket() {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let socket_path = tempdir.path().join("agentscan.sock");

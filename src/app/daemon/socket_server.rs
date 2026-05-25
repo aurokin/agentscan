@@ -712,11 +712,17 @@ fn handle_daemon_socket_client_with_pending(
     pending_handshake: PendingHandshake,
 ) -> Result<()> {
     stream
+        .set_nonblocking(false)
+        .context("failed to configure daemon socket client as blocking")?;
+    stream
         .set_write_timeout(Some(CLIENT_WRITE_TIMEOUT))
         .context("failed to set daemon socket write timeout")?;
     let mut writer = stream
         .try_clone()
         .context("failed to clone daemon socket stream")?;
+    writer
+        .set_nonblocking(false)
+        .context("failed to configure daemon socket writer as blocking")?;
     writer
         .set_write_timeout(Some(CLIENT_WRITE_TIMEOUT))
         .context("failed to set daemon socket writer timeout")?;
@@ -864,8 +870,12 @@ fn serve_subscriber(
                     std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                 ) =>
             {
+                let should_back_off = error.kind() == std::io::ErrorKind::WouldBlock;
                 if !state.has_subscriber(id) {
                     break;
+                }
+                if should_back_off {
+                    std::thread::sleep(SUBSCRIBER_MONITOR_POLL_INTERVAL);
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
