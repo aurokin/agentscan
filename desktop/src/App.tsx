@@ -124,6 +124,9 @@ type PickerRow = {
   status: { kind: string };
   display_label: string;
   location_tag: string;
+  // The currently-focused tmux pane (active pane of the active window).
+  // Distinct from the selection cursor; rendered with its own treatment.
+  is_active: boolean;
 };
 
 type ShellView = "picker" | "settings";
@@ -1951,12 +1954,16 @@ function GroupedPicker({
           <ul className="agent-list">
             {group.rows.map((row) => {
               const isSelected = row.pane_id === selectedPaneId;
+              // The pane tmux is currently focused on — distinct from the
+              // selection cursor, so it gets its own accent treatment.
+              const isActive = row.is_active;
               const isFocusing =
                 activation.status === "running" && activation.paneId === row.pane_id;
               return (
                 <li
                   aria-selected={isSelected}
-                  className={`agent-row${isSelected ? " selected" : ""}`}
+                  aria-current={isActive ? "true" : undefined}
+                  className={`agent-row${isSelected ? " selected" : ""}${isActive ? " active" : ""}`}
                   key={`${row.key}-${row.pane_id}`}
                   onClick={() => {
                     // Single-click selects and switches the active tmux pane.

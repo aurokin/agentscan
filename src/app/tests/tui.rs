@@ -21,6 +21,8 @@ fn tui_test_pane(pane_index: u32) -> PaneRecord {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        pane_active: false,
+        window_active: false,
     })
 }
 
@@ -44,6 +46,8 @@ fn tui_render_rows_include_location_status_and_key_labels() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        pane_active: false,
+        window_active: false,
     });
 
     let mut key_targets = std::collections::BTreeMap::new();
@@ -167,6 +171,8 @@ fn tui_render_rows_can_use_nerd_font_provider_markers() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        pane_active: false,
+        window_active: false,
     });
 
     let mut key_targets = std::collections::BTreeMap::new();
@@ -197,6 +203,8 @@ fn tui_render_rows_respect_terminal_cell_width_with_wide_status_emoji() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        pane_active: false,
+        window_active: false,
     });
 
     let mut key_targets = std::collections::BTreeMap::new();
@@ -230,6 +238,8 @@ fn tui_render_rows_sanitize_control_characters_and_escape_sequences() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        pane_active: false,
+        window_active: false,
     });
 
     let mut key_targets = std::collections::BTreeMap::new();
@@ -262,6 +272,8 @@ fn tui_key_assignments_stay_stable_across_rerenders() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        pane_active: false,
+        window_active: false,
     });
     let pane_two = classify::pane_from_row(super::TmuxPaneRow {
         session_name: "alpha".to_string(),
@@ -281,6 +293,8 @@ fn tui_key_assignments_stay_stable_across_rerenders() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        pane_active: false,
+        window_active: false,
     });
     let pane_three = classify::pane_from_row(super::TmuxPaneRow {
         session_name: "alpha".to_string(),
@@ -300,6 +314,8 @@ fn tui_key_assignments_stay_stable_across_rerenders() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        pane_active: false,
+        window_active: false,
     });
 
     let mut key_targets = std::collections::BTreeMap::new();
@@ -751,6 +767,8 @@ fn tui_frame_writer_sanitizes_tmux_controlled_labels() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        pane_active: false,
+        window_active: false,
     });
     let mut state = super::tui::TuiState::default();
     state.replace_panes(vec![pane]);

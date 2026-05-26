@@ -17,6 +17,9 @@ pub(crate) struct PickerRow {
     pub(crate) display_label: String,
     pub(crate) location: PaneLocation,
     pub(crate) location_tag: String,
+    /// Whether this pane is the currently-focused tmux pane (active pane of the
+    /// active window). Lets clients highlight the live pane.
+    pub(crate) is_active: bool,
 }
 
 pub(crate) fn picker_rows(panes: &[PaneRecord]) -> Vec<PickerRow> {
@@ -32,6 +35,7 @@ pub(crate) fn picker_rows(panes: &[PaneRecord]) -> Vec<PickerRow> {
             display_label: pane.display.label.clone(),
             location: pane.location.clone(),
             location_tag: pane.location.tag(),
+            is_active: pane.is_active(),
         })
         .collect()
 }

@@ -107,6 +107,13 @@ Implications:
 - one-shot commands read a full snapshot frame and disconnect
 - TSV is an output adapter only, not the canonical store
 - persisted cache JSON is not a supported IPC boundary
+- schema 5 added per-pane tmux active flags (`tmux.pane_active`,
+  `tmux.window_active`) and the derived picker `is_active`
+  (`pane_active && window_active`), so clients can highlight the focused pane.
+  The daemon control-mode subscription also tracks `#{pane_active}`/
+  `#{window_active}` so focus changes trigger a re-snapshot. The backend reports
+  tmux's raw layered state; collapsing multiple attached sessions to one global
+  active pane is a client concern, not a backend one.
 
 ### Detection Policy
 

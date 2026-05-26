@@ -200,7 +200,7 @@ fn ipc_frame_roundtrips_snapshot_hello() {
 
 #[test]
 fn ipc_frame_accepts_subscribe_mode() {
-    let bytes = br#"{"type":"hello","protocol_version":1,"snapshot_schema_version":4,"mode":"subscribe"}"#;
+    let bytes = br#"{"type":"hello","protocol_version":1,"snapshot_schema_version":5,"mode":"subscribe"}"#;
 
     let decoded = ipc::decode_client_frame(bytes).expect("subscribe hello should decode");
 
@@ -216,7 +216,7 @@ fn ipc_frame_accepts_subscribe_mode() {
 
 #[test]
 fn ipc_frame_accepts_lifecycle_status_mode() {
-    let bytes = br#"{"type":"hello","protocol_version":1,"snapshot_schema_version":4,"mode":"lifecycle_status"}"#;
+    let bytes = br#"{"type":"hello","protocol_version":1,"snapshot_schema_version":5,"mode":"lifecycle_status"}"#;
 
     let decoded = ipc::decode_client_frame(bytes).expect("lifecycle status hello should decode");
 
@@ -320,7 +320,7 @@ fn ipc_lifecycle_status_frame_roundtrips() {
 
 #[test]
 fn ipc_lifecycle_status_preserves_missing_runtime_telemetry() {
-    let bytes = br#"{"type":"lifecycle_status","status":{"state":"ready","identity":{"pid":42,"daemon_start_time":"2026-05-03T00:00:00Z","executable":"/tmp/agentscan","executable_canonical":null,"socket_path":"/tmp/agentscan.sock","protocol_version":1,"snapshot_schema_version":4},"subscriber_count":0,"latest_snapshot_generated_at":null,"latest_snapshot_pane_count":null,"latest_snapshot_update_source":null,"latest_snapshot_update_detail":null,"latest_snapshot_update_duration_ms":null,"control_mode_broker":null,"unavailable_reason":null,"message":null}}"#;
+    let bytes = br#"{"type":"lifecycle_status","status":{"state":"ready","identity":{"pid":42,"daemon_start_time":"2026-05-03T00:00:00Z","executable":"/tmp/agentscan","executable_canonical":null,"socket_path":"/tmp/agentscan.sock","protocol_version":1,"snapshot_schema_version":5},"subscriber_count":0,"latest_snapshot_generated_at":null,"latest_snapshot_pane_count":null,"latest_snapshot_update_source":null,"latest_snapshot_update_detail":null,"latest_snapshot_update_duration_ms":null,"control_mode_broker":null,"unavailable_reason":null,"message":null}}"#;
 
     let decoded = ipc::decode_daemon_frame(bytes).expect("status frame should decode");
     let ipc::DaemonFrame::LifecycleStatus { status } = decoded else {
@@ -332,7 +332,7 @@ fn ipc_lifecycle_status_preserves_missing_runtime_telemetry() {
 
 #[test]
 fn ipc_lifecycle_status_preserves_missing_broker_fallback_count() {
-    let bytes = br#"{"type":"lifecycle_status","status":{"state":"ready","identity":{"pid":42,"daemon_start_time":"2026-05-03T00:00:00Z","executable":"/tmp/agentscan","executable_canonical":null,"socket_path":"/tmp/agentscan.sock","protocol_version":1,"snapshot_schema_version":4},"subscriber_count":0,"latest_snapshot_generated_at":null,"latest_snapshot_pane_count":null,"latest_snapshot_update_source":null,"latest_snapshot_update_detail":null,"latest_snapshot_update_duration_ms":null,"control_mode_broker":{"mode":"fallback","disabled_reason":"old daemon","reconnect_count":1},"runtime_telemetry":null,"unavailable_reason":null,"message":null}}"#;
+    let bytes = br#"{"type":"lifecycle_status","status":{"state":"ready","identity":{"pid":42,"daemon_start_time":"2026-05-03T00:00:00Z","executable":"/tmp/agentscan","executable_canonical":null,"socket_path":"/tmp/agentscan.sock","protocol_version":1,"snapshot_schema_version":5},"subscriber_count":0,"latest_snapshot_generated_at":null,"latest_snapshot_pane_count":null,"latest_snapshot_update_source":null,"latest_snapshot_update_detail":null,"latest_snapshot_update_duration_ms":null,"control_mode_broker":{"mode":"fallback","disabled_reason":"old daemon","reconnect_count":1},"runtime_telemetry":null,"unavailable_reason":null,"message":null}}"#;
 
     let decoded = ipc::decode_daemon_frame(bytes).expect("status frame should decode");
     let ipc::DaemonFrame::LifecycleStatus { status } = decoded else {
@@ -388,7 +388,7 @@ fn ipc_hello_validation_rejects_schema_mismatch() {
 
 #[test]
 fn ipc_frame_rejects_unknown_fields() {
-    let bytes = br#"{"type":"hello","protocol_version":1,"snapshot_schema_version":4,"mode":"snapshot","extra":true}"#;
+    let bytes = br#"{"type":"hello","protocol_version":1,"snapshot_schema_version":5,"mode":"snapshot","extra":true}"#;
 
     let error = ipc::decode_client_frame(bytes).expect_err("unknown field should fail");
 
@@ -416,7 +416,7 @@ fn ipc_frame_rejects_missing_required_fields() {
 
 #[test]
 fn ipc_frame_rejects_malformed_version() {
-    let bytes = br#"{"type":"hello","protocol_version":"1","snapshot_schema_version":4,"mode":"snapshot"}"#;
+    let bytes = br#"{"type":"hello","protocol_version":"1","snapshot_schema_version":5,"mode":"snapshot"}"#;
 
     let error = ipc::decode_client_frame(bytes).expect_err("malformed version should fail");
 
@@ -428,7 +428,7 @@ fn ipc_frame_rejects_malformed_version() {
 
 #[test]
 fn ipc_frame_rejects_unknown_mode() {
-    let bytes = br#"{"type":"hello","protocol_version":1,"snapshot_schema_version":4,"mode":"stream"}"#;
+    let bytes = br#"{"type":"hello","protocol_version":1,"snapshot_schema_version":5,"mode":"stream"}"#;
 
     let error = ipc::decode_client_frame(bytes).expect_err("unknown mode should fail");
 

@@ -72,6 +72,8 @@ pub(crate) fn pane_from_row(row: TmuxPaneRow) -> PaneRecord {
             pane_title_raw: row.pane_title_raw.clone(),
             session_id: row.session_id.clone(),
             window_id: row.window_id.clone(),
+            pane_active: row.pane_active,
+            window_active: row.window_active,
         },
         display: derived.display,
         provider: derived.provider,

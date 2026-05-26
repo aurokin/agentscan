@@ -233,6 +233,8 @@ mod tests {
                 pane_title_raw: "GitHub Copilot".to_string(),
                 session_id: Some("$1".to_string()),
                 window_id: Some("@1".to_string()),
+                pane_active: false,
+                window_active: false,
             },
             display: DisplayMetadata {
                 label: "GitHub Copilot".to_string(),

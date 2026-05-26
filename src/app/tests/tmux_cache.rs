@@ -548,31 +548,37 @@ fn picker_key_normalization_accepts_supported_keys_only() {
 #[test]
 fn parses_tmux_output_into_rows() {
     let input = concat!(
-        "dotfiles\x1f1\x1f1\x1f%50\x1f438455\x1fcodex\x1f(bront) .dotfiles: codex\x1f/dev/pts/55\x1f/home/auro/.dotfiles\x1feditor\n",
-        "notes\x1f4\x1f1\x1f%41\x1f324026\x1fclaude\x1fClaude Code\x1f/dev/pts/44\x1f/home/auro/notes\x1fquery\n"
+        "dotfiles\x1f1\x1f1\x1f%50\x1f438455\x1fcodex\x1f(bront) .dotfiles: codex\x1f/dev/pts/55\x1f/home/auro/.dotfiles\x1feditor\x1f1\x1f1\n",
+        "notes\x1f4\x1f1\x1f%41\x1f324026\x1fclaude\x1fClaude Code\x1f/dev/pts/44\x1f/home/auro/notes\x1fquery\x1f0\x1f1\n"
     );
 
     let rows = tmux::parse_pane_rows(input).expect("tmux output should parse");
 
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].pane_id, "%50");
+    assert!(rows[0].pane_active);
+    assert!(rows[0].window_active);
     assert_eq!(rows[1].pane_title_raw, "Claude Code");
+    assert!(!rows[1].pane_active);
+    assert!(rows[1].window_active);
 }
 
 #[test]
 fn parses_tmux_output_with_session_and_window_ids() {
-    let input = "notes\x1f4\x1f1\x1f%41\x1f324026\x1fclaude\x1fClaude Code\x1f/dev/pts/44\x1f/home/auro/notes\x1fquery\x1f$7\x1f@9\n";
+    let input = "notes\x1f4\x1f1\x1f%41\x1f324026\x1fclaude\x1fClaude Code\x1f/dev/pts/44\x1f/home/auro/notes\x1fquery\x1f$7\x1f@9\x1f1\x1f1\n";
 
     let rows = tmux::parse_pane_rows(input).expect("tmux output with ids should parse");
 
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].session_id.as_deref(), Some("$7"));
     assert_eq!(rows[0].window_id.as_deref(), Some("@9"));
+    assert!(rows[0].pane_active);
+    assert!(rows[0].window_active);
 }
 
 #[test]
 fn parses_tmux_output_with_escaped_delimiters() {
-    let input = r"notes\0374\0371\037%41\037324026\037claude\037Claude Code\037/dev/pts/44\037/home/auro/notes\037query\037$7\037@9\037codex\037Task\037/home/auro/notes\037busy\037session-1
+    let input = r"notes\0374\0371\037%41\037324026\037claude\037Claude Code\037/dev/pts/44\037/home/auro/notes\037query\037$7\037@9\037codex\037Task\037/home/auro/notes\037busy\037session-1\0371\0370
 ";
 
     let rows = tmux::parse_pane_rows(input).expect("escaped tmux output should parse");
@@ -582,11 +588,13 @@ fn parses_tmux_output_with_escaped_delimiters() {
     assert_eq!(rows[0].session_id.as_deref(), Some("$7"));
     assert_eq!(rows[0].agent_provider.as_deref(), Some("codex"));
     assert_eq!(rows[0].agent_state.as_deref(), Some("busy"));
+    assert!(rows[0].pane_active);
+    assert!(!rows[0].window_active);
 }
 
 #[test]
 fn tmux_output_does_not_split_on_printable_field_content() {
-    let input = r"notes\0374\0371\037%41\037324026\037claude\037Task ||AGENTSCAN|| Review\037/dev/pts/44\037/home/auro/notes\037query\037$7\037@9\037codex\037Task ||AGENTSCAN|| Review\037/home/auro/notes\037busy\037session-1
+    let input = r"notes\0374\0371\037%41\037324026\037claude\037Task ||AGENTSCAN|| Review\037/dev/pts/44\037/home/auro/notes\037query\037$7\037@9\037codex\037Task ||AGENTSCAN|| Review\037/home/auro/notes\037busy\037session-1\0371\0371
 ";
 
     let rows = tmux::parse_pane_rows(input).expect("tmux output with printable token should parse");
@@ -595,6 +603,8 @@ fn tmux_output_does_not_split_on_printable_field_content() {
     assert_eq!(rows[0].pane_id, "%41");
     assert_eq!(rows[0].pane_title_raw, "Task ||AGENTSCAN|| Review");
     assert_eq!(rows[0].agent_provider.as_deref(), Some("codex"));
+    assert!(rows[0].pane_active);
+    assert!(rows[0].window_active);
 }
 
 #[test]
@@ -649,12 +659,58 @@ fn pane_record_uses_canonical_shape() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        pane_active: false,
+        window_active: false,
     });
 
     assert_eq!(pane.provider, Some(Provider::Claude));
     assert_eq!(pane.location.session_name, "notes");
     assert_eq!(pane.display.label, "Query");
     assert_eq!(pane.display.activity_label.as_deref(), Some("Query"));
+}
+
+#[test]
+fn active_flags_propagate_through_pane_record_and_picker() {
+    let active_row = |pane_id: &str, pane_active: bool, window_active: bool| super::TmuxPaneRow {
+        session_name: "notes".to_string(),
+        window_index: 1,
+        pane_index: 1,
+        pane_id: pane_id.to_string(),
+        pane_pid: 1000,
+        pane_current_command: "claude".to_string(),
+        pane_title_raw: "Claude Code".to_string(),
+        pane_tty: "/dev/pts/1".to_string(),
+        pane_current_path: "/home/auro/notes".to_string(),
+        window_name: "ai".to_string(),
+        session_id: None,
+        window_id: None,
+        agent_provider: None,
+        agent_label: None,
+        agent_cwd: None,
+        agent_state: None,
+        agent_session_id: None,
+        pane_active,
+        window_active,
+    };
+
+    // is_active requires BOTH the pane and its window to be active.
+    let focused = classify::pane_from_row(active_row("%1", true, true));
+    assert!(focused.tmux.pane_active);
+    assert!(focused.tmux.window_active);
+    assert!(focused.is_active());
+
+    let pane_active_other_window = classify::pane_from_row(active_row("%2", true, false));
+    assert!(!pane_active_other_window.is_active());
+
+    let inactive = classify::pane_from_row(active_row("%3", false, true));
+    assert!(!inactive.is_active());
+
+    // The is_active flag flows into the picker projection clients consume.
+    let panes = vec![focused, pane_active_other_window, inactive];
+    let rows = super::picker::picker_rows(&panes);
+    assert!(rows[0].is_active);
+    assert!(!rows[1].is_active);
+    assert!(!rows[2].is_active);
 }
 
 #[test]
@@ -677,6 +733,8 @@ fn list_json_exposes_the_machine_readable_pane_fields() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        pane_active: false,
+        window_active: false,
     });
     let status_kind = pane.status.kind;
     let snapshot = SnapshotEnvelope {
@@ -1252,6 +1310,8 @@ fn cursor_cli_generic_titles_fall_back_to_window_name_for_display() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        pane_active: false,
+        window_active: false,
     });
 
     assert_eq!(pane.provider, Some(Provider::CursorCli));
@@ -1285,6 +1345,8 @@ fn cursor_cli_title_only_panes_stay_unknown_from_bare_cursor_titles() {
             agent_cwd: None,
             agent_state: None,
             agent_session_id: None,
+            pane_active: false,
+            window_active: false,
         });
 
         assert_eq!(pane.provider, None, "title: {title}");
@@ -1319,6 +1381,8 @@ fn cursor_cli_generic_status_titles_fall_back_for_display() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        pane_active: false,
+        window_active: false,
     });
     assert_eq!(ready_pane.provider, Some(Provider::CursorCli));
     assert_eq!(ready_pane.display.label, "cursor-window");
@@ -1343,6 +1407,8 @@ fn cursor_cli_generic_status_titles_fall_back_for_display() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        pane_active: false,
+        window_active: false,
     });
     assert_eq!(working_pane.provider, Some(Provider::CursorCli));
     assert_eq!(working_pane.display.label, "cursor-window-2");
@@ -1370,6 +1436,8 @@ fn cursor_cli_task_titles_still_drive_display_label() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        pane_active: false,
+        window_active: false,
     });
 
     assert_eq!(pane.provider, Some(Provider::CursorCli));
@@ -1401,6 +1469,8 @@ fn cursor_cli_metadata_alias_classifies_generic_shell_panes() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        pane_active: false,
+        window_active: false,
     });
 
     assert_eq!(pane.provider, Some(Provider::CursorCli));
@@ -1433,6 +1503,8 @@ fn cursor_agent_prefixed_task_titles_still_drive_display_label() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        pane_active: false,
+        window_active: false,
     });
 
     assert_eq!(pane.provider, Some(Provider::CursorCli));
@@ -1685,10 +1757,14 @@ proptest! {
         pane_tty in safe_tmux_field(),
         pane_current_path in safe_tmux_field(),
         window_name in safe_tmux_field(),
+        pane_active in any::<bool>(),
+        window_active in any::<bool>(),
     ) {
         let pane_id = format!("%{pane_pid}");
         let line = format!(
-            "{session_name}\u{1f}{window_index}\u{1f}{pane_index}\u{1f}{pane_id}\u{1f}{pane_pid}\u{1f}{pane_current_command}\u{1f}{pane_title_raw}\u{1f}{pane_tty}\u{1f}{pane_current_path}\u{1f}{window_name}"
+            "{session_name}\u{1f}{window_index}\u{1f}{pane_index}\u{1f}{pane_id}\u{1f}{pane_pid}\u{1f}{pane_current_command}\u{1f}{pane_title_raw}\u{1f}{pane_tty}\u{1f}{pane_current_path}\u{1f}{window_name}\u{1f}{}\u{1f}{}",
+            pane_active as u8,
+            window_active as u8
         );
 
         let rows = tmux::parse_pane_rows(&line).expect("generated tmux row should parse");
@@ -1705,6 +1781,8 @@ proptest! {
         prop_assert_eq!(&row.pane_tty, &pane_tty);
         prop_assert_eq!(&row.pane_current_path, &pane_current_path);
         prop_assert_eq!(&row.window_name, &window_name);
+        prop_assert_eq!(row.pane_active, pane_active);
+        prop_assert_eq!(row.window_active, window_active);
     }
 
     #[test]

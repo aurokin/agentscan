@@ -17,6 +17,8 @@ fn proc_fallback_pane(pid: u32, command: &str, title: &str) -> PaneRecord {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        pane_active: false,
+        window_active: false,
     })
 }
 
