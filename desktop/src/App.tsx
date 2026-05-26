@@ -228,6 +228,8 @@ function App() {
   // remote over SSH). Open state for the inline dropdown.
   const [isSourceMenuOpen, setIsSourceMenuOpen] = useState(false);
   const sourceMenuRef = useRef<HTMLDivElement | null>(null);
+  // Debug log is a diagnostic panel — collapsed by default to keep Settings calm.
+  const [isDebugOpen, setIsDebugOpen] = useState(false);
   // Tracks the active runner config so in-flight refreshes/focus can detect a
   // profile switch OR a settings change and discard results from the previous
   // target. Updated synchronously during render (below) so async completions
@@ -1011,11 +1013,63 @@ function App() {
     // add/delete/switch are reflected immediately, even while a kept-ready
     // `state` still describes the previous profile during a reload. Preflight is
     // only trusted when the resolved state matches the active profile.
-    const settingsProfiles = profileState.profiles.map(profileSummary);
+    // Preflight is only trusted when the resolved state matches the active
+    // source; otherwise it describes the previous one mid-switch.
     const preflight =
       state.status === "ready" && state.runnerKey === runnerKey ? state.preflight : null;
+    const preflightTone = !preflight
+      ? state.status === "failed"
+        ? "error"
+        : "unknown"
+      : preflight.ok
+        ? "idle"
+        : "error";
+    const preflightLabel = !preflight
+      ? state.status === "failed"
+        ? "Unreachable"
+        : "Checking"
+      : preflight.ok
+        ? "Ready"
+        : "Unavailable";
+    const preflightDetail = !preflight
+      ? state.status === "failed"
+        ? "Can’t reach agentscan"
+        : "Probing agentscan…"
+      : preflight.ok
+        ? `${preflight.binary} · ${preflight.version ?? "ready"}`
+        : (preflight.error ?? "agentscan unavailable");
+    // The source rail only earns its space once there's more than the built-in
+    // local source; with a single source it just duplicates the detail card. So
+    // hide it then and offer a quiet "add remote" affordance instead.
+    const hasMultipleSources = profileState.profiles.length > 1;
+    // Shared by both header layouts (see adaptive header below).
+    const detailActions = (
+      <div className="detail-actions">
+        {activeProfile.kind === "ssh" ? (
+          <button className="ghost-button danger" type="button" onClick={deleteActiveProfile}>
+            Delete
+          </button>
+        ) : null}
+        <button
+          className="ghost-button"
+          type="button"
+          onClick={resetProfileSettings}
+          disabled={!isSettingsDirty}
+        >
+          Reset
+        </button>
+        <button
+          type="button"
+          onClick={applyRunnerSettings}
+          disabled={!isSettingsDirty || validation.errors.length > 0}
+        >
+          Apply
+        </button>
+      </div>
+    );
+
     return (
-      <main className="sidebar">
+      <main className="sidebar settings-view">
         <header className="topbar settings-topbar">
           <button
             className="icon-button back"
@@ -1029,177 +1083,216 @@ function App() {
         </header>
 
         <div className="settings-scroll">
-          <section className="settings-block" aria-label="Sources">
-            <div className="block-heading">
-              <h2>Sources</h2>
-              <button className="ghost-button" type="button" onClick={addSshProfile}>
-                + Remote
+          {hasMultipleSources ? (
+          <section className="settings-section" aria-label="Sources">
+            <div className="section-title">
+              <span>Sources</span>
+              <button className="ghost-button add-source" type="button" onClick={addSshProfile}>
+                {"+ Remote"}
               </button>
             </div>
-            <ul className="profile-list">
-              {settingsProfiles.map((profile) => (
-                <li key={profile.id}>
+            <div className="source-rail">
+              {profileState.profiles.map((profile) => {
+                const isActive = profile.id === activeProfile.id;
+                return (
                   <button
-                    aria-pressed={profile.id === activeProfile.id}
-                    className={profile.id === activeProfile.id ? "active" : undefined}
+                    aria-pressed={isActive}
+                    className={`source-card${isActive ? " active" : ""}`}
+                    key={profile.id}
                     type="button"
                     onClick={() => selectProfile(profile.id)}
                   >
-                    <span>{profile.name}</span>
-                    <small>{profile.kind === "ssh" ? "remote" : "local"}</small>
+                    <span
+                      className="source-card-mark"
+                      data-kind={profile.kind}
+                      aria-hidden="true"
+                    >
+                      {profile.kind === "ssh" ? "⇆" : "⌂"}
+                    </span>
+                    <span className="source-card-text">
+                      <span className="source-card-name">{profile.name}</span>
+                      <span className="source-card-sub">{sourceLabel(profile)}</span>
+                    </span>
+                    <span className={`kind-chip ${profile.kind}`}>
+                      {profile.kind === "ssh" ? "remote" : "local"}
+                    </span>
                   </button>
-                </li>
-              ))}
-            </ul>
+                );
+              })}
+            </div>
           </section>
+          ) : null}
 
-          <section className="settings-block" aria-label="Runner">
-            <div className="block-heading">
-              <h2>{activeProfile.name} runner</h2>
-              <div className="block-actions">
-                {activeProfile.kind === "ssh" ? (
-                  <button
-                    className="ghost-button danger"
-                    type="button"
-                    onClick={deleteActiveProfile}
-                  >
-                    Delete
-                  </button>
-                ) : null}
-                <button
-                  className="ghost-button"
-                  type="button"
-                  onClick={resetProfileSettings}
-                  disabled={!isSettingsDirty}
-                >
-                  Reset
-                </button>
-                <button
-                  type="button"
-                  onClick={applyRunnerSettings}
-                  disabled={!isSettingsDirty || validation.errors.length > 0}
-                >
-                  Apply
-                </button>
-              </div>
-            </div>
-
-            <div className={`preflight-line ${!preflight ? "" : preflight.ok ? "ok" : "bad"}`}>
-              <span
-                className="status-dot"
-                data-tone={!preflight ? "unknown" : preflight.ok ? "idle" : "error"}
-              />
-              <span className="preflight-text">
-                {!preflight
-                  ? state.status !== "failed"
-                    ? "Checking agentscan…"
-                    : "agentscan unreachable"
-                  : preflight.ok
-                    ? `${preflight.binary} · ${preflight.version ?? "ready"}`
-                    : (preflight.error ?? "agentscan unavailable")}
-              </span>
-            </div>
-
-            {validation.errors.length > 0 ? (
-              <div className="error-state settings-error" role="alert">
-                <h3>Invalid settings</h3>
-                <ul>
-                  {validation.errors.map((error) => (
-                    <li key={error}>{error}</li>
-                  ))}
-                </ul>
+          <section className="settings-section" aria-label="Configuration">
+            {/* Adaptive header: with the rail visible the identity already shows
+                there, so use a CONFIGURATION section title (actions on the right,
+                mirroring SOURCES). With the rail hidden, keep the chip + name in
+                the card — it's the only identity on screen. */}
+            {hasMultipleSources ? (
+              <div className="section-title">
+                <span>Configuration</span>
+                {detailActions}
               </div>
             ) : null}
-
-            <div className="settings-grid">
-              <label>
-                <span>profile name</span>
-                <input
-                  value={profileNameDraft}
-                  onChange={(event) => setProfileNameDraft(event.target.value)}
-                />
-              </label>
-              {activeProfile.kind === "ssh" ? (
-                <label>
-                  <span>ssh host</span>
-                  <input
-                    value={sshHostDraft}
-                    onChange={(event) => setSshHostDraft(event.target.value)}
-                    placeholder="user@host"
-                  />
-                </label>
-              ) : null}
-              {activeProfile.kind === "ssh" ? (
-                <label>
-                  <span>remote client tty</span>
-                  <input
-                    value={sshClientTtyDraft}
-                    onChange={(event) => setSshClientTtyDraft(event.target.value)}
-                    placeholder="Best-effort"
-                  />
-                </label>
-              ) : null}
-              <label>
-                <span>agentscan binary</span>
-                <input
-                  value={settingsDraft.binaryPath}
-                  onChange={(event) =>
-                    setSettingsDraft((current) => ({
-                      ...current,
-                      binaryPath: event.target.value,
-                    }))
-                  }
-                  placeholder="Auto-detect"
-                />
-              </label>
-              <div className="env-editor">
-                <span>environment</span>
-                <div className="env-list">
-                  {settingsDraft.env.map((variable, index) => (
-                    <div className="env-row" key={index}>
-                      <input
-                        aria-label="Environment variable name"
-                        value={variable.name}
-                        onChange={(event) =>
-                          updateEnvironmentVariable(index, { name: event.target.value })
-                        }
-                        placeholder="NAME"
-                        spellCheck={false}
-                      />
-                      <input
-                        aria-label="Environment variable value"
-                        value={variable.value}
-                        onChange={(event) =>
-                          updateEnvironmentVariable(index, { value: event.target.value })
-                        }
-                        placeholder="value"
-                        spellCheck={false}
-                      />
-                      <button
-                        className="ghost-button"
-                        type="button"
-                        onClick={() => removeEnvironmentVariable(index)}
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  ))}
+            <div className="source-detail">
+              {!hasMultipleSources ? (
+                <div className="detail-head">
+                  <div className="detail-head-title">
+                    <span className={`kind-chip ${activeProfile.kind}`}>
+                      {activeProfile.kind === "ssh" ? "remote" : "local"}
+                    </span>
+                    <h2>{activeProfile.name}</h2>
+                  </div>
+                  {detailActions}
                 </div>
-                <button className="ghost-button" type="button" onClick={addEnvironmentVariable}>
-                  Add env
+              ) : null}
+
+              <div className="detail-status" data-tone={preflightTone}>
+                <span
+                  className={`status-dot${preflightTone === "unknown" ? " pulsing" : ""}`}
+                  data-tone={preflightTone}
+                  aria-hidden="true"
+                />
+                <span className="detail-status-text">
+                  <strong>{preflightLabel}</strong>
+                  <span className="mono detail-status-detail">{preflightDetail}</span>
+                </span>
+              </div>
+
+              {validation.errors.length > 0 ? (
+                <div className="error-state settings-error" role="alert">
+                  <h3>Invalid settings</h3>
+                  <ul>
+                    {validation.errors.map((error) => (
+                      <li key={error}>{error}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+
+              <div className="field-grid">
+                <label className="field">
+                  <span className="field-label">Name</span>
+                  <input
+                    value={profileNameDraft}
+                    onChange={(event) => setProfileNameDraft(event.target.value)}
+                  />
+                </label>
+                {activeProfile.kind === "ssh" ? (
+                  <label className="field">
+                    <span className="field-label">SSH host</span>
+                    <input
+                      value={sshHostDraft}
+                      onChange={(event) => setSshHostDraft(event.target.value)}
+                      placeholder="user@host"
+                      spellCheck={false}
+                    />
+                  </label>
+                ) : null}
+                {activeProfile.kind === "ssh" ? (
+                  <label className="field">
+                    <span className="field-label">Remote client tty</span>
+                    <input
+                      value={sshClientTtyDraft}
+                      onChange={(event) => setSshClientTtyDraft(event.target.value)}
+                      placeholder="Best-effort"
+                      spellCheck={false}
+                    />
+                  </label>
+                ) : null}
+                <label className="field">
+                  <span className="field-label">agentscan binary</span>
+                  <input
+                    value={settingsDraft.binaryPath}
+                    onChange={(event) =>
+                      setSettingsDraft((current) => ({
+                        ...current,
+                        binaryPath: event.target.value,
+                      }))
+                    }
+                    placeholder="Auto-detect"
+                    spellCheck={false}
+                  />
+                </label>
+              </div>
+
+              <div className="env-block">
+                <div className="env-head">
+                  <span className="field-label">Environment</span>
+                  <span className="env-count">{settingsDraft.env.length}</span>
+                </div>
+                <div className="env-list">
+                  {settingsDraft.env.length === 0 ? (
+                    <p className="env-empty">No variables — agentscan runs with the inherited env.</p>
+                  ) : (
+                    settingsDraft.env.map((variable, index) => (
+                      <div className="env-row" key={index}>
+                        <input
+                          aria-label="Environment variable name"
+                          value={variable.name}
+                          onChange={(event) =>
+                            updateEnvironmentVariable(index, { name: event.target.value })
+                          }
+                          placeholder="NAME"
+                          spellCheck={false}
+                        />
+                        <span className="env-eq" aria-hidden="true">
+                          =
+                        </span>
+                        <input
+                          aria-label="Environment variable value"
+                          value={variable.value}
+                          onChange={(event) =>
+                            updateEnvironmentVariable(index, { value: event.target.value })
+                          }
+                          placeholder="value"
+                          spellCheck={false}
+                        />
+                        <button
+                          className="env-remove"
+                          type="button"
+                          aria-label="Remove variable"
+                          onClick={() => removeEnvironmentVariable(index)}
+                        >
+                          {"×"}
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
+                <button className="ghost-button env-add" type="button" onClick={addEnvironmentVariable}>
+                  {"+ Add variable"}
                 </button>
               </div>
             </div>
+            {!hasMultipleSources ? (
+              <button className="add-remote-cta" type="button" onClick={addSshProfile}>
+                {"+ Add a remote source"}
+              </button>
+            ) : null}
           </section>
 
-          <section className="settings-block" aria-label="Debug log">
-            <div className="block-heading">
-              <h2>Debug log</h2>
-              <button className="ghost-button" type="button" onClick={() => setDebugEntries([])}>
-                Clear
+          <section className="settings-section" aria-label="Debug log">
+            <div className="section-title">
+              <button
+                className="collapse-toggle"
+                type="button"
+                aria-expanded={isDebugOpen}
+                onClick={() => setIsDebugOpen((open) => !open)}
+              >
+                <span className={`collapse-caret${isDebugOpen ? " open" : ""}`} aria-hidden="true">
+                  {"›"}
+                </span>
+                <span className="collapse-label">Debug log</span>
+                <span className="env-count">{debugEntries.length}</span>
               </button>
+              {isDebugOpen ? (
+                <button className="ghost-button" type="button" onClick={() => setDebugEntries([])}>
+                  Clear
+                </button>
+              ) : null}
             </div>
-            <DebugLog entries={debugEntries} />
+            {isDebugOpen ? <DebugLog entries={debugEntries} /> : null}
           </section>
         </div>
       </main>
@@ -1286,8 +1379,11 @@ function App() {
               aria-hidden="true"
             />
             <span className="source-label">{sourceLabel(activeProfile)}</span>
-            <span className="source-caret" aria-hidden="true">
-              {"⌄"}
+            <span
+              className={`source-caret${isSourceMenuOpen ? " open" : ""}`}
+              aria-hidden="true"
+            >
+              {"›"}
             </span>
           </button>
           {isSourceMenuOpen ? (
@@ -1566,7 +1662,7 @@ function defaultProfileState(runner = emptyRunnerSettings()): ProfileState {
     profiles: [
       {
         id: LOCAL_PROFILE_ID,
-        name: "Local",
+        name: "Default",
         kind: "local",
         runner: normalizeRunnerSettings(runner),
       },
@@ -1606,7 +1702,7 @@ function normalizeProfile(value: unknown): DesktopProfileConfig | null {
   if (profile.kind === "local") {
     return {
       id: id || LOCAL_PROFILE_ID,
-      name: name || "Local",
+      name: name || "Default",
       kind: "local",
       runner,
     };
@@ -1891,7 +1987,7 @@ function sourceLabel(profile: DesktopProfileConfig): string {
     const host = profile.host.trim();
     return host ? `agentscan @ ${host}` : profile.name;
   }
-  return "local agentscan";
+  return "agentscan";
 }
 
 function filterPickerRows(rows: PickerRow[], query: string) {
