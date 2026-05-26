@@ -647,11 +647,21 @@ function App() {
   // data is consumed.
   const activeReadyState =
     state.status === "ready" && state.runnerKey === runnerKey ? state : null;
-  // Selectable agentscan sources for the footer dropdown: the built-in local
-  // runner plus every enabled SSH profile.
+  // Sources offered in the footer quick-switch: the built-in local runner plus
+  // enabled SSH profiles. A remote with no host yet can only resolve to a failed
+  // source, so exclude it from quick-switch (it's still listed in Settings, where
+  // it gets configured) — except keep the active one so the trigger's source is
+  // always represented in its own menu.
   const sourceProfiles = useMemo(
-    () => profileState.profiles.filter(isRunnableProfile),
-    [profileState],
+    () =>
+      profileState.profiles.filter(
+        (profile) =>
+          isRunnableProfile(profile) &&
+          (profile.kind !== "ssh" ||
+            profile.host.trim().length > 0 ||
+            profile.id === activeProfile.id),
+      ),
+    [profileState, activeProfile.id],
   );
   // Tone for the footer status dot, derived from the resolved preflight of the
   // active source (not a stale previous one). Detail lives in the title tooltip.
