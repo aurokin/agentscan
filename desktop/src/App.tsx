@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
+import { providerLogo } from "./providerLogos";
 
 const PICKER_HOTKEY = "CommandOrControl+Shift+A";
 const LIVE_PICKER_EVENT = "agentscan-live-picker";
@@ -1959,6 +1960,7 @@ function GroupedPicker({
               const isActive = row.is_active;
               const isFocusing =
                 activation.status === "running" && activation.paneId === row.pane_id;
+              const logo = providerLogo(row.provider);
               return (
                 <li
                   aria-selected={isSelected}
@@ -1979,6 +1981,11 @@ function GroupedPicker({
                     data-tone={isFocusing ? "busy" : statusTone(row.status.kind)}
                     aria-hidden="true"
                   />
+                  {logo ? (
+                    <img className="provider-logo" src={logo} alt="" aria-hidden="true" />
+                  ) : (
+                    <span className="provider-logo provider-logo-empty" aria-hidden="true" />
+                  )}
                   <span className="agent-label">{row.display_label}</span>
                   <span className="agent-suffix">{paneSuffix(row)}</span>
                   <kbd>{row.key}</kbd>
