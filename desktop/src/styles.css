@@ -371,59 +371,110 @@ kbd {
   border-top: 1px solid var(--border);
 }
 
-.profile-chip {
+.source-switcher {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.source-trigger {
   display: flex;
   align-items: center;
-  gap: 10px;
-  flex: 1 1 auto;
+  gap: 8px;
+  width: 100%;
   min-width: 0;
   padding: 6px 8px;
   border: none;
   border-radius: 8px;
   background: transparent;
+  color: var(--text);
   cursor: pointer;
   text-align: left;
 }
 
-.profile-chip:hover {
+.source-trigger:hover {
   background: var(--bg-hover);
 }
 
-.avatar {
-  display: inline-grid;
-  place-items: center;
-  flex: 0 0 auto;
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  background: var(--accent);
-  color: #1a1a1c;
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.profile-meta {
-  display: flex;
-  flex-direction: column;
+.source-label {
+  flex: 1 1 auto;
   min-width: 0;
-  line-height: 1.2;
-}
-
-.profile-name {
   font-size: 13px;
   font-weight: 600;
-  color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.profile-meta small {
-  font-size: 11px;
+.source-caret {
+  flex: 0 0 auto;
+  font-size: 12px;
   color: var(--text-dim);
+}
+
+.source-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
+  z-index: 20;
+}
+
+.source-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 7px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.source-option:hover {
+  background: var(--bg-hover);
+}
+
+.source-option.active {
+  font-weight: 600;
+}
+
+.source-check {
+  flex: 0 0 auto;
+  width: 14px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.source-option-label {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.source-menu-divider {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
+
+.source-option.manage {
+  color: var(--text-muted);
 }
 
 /* ---------- Boot / loading ---------- */

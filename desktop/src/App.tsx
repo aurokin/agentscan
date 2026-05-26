@@ -224,6 +224,10 @@ function App() {
   const [pickerFilter, setPickerFilter] = useState("");
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [view, setView] = useState<ShellView>("picker");
+  // Footer source switcher: which agentscan we're listening to (local vs a
+  // remote over SSH). Open state for the inline dropdown.
+  const [isSourceMenuOpen, setIsSourceMenuOpen] = useState(false);
+  const sourceMenuRef = useRef<HTMLDivElement | null>(null);
   // Tracks the active runner config so in-flight refreshes/focus can detect a
   // profile switch OR a settings change and discard results from the previous
   // target. Updated synchronously during render (below) so async completions
@@ -641,6 +645,19 @@ function App() {
   // data is consumed.
   const activeReadyState =
     state.status === "ready" && state.runnerKey === runnerKey ? state : null;
+  // Selectable agentscan sources for the footer dropdown: the built-in local
+  // runner plus every enabled SSH profile.
+  const sourceProfiles = useMemo(
+    () => profileState.profiles.filter(isRunnableProfile),
+    [profileState],
+  );
+  // Tone for the footer status dot, derived from the resolved preflight of the
+  // active source (not a stale previous one). Detail lives in the title tooltip.
+  const sourceStatusTone = !activeReadyState
+    ? "unknown"
+    : activeReadyState.preflight.ok
+      ? "idle"
+      : "error";
   const pickerDataState: PickerState = activeReadyState
     ? activeReadyState.picker
     : { status: "loading" };
@@ -697,8 +714,39 @@ function App() {
     // immediately rather than waiting on the stale call's finally.
     activationInFlightRef.current = false;
     setSelectedPaneId(null);
+    setIsSourceMenuOpen(false);
     liveRetryAttemptRef.current = 0;
   }, [activeProfile]);
+
+  // Dismiss the source dropdown on an outside click or Escape. The keydown is
+  // captured so it closes the menu before the picker's global Escape handler
+  // hides the whole window.
+  useEffect(() => {
+    if (!isSourceMenuOpen) {
+      return;
+    }
+
+    function onPointerDown(event: MouseEvent) {
+      if (sourceMenuRef.current && !sourceMenuRef.current.contains(event.target as Node)) {
+        setIsSourceMenuOpen(false);
+      }
+    }
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        event.preventDefault();
+        setIsSourceMenuOpen(false);
+      }
+    }
+
+    window.addEventListener("mousedown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.removeEventListener("mousedown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [isSourceMenuOpen]);
 
   async function activateSelectedRow(row = selectedRow) {
     if (!row || activationInFlightRef.current) {
@@ -981,11 +1029,11 @@ function App() {
         </header>
 
         <div className="settings-scroll">
-          <section className="settings-block" aria-label="Profiles">
+          <section className="settings-block" aria-label="Sources">
             <div className="block-heading">
-              <h2>Profiles</h2>
+              <h2>Sources</h2>
               <button className="ghost-button" type="button" onClick={addSshProfile}>
-                + SSH
+                + Remote
               </button>
             </div>
             <ul className="profile-list">
@@ -998,7 +1046,7 @@ function App() {
                     onClick={() => selectProfile(profile.id)}
                   >
                     <span>{profile.name}</span>
-                    <small>{profile.kind === "ssh" ? "ssh" : "local"}</small>
+                    <small>{profile.kind === "ssh" ? "remote" : "local"}</small>
                   </button>
                 </li>
               ))}
@@ -1223,20 +1271,66 @@ function App() {
       </div>
 
       <footer className="bottombar">
-        <button
-          className="profile-chip"
-          type="button"
-          onClick={() => setView("settings")}
-          title="Open settings"
-        >
-          <span className="avatar">{profileInitials(activeProfile.name)}</span>
-          <span className="profile-meta">
-            <span className="profile-name">{activeProfile.name}</span>
-            <small>
-              {activeReadyState?.preflight.ok ? profileKindLabel(activeProfile) : statusText}
-            </small>
-          </span>
-        </button>
+        <div className="source-switcher" ref={sourceMenuRef}>
+          <button
+            className="source-trigger"
+            type="button"
+            aria-haspopup="menu"
+            aria-expanded={isSourceMenuOpen}
+            onClick={() => setIsSourceMenuOpen((open) => !open)}
+            title={statusText}
+          >
+            <span
+              className="status-dot"
+              data-tone={sourceStatusTone}
+              aria-hidden="true"
+            />
+            <span className="source-label">{sourceLabel(activeProfile)}</span>
+            <span className="source-caret" aria-hidden="true">
+              {"⌄"}
+            </span>
+          </button>
+          {isSourceMenuOpen ? (
+            <div className="source-menu" role="menu">
+              {sourceProfiles.map((profile) => {
+                const isActive = profile.id === activeProfile.id;
+                return (
+                  <button
+                    className={`source-option${isActive ? " active" : ""}`}
+                    key={profile.id}
+                    role="menuitemradio"
+                    aria-checked={isActive}
+                    type="button"
+                    onClick={() => {
+                      selectProfile(profile.id);
+                      setIsSourceMenuOpen(false);
+                    }}
+                  >
+                    <span className="source-check" aria-hidden="true">
+                      {isActive ? "✓" : ""}
+                    </span>
+                    <span className="source-option-label">{sourceLabel(profile)}</span>
+                  </button>
+                );
+              })}
+              <div className="source-menu-divider" role="separator" />
+              <button
+                className="source-option manage"
+                role="menuitem"
+                type="button"
+                onClick={() => {
+                  setIsSourceMenuOpen(false);
+                  setView("settings");
+                }}
+              >
+                <span className="source-check" aria-hidden="true">
+                  {"⚙"}
+                </span>
+                <span className="source-option-label">Manage sources…</span>
+              </button>
+            </div>
+          ) : null}
+        </div>
         <button
           className="icon-button"
           type="button"
@@ -1790,15 +1884,14 @@ function statusTone(kind: string): string {
   }
 }
 
-function profileInitials(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) {
-    return "?";
+// Footer label for an agentscan source: the local runner, or a remote keyed by
+// its SSH host (falling back to the profile name when the host isn't set yet).
+function sourceLabel(profile: DesktopProfileConfig): string {
+  if (profile.kind === "ssh") {
+    const host = profile.host.trim();
+    return host ? `agentscan @ ${host}` : profile.name;
   }
-  if (parts.length === 1) {
-    return parts[0].slice(0, 2).toUpperCase();
-  }
-  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  return "local agentscan";
 }
 
 function filterPickerRows(rows: PickerRow[], query: string) {
