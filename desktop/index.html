@@ -3,15 +3,36 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="dark light" />
     <title>agentscan</title>
-    <!-- Paint the dark background before styles.css loads so cold start doesn't
-         flash the WebView's default white background. Keep in sync with --bg. -->
+    <!-- Resolve the saved theme before styles.css loads so cold start neither
+         flashes the WebView's default white nor the wrong theme. Keep the storage
+         key and the background colors in sync with App.tsx / styles.css. -->
+    <script>
+      (function () {
+        try {
+          var pref = localStorage.getItem("agentscan.desktop.theme") || "system";
+          var resolved =
+            pref === "system"
+              ? window.matchMedia("(prefers-color-scheme: dark)").matches
+                ? "dark"
+                : "light"
+              : pref;
+          document.documentElement.setAttribute("data-theme", resolved);
+        } catch (e) {
+          document.documentElement.setAttribute("data-theme", "dark");
+        }
+      })();
+    </script>
     <style>
       html,
       body {
         margin: 0;
         background: #1a1a1c;
+      }
+      html[data-theme="light"],
+      html[data-theme="light"] body {
+        background: #ffffff;
       }
     </style>
   </head>

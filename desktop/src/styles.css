@@ -1,7 +1,8 @@
 :root {
-  /* Opt native form controls, scrollbars, and autofill into the dark UA theme
-     so they don't render with light chrome that clashes with our dark inputs.
-     The meta tag alone doesn't reliably reach all UA-styled controls. */
+  /* Dark is the default theme. The concrete theme is selected by a data-theme
+     attribute on <html> (see the theme effect / index.html pre-paint script);
+     "system" resolves to dark or light from prefers-color-scheme. Opting native
+     controls/scrollbars into the right UA scheme keeps them from clashing. */
   color-scheme: dark;
 
   --bg: #1a1a1c;
@@ -12,11 +13,27 @@
   --text: #ededef;
   --text-muted: #9b9ba1;
   --text-dim: #6c6c73;
-  --accent: #cf7d52;
+  /* Accent is driven by --accent-rgb so washes/rings (rgba) and the solid color
+     stay in sync; light overrides the rgb only. Dark keeps the warm orange. */
+  --accent-rgb: 207, 125, 82;
+  --accent: rgb(var(--accent-rgb));
+  --on-accent: #1a1a1c;
   --dot-busy: #e3b341;
   --dot-idle: #3fb950;
   --dot-unknown: #5a5a61;
   --dot-error: #f85149;
+  /* Elevated surfaces in dark are lighter than the bg, so they need no shadow. */
+  --card-shadow: none;
+  /* Opaque hover fill, translucent overlays (per alpha so dark is unchanged),
+     and danger text — all flipped for light below. */
+  --surface-strong: #2a2a2d;
+  --overlay-04: rgba(255, 255, 255, 0.04);
+  --overlay-05: rgba(255, 255, 255, 0.05);
+  --overlay-07: rgba(255, 255, 255, 0.07);
+  --overlay-08: rgba(255, 255, 255, 0.08);
+  --overlay-12: rgba(255, 255, 255, 0.12);
+  --overlay-14: rgba(255, 255, 255, 0.14);
+  --danger-text: #ff9b95;
 
   color: var(--text);
   background: var(--bg);
@@ -26,6 +43,39 @@
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  /* Off-white base with white cards, so elevated surfaces read as raised (and
+     inputs, which use --bg, read as inset) — the same depth relationship as
+     dark, inverted. A faint shadow gives the cards their lift. */
+  --bg: #f4f4f6;
+  --bg-elevated: #ffffff;
+  --bg-hover: rgba(0, 0, 0, 0.04);
+  --bg-selected: rgba(0, 0, 0, 0.07);
+  --border: rgba(0, 0, 0, 0.1);
+  --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.05), 0 2px 6px rgba(0, 0, 0, 0.05);
+  --text: #1a1a1c;
+  --text-muted: #57575d;
+  --text-dim: #87878d;
+  /* Indigo accent in light only; dark keeps the warm orange. White text on it. */
+  --accent-rgb: 106, 108, 240;
+  --on-accent: #ffffff;
+  /* Status dots stay yellow/green across themes (per request). */
+  --dot-busy: #e3b341;
+  --dot-idle: #3fb950;
+  --dot-unknown: #a8a8ae;
+  --dot-error: #e5484d;
+  --surface-strong: #ececef;
+  --overlay-04: rgba(0, 0, 0, 0.04);
+  --overlay-05: rgba(0, 0, 0, 0.05);
+  --overlay-07: rgba(0, 0, 0, 0.06);
+  --overlay-08: rgba(0, 0, 0, 0.07);
+  --overlay-12: rgba(0, 0, 0, 0.1);
+  --overlay-14: rgba(0, 0, 0, 0.12);
+  --danger-text: #b3271e;
 }
 
 * {
@@ -88,7 +138,7 @@ p {
 
 .search-field:focus-within {
   border-color: var(--border);
-  background: #2a2a2d;
+  background: var(--surface-strong);
 }
 
 .search-icon {
@@ -194,7 +244,7 @@ p {
   padding: 8px 10px;
   border-radius: 8px;
   background: rgba(248, 81, 73, 0.12);
-  color: #ff9b95;
+  color: var(--danger-text);
   font-size: 12px;
 }
 
@@ -330,7 +380,7 @@ kbd {
   height: 18px;
   padding: 0 5px;
   border-radius: 5px;
-  background: rgba(255, 255, 255, 0.07);
+  background: var(--overlay-07);
   color: var(--text-muted);
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 11px;
@@ -338,7 +388,7 @@ kbd {
 }
 
 .agent-row.selected kbd {
-  background: rgba(255, 255, 255, 0.14);
+  background: var(--overlay-14);
   color: var(--text);
 }
 
@@ -582,6 +632,9 @@ kbd {
 .settings-section:nth-child(3) {
   animation-delay: 0.14s;
 }
+.settings-section:nth-child(4) {
+  animation-delay: 0.2s;
+}
 
 @keyframes settings-rise {
   from {
@@ -632,7 +685,7 @@ kbd {
 .add-remote-cta:hover {
   border-color: var(--accent);
   color: var(--text);
-  background: rgba(207, 125, 82, 0.06);
+  background: rgba(var(--accent-rgb), 0.06);
 }
 
 /* Collapsible section header (debug log) */
@@ -672,12 +725,46 @@ kbd {
   transform: rotate(90deg);
 }
 
+/* Appearance: Dark / Light / System segmented control */
+.theme-toggle {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+}
+
+.theme-option {
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 600;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+
+.theme-option:hover:not(.active) {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+.theme-option.active {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
 button {
   min-height: 30px;
   padding: 0 12px;
   border: none;
   border-radius: 7px;
-  color: #1a1a1c;
+  color: var(--on-accent);
   background: var(--accent);
   font-size: 13px;
   font-weight: 600;
@@ -696,11 +783,11 @@ button:disabled {
 
 .ghost-button:hover:not(:disabled) {
   color: var(--text);
-  background: #2c2c2f;
+  background: var(--surface-strong);
 }
 
 .ghost-button.danger {
-  color: #ff9b95;
+  color: var(--danger-text);
 }
 
 /* Source rail */
@@ -720,6 +807,7 @@ button:disabled {
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--bg-elevated);
+  box-shadow: var(--card-shadow);
   cursor: pointer;
   text-align: left;
   transition:
@@ -730,7 +818,7 @@ button:disabled {
 }
 
 .source-card:hover {
-  background: #2a2a2d;
+  background: var(--surface-strong);
 }
 
 .source-card:active {
@@ -739,9 +827,9 @@ button:disabled {
 
 .source-card.active {
   border-color: var(--accent);
-  background: rgba(207, 125, 82, 0.12);
+  background: rgba(var(--accent-rgb), 0.12);
   box-shadow:
-    0 0 0 1px rgba(207, 125, 82, 0.35),
+    0 0 0 1px rgba(var(--accent-rgb), 0.35),
     0 6px 18px rgba(0, 0, 0, 0.28);
 }
 
@@ -752,13 +840,13 @@ button:disabled {
   width: 28px;
   height: 28px;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--overlay-05);
   color: var(--text-muted);
   font-size: 15px;
 }
 
 .source-card.active .source-card-mark {
-  background: rgba(207, 125, 82, 0.2);
+  background: rgba(var(--accent-rgb), 0.2);
   color: var(--accent);
 }
 
@@ -800,12 +888,12 @@ button:disabled {
 
 .kind-chip.local {
   color: var(--text-muted);
-  background: rgba(255, 255, 255, 0.07);
+  background: var(--overlay-07);
 }
 
 .kind-chip.ssh {
   color: var(--accent);
-  background: rgba(207, 125, 82, 0.16);
+  background: rgba(var(--accent-rgb), 0.16);
 }
 
 /* Source detail */
@@ -817,6 +905,7 @@ button:disabled {
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--bg-elevated);
+  box-shadow: var(--card-shadow);
 }
 
 .detail-head {
@@ -862,7 +951,7 @@ button:disabled {
   padding: 8px 10px;
   border-radius: 9px;
   border: 1px solid transparent;
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--overlay-04);
 }
 
 .detail-status .status-dot {
@@ -950,7 +1039,7 @@ button:disabled {
 .field input:focus,
 .env-row input:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(207, 125, 82, 0.16);
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.16);
 }
 
 /* Environment editor */
@@ -973,7 +1062,7 @@ button:disabled {
   height: 16px;
   padding: 0 5px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--overlay-08);
   color: var(--text-muted);
   font-size: 10px;
   font-weight: 700;
@@ -1026,7 +1115,7 @@ button:disabled {
 
 .env-remove:hover {
   background: rgba(248, 81, 73, 0.14);
-  color: #ff9b95;
+  color: var(--danger-text);
 }
 
 .env-add {
@@ -1040,7 +1129,7 @@ button:disabled {
   padding: 10px 12px;
   border-radius: 8px;
   background: rgba(248, 81, 73, 0.12);
-  color: #ff9b95;
+  color: var(--danger-text);
   font-size: 13px;
 }
 
@@ -1116,7 +1205,7 @@ button:disabled {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--overlay-12);
   border-radius: 4px;
 }
 
