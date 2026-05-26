@@ -219,12 +219,7 @@ function App() {
   });
   const [pickerFilter, setPickerFilter] = useState("");
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [isPickerVisible, setIsPickerVisible] = useState(true);
   const [view, setView] = useState<ShellView>("picker");
-  // Latest view, read by async completions (e.g. a slow focus) to avoid acting
-  // on a view the user has since navigated away from.
-  const viewRef = useRef(view);
-  viewRef.current = view;
   // Tracks the active runner config so in-flight refreshes/focus can detect a
   // profile switch OR a settings change and discard results from the previous
   // target. Updated synchronously during render (below) so async completions
@@ -243,6 +238,13 @@ function App() {
   const liveRetryAttemptRef = useRef(0);
   const [selectedPaneId, setSelectedPaneId] = useState<string | null>(null);
   const [activation, setActivation] = useState<PickerActivation>({ status: "idle" });
+  // Synchronous in-flight guard for activation. The `activation` state alone
+  // can't gate concurrent activations: a double-click (or two rapid clicks)
+  // dispatches both click events before React re-renders, so each handler reads
+  // the same stale "idle" activation and a state-based guard lets both through —
+  // firing focus_picker_row twice. A ref updates synchronously, so the second
+  // click sees the in-flight activation and bails.
+  const activationInFlightRef = useRef(false);
   const validation = useMemo(
     () =>
       validateProfileDraft(
@@ -520,10 +522,7 @@ function App() {
         try {
           await register(PICKER_HOTKEY, (event) => {
             if (event.state === "Pressed") {
-              void togglePickerWindow(
-                () => setIsPickerVisible(true),
-                () => setIsPickerVisible(false),
-              );
+              void raisePickerWindow();
             }
           });
           registered = true;
@@ -688,14 +687,20 @@ function App() {
     setSshClientTtyDraft(activeProfile.kind === "ssh" ? activeProfile.clientTty : "");
     setPickerFilter("");
     setActivation({ status: "idle" });
+    // Free the in-flight activation guard too: an old focus_picker_row from the
+    // previous target may still be running, but activeRunnerKeyRef already
+    // discards its completion, so the new profile must be able to activate
+    // immediately rather than waiting on the stale call's finally.
+    activationInFlightRef.current = false;
     setSelectedPaneId(null);
     liveRetryAttemptRef.current = 0;
   }, [activeProfile]);
 
   async function activateSelectedRow(row = selectedRow) {
-    if (!row || activation.status === "running") {
+    if (!row || activationInFlightRef.current) {
       return;
     }
+    activationInFlightRef.current = true;
 
     const requestRunnerKey = runnerKey;
     setActivation({ status: "running", paneId: row.pane_id });
@@ -712,20 +717,23 @@ function App() {
         // a newer activation the user started. Also skip the post-focus UI.
         return;
       }
+      // Persistent-window model: focusing a pane must not hide the desktop.
+      // Reset activation to idle and leave the window visible.
       setActivation({ status: "idle" });
-      // Only auto-hide if the user is still in the picker. A slow focus (e.g.
-      // SSH) can complete after they've opened Settings; hiding then would yank
-      // the window out from under them mid-edit.
-      if (viewRef.current === "picker") {
-        setIsPickerVisible(false);
-        await hidePickerWindow();
-      }
     } catch (error) {
       if (activeRunnerKeyRef.current !== requestRunnerKey) {
         return;
       }
       setActivation({ status: "failed", message: errorMessage(error) });
       await refreshPickerRows();
+    } finally {
+      // Only release the guard if this is still the active target. After a
+      // profile/settings switch the effect already cleared the ref (and a newer
+      // activation may have re-set it), so a stale completion must not clear a
+      // guard that now belongs to a different in-flight activation.
+      if (activeRunnerKeyRef.current === requestRunnerKey) {
+        activationInFlightRef.current = false;
+      }
     }
   }
 
@@ -740,7 +748,7 @@ function App() {
   }
 
   function handlePickerKeyDown(event: KeyboardEvent) {
-    if (view !== "picker" || !isPickerVisible) {
+    if (view !== "picker") {
       return;
     }
 
@@ -764,9 +772,12 @@ function App() {
       event.preventDefault();
       void activateSelectedRow();
     } else if (event.key === "Escape") {
-      event.preventDefault();
-      setIsPickerVisible(false);
-      void hidePickerWindow();
+      // Persistent-window model: Escape never hides the window. Clear the search
+      // filter if one is active; otherwise it's a no-op.
+      if (pickerFilter) {
+        event.preventDefault();
+        setPickerFilter("");
+      }
     }
   }
 
@@ -920,33 +931,6 @@ function App() {
     const handler = (event: KeyboardEvent) => pickerKeyDownRef.current(event);
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, []);
-
-  // Keep isPickerVisible in sync when the window is revealed outside our own
-  // hide/show paths (e.g. dock click after a hotkey hide). Gaining focus implies
-  // the picker is on screen, so re-enable keyboard navigation.
-  useEffect(() => {
-    let unlisten: UnlistenFn | undefined;
-    let disposed = false;
-    void getCurrentWindow()
-      .onFocusChanged(({ payload: focused }) => {
-        if (focused) {
-          setIsPickerVisible(true);
-        }
-      })
-      .then((fn) => {
-        // Cleanup may run before this resolves (StrictMode/unmount); detach
-        // immediately so the listener isn't leaked.
-        if (disposed) {
-          fn();
-          return;
-        }
-        unlisten = fn;
-      });
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
   }, []);
 
   // Settings must be reachable even when the daemon/IPC is unreachable: that is
@@ -1884,26 +1868,14 @@ function liveStateLabel(state: LiveConnectionState) {
   return "Connecting";
 }
 
-async function togglePickerWindow(beforeShow: () => void, onHide: () => void) {
+// Persistent-window model: the global hotkey raises/focuses the window; it
+// never toggles it away.
+async function raisePickerWindow() {
   await enqueueWindowOperation(async () => {
     const appWindow = getCurrentWindow();
-
-    if (await appWindow.isVisible()) {
-      onHide();
-      await appWindow.hide();
-      return;
-    }
-
-    beforeShow();
     await placePickerWindow();
     await appWindow.show();
     await appWindow.setFocus();
-  });
-}
-
-async function hidePickerWindow() {
-  await enqueueWindowOperation(async () => {
-    await getCurrentWindow().hide();
   });
 }
 
@@ -1986,8 +1958,13 @@ function GroupedPicker({
                   aria-selected={isSelected}
                   className={`agent-row${isSelected ? " selected" : ""}`}
                   key={`${row.key}-${row.pane_id}`}
-                  onClick={() => onSelect(row)}
-                  onDoubleClick={() => onActivate(row)}
+                  onClick={() => {
+                    // Single-click selects and switches the active tmux pane.
+                    // Enter still activates the keyboard selection; double-click
+                    // is gone (redundant under single-click activation).
+                    onSelect(row);
+                    onActivate(row);
+                  }}
                   title={`${row.display_label} · ${row.provider ?? "unknown"} · ${row.location_tag}`}
                 >
                   <span
