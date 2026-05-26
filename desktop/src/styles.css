@@ -254,6 +254,13 @@ p {
   background: var(--bg-selected);
 }
 
+/* The pane tmux is focused on. A left accent bar is distinct from the
+   selection background fill, so the two read clearly when they coincide.
+   inset box-shadow avoids any layout shift. */
+.agent-row.active {
+  box-shadow: inset 3px 0 0 0 var(--accent);
+}
+
 .status-dot {
   width: 8px;
   height: 8px;
