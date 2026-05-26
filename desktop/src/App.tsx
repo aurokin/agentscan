@@ -750,6 +750,16 @@ function App() {
     };
   }, [isSourceMenuOpen]);
 
+  // Close the source menu whenever the picker isn't the active view. The
+  // outside-click/Escape handlers above miss keyboard-driven navigation (e.g.
+  // activating the gear or the boot screen's "Open settings" with Enter), which
+  // would otherwise leave the dropdown rendered already-open on return.
+  useEffect(() => {
+    if (view !== "picker") {
+      setIsSourceMenuOpen(false);
+    }
+  }, [view]);
+
   async function activateSelectedRow(row = selectedRow) {
     if (!row || activationInFlightRef.current) {
       return;
@@ -1405,7 +1415,10 @@ function App() {
                     <span className="source-check" aria-hidden="true">
                       {isActive ? "✓" : ""}
                     </span>
-                    <span className="source-option-label">{sourceLabel(profile)}</span>
+                    <span className="source-option-text">
+                      <span className="source-option-name">{profile.name}</span>
+                      <span className="source-option-sub">{sourceLabel(profile)}</span>
+                    </span>
                   </button>
                 );
               })}
