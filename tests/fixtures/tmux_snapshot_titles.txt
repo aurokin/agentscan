@@ -1,26 +1,26 @@
-agentchat_parallel11%1782278670codexWorking/dev/pts/12/home/auro/code/agentchat/parallel_prepeditor$2@2
-agentscan11%1913075750codex⠹ agentscan | Working/dev/pts/129/home/auro/code/agentscaneditor$3@3
-agentscan12%1943075751codex⠴ agentscan | Waiting/dev/pts/130/home/auro/code/agentscaneditor$3@3
-midnight11%67768342codexReady/dev/pts/48/home/auro/code/auro_midnighteditor$1@1
-notes41%41324026claude✳ Review and summarize todo list/dev/pts/44/home/auro/notesai$4@4
-dotfiles41%223430857claude⠐ Evaluate tmux plugins for Twigsmux improvements/dev/pts/62/home/auro/.dotfilesai$5@5
-notes42%224430858claudeClaude Code | Working/dev/pts/63/home/auro/notesai$4@4
-notes43%225430859claudeClaude Code | Ready/dev/pts/64/home/auro/notesai$4@4
-local_review_automation11%275430860claude✳ Design GitHub bot with Claude agent dashboard/dev/pts/165/home/auro/code/local_review_automationai$6@6
-parallel11%893220759codex(bront) parallel-n64: /home/auro/.zshrc.d/scripts/lgpt.sh/dev/pts/86/home/auro/code/parallel-n64editor$8@8
-webmux11%2404212996codexWorking/dev/pts/150/home/auro/code/webmuxeditor$9@9
-gemini_proj11%300555000gemini-cliReady/dev/pts/200/home/auro/code/gemini_projeditor$10@10
-opencode_proj11%301555001zshOC | Query planner/dev/pts/201/home/auro/code/opencode_projai$11@11
-copilot_proj11%302555002copilotCopilot | Working/dev/pts/202/home/auro/code/copilot_projai$12@12
-cursor_proj11%303555003cursor-agentCursor CLI | Query planner/dev/pts/203/home/auro/code/cursor_projai$13@13
-cursorprobe11%3051060198cursor-agentbront/dev/pts/99/home/auro/code/agentscancursor-agent$0@0
-pi_proj11%304555004zshπ - refactor - pi_proj/dev/pts/204/home/auro/code/pi_projai$14@14
-gemini_proj12%306555005gemini-cliWorking/dev/pts/205/home/auro/code/gemini_projeditor$10@10
-gemini_proj13%307555006gemini-cliPlan snapshot cache migration/dev/pts/206/home/auro/code/gemini_projeditor$10@10
-opencode_proj12%308555007zshOC | Working/dev/pts/207/home/auro/code/opencode_projai$11@11
-opencode_proj13%309555008zshOC | Ready/dev/pts/208/home/auro/code/opencode_projai$11@11
-opencode_proj14%314555013zshOpenCode/dev/pts/213/home/auro/code/opencode_projai$11@11
-copilot_proj12%310555009copilotGitHub Copilot | Ready/dev/pts/209/home/auro/code/copilot_projai$12@12
-copilot_proj13%311555010copilotCopilot | Review patch/dev/pts/210/home/auro/code/copilot_projai$12@12
-pi_proj12%312555011zsh⠋ π - refactor - pi_proj/dev/pts/211/home/auro/code/pi_projai$14@14
-pi_proj13%313555012pipi - ship cache docs - followup/dev/pts/212/home/auro/code/pi_projai$14@14
+agentchat_parallel11%1782278670codexWorking/dev/pts/12/home/auro/code/agentchat/parallel_prepeditor$2@200
+agentscan11%1913075750codex⠹ agentscan | Working/dev/pts/129/home/auro/code/agentscaneditor$3@300
+agentscan12%1943075751codex⠴ agentscan | Waiting/dev/pts/130/home/auro/code/agentscaneditor$3@300
+midnight11%67768342codexReady/dev/pts/48/home/auro/code/auro_midnighteditor$1@100
+notes41%41324026claude✳ Review and summarize todo list/dev/pts/44/home/auro/notesai$4@400
+dotfiles41%223430857claude⠐ Evaluate tmux plugins for Twigsmux improvements/dev/pts/62/home/auro/.dotfilesai$5@500
+notes42%224430858claudeClaude Code | Working/dev/pts/63/home/auro/notesai$4@400
+notes43%225430859claudeClaude Code | Ready/dev/pts/64/home/auro/notesai$4@400
+local_review_automation11%275430860claude✳ Design GitHub bot with Claude agent dashboard/dev/pts/165/home/auro/code/local_review_automationai$6@600
+parallel11%893220759codex(bront) parallel-n64: /home/auro/.zshrc.d/scripts/lgpt.sh/dev/pts/86/home/auro/code/parallel-n64editor$8@800
+webmux11%2404212996codexWorking/dev/pts/150/home/auro/code/webmuxeditor$9@900
+gemini_proj11%300555000gemini-cliReady/dev/pts/200/home/auro/code/gemini_projeditor$10@1000
+opencode_proj11%301555001zshOC | Query planner/dev/pts/201/home/auro/code/opencode_projai$11@1100
+copilot_proj11%302555002copilotCopilot | Working/dev/pts/202/home/auro/code/copilot_projai$12@1200
+cursor_proj11%303555003cursor-agentCursor CLI | Query planner/dev/pts/203/home/auro/code/cursor_projai$13@1300
+cursorprobe11%3051060198cursor-agentbront/dev/pts/99/home/auro/code/agentscancursor-agent$0@000
+pi_proj11%304555004zshπ - refactor - pi_proj/dev/pts/204/home/auro/code/pi_projai$14@1400
+gemini_proj12%306555005gemini-cliWorking/dev/pts/205/home/auro/code/gemini_projeditor$10@1000
+gemini_proj13%307555006gemini-cliPlan snapshot cache migration/dev/pts/206/home/auro/code/gemini_projeditor$10@1000
+opencode_proj12%308555007zshOC | Working/dev/pts/207/home/auro/code/opencode_projai$11@1100
+opencode_proj13%309555008zshOC | Ready/dev/pts/208/home/auro/code/opencode_projai$11@1100
+opencode_proj14%314555013zshOpenCode/dev/pts/213/home/auro/code/opencode_projai$11@1100
+copilot_proj12%310555009copilotGitHub Copilot | Ready/dev/pts/209/home/auro/code/copilot_projai$12@1200
+copilot_proj13%311555010copilotCopilot | Review patch/dev/pts/210/home/auro/code/copilot_projai$12@1200
+pi_proj12%312555011zsh⠋ π - refactor - pi_proj/dev/pts/211/home/auro/code/pi_projai$14@1400
+pi_proj13%313555012pipi - ship cache docs - followup/dev/pts/212/home/auro/code/pi_projai$14@1400

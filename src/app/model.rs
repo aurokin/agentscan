@@ -82,6 +82,13 @@ impl PaneRecord {
     pub(crate) fn location_tag(&self) -> String {
         self.location.tag()
     }
+
+    /// The currently-focused pane: the active pane of the active window. With
+    /// multiple attached sessions this can hold for one pane per session; the
+    /// most-recently-active-client disambiguation is left to clients.
+    pub(crate) fn is_active(&self) -> bool {
+        self.tmux.pane_active && self.tmux.window_active
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -112,6 +119,13 @@ pub(crate) struct TmuxPaneMetadata {
     pub(crate) session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) window_id: Option<String>,
+    /// Whether this pane is the active pane within its window (`#{pane_active}`).
+    #[serde(default)]
+    pub(crate) pane_active: bool,
+    /// Whether this pane's window is the active window in its session
+    /// (`#{window_active}`).
+    #[serde(default)]
+    pub(crate) window_active: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -225,6 +239,8 @@ pub(crate) struct TmuxPaneRow {
     pub(crate) agent_cwd: Option<String>,
     pub(crate) agent_state: Option<String>,
     pub(crate) agent_session_id: Option<String>,
+    pub(crate) pane_active: bool,
+    pub(crate) window_active: bool,
 }
 
 #[derive(Debug)]

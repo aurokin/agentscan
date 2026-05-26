@@ -9,24 +9,34 @@ pub(crate) fn parse_pane_rows(input: &str) -> Result<Vec<TmuxPaneRow>> {
         }
 
         let fields = split_tmux_fields(line);
-        if fields.len() != 10 && fields.len() != 12 && fields.len() != 15 && fields.len() != 17 {
+        // Field count by optional sections: core(10) + active(2) is always
+        // present; session/window ids (+2) and the @agent block (+5) are
+        // optional. The two active flags (#{pane_active}, #{window_active})
+        // are always the trailing two fields, so the id/agent offsets are
+        // unchanged from the pre-active layout — only the totals grew by 2.
+        let field_count = fields.len();
+        if field_count != 12 && field_count != 14 && field_count != 17 && field_count != 19 {
             bail!(
-                "unexpected tmux pane field count on line {}: expected 10, 12, 15, or 17, got {}",
+                "unexpected tmux pane field count on line {}: expected 12, 14, 17, or 19, got {}",
                 line_number + 1,
-                fields.len()
+                field_count
             );
         }
 
-        let (session_id, window_id, agent_fields_start) = match fields.len() {
-            12 => (empty_to_none(fields[10]), empty_to_none(fields[11]), None),
-            17 => (
+        let (session_id, window_id, agent_fields_start) = match field_count {
+            14 => (empty_to_none(fields[10]), empty_to_none(fields[11]), None),
+            19 => (
                 empty_to_none(fields[10]),
                 empty_to_none(fields[11]),
                 Some(12),
             ),
-            10 | 15 => (None, None, (fields.len() == 15).then_some(10)),
+            12 | 17 => (None, None, (field_count == 17).then_some(10)),
             _ => unreachable!("unexpected tmux field count already validated"),
         };
+
+        // Active flags trail every variant.
+        let pane_active = parse_bool_flag(fields[field_count - 2]);
+        let window_active = parse_bool_flag(fields[field_count - 1]);
 
         let (agent_provider, agent_label, agent_cwd, agent_state, agent_session_id) =
             if let Some(start) = agent_fields_start {
@@ -59,6 +69,8 @@ pub(crate) fn parse_pane_rows(input: &str) -> Result<Vec<TmuxPaneRow>> {
             agent_cwd,
             agent_state,
             agent_session_id,
+            pane_active,
+            window_active,
         });
     }
 
@@ -105,6 +117,12 @@ fn parse_u32(value: &str, field_name: &str, line_number: usize) -> Result<u32> {
     value.parse::<u32>().with_context(|| {
         format!("failed to parse {field_name} as u32 on tmux output line {line_number}")
     })
+}
+
+/// tmux flag formats (`#{pane_active}`, `#{window_active}`) render `1` when set
+/// and `0` otherwise. Treat anything but `1` (including an empty value) as false.
+fn parse_bool_flag(value: &str) -> bool {
+    value.trim() == "1"
 }
 
 fn empty_to_none(value: &str) -> Option<String> {

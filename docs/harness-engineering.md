@@ -43,6 +43,14 @@ The repo already uses multiple harnesses to validate behavior:
 These harnesses should be documented in terms of the contract they protect, not
 as checklists for an active milestone.
 
+The tmux pane fixtures (`tests/fixtures/tmux_snapshot_*.txt`) encode a fixed
+`\037`-delimited field layout. The two trailing fields are the active flags
+(`#{pane_active}`, `#{window_active}`), so every fixture line and every
+hand-built `TmuxPaneRow` literal carries them; the parser accepts field counts
+{12, 14, 17, 19} (core + active, optionally plus session/window ids and the
+`@agent` block). When the snapshot envelope shape changes, bump
+`CACHE_SCHEMA_VERSION` and the matching fixtures/wire literals together.
+
 ## Subprocess Boundary
 
 Production subprocesses should be limited to explicit product boundaries and

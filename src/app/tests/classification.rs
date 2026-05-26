@@ -139,6 +139,8 @@ fn proc_fallback_leaves_candidate_unknown_without_provider_evidence() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        pane_active: false,
+        window_active: false,
     });
     let inspector =
         FakeProcessInspector::new([(700, vec!["node".to_string(), "helper".to_string()])]);
@@ -181,6 +183,8 @@ fn proc_fallback_resolves_provider_from_argv0_when_command_is_interpreter() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        pane_active: false,
+        window_active: false,
     });
     let inspector = FakeProcessInspector::with_processes([(
         703,
@@ -221,6 +225,8 @@ fn proc_fallback_resolves_claude_from_node_cli_path_and_title_status() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        pane_active: false,
+        window_active: false,
     });
     let inspector = FakeProcessInspector::with_processes([(
         704,
@@ -271,6 +277,8 @@ fn proc_fallback_resolves_gemini_from_node_cli_path() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        pane_active: false,
+        window_active: false,
     });
     let inspector = FakeProcessInspector::with_processes([(
         705,
@@ -318,6 +326,8 @@ fn proc_fallback_resolves_gemini_from_node_bin_shim() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        pane_active: false,
+        window_active: false,
     });
     let inspector = FakeProcessInspector::with_processes([(
         706,
@@ -358,6 +368,8 @@ fn proc_fallback_does_not_treat_arbitrary_gemini_paths_as_gemini() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        pane_active: false,
+        window_active: false,
     });
     let inspector = FakeProcessInspector::with_processes([(
         707,
@@ -959,6 +971,8 @@ fn proc_fallback_resolves_claude_from_title_glyph_and_descendant_command() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        pane_active: false,
+        window_active: false,
     });
     let inspector = FakeProcessInspector::new([(711, vec!["claude".to_string()])]);
 
@@ -998,6 +1012,8 @@ fn proc_fallback_resolves_version_like_current_command_via_process_tree() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        pane_active: false,
+        window_active: false,
     });
     let inspector = FakeProcessInspector::new([(712, vec!["claude".to_string()])]);
 
@@ -1035,6 +1051,8 @@ fn proc_fallback_returns_no_match_for_version_like_command_without_provider_evid
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        pane_active: false,
+        window_active: false,
     });
     let inspector = FakeProcessInspector::new([(713, vec!["unrelated".to_string()])]);
 
@@ -1068,6 +1086,8 @@ fn proc_fallback_resolves_claude_teammate_flags_with_claudecode_env() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        pane_active: false,
+        window_active: false,
     });
     let inspector = FakeProcessInspector::with_processes([(
         705,
@@ -1118,6 +1138,8 @@ fn proc_fallback_resolves_claude_teammate_from_shell_env_assignment() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        pane_active: false,
+        window_active: false,
     });
     let inspector = FakeProcessInspector::with_processes([(
         707,
@@ -1164,6 +1186,8 @@ fn proc_fallback_does_not_treat_teammate_flags_without_claude_env_as_claude() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        pane_active: false,
+        window_active: false,
     });
     let inspector = FakeProcessInspector::with_processes([(
         706,
@@ -1216,6 +1240,8 @@ fn proc_fallback_does_not_treat_claude_substrings_as_claude() {
             agent_cwd: None,
             agent_state: None,
             agent_session_id: None,
+            pane_active: false,
+            window_active: false,
         });
         let inspector = FakeProcessInspector::with_processes([(
             pid,
@@ -1257,6 +1283,8 @@ fn proc_fallback_skips_panes_resolved_by_existing_precedence() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        pane_active: false,
+        window_active: false,
     });
     let inspector = FakeProcessInspector::new([(701, vec!["codex".to_string()])]);
 
@@ -1298,6 +1326,8 @@ fn proc_fallback_records_skip_reason_for_untargeted_unresolved_pane() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        pane_active: false,
+        window_active: false,
     });
     let inspector = FakeProcessInspector::new([(702, vec!["codex".to_string()])]);
 
@@ -1377,6 +1407,8 @@ fn inspect_text_reports_unresolved_fallback_decision() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        pane_active: false,
+        window_active: false,
     });
     let inspector = FakeProcessInspector::new([(703, vec!["node".to_string()])]);
 
@@ -1412,6 +1444,8 @@ fn pane_metadata_overrides_display_provider_and_status_when_title_is_ambiguous()
         agent_cwd: Some("/tmp/wrapper".to_string()),
         agent_state: Some("idle".to_string()),
         agent_session_id: Some("sess-123".to_string()),
+        pane_active: false,
+        window_active: false,
     });
 
     assert_eq!(pane.provider, Some(Provider::Claude));
@@ -1510,6 +1544,8 @@ fn snapshot_sort_orders_panes_by_location() {
                 agent_cwd: None,
                 agent_state: None,
                 agent_session_id: None,
+                pane_active: false,
+                window_active: false,
             }),
             classify::pane_from_row(super::TmuxPaneRow {
                 session_name: "alpha".to_string(),
@@ -1529,6 +1565,8 @@ fn snapshot_sort_orders_panes_by_location() {
                 agent_cwd: None,
                 agent_state: None,
                 agent_session_id: None,
+                pane_active: false,
+                window_active: false,
             }),
             classify::pane_from_row(super::TmuxPaneRow {
                 session_name: "alpha".to_string(),
@@ -1548,6 +1586,8 @@ fn snapshot_sort_orders_panes_by_location() {
                 agent_cwd: None,
                 agent_state: None,
                 agent_session_id: None,
+                pane_active: false,
+                window_active: false,
             }),
         ],
     };

@@ -68,6 +68,20 @@ agentscan daemon status --format json
 
 for lightweight diagnostics.
 
+### Active-pane indicator (schema 5+)
+
+Each picker row carries `is_active`, and each snapshot pane carries
+`tmux.pane_active` and `tmux.window_active`. `is_active` is the derived
+`pane_active && window_active`: the active pane of the active window — i.e. the
+currently-focused pane. Clients should highlight the row whose `is_active` is
+true.
+
+Caveat: with multiple attached tmux sessions, `is_active` can hold for one pane
+per attached session. Disambiguating "the pane the most-recently-active client
+is looking at" is left to the client (e.g. via the focus client-tty it already
+tracks); the backend reports tmux's raw layered state without collapsing it to a
+single global active pane.
+
 ## Profiles And Environment
 
 The local profile can override the `agentscan` binary path and provide
@@ -133,7 +147,7 @@ ssh workbox agentscan daemon status --format json
 If that succeeds and reports non-null `protocol_version` and
 `snapshot_schema_version` values, validate exact compatibility before starting
 the long-lived subscription process. The current compatible values are
-`protocol_version=1` and `snapshot_schema_version=4`.
+`protocol_version=1` and `snapshot_schema_version=5`.
 
 If the daemon is not running, this command reports the normal not-running JSON
 shape without a live daemon protocol/schema to validate. Normal remote

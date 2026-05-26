@@ -80,6 +80,8 @@ fn daemon_refresh_row(
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        pane_active: false,
+        window_active: false,
     }
 }
 

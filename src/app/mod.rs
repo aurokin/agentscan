@@ -43,7 +43,7 @@ pub(crate) use provider::*;
 const PANE_DELIM: &str = "\u{001f}";
 const TMUX_FORMAT_DELIM: &str = r"\037";
 const TMUX_SOCKET_ENV_VAR: &str = "AGENTSCAN_TMUX_SOCKET";
-const CACHE_SCHEMA_VERSION: u32 = 4;
+const CACHE_SCHEMA_VERSION: u32 = 5;
 const CLAUDE_SPINNER_GLYPHS: &[char] = &[
     '⠁', '⠂', '⠄', '⡀', '⢀', '⠠', '⠐', '⠈', '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏', '⣾',
     '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷',
@@ -82,7 +82,11 @@ const PANE_FORMAT: &str = concat!(
     r"\037",
     "#{@agent.state}",
     r"\037",
-    "#{@agent.session_id}"
+    "#{@agent.session_id}",
+    r"\037",
+    "#{pane_active}",
+    r"\037",
+    "#{window_active}"
 );
 const DAEMON_SUBSCRIPTION_FORMAT: &str = concat!(
     "agentscan:%*:",
@@ -93,7 +97,9 @@ const DAEMON_SUBSCRIPTION_FORMAT: &str = concat!(
     "#{{@agent.label}}:",
     "#{{@agent.cwd}}:",
     "#{{@agent.state}}:",
-    "#{{@agent.session_id}}"
+    "#{{@agent.session_id}}:",
+    "#{{pane_active}}:",
+    "#{{window_active}}"
 );
 
 fn default_if_empty<'a>(value: &'a str, fallback: &'a str) -> &'a str {
