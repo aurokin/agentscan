@@ -248,6 +248,18 @@ fn daemon_broker_reconnect_preserves_deferred_events() {
 }
 
 #[test]
+fn daemon_broker_reconnect_drains_stale_command_frames() {
+    // The retained shared channel is not replaced on reconnect, so leftover
+    // `%begin`/`%end` from a timed-out command must be drained or a later brokered
+    // command would consume the stale response (the collector takes the first
+    // `%begin` it reads). The drain must clear every buffered frame.
+    assert_eq!(
+        daemon::test_drain_control_mode_channel_clears_stale_frames(),
+        0
+    );
+}
+
+#[test]
 fn daemon_broker_list_pane_keeps_event_shaped_rows_as_output() {
     let expected_id = broker_frame_id("211");
     let mut harness = daemon::ControlModeBrokerTranscriptHarness::new([

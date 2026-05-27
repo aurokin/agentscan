@@ -26,7 +26,8 @@ pub(crate) use control_mode::{
     ControlModeBrokerTranscriptHarness, ControlModeBrokerTranscriptStep, ControlModeCommandFrameId,
     ControlModeCommandMarker, control_mode_command_marker, test_broker_health_after_error,
     test_broker_health_after_reconnect, test_broker_health_after_repeated_error,
-    test_collect_control_mode_command_response, test_reconnect_preserves_deferred_lines,
+    test_collect_control_mode_command_response,
+    test_drain_control_mode_channel_clears_stale_frames, test_reconnect_preserves_deferred_lines,
     test_subscriber_local_exit,
 };
 use control_mode::{
@@ -1316,6 +1317,11 @@ impl ControlEventBatch {
             // `output_line_count - title count`.
             if line.starts_with("%output") {
                 batch.output_line_count = batch.output_line_count.saturating_add(1);
+                // `str::len()` is the UTF-8 *byte* length (not a char count), which is
+                // exactly the metric here: the on-the-wire size of the `%output` line
+                // we read and process. This sizes the firehose volume we pay for, not
+                // the decoded terminal payload (tmux octal-escapes non-printable bytes
+                // in `%output`, so the escaped line is what actually costs us).
                 batch.output_byte_count = batch
                     .output_byte_count
                     .saturating_add(u64::try_from(line.len()).unwrap_or(u64::MAX));
@@ -1477,6 +1483,17 @@ pub(super) fn is_control_exit_line(line: &str) -> bool {
 
 fn control_event_from_line(line: &str) -> ControlEvent {
     if is_control_exit_line(line) {
+        // A primary `%exit` stops the daemon. Note that tmux also emits `%exit` to a
+        // control client when only its *attached* session is killed while the server
+        // and other sessions survive (empirically confirmed) — so killing the
+        // session the primary attached to stops the daemon even though other sessions
+        // remain. This is long-standing behavior, not introduced here: `main` likewise
+        // attached the single primary to one session and stopped on its `%exit`. The
+        // daemon is re-spawned on the next CLI call (which re-resolves a live primary),
+        // so monitoring resumes; true mid-session failover to a surviving session
+        // would require un-pinning the primary and is a deliberate future enhancement,
+        // not a regression in this diff. Subscriber `%exit` is filtered upstream
+        // (`subscriber_local_exit`) and never reaches this parser.
         return ControlEvent::Exit;
     }
 

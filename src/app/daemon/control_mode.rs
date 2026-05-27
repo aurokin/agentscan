@@ -187,6 +187,25 @@ pub(crate) fn test_broker_health_after_reconnect(
     health.status_frame()
 }
 
+// Exercise `drain_control_mode_channel` over a plain channel: seed it with the
+// `%begin`/`%end` of a brokered command that "timed out" (was never consumed),
+// drain, and report how many frames survive. The sender is kept alive so the
+// post-drain count reflects an emptied-but-open channel, mirroring the retained
+// shared channel on reconnect. Returns the residual frame count (expected 0).
+#[cfg(test)]
+pub(crate) fn test_drain_control_mode_channel_clears_stale_frames() -> usize {
+    let (line_tx, line_rx) = mpsc::channel::<Result<String>>();
+    line_tx.send(Ok("%begin 1779870847 7 0".to_string())).ok();
+    line_tx.send(Ok("%1 stale pane row".to_string())).ok();
+    line_tx.send(Ok("%end 1779870847 7 0".to_string())).ok();
+    drain_control_mode_channel(&line_rx);
+    // `line_tx` is still in scope, so the channel is open (not disconnected); a
+    // correctly drained channel yields zero remaining frames.
+    let residual = line_rx.try_iter().count();
+    drop(line_tx);
+    residual
+}
+
 #[cfg(test)]
 pub(crate) fn test_reconnect_preserves_deferred_lines() -> Vec<String> {
     let deferred_lines = VecDeque::from([
@@ -449,6 +468,13 @@ impl RunningTmuxControlModeClient {
     }
 
     fn reconnect(&mut self, startup: &impl StartupActions) -> Result<()> {
+        // Reconnect runs only after a forwarded fatal error disabled the broker, so
+        // the old primary reader has already terminated and any frames it emitted
+        // are now sitting unread in the shared channel. Drain them before the new
+        // reader starts producing, so a stale command response from the dead
+        // connection cannot be misattributed to a post-reconnect brokered command.
+        // See `drain_control_mode_channel`.
+        drain_control_mode_channel(&self.line_rx);
         let started = startup
             .start_tmux_control_mode_client()
             .context("failed to restart tmux control-mode client")?;
@@ -507,6 +533,23 @@ fn connect_primary_control_client(
     let (child, stdin) =
         spawn_control_client_reader(started, line_tx.clone(), ClientErrorMode::Fatal)?;
     Ok((child, stdin, line_rx, line_tx))
+}
+
+// Discard every frame currently buffered in the shared control-mode channel.
+//
+// Used on primary reconnect. The shared channel is created once and retained
+// across reconnects (so subscriber clients keep feeding the same stream), which
+// means it is never replaced the way `main` replaced the receiver on reconnect.
+// Without an explicit drain, command frames left over from the dead connection —
+// e.g. the `%begin`/`%end` of a brokered command that timed out just before the
+// reconnect — stay buffered in the receiver. The production command collector
+// (`collect_control_mode_command_outcome`) treats the first `%begin` it reads as
+// the active command, so a later brokered command could otherwise consume that
+// stale response and return an old or mismatched snapshot. Only the primary issues
+// commands, so the primary is the only source of stray `%begin`/`%end`; draining
+// here restores `main`'s discard-on-reconnect behavior for the shared channel.
+fn drain_control_mode_channel(line_rx: &mpsc::Receiver<Result<String>>) {
+    while line_rx.try_recv().is_ok() {}
 }
 
 // How a client's reader thread reports a read error on its stdout. The primary
