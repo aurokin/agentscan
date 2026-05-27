@@ -1560,9 +1560,13 @@ fn apply_control_event_batch(
         }
         changed = true;
         targeted_scope_refreshes = targeted_scope_refreshes.saturating_add(1);
-        if let Err(error) =
-            refresh_snapshot_session(snapshot, tmux_reads, session_id, pane_output_cache)
-        {
+        if let Err(error) = refresh_snapshot_session(
+            snapshot,
+            tmux_reads,
+            session_id,
+            pane_output_cache,
+            disable_proc_fallback,
+        ) {
             fallback_to_full_resnapshot(
                 snapshot,
                 tmux_reads,
@@ -1585,9 +1589,13 @@ fn apply_control_event_batch(
         }
         changed = true;
         targeted_scope_refreshes = targeted_scope_refreshes.saturating_add(1);
-        if let Err(error) =
-            refresh_snapshot_window(snapshot, tmux_reads, window_id, pane_output_cache)
-        {
+        if let Err(error) = refresh_snapshot_window(
+            snapshot,
+            tmux_reads,
+            window_id,
+            pane_output_cache,
+            disable_proc_fallback,
+        ) {
             fallback_to_full_resnapshot(
                 snapshot,
                 tmux_reads,
@@ -1616,6 +1624,7 @@ fn apply_control_event_batch(
             pane_id,
             title_override,
             pane_output_cache,
+            disable_proc_fallback,
         )? {
             changed = true;
             targeted_pane_refreshes = targeted_pane_refreshes.saturating_add(1);
@@ -1643,6 +1652,7 @@ fn apply_control_event_batch(
             pane_id,
             Some(title),
             pane_output_cache,
+            disable_proc_fallback,
         )? {
             changed = true;
             targeted_pane_refreshes = targeted_pane_refreshes.saturating_add(1);
@@ -1919,6 +1929,7 @@ fn refresh_snapshot_pane_with_title(
     pane_id: &str,
     title_override: Option<&str>,
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
+    disable_proc_fallback: bool,
 ) -> Result<bool> {
     let previous = snapshot
         .panes
@@ -1930,10 +1941,11 @@ fn refresh_snapshot_pane_with_title(
         if let Some(title) = title_override {
             row.pane_title_raw = title.to_string();
         }
-        let mut pane = pane_from_targeted_row_preserving_proc_identity(
+        let mut pane = pane_from_targeted_row_preserving_provider_identity(
             row,
             previous.as_ref(),
             allow_title_change_for_identity,
+            disable_proc_fallback,
         );
         scanner::apply_pane_output_status_fallbacks_with_cache(
             std::slice::from_mut(&mut pane),
@@ -1965,19 +1977,24 @@ fn refresh_snapshot_pane_with_title(
     Ok(true)
 }
 
-fn preserve_proc_identity_for_targeted_update(pane: &mut PaneRecord, previous: &PaneRecord) {
+// Carry the previous pane's identity (provider, how it was classified, and the
+// proc-fallback diagnostics) onto the freshly built pane. Status and display are
+// deliberately left as the fresh row computed them, so a preserved agent still
+// reflects its new title (e.g. idle -> busy) while keeping its provider.
+fn preserve_provider_identity_for_targeted_update(pane: &mut PaneRecord, previous: &PaneRecord) {
     pane.provider = previous.provider;
     pane.classification = previous.classification.clone();
     pane.diagnostics.proc_fallback = previous.diagnostics.proc_fallback.clone();
 }
 
-fn pane_from_targeted_row_preserving_proc_identity(
+fn pane_from_targeted_row_preserving_provider_identity(
     mut row: TmuxPaneRow,
     previous: Option<&PaneRecord>,
     allow_title_change_for_identity: bool,
+    disable_proc_fallback: bool,
 ) -> PaneRecord {
     let should_preserve = previous.is_some_and(|previous| {
-        should_preserve_proc_identity_for_targeted_update(
+        should_preserve_provider_identity_for_targeted_update(
             previous,
             &row,
             allow_title_change_for_identity,
@@ -1995,9 +2012,57 @@ fn pane_from_targeted_row_preserving_proc_identity(
         if let Some(fresh_agent_metadata) = fresh_agent_metadata {
             pane.agent_metadata = fresh_agent_metadata;
         }
-        preserve_proc_identity_for_targeted_update(&mut pane, previous);
+        preserve_provider_identity_for_targeted_update(&mut pane, previous);
     }
+    recover_targeted_pane_provider_via_proc(&mut pane, disable_proc_fallback);
     pane
+}
+
+// The targeted (event) path normally avoids process inspection, but some agents
+// cannot be identified from tmux metadata at all — notably Claude Code, whose
+// `pane_current_command` is its version string and whose title is the current task
+// rather than "Claude Code". Such a pane, when freshly built here, has no provider
+// and (because nothing carried one forward) would stay invisible until the next
+// full snapshot — up to the self-heal interval away under the default
+// `disable_reconcile = true`. Run the bounded single-pane proc fallback for exactly
+// these cases to recover identity from the process tree, which finds `claude` even
+// when the foreground briefly flips to a tool subprocess.
+//
+// This is self-limiting: `apply_proc_fallback_with_options` only inspects panes that
+// `is_proc_fallback_candidate` accepts (no provider yet, and an agent-shaped command
+// or title — version-like command, spinner/idle glyph, or shell/launcher), so plain
+// panes cost nothing, and once a pane resolves it is no longer a candidate. It does
+// revisit the "targeted refreshes avoid process inspection" stance, but only for the
+// ambiguous-agent panes that the metadata-only path cannot otherwise see.
+fn recover_targeted_pane_provider_via_proc(pane: &mut PaneRecord, disable_proc_fallback: bool) {
+    recover_targeted_pane_provider_with_inspector(
+        pane,
+        &proc::ProcProcessInspector,
+        disable_proc_fallback,
+    );
+}
+
+fn recover_targeted_pane_provider_with_inspector(
+    pane: &mut PaneRecord,
+    inspector: &impl proc::ProcessInspector,
+    disable_proc_fallback: bool,
+) {
+    // Only ambiguous panes that the metadata path could not identify. A pane that
+    // already has a provider (fresh classification or a carried-forward identity)
+    // is left untouched; `apply_proc_fallback_with_options` further self-gates to
+    // agent-shaped candidates, so plain panes never trigger process inspection.
+    if pane.provider.is_some() {
+        return;
+    }
+    classify::apply_proc_fallback_with_options(pane, inspector, disable_proc_fallback);
+}
+
+#[cfg(test)]
+pub(crate) fn test_recover_targeted_pane_provider_with_inspector(
+    pane: &mut PaneRecord,
+    inspector: &impl proc::ProcessInspector,
+) {
+    recover_targeted_pane_provider_with_inspector(pane, inspector, false);
 }
 
 fn agent_metadata_from_row(row: &TmuxPaneRow) -> AgentMetadata {
@@ -2010,7 +2075,28 @@ fn agent_metadata_from_row(row: &TmuxPaneRow) -> AgentMetadata {
     }
 }
 
-fn should_preserve_proc_identity_for_targeted_update(
+// Decide whether a targeted (title/pane) refresh should keep the pane's existing
+// provider instead of the freshly classified one. A control-mode title update only
+// changes the pane's title text; when a previously *process-tree-confirmed* agent's
+// title changes (e.g. Claude Code's title becoming the current task), we keep its
+// identity rather than re-running process inspection on every title tick.
+//
+// Restricted to `ProcFallbackOutcome::Resolved` identities on purpose: a provider
+// that came only from the old title (or a stable wrapper command) must NOT be made
+// sticky here, or a non-agent pane — or an agent that exited under a stable shell —
+// would keep a stale provider after its title changes away from the provider name.
+// Those panes instead fall through to `recover_targeted_pane_provider_via_proc`,
+// which consults the process tree and clears or corrects the match. The process
+// tree is the source of truth; this preservation is only the cheap fast path for
+// identities the process tree already confirmed.
+//
+// Preserve when: the previous identity was process-resolved and did not come from
+// agent metadata/hooks (fresh metadata should win), the fresh row carries no agent
+// metadata and resolves to no *different* provider, and the row still matches the
+// previous tmux process identity (same pane_pid, command, path, and tty — only the
+// title may differ). A genuine change fails these guards and fresh classification
+// (then proc recovery) wins.
+fn should_preserve_provider_identity_for_targeted_update(
     previous: &PaneRecord,
     row: &TmuxPaneRow,
     allow_title_change: bool,
@@ -2048,6 +2134,7 @@ fn refresh_snapshot_window(
     tmux_reads: &mut impl TmuxReadProvider,
     window_id: &str,
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
+    disable_proc_fallback: bool,
 ) -> Result<()> {
     refresh_snapshot_scope(
         snapshot,
@@ -2055,6 +2142,7 @@ fn refresh_snapshot_window(
         TargetScope::Window,
         window_id,
         pane_output_cache,
+        disable_proc_fallback,
     )
 }
 
@@ -2063,6 +2151,7 @@ fn refresh_snapshot_session(
     tmux_reads: &mut impl TmuxReadProvider,
     session_id: &str,
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
+    disable_proc_fallback: bool,
 ) -> Result<()> {
     refresh_snapshot_scope(
         snapshot,
@@ -2070,6 +2159,7 @@ fn refresh_snapshot_session(
         TargetScope::Session,
         session_id,
         pane_output_cache,
+        disable_proc_fallback,
     )
 }
 
@@ -2079,6 +2169,7 @@ fn refresh_snapshot_scope(
     scope: TargetScope,
     target_id: &str,
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
+    disable_proc_fallback: bool,
 ) -> Result<()> {
     let rows = tmux_reads.list_target_panes(target_id)?;
     let previous_by_pane_id = snapshot
@@ -2104,7 +2195,12 @@ fn refresh_snapshot_scope(
             .into_iter()
             .map(|row| {
                 let previous = previous_by_pane_id.get(&row.pane_id);
-                pane_from_targeted_row_preserving_proc_identity(row, previous, false)
+                pane_from_targeted_row_preserving_provider_identity(
+                    row,
+                    previous,
+                    false,
+                    disable_proc_fallback,
+                )
             })
             .collect::<Vec<_>>();
         scanner::apply_pane_output_status_fallbacks_with_cache(
@@ -2364,8 +2460,15 @@ pub(crate) fn test_refresh_snapshot_pane_with_provider(
     pane_id: &str,
 ) -> Result<()> {
     let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
-    refresh_snapshot_pane_with_title(snapshot, tmux_reads, pane_id, None, &mut pane_output_cache)
-        .map(|_| ())
+    refresh_snapshot_pane_with_title(
+        snapshot,
+        tmux_reads,
+        pane_id,
+        None,
+        &mut pane_output_cache,
+        false,
+    )
+    .map(|_| ())
 }
 
 #[cfg(test)]
@@ -2591,6 +2694,7 @@ pub(crate) fn test_refresh_snapshot_pane_title_with_provider(
         pane_id,
         Some(title_override),
         &mut pane_output_cache,
+        false,
     )
     .map(|_| ())
 }
@@ -2602,7 +2706,13 @@ pub(crate) fn test_refresh_snapshot_window_with_provider(
     window_id: &str,
 ) -> Result<()> {
     let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
-    refresh_snapshot_window(snapshot, tmux_reads, window_id, &mut pane_output_cache)
+    refresh_snapshot_window(
+        snapshot,
+        tmux_reads,
+        window_id,
+        &mut pane_output_cache,
+        false,
+    )
 }
 
 #[cfg(test)]
@@ -2612,7 +2722,13 @@ pub(crate) fn test_refresh_snapshot_session_with_provider(
     session_id: &str,
 ) -> Result<()> {
     let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
-    refresh_snapshot_session(snapshot, tmux_reads, session_id, &mut pane_output_cache)
+    refresh_snapshot_session(
+        snapshot,
+        tmux_reads,
+        session_id,
+        &mut pane_output_cache,
+        false,
+    )
 }
 
 #[cfg(test)]
