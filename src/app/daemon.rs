@@ -1930,7 +1930,7 @@ fn refresh_snapshot_pane_with_title(
         if let Some(title) = title_override {
             row.pane_title_raw = title.to_string();
         }
-        let mut pane = pane_from_targeted_row_preserving_proc_identity(
+        let mut pane = pane_from_targeted_row_preserving_provider_identity(
             row,
             previous.as_ref(),
             allow_title_change_for_identity,
@@ -1965,19 +1965,23 @@ fn refresh_snapshot_pane_with_title(
     Ok(true)
 }
 
-fn preserve_proc_identity_for_targeted_update(pane: &mut PaneRecord, previous: &PaneRecord) {
+// Carry the previous pane's identity (provider, how it was classified, and the
+// proc-fallback diagnostics) onto the freshly built pane. Status and display are
+// deliberately left as the fresh row computed them, so a preserved agent still
+// reflects its new title (e.g. idle -> busy) while keeping its provider.
+fn preserve_provider_identity_for_targeted_update(pane: &mut PaneRecord, previous: &PaneRecord) {
     pane.provider = previous.provider;
     pane.classification = previous.classification.clone();
     pane.diagnostics.proc_fallback = previous.diagnostics.proc_fallback.clone();
 }
 
-fn pane_from_targeted_row_preserving_proc_identity(
+fn pane_from_targeted_row_preserving_provider_identity(
     mut row: TmuxPaneRow,
     previous: Option<&PaneRecord>,
     allow_title_change_for_identity: bool,
 ) -> PaneRecord {
     let should_preserve = previous.is_some_and(|previous| {
-        should_preserve_proc_identity_for_targeted_update(
+        should_preserve_provider_identity_for_targeted_update(
             previous,
             &row,
             allow_title_change_for_identity,
@@ -1995,7 +1999,7 @@ fn pane_from_targeted_row_preserving_proc_identity(
         if let Some(fresh_agent_metadata) = fresh_agent_metadata {
             pane.agent_metadata = fresh_agent_metadata;
         }
-        preserve_proc_identity_for_targeted_update(&mut pane, previous);
+        preserve_provider_identity_for_targeted_update(&mut pane, previous);
     }
     pane
 }
@@ -2010,13 +2014,33 @@ fn agent_metadata_from_row(row: &TmuxPaneRow) -> AgentMetadata {
     }
 }
 
-fn should_preserve_proc_identity_for_targeted_update(
+// Decide whether a targeted (title/pane) refresh should keep the pane's existing
+// provider instead of the freshly classified one. A control-mode title update only
+// changes the pane's title text; when the underlying process is unchanged we must
+// not let that weak signal drop a known agent.
+//
+// This matters most for providers whose title stops identifying them once they
+// start working — notably Claude Code, whose busy title is the task text
+// ("✳ <task>") rather than "Claude Code", and whose `pane_current_command` is its
+// version string rather than `claude`. A fresh classification of such a working
+// pane yields no provider, so without this the pane would silently disappear from
+// the list the moment a prompt is sent.
+//
+// Preserve when: the pane already had a provider that did not come from agent
+// metadata/hooks (fresh metadata should win over a carried-forward guess), the
+// fresh row carries no agent metadata and resolves to no *different* provider, and
+// the row still matches the previous tmux process identity (same pane_pid, command,
+// path, and tty — only the title may differ). The previous provider may have been
+// established by any means (process-tree fallback, title, or command); it is the
+// unchanged process identity, not how it was first found, that makes carrying it
+// forward safe. A genuine change (different command/path/tty, or a fresh title that
+// names another provider) fails these guards and the fresh classification wins.
+fn should_preserve_provider_identity_for_targeted_update(
     previous: &PaneRecord,
     row: &TmuxPaneRow,
     allow_title_change: bool,
 ) -> bool {
-    previous.diagnostics.proc_fallback.outcome == ProcFallbackOutcome::Resolved
-        && previous.provider.is_some()
+    previous.provider.is_some()
         && previous.agent_metadata.provider.is_none()
         && row.agent_provider.is_none()
         && previous.tmux.pane_pid == row.pane_pid
@@ -2104,7 +2128,7 @@ fn refresh_snapshot_scope(
             .into_iter()
             .map(|row| {
                 let previous = previous_by_pane_id.get(&row.pane_id);
-                pane_from_targeted_row_preserving_proc_identity(row, previous, false)
+                pane_from_targeted_row_preserving_provider_identity(row, previous, false)
             })
             .collect::<Vec<_>>();
         scanner::apply_pane_output_status_fallbacks_with_cache(

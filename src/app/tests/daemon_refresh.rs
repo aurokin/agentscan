@@ -587,6 +587,40 @@ fn daemon_control_event_batch_preserves_proc_identity_on_generic_title_update() 
 }
 
 #[test]
+fn daemon_control_event_batch_preserves_title_resolved_provider_on_title_update() {
+    // Claude Code case: the provider was established without process-tree fallback
+    // (here it stands in as title-resolved, so proc_fallback is Skipped, not
+    // Resolved) and its working title no longer names the provider. Because the
+    // process is unchanged, the title event must keep the agent rather than dropping
+    // it from the list. Regression guard for "Claude disappears after I send a
+    // prompt".
+    let mut pane = proc_fallback_pane(42, "2.1.150", "Claude Code");
+    pane.provider = Some(Provider::Claude);
+    pane.diagnostics.proc_fallback.outcome = ProcFallbackOutcome::Skipped;
+    pane.diagnostics.proc_fallback.reason = "provider already resolved by title".to_string();
+    let mut snapshot = empty_socket_snapshot("2026-05-03T00:00:00Z");
+    snapshot.panes = vec![pane];
+    let mut row = daemon_refresh_row("%42", "$1", "@1", 0, "Claude Code");
+    row.pane_pid = 42;
+    row.pane_current_command = "2.1.150".to_string();
+    row.pane_tty = "/dev/pts/42".to_string();
+    row.pane_current_path = "/tmp/proc-wrapper".to_string();
+    let mut provider = FakeTmuxReadProvider::default().with_pane("%42", Some(row));
+    // The working title is the task text with a spinner glyph — no "Claude" token.
+    let lines = vec!["%output %42 \\033]0;Refactoring the parser\\007".to_string()];
+
+    let (changed, full_snapshot_refresh, fallback_to_full) =
+        daemon::test_apply_control_event_lines_with_provider(&mut snapshot, &mut provider, &lines)
+            .expect("title event should preserve title-resolved provider");
+
+    assert!(changed);
+    assert!(!full_snapshot_refresh);
+    assert!(!fallback_to_full);
+    assert_eq!(snapshot.panes[0].provider, Some(Provider::Claude));
+    assert_eq!(snapshot.panes[0].tmux.pane_title_raw, "Refactoring the parser");
+}
+
+#[test]
 fn daemon_control_event_batch_preserves_proc_identity_on_coalesced_pane_title_update() {
     let mut pane = proc_fallback_pane(42, "node", "old-title");
     pane.provider = Some(Provider::Claude);
