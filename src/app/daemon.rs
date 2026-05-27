@@ -1076,21 +1076,32 @@ pub(crate) trait StartupActions {
     }
 }
 
+#[derive(Default)]
 struct DaemonStartup {
-    // The session the primary control client attaches to, resolved once at daemon
-    // start. Holding it (rather than recomputing `default_session_target()` each
-    // reconcile) keeps the primary attach and the subscriber-exclusion set in
+    // The session the primary control client attaches to, resolved once (lazily)
+    // and cached. Caching it (rather than recomputing `default_session_target()`
+    // each reconcile) keeps the primary attach and the subscriber-exclusion set in
     // agreement: `default_session_target()` follows the launching tmux client's
     // current session and would drift if that client switched sessions, which
-    // could leave the switched-to session with no event client.
-    primary_session_id: String,
+    // could leave the switched-to session with no event client. Resolution is
+    // lazy so it happens on the first `start_tmux_control_mode_client` call, which
+    // runs inside the daemon startup-failure reporting region — a resolution error
+    // then surfaces as an observable `startup_failed` status, not a silent exit.
+    primary_session_id: std::sync::OnceLock<String>,
 }
 
 impl DaemonStartup {
-    fn new() -> Result<Self> {
-        Ok(Self {
-            primary_session_id: tmux::default_session_target()?,
-        })
+    fn primary_session_id(&self) -> Result<&str> {
+        if let Some(session_id) = self.primary_session_id.get() {
+            return Ok(session_id.as_str());
+        }
+        let session_id = tmux::default_session_target()?;
+        let _ = self.primary_session_id.set(session_id);
+        Ok(self
+            .primary_session_id
+            .get()
+            .expect("primary session id was just set")
+            .as_str())
     }
 }
 
@@ -1104,14 +1115,15 @@ impl StartupActions for DaemonStartup {
     }
 
     fn start_tmux_control_mode_client(&self) -> Result<StartedTmuxControlModeClient> {
-        start_tmux_control_mode_client_for(&self.primary_session_id)
+        start_tmux_control_mode_client_for(self.primary_session_id()?)
             .map(StartedTmuxControlModeClient::from_real)
     }
 
     fn additional_subscriber_session_ids(&self) -> Result<Vec<String>> {
+        let primary = self.primary_session_id()?;
         Ok(tmux::list_session_ids()?
             .into_iter()
-            .filter(|session_id| *session_id != self.primary_session_id)
+            .filter(|session_id| session_id.as_str() != primary)
             .collect())
     }
 
