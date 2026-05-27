@@ -1130,6 +1130,37 @@ fn daemon_reconcile_interval_uses_self_heal_when_reconcile_disabled() {
 }
 
 #[test]
+fn daemon_settle_deadline_arms_once_and_is_not_pushed_by_unrelated_activity() {
+    use std::time::Duration;
+    let now = std::time::Instant::now();
+    let delay = Duration::from_millis(2200);
+
+    // No busy pane-output pane: never armed (and cleared if previously set).
+    assert_eq!(daemon::test_next_settle_deadline(false, None, now, delay), None);
+    assert_eq!(
+        daemon::test_next_settle_deadline(false, Some(now + delay), now, delay),
+        None
+    );
+
+    // First busy observation arms the deadline. This is also the boot path: `run` calls
+    // `update_settle_deadline` once at startup, so a pane already busy in the initial snapshot
+    // arms the re-check even if no control event ever follows.
+    assert_eq!(
+        daemon::test_next_settle_deadline(true, None, now, delay),
+        Some(now + delay)
+    );
+
+    // Already armed: a later refresh (e.g. another pane streaming) must NOT push the
+    // deadline out, or the busy->idle re-check would be starved and never fire.
+    let armed_at = now + delay;
+    let later = now + Duration::from_millis(1000);
+    assert_eq!(
+        daemon::test_next_settle_deadline(true, Some(armed_at), later, delay),
+        Some(armed_at)
+    );
+}
+
+#[test]
 fn daemon_subscriber_coverage_requires_every_desired_session_attached() {
     let desired = vec!["$0".to_string(), "$1".to_string(), "$2".to_string()];
 

@@ -105,7 +105,25 @@ const DAEMON_SUBSCRIPTION_FORMAT: &str = concat!(
     "#{@agent.state}:",
     "#{@agent.session_id}:",
     "#{pane_active}:",
-    "#{window_active}"
+    "#{window_active}:",
+    // `window_activity` is the timestamp of the window's last output activity (second
+    // resolution). Subscribing to it makes tmux fire `%subscription-changed` whenever a pane
+    // in the window produces output — including in-place redraws like a spinner animation, so
+    // it catches "silently thinking" turns, and unlike `history_size` it works for
+    // alternate-screen apps. This is the only "this pane may have changed state" signal for
+    // providers whose busy/idle shows up solely in captured pane output and never in tmux
+    // metadata (e.g. pi without the titlebar-spinner extension, droid). The second-resolution
+    // timestamp coalesces bursts to ~1 event/sec, and the resulting targeted re-capture is
+    // throttled again by the daemon's pane-output cache TTL — so this drives refreshes
+    // without taking the `%output` pty firehose (see no-output rationale in control_mode.rs).
+    // Because the timestamp is window-scoped, a noisy pane also fires this for its quiet
+    // siblings; those refreshes are cheap (a fresh cache entry is reused without re-capturing),
+    // so capture cost stays proportional to turn activity rather than pane count. The cache TTL
+    // is therefore the deliberate cost knob, at the price of a responsiveness floor: a turn that
+    // starts and ends inside the TTL of a recent capture may not be observed as busy.
+    // (`pane_activity` would be a precise per-pane signal but is not a populated format in
+    // tmux 3.x, so there is no cheaper way to scope this to the pane that actually changed.)
+    "#{window_activity}"
 );
 
 fn default_if_empty<'a>(value: &'a str, fallback: &'a str) -> &'a str {

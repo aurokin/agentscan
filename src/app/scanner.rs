@@ -177,6 +177,15 @@ impl PaneOutputStatusCache {
                 .is_some_and(|age| age <= ttl)
         });
     }
+
+    /// Drop the cached status for a pane so the next `apply` re-captures it unconditionally.
+    ///
+    /// The settle re-capture uses this: a pane already classified `Busy` from pane output is
+    /// not a fallback candidate, and an idle transition emits no further tmux activity, so the
+    /// only way to re-confirm it is to force a fresh capture rather than wait out the TTL.
+    pub(crate) fn invalidate(&mut self, pane_id: &str) {
+        self.entries.remove(pane_id);
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

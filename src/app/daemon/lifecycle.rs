@@ -877,6 +877,10 @@ enum SubscriptionStreamCompletion {
     WorkerFinished,
 }
 
+/// How long the subscribe writer waits for a real event before emitting a heartbeat frame to
+/// probe whether the consumer is still attached.
+const SUBSCRIPTION_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(1);
+
 fn write_subscription_events_json(
     events: mpsc::Receiver<LiveClientEvent>,
     cancel: &AtomicBool,
@@ -884,25 +888,62 @@ fn write_subscription_events_json(
     let stdout = std::io::stdout();
     let mut stdout = stdout.lock();
 
-    while let Ok(event) = events.recv() {
-        if !write_subscription_event_json_line(&mut stdout, &event, cancel)? {
-            return Ok(SubscriptionStreamCompletion::StdoutClosed);
-        }
+    loop {
+        match events.recv_timeout(SUBSCRIPTION_KEEPALIVE_INTERVAL) {
+            Ok(event) => {
+                if !write_subscription_event_json_line(&mut stdout, &event, cancel)? {
+                    return Ok(SubscriptionStreamCompletion::StdoutClosed);
+                }
 
-        match event {
-            LiveClientEvent::Fatal { message } => {
-                return Err(DaemonSnapshotError::UnexpectedFrame { message });
+                match event {
+                    LiveClientEvent::Fatal { message } => {
+                        return Err(DaemonSnapshotError::UnexpectedFrame { message });
+                    }
+                    LiveClientEvent::Shutdown { .. } => {
+                        return Ok(SubscriptionStreamCompletion::WorkerFinished);
+                    }
+                    LiveClientEvent::Connecting { .. }
+                    | LiveClientEvent::Snapshot { .. }
+                    | LiveClientEvent::Offline { .. } => {}
+                }
             }
-            LiveClientEvent::Shutdown { .. } => {
+            // No event within the interval: probe the consumer with a heartbeat so a closed
+            // stdout (e.g. `agentscan subscribe | head`) is detected promptly even when the
+            // daemon publishes nothing. The daemon suppresses materially-equal snapshots, so the
+            // stream is otherwise free to stay silent indefinitely while the consumer is gone.
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if !write_subscription_keepalive(&mut stdout, cancel)? {
+                    return Ok(SubscriptionStreamCompletion::StdoutClosed);
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
                 return Ok(SubscriptionStreamCompletion::WorkerFinished);
             }
-            LiveClientEvent::Connecting { .. }
-            | LiveClientEvent::Snapshot { .. }
-            | LiveClientEvent::Offline { .. } => {}
         }
     }
+}
 
-    Ok(SubscriptionStreamCompletion::WorkerFinished)
+/// Heartbeat frame for a silent subscribe stream. It carries the same `type`-tagged shape as
+/// `LiveClientEvent`, so consumers that switch on the frame type ignore it. Returns `false` when
+/// stdout has closed (a broken pipe), which is how the writer learns the consumer is gone when no
+/// real events are flowing.
+fn write_subscription_keepalive(
+    writer: &mut impl Write,
+    cancel: &AtomicBool,
+) -> std::result::Result<bool, DaemonSnapshotError> {
+    if let Err(error) = writer
+        .write_all(b"{\"type\":\"keepalive\"}\n")
+        .and_then(|()| writer.flush())
+    {
+        if error.kind() == std::io::ErrorKind::BrokenPipe {
+            cancel.store(true, Ordering::Relaxed);
+            return Ok(false);
+        }
+        return Err(DaemonSnapshotError::UnexpectedFrame {
+            message: format!("failed to write subscription keepalive: {error}"),
+        });
+    }
+    Ok(true)
 }
 
 fn write_subscription_event_json_line(
@@ -2363,6 +2404,14 @@ pub(crate) fn test_daemon_start_tmux_envs_from(
     read_env: impl Fn(&str) -> Option<OsString>,
 ) -> Vec<(OsString, OsString)> {
     daemon_start_tmux_envs_from(read_env)
+}
+
+#[cfg(test)]
+pub(crate) fn test_write_subscription_keepalive(
+    writer: &mut impl Write,
+    cancel: &AtomicBool,
+) -> std::result::Result<bool, DaemonSnapshotError> {
+    write_subscription_keepalive(writer, cancel)
 }
 
 #[cfg(test)]
