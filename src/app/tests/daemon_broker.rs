@@ -203,6 +203,31 @@ fn daemon_broker_health_counts_only_fallback_transition() {
 }
 
 #[test]
+fn daemon_subscriber_exit_is_local_and_not_forwarded_as_server_exit() {
+    // A subscriber (Quiet) client's `%exit` is a local detach and must be
+    // swallowed so it never reaches the shared stream as a server-wide exit that
+    // would stop the daemon loop.
+    assert!(daemon::test_subscriber_local_exit(true, "%exit"));
+    assert!(daemon::test_subscriber_local_exit(
+        true,
+        "%exit client detached"
+    ));
+    // The primary (Fatal) client still forwards `%exit` to drive shutdown.
+    assert!(!daemon::test_subscriber_local_exit(false, "%exit"));
+    // Non-exit subscriber lines are always forwarded.
+    assert!(!daemon::test_subscriber_local_exit(
+        true,
+        "%subscription-changed agentscan $1 @1 0 %1 : %1:Codex:codex::::"
+    ));
+    assert!(!daemon::test_subscriber_local_exit(true, "%output %1 data"));
+    // Match the exact `%exit` token, not a bare prefix: a hypothetical
+    // `%exit`-prefixed token must not be swallowed (and stays consistent with the
+    // main control-event parser, which uses the same predicate).
+    assert!(!daemon::test_subscriber_local_exit(true, "%exited"));
+    assert!(!daemon::test_subscriber_local_exit(true, "%exitfoo"));
+}
+
+#[test]
 fn daemon_broker_health_returns_active_after_reconnect() {
     let status = daemon::test_broker_health_after_reconnect("broken pipe");
 
@@ -219,6 +244,18 @@ fn daemon_broker_reconnect_preserves_deferred_events() {
     assert_eq!(
         deferred_events,
         vec!["%subscription-changed agentscan $1 @1 0 %1 : %1:Codex:codex::::"]
+    );
+}
+
+#[test]
+fn daemon_broker_reconnect_drains_stale_command_frames() {
+    // The retained shared channel is not replaced on reconnect, so leftover
+    // `%begin`/`%end` from a timed-out command must be drained or a later brokered
+    // command would consume the stale response (the collector takes the first
+    // `%begin` it reads). The drain must clear every buffered frame.
+    assert_eq!(
+        daemon::test_drain_control_mode_channel_clears_stale_frames(),
+        0
     );
 }
 

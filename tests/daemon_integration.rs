@@ -957,6 +957,11 @@ fn daemon_updates_socket_snapshot_when_metadata_changes() -> Result<()> {
     Ok(())
 }
 
+// Exercises two separate tmux sessions. tmux control mode is scoped to the
+// attached session, so the metadata pane in the non-primary session is covered
+// by a per-session event subscriber client (both sessions exist before the daemon
+// starts, so the startup subscriber attachment covers it). Sessions created or
+// destroyed at runtime are handled by the session lifecycle (Phase 2).
 #[test]
 fn metadata_helpers_survive_unrelated_daemon_updates() -> Result<()> {
     let harness = TestHarness::new()?;
@@ -1017,6 +1022,108 @@ fn metadata_helpers_survive_unrelated_daemon_updates() -> Result<()> {
                     && pane["display"]["label"] == "Persistent Metadata"
                     && pane["status"]["kind"] == "busy"
             })
+    })?;
+
+    daemon.shutdown()?;
+    Ok(())
+}
+
+// A session created after the daemon is already running must get an event-only
+// subscriber client attached via the `%sessions-changed` lifecycle, so an
+// in-place metadata change on its pane propagates through events rather than
+// waiting for the infrequent self-heal reconcile.
+#[test]
+fn runtime_created_session_gets_event_subscriber() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let primary_pane_id = harness.start_session("primary-session", "sh")?;
+    let mut daemon = harness.start_daemon()?;
+    harness.wait_for_daemon_pane(&mut daemon, &primary_pane_id, |_| true)?;
+
+    // Create a brand-new session at runtime. `%sessions-changed` triggers both a
+    // resnapshot (picks up the pane) and subscriber attachment for the session.
+    let runtime_pane_id = harness.start_session("runtime-session", "sh")?;
+    harness.wait_for_daemon_pane(&mut daemon, &runtime_pane_id, |_| true)?;
+
+    // This in-place change emits no topology notification, so it can only reach
+    // the daemon through the newly-attached subscriber's event stream.
+    harness.agentscan([
+        "tmux",
+        "set-metadata",
+        "--pane-id",
+        &runtime_pane_id,
+        "--provider",
+        "codex",
+        "--label",
+        "Runtime Session",
+        "--state",
+        "busy",
+    ])?;
+    harness.wait_for_daemon_pane(&mut daemon, &runtime_pane_id, |pane| {
+        pane["provider"] == "codex"
+            && pane["status"]["kind"] == "busy"
+            && pane["display"]["label"] == "Runtime Session"
+            && pane["status"]["source"] == "pane_metadata"
+    })?;
+
+    daemon.shutdown()?;
+    Ok(())
+}
+
+#[test]
+fn multiple_sessions_each_get_event_subscriber_and_propagate_in_place() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let primary_pane_id = harness.start_session("scale-primary", "sh")?;
+    let mut daemon = harness.start_daemon()?;
+    harness.wait_for_daemon_pane(&mut daemon, &primary_pane_id, |_| true)?;
+
+    // Stand up several additional sessions. Each non-primary session should get
+    // its own event-only subscriber client so in-place status changes propagate
+    // without the periodic reconcile (disabled by default).
+    let mut extra_pane_ids = Vec::new();
+    for index in 0..3 {
+        let pane_id = harness.start_session(&format!("scale-extra-{index}"), "sh")?;
+        harness.wait_for_daemon_pane(&mut daemon, &pane_id, |_| true)?;
+        extra_pane_ids.push(pane_id);
+    }
+
+    // The subscriber set is everything except the primary's own session, so with
+    // four sessions total the broker should report three subscriber clients.
+    let deadline = Instant::now() + DAEMON_TIMEOUT;
+    loop {
+        let status_json_output =
+            harness.agentscan_output(["daemon", "status", "--format", "json"])?;
+        let status_json: Value =
+            serde_json::from_str(&status_json_output).context("daemon status JSON should parse")?;
+        if status_json["control_mode_broker_subscriber_count"].as_u64() == Some(3) {
+            break;
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("expected three subscriber clients, got:\n{status_json_output}");
+        }
+        sleep(POLL_INTERVAL);
+    }
+
+    // Flip status in a non-primary session via an in-place metadata write (no
+    // topology notification). It can only reach the daemon through that session's
+    // subscriber event stream, with `%output` globally paused.
+    let target_pane_id = &extra_pane_ids[2];
+    harness.agentscan([
+        "tmux",
+        "set-metadata",
+        "--pane-id",
+        target_pane_id,
+        "--provider",
+        "codex",
+        "--label",
+        "Scaled Session",
+        "--state",
+        "busy",
+    ])?;
+    harness.wait_for_daemon_pane(&mut daemon, target_pane_id, |pane| {
+        pane["provider"] == "codex"
+            && pane["status"]["kind"] == "busy"
+            && pane["display"]["label"] == "Scaled Session"
+            && pane["status"]["source"] == "pane_metadata"
     })?;
 
     daemon.shutdown()?;
@@ -1835,6 +1942,52 @@ fn daemon_survives_when_attached_session_is_removed_but_server_remains() -> Resu
 
     harness.tmux(["kill-session", "-t", "zz-removed-session"])?;
     harness.wait_for_daemon_pane(&mut daemon, &surviving_pane_id, |_| true)?;
+
+    daemon.shutdown()?;
+    Ok(())
+}
+
+#[test]
+fn daemon_keeps_processing_events_after_a_subscribed_session_is_killed() -> Result<()> {
+    // A killed non-primary session's control client emits `%exit`. That must not
+    // be treated as a server-wide exit that stops the daemon loop: the daemon has
+    // to keep delivering events for the remaining and future sessions.
+    let harness = TestHarness::new()?;
+    let primary_pane_id = harness.start_session("survivor-primary", "sh")?;
+    let mut daemon = harness.start_daemon()?;
+    harness.wait_for_daemon_pane(&mut daemon, &primary_pane_id, |_| true)?;
+
+    // A runtime session gets its own subscriber client; killing it emits `%exit`
+    // on that subscriber's stream.
+    let doomed_pane_id = harness.start_session("survivor-doomed", "sh")?;
+    harness.wait_for_daemon_pane(&mut daemon, &doomed_pane_id, |_| true)?;
+    harness.tmux(["kill-session", "-t", "survivor-doomed"])?;
+    harness.wait_for_daemon_snapshot(&mut daemon, |snapshot| {
+        pane_from_snapshot(snapshot, &doomed_pane_id).is_none()
+    })?;
+
+    // Prove the event loop is still alive: a session created after the kill must
+    // still be picked up, and an in-place metadata write on it (no topology
+    // notification) must still propagate through its newly-attached subscriber.
+    let later_pane_id = harness.start_session("survivor-later", "sh")?;
+    harness.wait_for_daemon_pane(&mut daemon, &later_pane_id, |_| true)?;
+    harness.agentscan([
+        "tmux",
+        "set-metadata",
+        "--pane-id",
+        &later_pane_id,
+        "--provider",
+        "codex",
+        "--label",
+        "Still Alive",
+        "--state",
+        "busy",
+    ])?;
+    harness.wait_for_daemon_pane(&mut daemon, &later_pane_id, |pane| {
+        pane["provider"] == "codex"
+            && pane["status"]["kind"] == "busy"
+            && pane["status"]["source"] == "pane_metadata"
+    })?;
 
     daemon.shutdown()?;
     Ok(())

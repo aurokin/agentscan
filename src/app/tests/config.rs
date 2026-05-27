@@ -120,7 +120,9 @@ fn runtime_options_default_to_enabled_safety_paths_when_file_is_missing() {
     let resolved = config::resolve_runtime_options_from_source(&source)
         .expect("missing config should be accepted");
 
-    assert!(!resolved.disable_reconcile);
+    // Periodic reconcile is now disabled by default; the event-driven path is
+    // authoritative with connect/reconnect bootstrap as the recovery backstop.
+    assert!(resolved.disable_reconcile);
     assert!(!resolved.disable_proc_fallback);
     assert_eq!(
         resolved.config_path.as_deref(),

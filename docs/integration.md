@@ -73,13 +73,21 @@ The config file shape is:
 
 ```toml
 icons = "emoji"
-disable_reconcile = false
+disable_reconcile = true
 disable_proc_fallback = false
 ```
 
 `disable_reconcile` and `disable_proc_fallback` are diagnostic runtime knobs.
 Their environment variables, `AGENTSCAN_DISABLE_RECONCILE` and
 `AGENTSCAN_DISABLE_PROC_FALLBACK`, override config file values.
+`disable_reconcile` defaults to `true`: every session is driven by control-mode
+events (the daemon runs one event subscriber client per session, since control
+mode is session-scoped), so the periodic redundancy reconcile is off. The poll is
+not disabled entirely — it is reduced to an infrequent self-heal/drift backstop
+(default 300s). Broker fallback (no events) always keeps the fast reconcile. Set
+`disable_reconcile = false` to restore the full 30s redundancy reconcile (useful
+for populating the redundancy meter). See `docs/daemon-operations.md` for the full
+interval matrix.
 
 If a script needs data that is missing from the documented JSON surfaces, treat
 that as an API gap in `list` or snapshot JSON. Do not add hidden `tui --format`
@@ -157,6 +165,8 @@ clients and developers that need to evaluate event-driven behavior:
 - `reconcile_changed_snapshot_count`
 - `targeted_refresh_fallback_to_full_count`
 - `broker_fallback_count`
+- `control_mode_broker_subscriber_count` — per-session event-only subscriber
+  clients currently attached (one per non-primary session)
 
 When the daemon is not running, has not finished initializing runtime
 telemetry, or is an older compatible daemon that does not publish these

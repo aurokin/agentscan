@@ -132,13 +132,18 @@ pub(crate) fn resolve_runtime_options_from_source(
     };
 
     Ok(ResolvedRuntimeOptions {
+        // Periodic reconcile is disabled by default; the event-driven path is
+        // authoritative and the connect/reconnect bootstrap still recovers
+        // ground truth. Set `disable_reconcile = false` to re-enable polling.
         disable_reconcile: resolve_bool_option(
             source.env_disable_reconcile.as_deref(),
             file_config.disable_reconcile,
+            true,
         ),
         disable_proc_fallback: resolve_bool_option(
             source.env_disable_proc_fallback.as_deref(),
             file_config.disable_proc_fallback,
+            false,
         ),
         config_path,
     })
@@ -186,11 +191,11 @@ fn parse_icon_mode(value: &str) -> Result<IconMode> {
     }
 }
 
-fn resolve_bool_option(env_value: Option<&str>, file_value: Option<bool>) -> bool {
+fn resolve_bool_option(env_value: Option<&str>, file_value: Option<bool>, default: bool) -> bool {
     env_value
         .map(parse_bool_env)
         .or(file_value)
-        .unwrap_or(false)
+        .unwrap_or(default)
 }
 
 fn parse_bool_env(value: &str) -> bool {

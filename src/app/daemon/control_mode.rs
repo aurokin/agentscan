@@ -140,6 +140,9 @@ impl TmuxBrokerHealth {
             disabled_reason: self.disabled_reason.clone(),
             reconnect_count: self.reconnect_count,
             fallback_count: Some(self.fallback_count),
+            // Filled in by `RunningTmuxControlModeClient::broker_status_frame`,
+            // which owns the subscriber set; broker health alone cannot see it.
+            subscriber_count: None,
         }
     }
 
@@ -182,6 +185,25 @@ pub(crate) fn test_broker_health_after_reconnect(
     health.disable_after_error(&error);
     health.mark_reconnected();
     health.status_frame()
+}
+
+// Exercise `drain_control_mode_channel` over a plain channel: seed it with the
+// `%begin`/`%end` of a brokered command that "timed out" (was never consumed),
+// drain, and report how many frames survive. The sender is kept alive so the
+// post-drain count reflects an emptied-but-open channel, mirroring the retained
+// shared channel on reconnect. Returns the residual frame count (expected 0).
+#[cfg(test)]
+pub(crate) fn test_drain_control_mode_channel_clears_stale_frames() -> usize {
+    let (line_tx, line_rx) = mpsc::channel::<Result<String>>();
+    line_tx.send(Ok("%begin 1779870847 7 0".to_string())).ok();
+    line_tx.send(Ok("%1 stale pane row".to_string())).ok();
+    line_tx.send(Ok("%end 1779870847 7 0".to_string())).ok();
+    drain_control_mode_channel(&line_rx);
+    // `line_tx` is still in scope, so the channel is open (not disconnected); a
+    // correctly drained channel yields zero remaining frames.
+    let residual = line_rx.try_iter().count();
+    drop(line_tx);
+    residual
 }
 
 #[cfg(test)]
@@ -246,20 +268,142 @@ pub(super) struct RunningTmuxControlModeClient {
     child: std::process::Child,
     stdin: std::process::ChildStdin,
     line_rx: mpsc::Receiver<Result<String>>,
+    // Retained so per-session subscriber clients and primary reconnects can feed
+    // the same shared event stream the run loop drains. Because this keeps a live
+    // sender, the channel never reports `Disconnected` on its own; primary-client
+    // death is instead detected by the events the primary forwards — `%exit` on a
+    // clean tmux exit and a `Fatal` read error on an abnormal one — not by channel
+    // closure.
+    line_tx: mpsc::Sender<Result<String>>,
+    // Event-only control clients, one per non-primary session. tmux control mode
+    // is scoped to the attached session, so these provide event coverage for
+    // panes the primary client cannot see. They never issue commands; their
+    // reader threads feed the shared channel.
+    subscribers: Vec<SubscriberClient>,
+    // False when there are more non-primary sessions than the subscriber cap, so
+    // some sessions have no event client. The run loop keeps the reconcile poll
+    // active in that case rather than relaxing to the self-heal backstop.
+    subscriber_coverage_complete: bool,
     deferred_lines: VecDeque<String>,
     broker_health: TmuxBrokerHealth,
 }
 
+struct SubscriberClient {
+    session_id: String,
+    child: std::process::Child,
+    // Retained for keep-alive and per-pane output gating (`refresh-client -A`).
+    #[allow(dead_code)]
+    stdin: std::process::ChildStdin,
+}
+
+impl Drop for SubscriberClient {
+    fn drop(&mut self) {
+        cleanup_startup_child(&mut self.child);
+    }
+}
+
 impl RunningTmuxControlModeClient {
     pub(super) fn from_started(started: StartedTmuxControlModeClient) -> Result<Self> {
-        let (child, stdin, line_rx) = control_mode_connection_from_started(started)?;
+        let (child, stdin, line_rx, line_tx) = connect_primary_control_client(started)?;
         Ok(Self {
             child,
             stdin,
             line_rx,
+            line_tx,
+            subscribers: Vec::new(),
+            subscriber_coverage_complete: true,
             deferred_lines: VecDeque::new(),
             broker_health: TmuxBrokerHealth::default(),
         })
+    }
+
+    // Attach an event-only subscriber client for a non-primary session. Its
+    // reader feeds the shared channel; a subscriber read error ends only its own
+    // thread (Quiet) so one failing session does not bounce the daemon.
+    pub(super) fn attach_subscriber(
+        &mut self,
+        session_id: String,
+        started: StartedTmuxControlModeClient,
+    ) -> Result<()> {
+        if self.subscribers.iter().any(|s| s.session_id == session_id) {
+            return Ok(());
+        }
+        let (child, stdin) =
+            spawn_control_client_reader(started, self.line_tx.clone(), ClientErrorMode::Quiet)
+                .with_context(|| {
+                    format!("failed to attach subscriber control client for session {session_id}")
+                })?;
+        self.subscribers.push(SubscriberClient {
+            session_id,
+            child,
+            stdin,
+        });
+        Ok(())
+    }
+
+    pub(super) fn has_subscriber(&self, session_id: &str) -> bool {
+        self.subscribers
+            .iter()
+            .any(|subscriber| subscriber.session_id == session_id)
+    }
+
+    // Drop subscribers whose client process has exited so a following reconcile
+    // re-attaches them. Covers the case where a subscriber client dies while its
+    // session is still alive (a closed session is instead handled by
+    // `retain_subscriber_sessions`, since the session leaves the desired set).
+    //
+    // Safe to run after `has_dead_subscriber` has already `try_wait`-ed the same
+    // children: `Child::try_wait` records the exit status on the `Child` and
+    // returns that cached `Ok(Some(status))` on every subsequent call (it does
+    // not reap-then-report-`None`). So the earlier detection call does not consume
+    // the status out from under this prune — both observe the exited child.
+    pub(super) fn prune_dead_subscribers(&mut self) {
+        self.subscribers
+            .retain_mut(|subscriber| !matches!(subscriber.child.try_wait(), Ok(Some(_))));
+    }
+
+    // Whether any subscriber's client process has exited. A dead subscriber means
+    // its session is no longer event-covered, but `has_subscriber` (membership
+    // only) still reports it covered, so the run loop polls this on each timeout
+    // to trigger a prune + re-attach + coverage recompute promptly, instead of
+    // waiting for the self-heal reconcile that the stale coverage would delay.
+    //
+    // Calling `try_wait` here does not prevent the subsequent
+    // `prune_dead_subscribers` from seeing the same exit: the status is cached on
+    // the `Child` and re-reported by later `try_wait` calls (see that method).
+    pub(super) fn has_dead_subscriber(&mut self) -> bool {
+        self.subscribers
+            .iter_mut()
+            .any(|subscriber| matches!(subscriber.child.try_wait(), Ok(Some(_))))
+    }
+
+    pub(super) fn subscriber_count(&self) -> usize {
+        self.subscribers.len()
+    }
+
+    // Whether the primary control client process has exited. Because the retained
+    // `line_tx` keeps the shared channel from ever reporting `Disconnected`, the
+    // run loop polls this to detect a primary that died without emitting `%exit`
+    // (e.g. the tmux server was SIGKILLed and the pipe closed at EOF). Checks the
+    // current primary child, so it is correct across reconnects (which install a
+    // fresh, live child).
+    pub(super) fn primary_child_exited(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(Some(_)))
+    }
+
+    pub(super) fn set_subscriber_coverage_complete(&mut self, complete: bool) {
+        self.subscriber_coverage_complete = complete;
+    }
+
+    pub(super) fn subscriber_coverage_complete(&self) -> bool {
+        self.subscriber_coverage_complete
+    }
+
+    // Drop subscriber clients whose sessions are no longer desired (each dropped
+    // `SubscriberClient` cleans up its child process).
+    pub(super) fn retain_subscriber_sessions(&mut self, desired: &[String]) {
+        self.subscribers
+            .retain(|subscriber| desired.iter().any(|id| id == &subscriber.session_id));
     }
 
     pub(super) fn read_provider(&mut self) -> TmuxDaemonReadProvider<'_> {
@@ -289,7 +433,10 @@ impl RunningTmuxControlModeClient {
     }
 
     pub(super) fn broker_status_frame(&self) -> ipc::ControlModeBrokerStatusFrame {
-        self.broker_health.status_frame()
+        ipc::ControlModeBrokerStatusFrame {
+            subscriber_count: Some(self.subscriber_count()),
+            ..self.broker_health.status_frame()
+        }
     }
 
     pub(super) fn broker_enabled(&self) -> bool {
@@ -321,17 +468,25 @@ impl RunningTmuxControlModeClient {
     }
 
     fn reconnect(&mut self, startup: &impl StartupActions) -> Result<()> {
+        // Reconnect runs only after a forwarded fatal error disabled the broker, so
+        // the old primary reader has already terminated and any frames it emitted
+        // are now sitting unread in the shared channel. Drain them before the new
+        // reader starts producing, so a stale command response from the dead
+        // connection cannot be misattributed to a post-reconnect brokered command.
+        // See `drain_control_mode_channel`.
+        drain_control_mode_channel(&self.line_rx);
         let started = startup
             .start_tmux_control_mode_client()
             .context("failed to restart tmux control-mode client")?;
-        let (mut replacement_child, replacement_stdin, replacement_line_rx) =
-            control_mode_connection_from_started(started)
+        // Re-spawn the primary reader into the existing shared channel rather than
+        // recreating it, so any attached subscriber clients keep delivering events.
+        let (mut replacement_child, replacement_stdin) =
+            spawn_control_client_reader(started, self.line_tx.clone(), ClientErrorMode::Fatal)
                 .context("failed to configure restarted tmux control-mode client")?;
 
         std::mem::swap(&mut self.child, &mut replacement_child);
         cleanup_startup_child(&mut replacement_child);
         self.stdin = replacement_stdin;
-        self.line_rx = replacement_line_rx;
         self.broker_health.mark_reconnected();
         Ok(())
     }
@@ -348,6 +503,8 @@ impl RunningTmuxControlModeClient {
     }
 
     pub(super) fn terminate(&mut self) {
+        // Dropping each subscriber cleans up its child process.
+        self.subscribers.clear();
         cleanup_startup_child(&mut self.child);
     }
 }
@@ -358,13 +515,58 @@ impl Drop for RunningTmuxControlModeClient {
     }
 }
 
-fn control_mode_connection_from_started(
-    mut started: StartedTmuxControlModeClient,
-) -> Result<(
+// Connect a control client's stdout to a shared event channel. The channel is
+// owned at the broker level and stays stable across primary reconnects, so the
+// returned `line_tx` can be cloned to feed per-session subscriber clients into
+// the same stream the run loop drains.
+type PrimaryControlConnection = (
     std::process::Child,
     std::process::ChildStdin,
     mpsc::Receiver<Result<String>>,
-)> {
+    mpsc::Sender<Result<String>>,
+);
+
+fn connect_primary_control_client(
+    started: StartedTmuxControlModeClient,
+) -> Result<PrimaryControlConnection> {
+    let (line_tx, line_rx) = mpsc::channel();
+    let (child, stdin) =
+        spawn_control_client_reader(started, line_tx.clone(), ClientErrorMode::Fatal)?;
+    Ok((child, stdin, line_rx, line_tx))
+}
+
+// Discard every frame currently buffered in the shared control-mode channel.
+//
+// Used on primary reconnect. The shared channel is created once and retained
+// across reconnects (so subscriber clients keep feeding the same stream), which
+// means it is never replaced the way `main` replaced the receiver on reconnect.
+// Without an explicit drain, command frames left over from the dead connection —
+// e.g. the `%begin`/`%end` of a brokered command that timed out just before the
+// reconnect — stay buffered in the receiver. The production command collector
+// (`collect_control_mode_command_outcome`) treats the first `%begin` it reads as
+// the active command, so a later brokered command could otherwise consume that
+// stale response and return an old or mismatched snapshot. Only the primary issues
+// commands, so the primary is the only source of stray `%begin`/`%end`; draining
+// here restores `main`'s discard-on-reconnect behavior for the shared channel.
+fn drain_control_mode_channel(line_rx: &mpsc::Receiver<Result<String>>) {
+    while line_rx.try_recv().is_ok() {}
+}
+
+// How a client's reader thread reports a read error on its stdout. The primary
+// client's errors are fatal (they propagate to the run loop and bounce the
+// daemon into broker recovery), but a subscriber client dying must not take the
+// daemon down — it just ends its own thread and is reconnected by the lifecycle.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ClientErrorMode {
+    Fatal,
+    Quiet,
+}
+
+fn spawn_control_client_reader(
+    mut started: StartedTmuxControlModeClient,
+    line_tx: mpsc::Sender<Result<String>>,
+    error_mode: ClientErrorMode,
+) -> Result<(std::process::Child, std::process::ChildStdin)> {
     let stdout_reader = started
         .stdout_reader
         .take()
@@ -377,32 +579,62 @@ fn control_mode_connection_from_started(
         .stdin
         .take()
         .context("tmux control-mode client did not provide stdin")?;
-    let line_rx = spawn_control_mode_line_reader(stdout_reader);
-    Ok((child, stdin, line_rx))
+    spawn_control_mode_line_reader(stdout_reader, line_tx, error_mode);
+    Ok((child, stdin))
+}
+
+// A `%exit` on a subscriber (Quiet) client signals only that this one
+// non-primary control client is detaching, so it must not be forwarded to the
+// shared stream (where `%exit` parses as a server-wide `ControlEvent::Exit`).
+// The primary (Fatal) client still forwards `%exit` to drive daemon shutdown.
+fn subscriber_local_exit(error_mode: ClientErrorMode, line: &str) -> bool {
+    matches!(error_mode, ClientErrorMode::Quiet) && is_control_exit_line(line)
+}
+
+#[cfg(test)]
+pub(crate) fn test_subscriber_local_exit(quiet: bool, line: &str) -> bool {
+    let error_mode = if quiet {
+        ClientErrorMode::Quiet
+    } else {
+        ClientErrorMode::Fatal
+    };
+    subscriber_local_exit(error_mode, line)
 }
 
 fn spawn_control_mode_line_reader(
     stdout_reader: BufReader<std::process::ChildStdout>,
-) -> mpsc::Receiver<Result<String>> {
-    let (line_tx, line_rx) = mpsc::channel();
+    line_tx: mpsc::Sender<Result<String>>,
+    error_mode: ClientErrorMode,
+) {
     std::thread::spawn(move || {
         let mut reader = stdout_reader;
         loop {
             match read_control_mode_line(&mut reader) {
                 Ok(Some(line)) => {
+                    // A subscriber client's `%exit` reports only that this one
+                    // client is detaching (e.g. its session was killed); it must
+                    // not reach the shared stream, where `%exit` is parsed as a
+                    // server-wide `ControlEvent::Exit` that stops the daemon loop.
+                    // The subscriber's removal is handled by `%sessions-changed`
+                    // reconcile and dead-subscriber pruning instead. The primary
+                    // client (Fatal) still forwards `%exit` to drive shutdown.
+                    if subscriber_local_exit(error_mode, &line) {
+                        break;
+                    }
                     if line_tx.send(Ok(line)).is_err() {
                         break;
                     }
                 }
                 Ok(None) => break,
                 Err(error) => {
-                    let _ = line_tx.send(Err(error));
+                    if matches!(error_mode, ClientErrorMode::Fatal) {
+                        let _ = line_tx.send(Err(error));
+                    }
                     break;
                 }
             }
         }
     });
-    line_rx
 }
 
 extern "C" fn daemon_shutdown_signal_handler(_signal: libc::c_int) {
@@ -455,14 +687,55 @@ pub(super) fn startup_failure_message(context: &str, error: &anyhow::Error) -> S
     )
 }
 
-pub(super) fn start_tmux_control_mode_client() -> Result<(
+// All control clients attach with these flags:
+//   ignore-size: the client never participates in window-size calculation, so
+//     attaching (especially to a detached session) cannot resize the user's panes.
+//   no-output: tmux never sends `%output` to the client. The daemon does not need
+//     the pty firehose — status/title/command/metadata arrive via the 1s
+//     `%subscription-changed` stream and topology via structural notifications.
+//     This is what keeps cost flat as the number of active agents grows.
+const CONTROL_CLIENT_ATTACH_FLAGS: &str = "ignore-size,no-output";
+
+// Start the primary control client attached to an explicit session target. The
+// caller resolves and owns the primary session id (once, at startup) so the
+// primary attach and the subscriber-exclusion set agree and do not drift if the
+// launching tmux client later switches sessions.
+pub(super) fn start_tmux_control_mode_client_for(
+    session_target: &str,
+) -> Result<(
     std::process::Child,
     BufReader<std::process::ChildStdout>,
     std::process::ChildStdin,
 )> {
-    let session_target = tmux::default_session_target()?;
+    start_control_mode_client_for(session_target)
+}
+
+pub(super) fn start_subscriber_control_mode_client(
+    session_id: &str,
+) -> Result<(
+    std::process::Child,
+    BufReader<std::process::ChildStdout>,
+    std::process::ChildStdin,
+)> {
+    start_control_mode_client_for(session_id)
+}
+
+fn start_control_mode_client_for(
+    session_target: &str,
+) -> Result<(
+    std::process::Child,
+    BufReader<std::process::ChildStdout>,
+    std::process::ChildStdin,
+)> {
     let mut child = tmux::tmux_command()
-        .args(["-C", "attach-session", "-t", &session_target])
+        .args([
+            "-C",
+            "attach-session",
+            "-f",
+            CONTROL_CLIENT_ATTACH_FLAGS,
+            "-t",
+            session_target,
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
