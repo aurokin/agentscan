@@ -2165,22 +2165,64 @@ fn droid_pane_output_marks_current_prompt_idle_only_after_provider_is_known() {
 }
 
 #[test]
-fn droid_pane_output_marks_current_streaming_prompt_busy() {
+fn droid_pane_output_marks_current_steer_prompt_busy() {
+    // Mirrors a real busy droid frame (v0.134.0): the input box prompt switches to
+    // "Enter to steer" during a turn, with a streaming line above it whose verb varies
+    // ("Invoking tools…" here, not "Streaming…").
     let mut droid = pane_output_status_pane(812, Provider::Droid, "⛬ New Session");
 
     classify::apply_pane_output_status_fallback(
         &mut droid,
-        "   What is 1+1? Answer briefly.\n\n\
-         ⠄ Streaming...  (Press ESC to stop)\n\n\
-         Auto (High) - allow all commands            Droid Core (DeepSeek V4 Pro) (Max)\n\
+        "   Analyze this entire codebase and tell me about it\n\n\
+         Plan · 0/7\n\
+         ┃ ● Explore project structure and core files\n\n\
+         ⠟ Invoking tools...  (Press ESC to stop)\n\n\
+         Auto (High) - allow all commands            Droid Core (Kimi K2.6) (High)\n\
          ╭──────────────────────────────────────────────────────────────────────────────╮\n\
          │ > Enter to steer                                                             │\n\
          ╰──────────────────────────────────────────────────────────────────────────────╯\n\
-         [⏱ 2s] ? for help                                                          IDE ◌\n",
+         [⏱ 38s] ? for help                                                         IDE ◌\n",
     );
 
     assert_eq!(droid.status.kind, StatusKind::Busy);
     assert_eq!(droid.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn droid_pane_output_marks_streaming_busy_when_verb_is_not_streaming() {
+    // The streaming fallback must recognize droid's varying verbs by the stop hint, not the
+    // word "Streaming". Here the current frame has no steer/idle prompt in the box window, so
+    // the streaming line is the deciding busy signal.
+    let mut droid = pane_output_status_pane(814, Provider::Droid, "⛬ New Session");
+
+    classify::apply_pane_output_status_fallback(
+        &mut droid,
+        "   Read the source and summarize\n\n\
+         ⠹ Thinking...  (Press ESC to stop)\n\n\
+         Auto (High) - allow all commands            Droid Core (Kimi K2.6) (High)\n\
+         [⏱ 9s] ? for help                                                          IDE ◌\n",
+    );
+
+    assert_eq!(droid.status.kind, StatusKind::Busy);
+    assert_eq!(droid.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn droid_pane_output_does_not_mark_busy_from_prose_stop_hint_without_spinner() {
+    // The streaming fallback requires the live braille spinner glyph, not a bare "Press ESC to
+    // stop" substring. Model output that mentions the phrase in prose (no leading spinner) sits
+    // in the current frame with no steer/idle prompt, so the pane must not be marked busy.
+    let mut droid = pane_output_status_pane(815, Provider::Droid, "⛬ New Session");
+
+    classify::apply_pane_output_status_fallback(
+        &mut droid,
+        "   To cancel a running job, press ESC. The banner reads: Press ESC to stop\n\n\
+         Auto (High) - allow all commands            Droid Core (Kimi K2.6) (High)\n\
+         [⏱ 9s] ? for help                                                          IDE ◌\n",
+    );
+
+    assert_eq!(droid.status.kind, StatusKind::Unknown);
+    assert_eq!(droid.status.source, super::StatusSource::NotChecked);
 }
 
 #[test]
@@ -2489,15 +2531,18 @@ fn codex_pane_output_does_not_infer_idle_from_stale_prompt() {
 
 #[test]
 fn grok_pane_output_marks_current_prompt_box_idle_only_after_provider_is_known() {
-    // Mirrors a real idle grok pane: the rounded input box is the current bottom UI and
-    // the rest of the taller pane is blank padding below it.
-    let idle_screen = "Update: v0.2.3 available — press ctrl+u to restart\n\
+    // Mirrors a real fresh idle grok pane (v0.2.3 capture): the rounded input box is the
+    // current bottom UI with the version line below it, and the rest of the taller pane is
+    // blank padding.
+    let idle_screen = "   main ~/code/agentscan/\n\
+         \n\
+         Tip: Press Ctrl-W to start a parallel task in its own worktree.\n\
          \n\
          ╭────────────────────────────────────────────────╮\n\
          │ ❯                                                │\n\
          ╰──────────────── Grok Build · always-approve ─╯\n\
          \n\
-         0.1.220 Beta\n\
+         0.2.3 [stable] Beta\n\
          \n\
          \n\
          \n\
@@ -2514,6 +2559,53 @@ fn grok_pane_output_marks_current_prompt_box_idle_only_after_provider_is_known()
 
     assert_eq!(unknown.status.kind, StatusKind::Unknown);
     assert_eq!(unknown.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn grok_pane_output_marks_used_session_keybind_footer_idle() {
+    // Mirrors a real used grok session (v0.2.3): after a completed turn the input box is the
+    // current bottom UI with the idle keybind footer (mode/shortcuts only) below it.
+    let mut grok = pane_output_status_pane(778, Provider::Grok, "grok");
+
+    classify::apply_pane_output_status_fallback(
+        &mut grok,
+        "     ❯ hi                                          2:23 PM\n\
+         \n\
+         Turn completed in 1.9s.\n\
+         \n\
+         ╭────────────────────────────────────────────────╮\n\
+         │ ❯                                                │\n\
+         ╰──────────────── Grok Build · always-approve ─╯\n\
+         \n\
+         Shift+Tab:mode  │  Ctrl+.:shortcuts\n",
+    );
+
+    assert_eq!(grok.status.kind, StatusKind::Idle);
+    assert_eq!(grok.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn grok_pane_output_marks_active_turn_footer_busy() {
+    // Mirrors a real busy grok pane (v0.2.3): the input box stays pinned at the bottom during
+    // a turn, with the running spinner above it and the active-turn footer (adding
+    // cancel/interject keybinds) below it.
+    let mut grok = pane_output_status_pane(779, Provider::Grok, "grok");
+
+    classify::apply_pane_output_status_fallback(
+        &mut grok,
+        "     ◆ Search \"disable_reconcile\" in src (28 matches)\n\
+         \n\
+         ⠹ Thinking… 0.4s                              42s ⇣80.3k [✗]\n\
+         \n\
+         ╭────────────────────────────────────────────────╮\n\
+         │ ❯                                                │\n\
+         ╰──────────────── Grok Build · always-approve ─╯\n\
+         \n\
+         Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+Enter:interject  │  Ctrl+.:shortcuts\n",
+    );
+
+    assert_eq!(grok.status.kind, StatusKind::Busy);
+    assert_eq!(grok.status.source, super::StatusSource::PaneOutput);
 }
 
 #[test]
@@ -2636,6 +2728,61 @@ fn grok_pane_output_does_not_treat_release_channel_prose_below_box_as_chrome() {
          │ ❯                                                │\n\
          ╰──────────────── Grok Build · always-approve ─╯\n\
          Beta access for the new planner is rolling out now\n",
+    );
+
+    assert_eq!(grok.status.kind, StatusKind::Unknown);
+    assert_eq!(grok.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn grok_pane_output_does_not_treat_ctrl_prose_below_box_as_keybind_footer() {
+    // The keybind footer is matched by its `Ctrl+<key>:<action>` shape, not bare `Ctrl+`. Model
+    // output that mentions `Ctrl+C` in prose sits below the box as real output, so the box is a
+    // stale frame and the pane must not be inferred idle.
+    let mut grok = pane_output_status_pane(780, Provider::Grok, "grok");
+
+    classify::apply_pane_output_status_fallback(
+        &mut grok,
+        "╭────────────────────────────────────────────────╮\n\
+         │ ❯                                                │\n\
+         ╰──────────────── Grok Build · always-approve ─╯\n\
+         You can press Ctrl+C to stop the dev server\n",
+    );
+
+    assert_eq!(grok.status.kind, StatusKind::Unknown);
+    assert_eq!(grok.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn grok_pane_output_does_not_treat_shift_tab_prose_below_box_as_keybind_footer() {
+    // The keybind footer is matched by its `Key:action` shape, not a bare `Shift+Tab` substring.
+    // Prose mentioning Shift+Tab below a stale box is real output, so the pane stays unknown.
+    let mut grok = pane_output_status_pane(782, Provider::Grok, "grok");
+
+    classify::apply_pane_output_status_fallback(
+        &mut grok,
+        "╭────────────────────────────────────────────────╮\n\
+         │ ❯                                                │\n\
+         ╰──────────────── Grok Build · always-approve ─╯\n\
+         Press Shift+Tab to cycle between the open editor tabs\n",
+    );
+
+    assert_eq!(grok.status.kind, StatusKind::Unknown);
+    assert_eq!(grok.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn grok_pane_output_does_not_treat_version_led_prose_below_box_as_chrome() {
+    // The version footer's trailing tokens must be release-channel labels, so version-led prose
+    // like `0.2.3 docs` is real output below a stale box and the pane must not be inferred idle.
+    let mut grok = pane_output_status_pane(781, Provider::Grok, "grok");
+
+    classify::apply_pane_output_status_fallback(
+        &mut grok,
+        "╭────────────────────────────────────────────────╮\n\
+         │ ❯                                                │\n\
+         ╰──────────────── Grok Build · always-approve ─╯\n\
+         0.2.3 docs\n",
     );
 
     assert_eq!(grok.status.kind, StatusKind::Unknown);

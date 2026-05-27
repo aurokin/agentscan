@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+### Added
+
+- Responsive busy/idle for providers whose status only shows in captured pane output and
+  never in tmux metadata (e.g. pi without the `titlebar-spinner` extension, droid). The
+  daemon subscription now includes `window_activity`, so a pane producing output fires a
+  `%subscription-changed` event that drives a (cache-throttled) re-capture — making the
+  idle→busy transition event-driven without taking the `%output` pty firehose. `window_activity`
+  is window-scoped, so in a split window a noisy pane also refreshes its quiet siblings; those
+  refreshes stay cheap because the capture itself remains gated by the pane-output capture cache
+  (a still-fresh entry is reused without re-capturing), so capture cost stays proportional to
+  turn activity rather than pane count. The flip side is a responsiveness floor: a short turn
+  that both starts and finishes inside the cache TTL of a recent capture may not be observed as
+  busy. A matching settle re-check polls any pane believed busy on a short cadence so the
+  busy→idle transition (which emits no tmux event) is caught within ~2s. Installing the
+  `titlebar-spinner` extension still gives pi the cheaper title-driven fast path
+  automatically; both paths are supported and selected by the existing layered detection.
+  Because `window_activity` ticks fire on any output in the window, the control-event refresh
+  now skips publishing when the refreshed snapshot is materially unchanged (matching the settle
+  and reconcile paths), so a spinner redraw or log tail in one pane no longer republishes an
+  identical snapshot to subscribers.
+
+### Fixed
+
+- Reworked grok pane-output status detection against the current grok build (v0.2.3),
+  which had regressed idle panes back to `unknown`. The matcher now reads grok's own
+  state-driven keybind footer below the pinned input box rather than enumerating exact
+  trailing chrome: an idle prompt shows `Shift+Tab:mode │ Ctrl+.:shortcuts` (or the
+  version line `0.2.3 [stable] Beta` on a fresh prompt), while an active turn adds
+  `Ctrl+c:cancel` / `Ctrl+Enter:interject`. This restores idle detection for both fresh
+  and used sessions, fixes busy detection (the running-spinner line shape also changed),
+  and drops the brittle version/channel-word allowlist that broke on `[stable]`.
+- Generalized droid streaming detection so a turn is recognized as busy regardless of the
+  streaming verb. droid's status line cycles the verb across a turn (`Streaming…`,
+  `Invoking tools…`, `Thinking…`); the matcher now anchors on the live braille spinner glyph
+  plus the verb-agnostic `(Press ESC to stop)` hint instead of only `Streaming…`, so the
+  varying verb is handled without a bare-substring match treating prose that mentions the stop
+  hint as an active turn.
+- Stopped exited pi sessions from lingering as ghost panes. pi paints its `π - <cwd>`
+  title via an OSC escape that tmux keeps painted after pi exits and the pane returns to
+  the shell prompt, so a stale idle title kept the pane classified as pi indefinitely.
+  An idle (non-spinner) greek pi title now requires liveness corroboration: over a plain
+  interactive shell foreground it defers to process evidence and is dropped when no pi
+  process remains. A running pi reports `node`/`pi`/`bun`, and a live spinner-frame title
+  still classifies — this mirrors the corroboration grok and ascii `pi -` titles already
+  require.
+
 ## 0.4.2 - 2026-05-27
 
 ### Fixed

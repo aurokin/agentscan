@@ -79,6 +79,13 @@ const CONTROL_MODE_EVENT_BATCH_WINDOW: Duration = Duration::from_millis(100);
 const CONTROL_MODE_MIN_WAIT: Duration = Duration::from_millis(1);
 const CONTROL_MODE_MAX_WAIT: Duration = Duration::from_millis(500);
 const PANE_OUTPUT_STATUS_CACHE_TTL: Duration = Duration::from_secs(2);
+// How long after a pane-output provider's last activity event to re-capture it once more.
+// `window_activity` ticks drive busy detection while a turn produces output, but an idle
+// transition emits no further activity, so a pane classified `Busy` from pane output would
+// otherwise stay stuck busy. Each activity-bearing refresh re-arms this deadline; when the
+// event stream finally goes quiet (turn ended), the settle pass re-reads the pane once to
+// catch the idle frame. Kept slightly above the capture cache TTL so the entry is expired.
+const PANE_OUTPUT_SETTLE_DELAY: Duration = Duration::from_millis(2200);
 const STARTUP_FAILURE_OBSERVABILITY_WINDOW: Duration = Duration::from_millis(200);
 const CONTROL_MODE_STARTUP_TIMEOUT: Duration = Duration::from_secs(2);
 const CONTROL_MODE_COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
@@ -237,6 +244,9 @@ struct DaemonRuntime<S> {
     pane_output_cache: scanner::PaneOutputStatusCache,
     control_mode: RunningTmuxControlModeClient,
     next_reconcile_at: Instant,
+    // When set, a pane-output provider is believed busy and the daemon should re-read it once
+    // the event stream goes quiet, to catch the idle transition (which emits no event).
+    settle_recapture_at: Option<Instant>,
     telemetry: RuntimeTelemetry,
     deep_control_mode_telemetry: bool,
     disable_reconcile: bool,
@@ -431,6 +441,7 @@ enum RefreshRequest<'a> {
     IntervalReconcile,
     TimeoutReconcile,
     ControlModeLines(&'a [String]),
+    SettleRecapture,
 }
 
 struct RefreshOutcome {
@@ -491,6 +502,12 @@ impl RefreshObservability {
                     should_record: batch.has_telemetry_event(),
                 }
             }
+            RefreshRequest::SettleRecapture => Self {
+                source: "pane_output_settle",
+                detail: ObservabilityDetail::Static("busy_recheck"),
+                refresh: "targeted_pane",
+                should_record: true,
+            },
         }
     }
 
@@ -686,6 +703,7 @@ impl<S: StartupActions> DaemonRuntime<S> {
             pane_output_cache,
             control_mode,
             next_reconcile_at,
+            settle_recapture_at: None,
             telemetry,
             deep_control_mode_telemetry: deep_control_mode_telemetry_enabled(),
             disable_reconcile: runtime_options.disable_reconcile,
@@ -695,6 +713,12 @@ impl<S: StartupActions> DaemonRuntime<S> {
     }
 
     fn run(&mut self, server_handle: &DaemonSocketServerHandle) -> Result<()> {
+        // Arm the settle re-check from the boot snapshot: a pane already classified `Busy` from
+        // pane output at startup that then goes quiet would otherwise never get a busy->idle
+        // re-check (the deadline is only refreshed after a refresh request runs), leaving it
+        // stuck busy until the next reconcile. `update_settle_deadline` is set-when-None, so this
+        // is a no-op when nothing is busy.
+        self.update_settle_deadline();
         loop {
             if DAEMON_SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
                 break;
@@ -710,6 +734,18 @@ impl<S: StartupActions> DaemonRuntime<S> {
                 // subscriber set: prune subscribers whose client died and re-attach
                 // any missing sessions, even without a `%sessions-changed` event.
                 self.reconcile_subscriber_clients();
+            }
+
+            // A pane-output provider's idle transition emits no tmux event, so poll any pane
+            // believed busy on the settle cadence. Clear the deadline before firing so the
+            // post-refresh re-arm reflects the fresh result (re-armed if still busy, else
+            // cleared) rather than the stale past instant.
+            if self
+                .settle_recapture_at
+                .is_some_and(|at| Instant::now() >= at)
+            {
+                self.settle_recapture_at = None;
+                self.apply_refresh_request(RefreshRequest::SettleRecapture)?;
             }
 
             let timeout = self.next_control_mode_wait();
@@ -758,7 +794,14 @@ impl<S: StartupActions> DaemonRuntime<S> {
     }
 
     fn next_control_mode_wait(&self) -> Duration {
-        self.next_reconcile_at
+        // Wake for whichever comes first: the next reconcile or a pending settle re-capture,
+        // so a busy pane-output provider's idle transition is caught near the settle delay
+        // rather than waiting out the reconcile interval.
+        let mut next_wake = self.next_reconcile_at;
+        if let Some(settle_at) = self.settle_recapture_at {
+            next_wake = next_wake.min(settle_at);
+        }
+        next_wake
             .saturating_duration_since(Instant::now())
             .max(CONTROL_MODE_MIN_WAIT)
             .min(CONTROL_MODE_MAX_WAIT)
@@ -818,6 +861,7 @@ impl<S: StartupActions> DaemonRuntime<S> {
                 SnapshotPublishContext::new("reconcile").with_detail("timeout"),
             )?,
             RefreshRequest::ControlModeLines(lines) => self.apply_control_mode_refresh(lines)?,
+            RefreshRequest::SettleRecapture => self.apply_settle_recapture_refresh()?,
         };
         let publish_context = outcome.publish_context.take();
         let published = if let Some(publish_context) = publish_context {
@@ -837,7 +881,72 @@ impl<S: StartupActions> DaemonRuntime<S> {
         if outcome.reset_reconcile_timer {
             self.next_reconcile_at = Instant::now() + self.reconcile_interval();
         }
+        // Re-arm (or clear) the settle deadline from the current snapshot: any refresh that
+        // leaves a pane-output provider busy means we must re-read it once the event stream
+        // goes quiet. Activity-bearing refreshes keep pushing the deadline out; the pass only
+        // fires after the turn's output stops.
+        self.update_settle_deadline();
         Ok(outcome.should_exit)
+    }
+
+    /// Maintain `settle_recapture_at` as a steady re-check deadline whenever any pane reads
+    /// busy from captured pane output. Such a status has no tmux event to refresh it when the
+    /// turn ends, so the daemon polls it: the deadline is armed once when a busy pane-output
+    /// pane appears and is left alone while set, so unrelated panes' activity cannot push it
+    /// out (which would starve the re-check). It is re-armed after each fire and cleared once
+    /// no pane-output pane is busy.
+    fn update_settle_deadline(&mut self) {
+        let has_busy_pane_output = self.snapshot.panes.iter().any(|pane| {
+            pane.status.source == StatusSource::PaneOutput && pane.status.kind == StatusKind::Busy
+        });
+        self.settle_recapture_at = next_settle_deadline(
+            has_busy_pane_output,
+            self.settle_recapture_at,
+            Instant::now(),
+            PANE_OUTPUT_SETTLE_DELAY,
+        );
+    }
+
+    /// Re-read pane-output providers currently believed busy, to catch an idle transition that
+    /// emitted no tmux event. The cache entry is invalidated first so the re-read forces a
+    /// fresh capture (a `Busy` pane is otherwise not a fallback candidate).
+    fn apply_settle_recapture_refresh(&mut self) -> Result<RefreshOutcome> {
+        let busy_ids: Vec<String> = self
+            .snapshot
+            .panes
+            .iter()
+            .filter(|pane| {
+                pane.status.source == StatusSource::PaneOutput
+                    && pane.status.kind == StatusKind::Busy
+            })
+            .map(|pane| pane.pane_id.clone())
+            .collect();
+        if busy_ids.is_empty() {
+            return Ok(RefreshOutcome::no_publish());
+        }
+
+        let previous_snapshot = self.snapshot.clone();
+        let mut tmux_reads = self.control_mode.read_provider();
+        for pane_id in &busy_ids {
+            self.pane_output_cache.invalidate(pane_id);
+            refresh_snapshot_pane_with_title(
+                &mut self.snapshot,
+                &mut tmux_reads,
+                pane_id,
+                None,
+                &mut self.pane_output_cache,
+                self.disable_proc_fallback,
+            )?;
+        }
+
+        if snapshots_are_materially_equal(&previous_snapshot, &self.snapshot) {
+            self.update_runtime_telemetry();
+            Ok(RefreshOutcome::no_publish())
+        } else {
+            Ok(RefreshOutcome::publish(
+                SnapshotPublishContext::new("pane_output_settle").with_detail("busy_recheck"),
+            ))
+        }
     }
 
     fn record_observability_event(
@@ -894,6 +1003,12 @@ impl<S: StartupActions> DaemonRuntime<S> {
         let previous_snapshot = batch
             .can_refresh_full_snapshot()
             .then(|| self.snapshot.clone());
+        // Captured for the publish gate below: a `window_activity` tick fires a control event
+        // (and a targeted refresh) whenever any pane in the window writes output — including a
+        // spinner redraw or a log tail — but that often leaves every `PaneRecord` materially
+        // unchanged. Comparing against this pre-refresh snapshot lets us skip publishing an
+        // identical snapshot, matching the settle and reconcile paths.
+        let snapshot_before_refresh = self.snapshot.clone();
         let broker_enabled_before_refresh = self.control_mode.broker_enabled();
         let mut event_tmux_reads = self.control_mode.read_provider();
         let event_outcome = apply_control_event_batch(
@@ -944,13 +1059,20 @@ impl<S: StartupActions> DaemonRuntime<S> {
         }
 
         let reconnected = self.recover_broker_and_reconcile_if_needed()?;
-        let mut outcome = RefreshOutcome::publish(if reconnected {
-            SnapshotPublishContext::new("reconcile").with_detail("broker_reconnect")
+        let mut outcome = if reconnected {
+            RefreshOutcome::publish(
+                SnapshotPublishContext::new("reconcile").with_detail("broker_reconnect"),
+            )
+        } else if snapshots_are_materially_equal(&snapshot_before_refresh, &self.snapshot) {
+            // The refresh ran but produced no material change (e.g. a window_activity tick on a
+            // pane whose status/title/metadata is unchanged); skip the redundant publish.
+            self.update_runtime_telemetry();
+            RefreshOutcome::no_publish()
         } else {
-            event_publish_context.unwrap_or_else(|| {
+            RefreshOutcome::publish(event_publish_context.unwrap_or_else(|| {
                 SnapshotPublishContext::new("control_event").with_detail("unknown")
-            })
-        });
+            }))
+        };
         outcome.should_exit = should_exit;
         if control_event_refresh_should_reset_reconcile_timer(
             broker_enabled_before_refresh,
@@ -1043,6 +1165,24 @@ fn control_event_refresh_should_reset_reconcile_timer(
 
 fn control_event_should_recover_broker(should_exit: bool) -> bool {
     !should_exit
+}
+
+/// Decide the next pane-output busy re-check deadline.
+///
+/// While a pane-output provider is busy the deadline is armed once and then left untouched
+/// until it fires, so activity from *other* panes (which arrives continuously when any agent
+/// is streaming) cannot keep pushing it out and starve the re-check. It clears as soon as no
+/// pane-output pane is busy.
+fn next_settle_deadline(
+    has_busy_pane_output: bool,
+    current: Option<Instant>,
+    now: Instant,
+    delay: Duration,
+) -> Option<Instant> {
+    if !has_busy_pane_output {
+        return None;
+    }
+    current.or(Some(now + delay))
 }
 
 fn reconcile_interval_for(
@@ -2634,6 +2774,16 @@ pub(crate) fn test_reconcile_interval_for(
         disable_reconcile,
         subscriber_coverage_complete,
     )
+}
+
+#[cfg(test)]
+pub(crate) fn test_next_settle_deadline(
+    has_busy_pane_output: bool,
+    current: Option<Instant>,
+    now: Instant,
+    delay: Duration,
+) -> Option<Instant> {
+    next_settle_deadline(has_busy_pane_output, current, now, delay)
 }
 
 #[cfg(test)]

@@ -123,6 +123,19 @@ Implications:
   and the connect/reconnect bootstrap reconcile (initial truth + gap recovery)
   runs unconditionally. Setting `disable_reconcile = false` restores the full 30s
   redundancy reconcile and its meter (`reconcile_changed_snapshot_count`).
+- **pane-output providers** (status read only from captured pane output, never from
+  tmux metadata — e.g. pi without the `titlebar-spinner` extension, droid) are kept
+  responsive without the `%output` pty firehose. The daemon subscription includes
+  `window_activity`, so pane output fires a `%subscription-changed` event that drives a
+  cache-throttled re-capture (idle→busy, event-driven). Because an idle transition emits
+  no activity, the daemon also arms a single **settle re-check** deadline (~2.2s) while any
+  pane-output pane reads busy and re-reads those panes when it fires (busy→idle); the
+  deadline is armed once and not pushed out by unrelated panes' activity, so the re-check
+  is not starved. This preserves the `no-output` flat-cost invariant (no per-byte pty
+  stream) while making non-metadata providers event-responsive. Where a provider *does*
+  publish state in tmux metadata (claude/codex/grok titles; pi's `titlebar-spinner`
+  extension), that cheaper title-driven path is preferred automatically by the layered
+  detection — both paths are supported, selected by cost.
 
 ### Snapshot Contract
 

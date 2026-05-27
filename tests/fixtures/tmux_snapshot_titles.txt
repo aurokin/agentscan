@@ -14,7 +14,7 @@ opencode_proj11%301555001zshOC | Query planner/dev/pts/201/home/auro/cod
 copilot_proj11%302555002copilotCopilot | Working/dev/pts/202/home/auro/code/copilot_projai$12@1200
 cursor_proj11%303555003cursor-agentCursor CLI | Query planner/dev/pts/203/home/auro/code/cursor_projai$13@1300
 cursorprobe11%3051060198cursor-agentbront/dev/pts/99/home/auro/code/agentscancursor-agent$0@000
-pi_proj11%304555004zshπ - refactor - pi_proj/dev/pts/204/home/auro/code/pi_projai$14@1400
+pi_proj11%304555004nodeπ - refactor - pi_proj/dev/pts/204/home/auro/code/pi_projai$14@1400
 gemini_proj12%306555005gemini-cliWorking/dev/pts/205/home/auro/code/gemini_projeditor$10@1000
 gemini_proj13%307555006gemini-cliPlan snapshot cache migration/dev/pts/206/home/auro/code/gemini_projeditor$10@1000
 opencode_proj12%308555007zshOC | Working/dev/pts/207/home/auro/code/opencode_projai$11@1100

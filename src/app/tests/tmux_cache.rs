@@ -1154,6 +1154,9 @@ fn daemon_subscription_format_includes_wrapper_metadata_fields() {
     assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{@agent.provider}"));
     assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{@agent.state}"));
     assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{@agent.session_id}"));
+    // window_activity drives re-capture for pane-output-only providers (busy/idle that never
+    // touches tmux metadata), so the subscription must fire on pane output activity.
+    assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{window_activity}"));
     // Explicitly reject the doubled-brace form that broke the subscription.
     assert!(!DAEMON_SUBSCRIPTION_FORMAT.contains("#{{"));
 }
@@ -1776,16 +1779,39 @@ fn detects_codex_titles() {
 
 #[test]
 fn detects_pi_titles() {
-    let greek = classify::classify_provider(None, "zsh", "π - refactor - agentscan")
-        .expect("greek pi title should match");
-    let default_greek = classify::classify_provider(None, "zsh", "π - agentscan")
-        .expect("default greek pi title should match");
+    // A running pi reports its runtime (`node`/`pi`/`bun`) as the foreground command, so the
+    // greek title classifies. Over a bare shell the title is stale residue (see
+    // `pi_greek_title_over_shell_defers_to_process_evidence`).
+    let greek = classify::classify_provider(None, "node", "π - refactor - agentscan")
+        .expect("greek pi title should match a running pi");
+    let default_greek = classify::classify_provider(None, "node", "π - agentscan")
+        .expect("default greek pi title should match a running pi");
     let ascii = classify::classify_provider(None, "pi", "pi - refactor - agentscan")
         .expect("ascii pi title should match with bare pi command");
 
     assert_eq!(greek.provider, Provider::Pi);
     assert_eq!(default_greek.provider, Provider::Pi);
     assert_eq!(ascii.provider, Provider::Pi);
+}
+
+#[test]
+fn pi_greek_title_over_shell_defers_to_process_evidence() {
+    // pi paints `π - <cwd>` via an OSC escape; tmux keeps it after pi exits and the pane
+    // returns to the shell prompt. A bare interactive shell foreground is positive evidence
+    // pi is gone, so the stale title must not classify on its own — leaving the pane to
+    // process evidence, which drops it when no pi process remains.
+    assert!(
+        classify::classify_provider(None, "zsh", "π - agentscan").is_none(),
+        "stale greek pi title over a shell prompt should not classify"
+    );
+    assert!(
+        classify::classify_provider(None, "-zsh", "π - refactor - agentscan").is_none(),
+        "stale greek pi title over a login shell should not classify"
+    );
+    assert!(
+        classify::classify_provider(None, "fish", "π - agentscan").is_none(),
+        "stale greek pi title over fish should not classify"
+    );
 }
 
 #[test]
