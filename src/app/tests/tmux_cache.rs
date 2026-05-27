@@ -513,7 +513,7 @@ fn picker_rows_assign_tui_keys_and_expose_display_contract() {
     panes[1].status = PaneStatus::metadata(StatusKind::Busy);
     panes[1].display.label = "Split Task".to_string();
 
-    let rows = super::picker::picker_rows(&panes);
+    let rows = super::picker::picker_rows(&panes, None, 0);
 
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].key, '1');
@@ -608,25 +608,126 @@ fn tmux_output_does_not_split_on_printable_field_content() {
 }
 
 #[test]
-fn parses_tmux_client_rows_and_selects_most_recent_tty() {
+fn parses_tmux_client_rows_and_selects_most_recent_tty_and_session() {
+    // The third row has no tty: tmux reports an empty `#{client_tty}` for the
+    // daemon's control-mode plumbing clients. Despite being the most recently
+    // active, it must be skipped so it drives neither the tty/session selection
+    // nor the attached-client count.
     let input = concat!(
-        "/dev/pts/5\x1f1711671000\n",
-        "/dev/pts/7\x1f1711672000\n",
-        "\x1f1711673000\n"
+        "/dev/pts/5\x1f1711671000\x1fnotes\n",
+        "/dev/pts/7\x1f1711672000\x1fagentscan\n",
+        "\x1f1711673000\x1fghost\n"
     );
 
     let clients = tmux::parse_tmux_client_rows(input).expect("tmux client output should parse");
     assert_eq!(clients.len(), 2);
     assert_eq!(clients[0].client_tty, "/dev/pts/5");
+    assert_eq!(clients[0].client_session.as_deref(), Some("notes"));
     assert_eq!(
         tmux::select_best_client_tty(&clients),
         Some("/dev/pts/7".to_string())
+    );
+    // The most-recently-active *interactive* client's session is the focused one;
+    // the more-recent tty-less plumbing client is ignored.
+    assert_eq!(
+        tmux::select_focused_session(&clients),
+        Some("agentscan".to_string())
+    );
+}
+
+#[test]
+fn parses_tmux_client_rows_skips_ttyless_plumbing_clients() {
+    // Reproduces the live daemon shape: one human client plus a tty-less
+    // control-mode client per session, each tied at the same activity on a
+    // different session. Counting the daemon's clients would inflate the attached
+    // count and make focus permanently ambiguous (top activity tied across
+    // sessions); excluding tty-less clients keeps a single, correct focus.
+    let input = concat!(
+        "/dev/ttys000\x1f200\x1fagentscan\n",
+        "\x1f300\x1fnotes\n",
+        "\x1f300\x1fdotfiles\n",
+        "\x1f300\x1fagentchat\n"
+    );
+
+    let clients = tmux::parse_tmux_client_rows(input).expect("tmux client output should parse");
+    assert_eq!(clients.len(), 1);
+    assert_eq!(clients[0].client_tty, "/dev/ttys000");
+    assert_eq!(
+        tmux::select_focused_session(&clients),
+        Some("agentscan".to_string())
+    );
+}
+
+#[test]
+fn parses_tmux_client_rows_without_session_column() {
+    // Defensive: a client row with only the core tty + activity columns still
+    // parses (session unknown) rather than failing the whole client list.
+    let input = "/dev/pts/9\x1f400\n";
+
+    let clients = tmux::parse_tmux_client_rows(input).expect("tmux client output should parse");
+    assert_eq!(clients.len(), 1);
+    assert_eq!(clients[0].client_tty, "/dev/pts/9");
+    assert_eq!(clients[0].client_session, None);
+    assert_eq!(
+        tmux::select_best_client_tty(&clients),
+        Some("/dev/pts/9".to_string())
+    );
+    // No known session → focus is undeterminable rather than guessed.
+    assert_eq!(tmux::select_focused_session(&clients), None);
+}
+
+#[test]
+fn focused_session_optimizes_for_one_client_and_degrades_gracefully() {
+    let parse = |input: &str| {
+        tmux::parse_tmux_client_rows(input).expect("tmux client output should parse")
+    };
+
+    // No clients attached → no focused pane.
+    assert_eq!(tmux::select_focused_session(&[]), None);
+
+    // Single client → its session (the case we optimize for).
+    assert_eq!(
+        tmux::select_focused_session(&parse("/dev/pts/1\x1f100\x1fagentscan\n")),
+        Some("agentscan".to_string())
+    );
+
+    // Several clients with a clear most-recent winner → that client's session.
+    assert_eq!(
+        tmux::select_focused_session(&parse(
+            "/dev/pts/1\x1f100\x1fnotes\n/dev/pts/2\x1f200\x1fagentscan\n"
+        )),
+        Some("agentscan".to_string())
+    );
+
+    // Tie at the top, but the tied clients agree on the session → use it.
+    assert_eq!(
+        tmux::select_focused_session(&parse(
+            "/dev/pts/1\x1f200\x1fagentscan\n/dev/pts/2\x1f200\x1fagentscan\n"
+        )),
+        Some("agentscan".to_string())
+    );
+
+    // Tie at the top across different sessions → ambiguous, decline to guess.
+    assert_eq!(
+        tmux::select_focused_session(&parse(
+            "/dev/pts/1\x1f200\x1fnotes\n/dev/pts/2\x1f200\x1fagentscan\n"
+        )),
+        None
+    );
+
+    // A tied top client with an unknown session is treated as disagreement, not
+    // silently skipped, so focus stays ambiguous rather than guessing the known one.
+    assert_eq!(
+        tmux::select_focused_session(&parse(
+            "/dev/pts/1\x1f200\x1fagentscan\n/dev/pts/2\x1f200\x1f\n"
+        )),
+        None
     );
 }
 
 #[test]
 fn parses_tmux_client_rows_with_escaped_delimiters() {
-    let input = "/dev/pts/5\\0371711671000\n/dev/pts/7\\0371711672000\n";
+    let input = "/dev/pts/5\\0371711671000\\037notes\n/dev/pts/7\\0371711672000\\037agentscan\n";
 
     let clients =
         tmux::parse_tmux_client_rows(input).expect("escaped tmux client output should parse");
@@ -636,6 +737,10 @@ fn parses_tmux_client_rows_with_escaped_delimiters() {
     assert_eq!(
         tmux::select_best_client_tty(&clients),
         Some("/dev/pts/7".to_string())
+    );
+    assert_eq!(
+        tmux::select_focused_session(&clients),
+        Some("agentscan".to_string())
     );
 }
 
@@ -707,10 +812,28 @@ fn active_flags_propagate_through_pane_record_and_picker() {
 
     // The is_active flag flows into the picker projection clients consume.
     let panes = vec![focused, pane_active_other_window, inactive];
-    let rows = super::picker::picker_rows(&panes);
+    let rows = super::picker::picker_rows(&panes, None, 2);
     assert!(rows[0].is_active);
     assert!(!rows[1].is_active);
     assert!(!rows[2].is_active);
+    // Without a focused session, no row is the live pane.
+    assert!(rows.iter().all(|row| !row.is_focused));
+    // The attached-client count is echoed on every row.
+    assert!(rows.iter().all(|row| row.attached_client_count == 2));
+
+    // With the "notes" session focused, only the active pane of that session is
+    // the live pane; an active-but-not-window-active pane stays unfocused.
+    let focused_rows = super::picker::picker_rows(&panes, Some("notes"), 1);
+    assert!(focused_rows[0].is_focused);
+    assert!(!focused_rows[1].is_focused);
+    assert!(!focused_rows[2].is_focused);
+
+    // A focused session with no matching active pane yields no live pane.
+    assert!(
+        super::picker::picker_rows(&panes, Some("other"), 1)
+            .iter()
+            .all(|row| !row.is_focused)
+    );
 }
 
 #[test]

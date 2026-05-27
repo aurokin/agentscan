@@ -12,12 +12,12 @@ use command::{
     run_tmux_status, run_tmux_text_output, tmux_pane_target_is_missing,
     tmux_scope_target_is_missing,
 };
-#[cfg(test)]
-pub(crate) use focus::select_best_client_tty;
 pub(crate) use focus::{
     FocusTmuxPaneResult, display_tmux_message, focus_tmux_pane, resolve_focus_target,
-    resolve_tmux_target_pane, switch_tmux_client_to_prefix,
+    resolve_tmux_target_pane, switch_tmux_client_to_prefix, tmux_focus_state,
 };
+#[cfg(test)]
+pub(crate) use focus::{select_best_client_tty, select_focused_session};
 pub(crate) use metadata::{
     set_tmux_pane_option, tmux_metadata_fields_to_clear, tmux_metadata_updates,
     unset_tmux_pane_option,

@@ -6,6 +6,11 @@
   color-scheme: dark;
 
   --bg: #1a1a1c;
+  /* RGB channels of --bg, so the glass tint can vary its alpha (see [data-glass]).
+     Keep in sync with --bg. --surface-alpha is overwritten at runtime by the
+     transparency slider; 1 = fully opaque, which is the no-glass default. */
+  --bg-rgb: 26, 26, 28;
+  --surface-alpha: 1;
   --bg-elevated: #232325;
   --bg-hover: rgba(255, 255, 255, 0.05);
   --bg-selected: rgba(255, 255, 255, 0.08);
@@ -24,6 +29,14 @@
   --dot-error: #f85149;
   /* Elevated surfaces in dark are lighter than the bg, so they need no shadow. */
   --card-shadow: none;
+  /* Keyboard-selected row: a neutral inset ring plus a soft lift, no accent and
+     no heavy fill. Flipped lighter for light mode below. */
+  --row-selected-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16),
+    0 6px 16px -8px rgba(0, 0, 0, 0.6);
+  /* Live (tmux-focused) row when it is not the selected row: a faint inset ring
+     only — no lift — so it reads as "this is live" without competing with the
+     selection cursor. */
+  --row-live-ring: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
   /* Opaque hover fill, translucent overlays (per alpha so dark is unchanged),
      and danger text — all flipped for light below. */
   --surface-strong: #2a2a2d;
@@ -52,11 +65,15 @@
      inputs, which use --bg, read as inset) — the same depth relationship as
      dark, inverted. A faint shadow gives the cards their lift. */
   --bg: #f4f4f6;
+  --bg-rgb: 244, 244, 246;
   --bg-elevated: #ffffff;
   --bg-hover: rgba(0, 0, 0, 0.04);
   --bg-selected: rgba(0, 0, 0, 0.07);
   --border: rgba(0, 0, 0, 0.1);
   --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.05), 0 2px 6px rgba(0, 0, 0, 0.05);
+  --row-selected-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.14),
+    0 6px 16px -8px rgba(0, 0, 0, 0.18);
+  --row-live-ring: inset 0 0 0 1px rgba(0, 0, 0, 0.09);
   --text: #1a1a1c;
   --text-muted: #57575d;
   --text-dim: #87878d;
@@ -88,6 +105,19 @@ body {
   min-height: 100vh;
   overflow: hidden;
   background: var(--bg);
+}
+
+/* macOS glass: the native vibrancy backdrop lives behind the webview (applied in
+   Rust). Letting it show means clearing the opaque window/body fill and tinting
+   only the base surface (.sidebar) with a slider-controlled alpha. Elevated panels
+   keep their solid fill, so text stays readable and cards float over the blur. */
+:root[data-glass="on"],
+:root[data-glass="on"] body {
+  background: transparent;
+}
+
+:root[data-glass="on"] .sidebar {
+  background: rgba(var(--bg-rgb), var(--surface-alpha));
 }
 
 button,
@@ -309,15 +339,24 @@ p {
   background: var(--bg-hover);
 }
 
+/* Keyboard cursor: a soft ring + lift rather than a heavy fill or left accent.
+   z-index lifts it so the drop shadow reads above adjacent rows in the tight
+   1px-gap list. Per-window `is_active` is intentionally unstyled — tmux marks
+   the active pane of every window, so it landed on essentially every row and
+   read as noise; the status dot already conveys per-pane liveness. */
 .agent-row.selected {
-  background: var(--bg-selected);
+  position: relative;
+  z-index: 1;
+  background: var(--bg-hover);
+  box-shadow: var(--row-selected-shadow);
 }
 
-/* The pane tmux is focused on. A left accent bar is distinct from the
-   selection background fill, so the two read clearly when they coincide.
-   inset box-shadow avoids any layout shift. */
-.agent-row.active {
-  box-shadow: inset 3px 0 0 0 var(--accent);
+/* The collapsed live (tmux-focused) pane when the cursor has been moved off it.
+   The cursor normally follows focus, so the markup only adds `.live` when the
+   row isn't also `.selected` — the two never coexist. A faint ring marks the
+   live pane during manual navigation without competing with the selection. */
+.agent-row.live {
+  box-shadow: var(--row-live-ring);
 }
 
 .status-dot {
@@ -419,6 +458,28 @@ kbd {
 }
 
 /* ---------- Bottom bar ---------- */
+
+/* Caution strip just above the footer: informational, not an error. Uses the
+   warm "busy" dot hue so it reads as a heads-up across both themes. */
+.client-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  background: rgba(227, 179, 65, 0.1);
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+
+.client-warning-icon {
+  color: var(--dot-busy);
+  flex: 0 0 auto;
+  font-size: 12px;
+  line-height: 1.35;
+}
 
 .bottombar {
   display: flex;
@@ -765,6 +826,84 @@ kbd {
 .theme-option.active {
   background: var(--accent);
   color: var(--on-accent);
+}
+
+/* ---------- Glass controls (macOS) ---------- */
+
+.glass-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.setting-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.setting-label > span:first-child {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.setting-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.switch {
+  flex: 0 0 auto;
+  position: relative;
+  width: 40px;
+  min-height: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 999px;
+  background: var(--surface-strong);
+  border: 1px solid var(--border);
+  transition: background 0.15s ease;
+}
+
+.switch.on {
+  background: var(--accent);
+  border-color: transparent;
+}
+
+.switch-thumb {
+  position: absolute;
+  top: 50%;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  transform: translateY(-50%);
+  transition: left 0.15s ease;
+}
+
+.switch.on .switch-thumb {
+  left: 19px;
+}
+
+.glass-slider {
+  flex: 0 0 140px;
+  width: 140px;
+  min-height: 0;
+  padding: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
 }
 
 button {

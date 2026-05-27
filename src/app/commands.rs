@@ -300,14 +300,27 @@ fn command_providers(args: &ProvidersArgs) -> Result<()> {
 fn command_hotkeys(args: &HotkeysArgs) -> Result<()> {
     let mut snapshot = snapshot_for_consumer(args.refresh, args.auto_start)?;
     snapshot::filter_snapshot(&mut snapshot, args.all);
-    output::emit_picker_rows(&picker::picker_rows(&snapshot.panes), args.format)
+    // Best-effort: resolve the focused pane and attached-client count live from
+    // tmux so clients can highlight the pane the user is in and warn about
+    // multiple clients. Any tmux error degrades to "no focus" rather than failing.
+    let focus = tmux::tmux_focus_state().unwrap_or_default();
+    output::emit_picker_rows(
+        &picker::picker_rows(
+            &snapshot.panes,
+            focus.focused_session.as_deref(),
+            u32::try_from(focus.attached_client_count).unwrap_or(u32::MAX),
+        ),
+        args.format,
+    )
 }
 
 fn command_hotkey(args: &HotkeyArgs) -> Result<()> {
     let selected_key = picker::normalize_picker_key(&args.key)?;
     let mut snapshot = snapshot_for_consumer(args.refresh, args.auto_start)?;
     snapshot::filter_snapshot(&mut snapshot, args.all);
-    let rows = picker::picker_rows(&snapshot.panes);
+    // Focus highlight and client count are irrelevant when resolving a key to a
+    // pane to switch to.
+    let rows = picker::picker_rows(&snapshot.panes, None, 0);
     let row = rows
         .iter()
         .find(|row| row.key == selected_key)
