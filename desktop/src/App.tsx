@@ -14,6 +14,14 @@ const THEME_STORAGE_KEY = "agentscan.desktop.theme";
 const DEBUG_LOG_LIMIT = 80;
 const LOCAL_PROFILE_ID = "local";
 
+// Per-row picker hotkeys are triggered with Control rather than Command: the key
+// set (1-5, Q E R F G T Z X C V B) overlaps macOS ⌘ shortcuts — ⌘Q quits, ⌘C/V/X
+// are clipboard, ⌘F/Z/R are find/undo/refresh — so ⌘ would be hostile. Control has
+// no such collisions (only emacs text-nav in inputs, which we override on a match).
+const IS_MAC =
+  typeof navigator !== "undefined" && /Mac|iP(hone|ad|od)/.test(navigator.platform);
+const HOTKEY_MODIFIER_LABEL = IS_MAC ? "⌃" : "Ctrl ";
+
 let hotkeyOperationQueue = Promise.resolve();
 let liveOperationQueue = Promise.resolve();
 let windowOperationQueue = Promise.resolve();
@@ -854,6 +862,31 @@ function App() {
   function handlePickerKeyDown(event: KeyboardEvent) {
     if (view !== "picker") {
       return;
+    }
+
+    // Control + a row's displayed hotkey jumps straight to that pane. Require
+    // Control alone so we never shadow ⌘ shortcuts or Ctrl+⌘ combos. On macOS,
+    // editing uses ⌘, so Ctrl is free even inside the search box — bypass the
+    // interactive-target gate so you can filter then jump in one motion. On
+    // Windows/Linux, Ctrl *is* the editing modifier (Ctrl+C/V/X/Z/F), so only
+    // honor the hotkey when no input/button is focused; otherwise native
+    // clipboard/find/undo wins. (Key match is character-based to mirror the kbd
+    // label and the CLI's char hotkeys; non-US layouts that shift the digit row
+    // may no-op on 1-5, which is a silent miss rather than a wrong action.)
+    const ctrlActivate =
+      event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey &&
+      !event.shiftKey &&
+      event.key.length === 1;
+    if (ctrlActivate && (IS_MAC || !isInteractiveShortcutTarget(event.target))) {
+      const target = pickerRows.find((row) => row.key === event.key.toUpperCase());
+      if (target) {
+        event.preventDefault();
+        setSelectedPaneId(target.pane_id);
+        void activateSelectedRow(target);
+        return;
+      }
     }
 
     if (isInteractiveShortcutTarget(event.target)) {
@@ -2261,7 +2294,10 @@ function GroupedPicker({
                   )}
                   <span className="agent-label">{row.display_label}</span>
                   <span className="agent-suffix">{paneSuffix(row)}</span>
-                  <kbd>{row.key}</kbd>
+                  <kbd>
+                    <span className="kbd-mod">{HOTKEY_MODIFIER_LABEL}</span>
+                    {row.key}
+                  </kbd>
                 </li>
               );
             })}
