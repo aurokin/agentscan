@@ -47,7 +47,7 @@ pub(crate) use lifecycle::{
     test_daemon_start_env_removes_from, test_daemon_start_tmux_envs_from,
     test_explicit_macos_daemon_start_preflight, test_implicit_consumer_macos_auto_start_preflight,
     test_macos_executable_assessment_for_outputs, test_macos_start_requires_trust_preflight,
-    test_tui_macos_auto_start_preflight,
+    test_tui_macos_auto_start_preflight, test_write_subscription_keepalive,
 };
 use snapshot_store::SnapshotStore;
 pub(crate) use socket_server::DaemonSocketState;

@@ -21,7 +21,9 @@
   Because `window_activity` ticks fire on any output in the window, the control-event refresh
   now skips publishing when the refreshed snapshot is materially unchanged (matching the settle
   and reconcile paths), so a spinner redraw or log tail in one pane no longer republishes an
-  identical snapshot to subscribers.
+  identical snapshot to subscribers. So a closed consumer is still detected promptly while the
+  stream is silent, `agentscan subscribe` now emits a `{"type":"keepalive"}` heartbeat frame
+  after each idle second; consumers that switch on the frame `type` ignore it.
 
 ### Fixed
 
