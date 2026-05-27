@@ -3,7 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
-import { providerLogo } from "./providerLogos";
+import { providerLogo, type LogoTheme } from "./providerLogos";
+import logoUrl from "./assets/agentscan-logo.png";
 
 const PICKER_HOTKEY = "CommandOrControl+Shift+A";
 const LIVE_PICKER_EVENT = "agentscan-live-picker";
@@ -14,11 +15,21 @@ const THEME_STORAGE_KEY = "agentscan.desktop.theme";
 // macOS "glass": vibrancy backdrop (Rust) + a translucent surface tint (CSS).
 const GLASS_STORAGE_KEY = "agentscan.desktop.glass";
 const SURFACE_ALPHA_STORAGE_KEY = "agentscan.desktop.surfaceAlpha";
-// Floor the tint above 0 so panels never become fully invisible; default leans
-// frosted rather than maximally clear.
-const SURFACE_ALPHA_MIN = 0.4;
+// Tint alpha floor of 0.20 caps transparency at 80% (the slider reads 1 - alpha):
+// the surface always keeps a little tint over the native vibrancy frost, so the UI
+// never washes out fully even at the most transparent setting.
+const SURFACE_ALPHA_MIN = 0.2;
 const SURFACE_ALPHA_MAX = 1;
-const SURFACE_ALPHA_DEFAULT = 0.72;
+// First-run default: 0.50 alpha == 50% transparency (the slider reads 1 - alpha),
+// a balanced frosted look — clearly glassy but still a substantial surface tint.
+const SURFACE_ALPHA_DEFAULT = 0.5;
+// "How see-through is the surface" as a 0..1 scalar (0 frosted/solid, 1 fully
+// clear) that adaptive tokens interpolate against. Mirrors the slider math.
+const glassClearFor = (alpha: number) =>
+  (SURFACE_ALPHA_MAX - alpha) / (SURFACE_ALPHA_MAX - SURFACE_ALPHA_MIN);
+const setGlassClear = (clear: number) => {
+  document.documentElement.style.setProperty("--glass-clear", clear.toFixed(3));
+};
 const DEBUG_LOG_LIMIT = 80;
 const LOCAL_PROFILE_ID = "local";
 
@@ -163,6 +174,19 @@ type ShellView = "picker" | "settings";
 
 type ThemePreference = "dark" | "light" | "system";
 
+// Collapse a preference to the concrete theme in effect, resolving "system" from
+// the OS appearance. Used to pick per-theme logo variants.
+function resolveThemeMode(pref: ThemePreference): LogoTheme {
+  if (pref !== "system") {
+    return pref;
+  }
+  try {
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  } catch {
+    return "dark";
+  }
+}
+
 type PickerGroup = {
   project: string;
   rows: PickerRow[];
@@ -263,10 +287,20 @@ function App() {
   const [isDebugOpen, setIsDebugOpen] = useState(false);
   // Appearance: dark / light / system (system follows the OS).
   const [themePref, setThemePref] = useState<ThemePreference>(loadStoredTheme);
+  // Concrete theme in effect, kept in sync by the theme effect; drives per-theme
+  // logo variant selection. Seeded so first paint picks the right logos.
+  const [resolvedTheme, setResolvedTheme] = useState<LogoTheme>(() =>
+    resolveThemeMode(loadStoredTheme()),
+  );
   // macOS glass: the vibrancy backdrop toggle and the tint opacity over it. The
   // toggle is only surfaced on macOS; elsewhere these stay inert.
   const [glassEnabled, setGlassEnabled] = useState<boolean>(loadStoredGlass);
   const [surfaceAlpha, setSurfaceAlpha] = useState<number>(loadStoredSurfaceAlpha);
+  // The glass toggle's async resolution sets `--glass-clear` from the latest
+  // alpha; reading it through a render-synced ref keeps the toggle effect off
+  // surfaceAlpha's dep list (so a slider tick can't re-fire the native call).
+  const surfaceAlphaRef = useRef(surfaceAlpha);
+  surfaceAlphaRef.current = surfaceAlpha;
   // Tracks the active runner config so in-flight refreshes/focus can detect a
   // profile switch OR a settings change and discard results from the previous
   // target. Updated synchronously during render (below) so async completions
@@ -885,6 +919,7 @@ function App() {
       const resolved =
         themePref === "system" ? (media.matches ? "dark" : "light") : themePref;
       document.documentElement.setAttribute("data-theme", resolved);
+      setResolvedTheme(resolved);
     };
     apply();
 
@@ -920,14 +955,20 @@ function App() {
         if (glassEnabled) {
           await invoke("set_window_glass", { enabled: true });
           if (!cancelled) {
+            // Flip the surface translucent and arm the adaptive tokens together,
+            // so `--glass-clear` is only nonzero once the blur is actually live.
             document.documentElement.setAttribute("data-glass", "on");
+            setGlassClear(glassClearFor(surfaceAlphaRef.current));
           }
         } else {
           document.documentElement.setAttribute("data-glass", "off");
+          setGlassClear(0);
           await invoke("set_window_glass", { enabled: false });
         }
       } catch (error) {
+        // Native call failed: keep the surface opaque AND the tokens un-adapted.
         document.documentElement.setAttribute("data-glass", "off");
+        setGlassClear(0);
         appendDebugEntry({
           kind: "command",
           label: "Glass effect",
@@ -943,8 +984,17 @@ function App() {
 
   // Drive the tint opacity via a CSS variable; the data-glass rules in styles.css
   // only consume it while glass is on, so this is harmless when glass is off.
+  // `--glass-clear` (a 0..1 see-through scalar the adaptive tokens interpolate
+  // against) is owned by the glass-toggle effect so it stays in lockstep with the
+  // actual data-glass state, not the pending React intent. Here we only refresh it
+  // for slider moves while glass is already live; on/off transitions are that
+  // effect's job.
   useEffect(() => {
-    document.documentElement.style.setProperty("--surface-alpha", String(surfaceAlpha));
+    const root = document.documentElement;
+    root.style.setProperty("--surface-alpha", String(surfaceAlpha));
+    if (root.getAttribute("data-glass") === "on") {
+      setGlassClear(glassClearFor(surfaceAlpha));
+    }
     try {
       window.localStorage.setItem(SURFACE_ALPHA_STORAGE_KEY, surfaceAlpha.toFixed(2));
     } catch {
@@ -1647,6 +1697,7 @@ function App() {
           filterQuery={pickerFilter}
           focusedPaneId={focusedPaneId}
           groups={pickerGroups}
+          logoTheme={resolvedTheme}
           selectedPaneId={selectedPaneId}
           state={pickerDataState}
           totalRows={allPickerRows.length}
@@ -1948,13 +1999,17 @@ function loadStoredTheme(): ThemePreference {
 }
 
 function loadStoredGlass(): boolean {
+  // Glass is macOS-only (native vibrancy); other platforms never enable it.
   if (!IS_MAC) {
     return false;
   }
   try {
-    return window.localStorage.getItem(GLASS_STORAGE_KEY) === "on";
+    const raw = window.localStorage.getItem(GLASS_STORAGE_KEY);
+    // Default glass on for macOS on first run (no stored choice); once the user
+    // toggles it, "on"/"off" is persisted and respected.
+    return raw === null ? true : raw === "on";
   } catch {
-    return false;
+    return true;
   }
 }
 
@@ -2439,6 +2494,7 @@ function GroupedPicker({
   filterQuery,
   focusedPaneId,
   groups,
+  logoTheme,
   selectedPaneId,
   state,
   totalRows,
@@ -2450,6 +2506,7 @@ function GroupedPicker({
   filterQuery: string;
   focusedPaneId: string | null;
   groups: PickerGroup[];
+  logoTheme: LogoTheme;
   selectedPaneId: string | null;
   state: PickerState;
   totalRows: number;
@@ -2484,7 +2541,12 @@ function GroupedPicker({
   }
 
   if (rowCount === 0) {
-    return <p className="empty-note">No agents detected.</p>;
+    return (
+      <div className="empty-detected">
+        <img className="empty-logo" src={logoUrl} alt="agentscan" />
+        <p className="empty-note">No agents detected.</p>
+      </div>
+    );
   }
 
   return (
@@ -2504,7 +2566,7 @@ function GroupedPicker({
               const isFocused = row.pane_id === focusedPaneId;
               const isFocusing =
                 activation.status === "running" && activation.paneId === row.pane_id;
-              const logo = providerLogo(row.provider);
+              const logo = providerLogo(row.provider, logoTheme);
               return (
                 <li
                   aria-selected={isSelected}
