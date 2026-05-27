@@ -17,25 +17,46 @@ pub(crate) struct PickerRow {
     pub(crate) display_label: String,
     pub(crate) location: PaneLocation,
     pub(crate) location_tag: String,
-    /// Whether this pane is the currently-focused tmux pane (active pane of the
-    /// active window). Lets clients highlight the live pane.
+    /// Whether this pane is the active pane of its window (`pane_active &&
+    /// window_active`). True for one pane per session, so clients should prefer
+    /// `is_focused` to mark the single live pane.
     pub(crate) is_active: bool,
+    /// Whether this is the single pane the user is currently focused on: the
+    /// active pane of the session the most-recently-active tmux client is viewing.
+    /// At most one row is `is_focused`; all are `false` when nothing is attached.
+    pub(crate) is_focused: bool,
+    /// Number of clients attached to the tmux server. A server-level fact echoed
+    /// on every row (the picker output is a flat array, so there is no envelope to
+    /// carry it once); `>1` signals best-effort focus and a multiple-clients hint.
+    pub(crate) attached_client_count: u32,
 }
 
-pub(crate) fn picker_rows(panes: &[PaneRecord]) -> Vec<PickerRow> {
+pub(crate) fn picker_rows(
+    panes: &[PaneRecord],
+    focused_session: Option<&str>,
+    attached_client_count: u32,
+) -> Vec<PickerRow> {
     panes
         .iter()
         .zip(PICKER_SELECTION_KEYS)
-        .map(|(pane, key)| PickerRow {
-            key,
-            pane_id: pane.pane_id.clone(),
-            provider: pane.provider,
-            status: pane.status.clone(),
-            display: pane.display.clone(),
-            display_label: pane.display.label.clone(),
-            location: pane.location.clone(),
-            location_tag: pane.location.tag(),
-            is_active: pane.is_active(),
+        .map(|(pane, key)| {
+            let is_active = pane.is_active();
+            PickerRow {
+                key,
+                pane_id: pane.pane_id.clone(),
+                provider: pane.provider,
+                status: pane.status.clone(),
+                display: pane.display.clone(),
+                display_label: pane.display.label.clone(),
+                location: pane.location.clone(),
+                location_tag: pane.location.tag(),
+                is_active,
+                // The focused pane is the active pane of the focused session, so
+                // require both signals — that yields exactly one row.
+                is_focused: is_active
+                    && focused_session.is_some_and(|session| session == pane.location.session_name),
+                attached_client_count,
+            }
         })
         .collect()
 }

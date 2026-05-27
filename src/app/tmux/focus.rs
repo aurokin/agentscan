@@ -70,8 +70,14 @@ fn current_client_tty() -> Result<Option<String>> {
     }
 }
 
+fn client_list_format() -> String {
+    format!(
+        "#{{client_tty}}{TMUX_FORMAT_DELIM}#{{client_activity}}{TMUX_FORMAT_DELIM}#{{client_session}}"
+    )
+}
+
 fn attached_client_tty() -> Result<Option<String>> {
-    let format = format!("#{{client_tty}}{TMUX_FORMAT_DELIM}#{{client_activity}}");
+    let format = client_list_format();
     let Some(stdout) = run_tmux_text_output(
         &["list-clients", "-F", &format],
         "tmux list-clients",
@@ -88,10 +94,72 @@ fn attached_client_tty() -> Result<Option<String>> {
 }
 
 pub(crate) fn select_best_client_tty(clients: &[TmuxClientRow]) -> Option<String> {
+    // A focus action must target a real tty. Parsing already drops control-mode
+    // clients, but guard against an attached client without a tty so we never
+    // hand `switch-client -c ""` an empty target.
     clients
         .iter()
+        .filter(|client| !client.client_tty.trim().is_empty())
         .max_by_key(|client| client.client_activity)
         .map(|client| client.client_tty.clone())
+}
+
+/// The session the user is currently viewing, used to highlight the live pane.
+///
+/// We optimize for a single attached client (the common case). With several, the
+/// most-recently-active one wins. A tie at the top is only ambiguous when those
+/// clients view *different* sessions: if they agree (or there's just one) we use
+/// that session, otherwise we return `None` so a client never gets the cursor
+/// yanked to a guess. `None` also covers "no clients attached".
+pub(crate) fn select_focused_session(clients: &[TmuxClientRow]) -> Option<String> {
+    let max_activity = clients.iter().map(|client| client.client_activity).max()?;
+
+    let mut top_clients = clients
+        .iter()
+        .filter(|client| client.client_activity == max_activity);
+
+    // Anchor on the first most-recent client. A missing session on any of them
+    // is treated as disagreement (ambiguous), not silently skipped, so we never
+    // resolve focus from partial knowledge.
+    let first = top_clients.next()?.client_session.clone()?;
+    top_clients
+        .all(|client| client.client_session.as_deref() == Some(first.as_str()))
+        .then_some(first)
+}
+
+/// The live tmux client state clients need to highlight the focused pane and warn
+/// about multiple attached clients.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct TmuxFocusState {
+    /// Session the user is focused on, or `None` when undeterminable (see
+    /// [`select_focused_session`]).
+    pub(crate) focused_session: Option<String>,
+    /// Number of clients attached to the tmux server. `>1` means focus-following
+    /// is best-effort and clients should surface a "multiple clients" hint.
+    pub(crate) attached_client_count: usize,
+}
+
+/// Resolve the focused session and attached-client count from tmux. Returns an
+/// empty state outside tmux, with no client attached, or on any tmux error —
+/// callers treat that as "no focused pane, no warning" rather than failing.
+pub(crate) fn tmux_focus_state() -> Result<TmuxFocusState> {
+    let format = client_list_format();
+    let Some(stdout) = run_tmux_text_output(
+        &["list-clients", "-F", &format],
+        "tmux list-clients",
+        "tmux list-clients",
+        |_| true,
+        "tmux client output was not UTF-8",
+    )?
+    else {
+        return Ok(TmuxFocusState::default());
+    };
+
+    let clients = parse_tmux_client_rows(&stdout)?;
+    Ok(TmuxFocusState {
+        focused_session: select_focused_session(&clients),
+        attached_client_count: clients.len(),
+    })
 }
 
 pub(crate) fn resolve_focus_client_tty(client_tty: Option<&str>) -> Result<Option<String>> {

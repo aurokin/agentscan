@@ -280,6 +280,9 @@ impl ProviderMatch {
 pub(crate) struct TmuxClientRow {
     pub(crate) client_tty: String,
     pub(crate) client_activity: i64,
+    /// Session this client is currently viewing (`#{client_session}`). Used to
+    /// resolve which pane the user is actually focused on across sessions.
+    pub(crate) client_session: Option<String>,
 }
 
 impl StatusKind {

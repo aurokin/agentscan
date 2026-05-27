@@ -146,9 +146,17 @@ type PickerRow = {
   status: { kind: string };
   display_label: string;
   location_tag: string;
-  // The currently-focused tmux pane (active pane of the active window).
-  // Distinct from the selection cursor; rendered with its own treatment.
+  // Active pane of its window — true for one pane per session, so not unique.
   is_active: boolean;
+  // The single pane the user is actually focused on (active pane of the session
+  // the most-recently-active tmux client is viewing). At most one row is true.
+  // The selection cursor defaults to and follows this pane. Optional: an older
+  // or remote `agentscan` (schema < 5) omits it; we fall back to `is_active`.
+  is_focused?: boolean;
+  // Clients attached to the tmux server (server-level, echoed on every row).
+  // >1 means focus-following is best-effort; we surface a banner. Optional for
+  // the same backward-compatibility reason; absent reads as 0 (no banner).
+  attached_client_count?: number;
 };
 
 type ShellView = "picker" | "settings";
@@ -276,6 +284,12 @@ function App() {
   const [liveRetryToken, setLiveRetryToken] = useState(0);
   const liveRetryAttemptRef = useRef(0);
   const [selectedPaneId, setSelectedPaneId] = useState<string | null>(null);
+  // The focused pane id we last *observed as visible*. We follow focus only when
+  // this value changes (a genuine focus move), not when it merely reappears, so a
+  // manual j/k/click pick survives a search filter being applied and cleared, and
+  // a focus move to a hidden pane is still followed once that pane becomes
+  // visible again.
+  const prevFocusedPaneIdRef = useRef<string | null>(null);
   const [activation, setActivation] = useState<PickerActivation>({ status: "idle" });
   // Synchronous in-flight guard for activation. The `activation` state alone
   // can't gate concurrent activations: a double-click (or two rapid clicks)
@@ -709,6 +723,9 @@ function App() {
     : { status: "connecting", message: "Switching profile…" };
   const allPickerRows =
     pickerDataState.status === "ready" ? pickerDataState.rows : [];
+  // Server-level count echoed on every row; >1 means focus-following is
+  // best-effort, so we warn that the live-pane highlight may not be reliable.
+  const attachedClientCount = allPickerRows[0]?.attached_client_count ?? 0;
   const pickerRows = useMemo(
     () => groupRowsByProject(filterPickerRows(allPickerRows, pickerFilter)).flatMap((g) => g.rows),
     [allPickerRows, pickerFilter],
@@ -719,23 +736,76 @@ function App() {
     ? Math.max(0, pickerRows.findIndex((row) => row.pane_id === selectedPaneId))
     : 0;
   const selectedRow = pickerRows[selectedIndex] ?? null;
+  // Derive from the unfiltered rows: the search filter must not change the focus
+  // signal, or hiding the focused row would null it and spuriously reset
+  // follow-state, yanking a manual selection when the filter is cleared.
+  //
+  // Prefer the collapsed `is_focused` signal. If no row carries it — an older or
+  // remote `agentscan` (schema < 5) that doesn't emit the field — fall back to
+  // the first `is_active` pane so the picker still defaults to/highlights a live
+  // pane instead of going dark.
+  const focusedPaneId =
+    allPickerRows.find((row) => row.is_focused)?.pane_id ??
+    (allPickerRows.some((row) => row.is_focused !== undefined)
+      ? null
+      : (allPickerRows.find((row) => row.is_active)?.pane_id ?? null));
 
   useEffect(() => {
     if (pickerStatus === "loading") {
       return;
     }
 
-    if (pickerRows.length === 0) {
-      if (allPickerRows.length === 0 && selectedPaneId !== null) {
+    // No data at all → clear selection and focus-follow state.
+    if (allPickerRows.length === 0) {
+      if (selectedPaneId !== null) {
         setSelectedPaneId(null);
       }
+      prevFocusedPaneIdRef.current = null;
       return;
     }
 
-    if (!selectedPaneId || !pickerRows.some((row) => row.pane_id === selectedPaneId)) {
-      setSelectedPaneId(pickerRows[0].pane_id);
+    // Filter matched nothing: leave selection and follow-state untouched so
+    // clearing the filter restores them. There's no visible row to target now.
+    if (pickerRows.length === 0) {
+      return;
     }
-  }, [allPickerRows.length, pickerRows, pickerStatus, selectedPaneId]);
+
+    const focusedVisible =
+      focusedPaneId !== null && pickerRows.some((row) => row.pane_id === focusedPaneId);
+
+    // Follow a genuine focus *move*: we have a prior observed focus value and it
+    // changed to a different, now-visible pane. Comparing focus to its own
+    // previous value — not to the current selection — is the key to surviving the
+    // search filter: applying then clearing a filter doesn't change the focus
+    // value, so it never re-snaps over a manual pick. A `null` previous value is
+    // first observation / re-init, *not* a move: it must fall through to the
+    // selection-validity branch so an already-made manual pick isn't clobbered.
+    if (
+      focusedVisible &&
+      prevFocusedPaneIdRef.current !== null &&
+      focusedPaneId !== prevFocusedPaneIdRef.current
+    ) {
+      prevFocusedPaneIdRef.current = focusedPaneId;
+      setSelectedPaneId(focusedPaneId);
+      return;
+    }
+
+    // Record the focus value once the focused pane is visible: initializing the
+    // marker on first observation, or confirming an unchanged value. While it's
+    // hidden (filtered) or unknown (null), leave the marker so a pending move is
+    // still followed when the pane reappears.
+    if (focusedVisible) {
+      prevFocusedPaneIdRef.current = focusedPaneId;
+    }
+
+    // Keep a valid, visible selection (initial mount with no pick yet, or the
+    // selected row was filtered out / vanished). Prefer the focused pane when
+    // visible, else the first row. A still-valid selection — including a manual
+    // pick made before this effect first ran — is left untouched.
+    if (!selectedPaneId || !pickerRows.some((row) => row.pane_id === selectedPaneId)) {
+      setSelectedPaneId(focusedVisible ? focusedPaneId! : pickerRows[0].pane_id);
+    }
+  }, [allPickerRows.length, pickerRows, pickerStatus, selectedPaneId, focusedPaneId]);
 
   useEffect(() => {
     // activeRunnerKeyRef is updated synchronously during render; here we reset
@@ -755,6 +825,8 @@ function App() {
     // immediately rather than waiting on the stale call's finally.
     activationInFlightRef.current = false;
     setSelectedPaneId(null);
+    // Re-arm focus-follow so the new profile snaps to its own focused pane.
+    prevFocusedPaneIdRef.current = null;
     setIsSourceMenuOpen(false);
     liveRetryAttemptRef.current = 0;
   }, [activeProfile]);
@@ -1573,6 +1645,7 @@ function App() {
         <GroupedPicker
           activation={activation}
           filterQuery={pickerFilter}
+          focusedPaneId={focusedPaneId}
           groups={pickerGroups}
           selectedPaneId={selectedPaneId}
           state={pickerDataState}
@@ -1582,6 +1655,18 @@ function App() {
           onSelect={(row) => setSelectedPaneId(row.pane_id)}
         />
       </div>
+
+      {attachedClientCount > 1 ? (
+        <div className="client-warning" role="status">
+          <span className="client-warning-icon" aria-hidden="true">
+            ⚠
+          </span>
+          <span>
+            Multiple clients attached to the tmux server — the live-pane highlight
+            follows your most recent one.
+          </span>
+        </div>
+      ) : null}
 
       <footer className="bottombar">
         <div className="source-switcher" ref={sourceMenuRef}>
@@ -2352,6 +2437,7 @@ async function placePickerWindow() {
 function GroupedPicker({
   activation,
   filterQuery,
+  focusedPaneId,
   groups,
   selectedPaneId,
   state,
@@ -2362,6 +2448,7 @@ function GroupedPicker({
 }: {
   activation: PickerActivation;
   filterQuery: string;
+  focusedPaneId: string | null;
   groups: PickerGroup[];
   selectedPaneId: string | null;
   state: PickerState;
@@ -2408,17 +2495,23 @@ function GroupedPicker({
           <ul className="agent-list">
             {group.rows.map((row) => {
               const isSelected = row.pane_id === selectedPaneId;
-              // The pane tmux is currently focused on — distinct from the
-              // selection cursor, so it gets its own accent treatment.
-              const isActive = row.is_active;
+              // The single live pane the user is in. The selection cursor follows
+              // it, so in the common case the two coincide and the selection ring
+              // sits on the live pane. When they diverge (manual j/k/click away),
+              // a faint "live" ring keeps the live pane discoverable. Derived from
+              // the same resolved id as the cursor so the legacy `is_active`
+              // fallback stays single-row and consistent.
+              const isFocused = row.pane_id === focusedPaneId;
               const isFocusing =
                 activation.status === "running" && activation.paneId === row.pane_id;
               const logo = providerLogo(row.provider);
               return (
                 <li
                   aria-selected={isSelected}
-                  aria-current={isActive ? "true" : undefined}
-                  className={`agent-row${isSelected ? " selected" : ""}${isActive ? " active" : ""}`}
+                  aria-current={isFocused ? "true" : undefined}
+                  className={`agent-row${isSelected ? " selected" : ""}${
+                    isFocused && !isSelected ? " live" : ""
+                  }`}
                   key={`${row.key}-${row.pane_id}`}
                   onClick={() => {
                     // Single-click selects and switches the active tmux pane.

@@ -86,14 +86,28 @@ pub(crate) fn parse_tmux_client_rows(input: &str) -> Result<Vec<TmuxClientRow>> 
         }
 
         let fields = split_tmux_fields(line);
-        if fields.len() != 2 {
+        // Require the stable core columns: tty + activity. The session column is
+        // read defensively (`fields.get(2)`) so it can't turn a tmux quirk into a
+        // hard parse failure that loses every client and breaks focus-action tty
+        // resolution. Fewer than two columns is genuine format corruption.
+        if fields.len() < 2 {
             bail!(
-                "unexpected tmux client field count on line {}: expected 2, got {}",
+                "unexpected tmux client field count on line {}: expected at least 2, got {}",
                 line_number + 1,
                 fields.len()
             );
         }
 
+        // Drop clients without a controlling terminal. tmux reports an empty
+        // `#{client_tty}` for programmatic, control-mode attachments that have no
+        // pty — and the agentscan daemon itself attaches exactly one such
+        // control-mode client per session for snapshotting (confirmed via
+        // `list-clients`: each shows `control-mode` with an empty tty). These are
+        // server plumbing, not humans watching panes, so excluding them keeps the
+        // attached-client count and focused-session resolution scoped to real
+        // interactive clients. A human client always has a tty — including a human
+        // control-mode client such as iTerm2 `tmux -CC`, which keeps its pty and
+        // is therefore retained and still able to anchor focus.
         let client_tty = fields[0].trim();
         if client_tty.is_empty() {
             continue;
@@ -107,6 +121,7 @@ pub(crate) fn parse_tmux_client_rows(input: &str) -> Result<Vec<TmuxClientRow>> 
                     line_number + 1
                 )
             })?,
+            client_session: fields.get(2).and_then(|session| empty_to_none(session)),
         });
     }
 

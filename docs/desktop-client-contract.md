@@ -68,19 +68,54 @@ agentscan daemon status --format json
 
 for lightweight diagnostics.
 
-### Active-pane indicator (schema 5+)
+### Active-pane and focused-pane indicators (schema 5+)
 
-Each picker row carries `is_active`, and each snapshot pane carries
-`tmux.pane_active` and `tmux.window_active`. `is_active` is the derived
-`pane_active && window_active`: the active pane of the active window — i.e. the
-currently-focused pane. Clients should highlight the row whose `is_active` is
-true.
+Each picker row carries `is_active` and `is_focused`, and each snapshot pane
+carries `tmux.pane_active` and `tmux.window_active`.
 
-Caveat: with multiple attached tmux sessions, `is_active` can hold for one pane
-per attached session. Disambiguating "the pane the most-recently-active client
-is looking at" is left to the client (e.g. via the focus client-tty it already
-tracks); the backend reports tmux's raw layered state without collapsing it to a
-single global active pane.
+`is_active` is the derived `pane_active && window_active`: the active pane of the
+active window. Because tmux tracks this per session, `is_active` can hold for one
+pane per attached session — it is *not* a single global signal. The backend
+reports tmux's raw layered state without collapsing it.
+
+`is_focused` is the collapsed signal: at most one row across the whole picker is
+`is_focused`, identifying the pane the user is actually in. It is the active pane
+(`is_active`) of the session that the most-recently-active attached tmux client
+is viewing, resolved live by `hotkeys` from `list-clients` (`#{client_activity}`,
+`#{client_session}`). Clients should highlight / default selection to the
+`is_focused` row, falling back to first-row or last selection when none is set.
+
+Client resolution counts *interactive* tmux clients only. The agentscan daemon
+attaches one control-mode client per session for snapshotting, which tmux reports
+with an empty `#{client_tty}`; these are server plumbing, not humans watching
+panes, so `hotkeys` ignores tty-less clients when resolving focus and counting
+clients. A human client always has a tty — including a human control-mode client
+such as iTerm2 `tmux -CC`, which keeps its pty and is still counted and eligible
+to anchor focus.
+
+Multiple-client semantics (we optimize for one attached client):
+
+- 0 clients attached → no row is `is_focused`.
+- 1 client → the active pane of its session.
+- N clients with a clear most-recently-active winner → that client's session.
+- N clients tied at the most-recent activity, all viewing the same session →
+  that session.
+- N clients tied across *different* sessions → ambiguous; no row is `is_focused`,
+  so clients should not move the cursor rather than guess.
+
+`is_focused` resolution is best-effort: any tmux error degrades to "no focused
+pane" and never fails the picker. It re-resolves on every `hotkeys` call, so it
+follows focus live as snapshot frames trigger picker-row refreshes.
+
+Each row also carries `attached_client_count`: the count of *interactive* clients
+attached to the tmux server, echoed on every row because the picker output is a
+flat array with no envelope. It deliberately excludes the daemon's tty-less
+clients (per the resolution rule above), so it reflects the number of real views
+a human could be looking at rather than internal plumbing — otherwise the count
+would never be 1 on a daemon-backed server. `>1` means
+focus-following is best-effort (the highlight tracks the most-recently-active
+client); clients may surface a hint, as the macOS desktop does with a "multiple
+clients attached" banner.
 
 ## Profiles And Environment
 
