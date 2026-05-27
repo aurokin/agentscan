@@ -23,6 +23,13 @@ const SURFACE_ALPHA_MAX = 1;
 // First-run default: 0.50 alpha == 50% transparency (the slider reads 1 - alpha),
 // a balanced frosted look — clearly glassy but still a substantial surface tint.
 const SURFACE_ALPHA_DEFAULT = 0.5;
+// "How see-through is the surface" as a 0..1 scalar (0 frosted/solid, 1 fully
+// clear) that adaptive tokens interpolate against. Mirrors the slider math.
+const glassClearFor = (alpha: number) =>
+  (SURFACE_ALPHA_MAX - alpha) / (SURFACE_ALPHA_MAX - SURFACE_ALPHA_MIN);
+const setGlassClear = (clear: number) => {
+  document.documentElement.style.setProperty("--glass-clear", clear.toFixed(3));
+};
 const DEBUG_LOG_LIMIT = 80;
 const LOCAL_PROFILE_ID = "local";
 
@@ -289,6 +296,11 @@ function App() {
   // toggle is only surfaced on macOS; elsewhere these stay inert.
   const [glassEnabled, setGlassEnabled] = useState<boolean>(loadStoredGlass);
   const [surfaceAlpha, setSurfaceAlpha] = useState<number>(loadStoredSurfaceAlpha);
+  // The glass toggle's async resolution sets `--glass-clear` from the latest
+  // alpha; reading it through a render-synced ref keeps the toggle effect off
+  // surfaceAlpha's dep list (so a slider tick can't re-fire the native call).
+  const surfaceAlphaRef = useRef(surfaceAlpha);
+  surfaceAlphaRef.current = surfaceAlpha;
   // Tracks the active runner config so in-flight refreshes/focus can detect a
   // profile switch OR a settings change and discard results from the previous
   // target. Updated synchronously during render (below) so async completions
@@ -943,14 +955,20 @@ function App() {
         if (glassEnabled) {
           await invoke("set_window_glass", { enabled: true });
           if (!cancelled) {
+            // Flip the surface translucent and arm the adaptive tokens together,
+            // so `--glass-clear` is only nonzero once the blur is actually live.
             document.documentElement.setAttribute("data-glass", "on");
+            setGlassClear(glassClearFor(surfaceAlphaRef.current));
           }
         } else {
           document.documentElement.setAttribute("data-glass", "off");
+          setGlassClear(0);
           await invoke("set_window_glass", { enabled: false });
         }
       } catch (error) {
+        // Native call failed: keep the surface opaque AND the tokens un-adapted.
         document.documentElement.setAttribute("data-glass", "off");
+        setGlassClear(0);
         appendDebugEntry({
           kind: "command",
           label: "Glass effect",
@@ -966,23 +984,23 @@ function App() {
 
   // Drive the tint opacity via a CSS variable; the data-glass rules in styles.css
   // only consume it while glass is on, so this is harmless when glass is off.
-  // Also expose `--glass-clear`: a 0..1 "how see-through is the surface" scalar
-  // (0 frosted/solid, 1 fully clear) that adaptive tokens interpolate against so
-  // borders firm up and text gains a scrim as transparency rises. It's 0 when
-  // glass is off so nothing adapts on a solid surface.
+  // `--glass-clear` (a 0..1 see-through scalar the adaptive tokens interpolate
+  // against) is owned by the glass-toggle effect so it stays in lockstep with the
+  // actual data-glass state, not the pending React intent. Here we only refresh it
+  // for slider moves while glass is already live; on/off transitions are that
+  // effect's job.
   useEffect(() => {
     const root = document.documentElement;
     root.style.setProperty("--surface-alpha", String(surfaceAlpha));
-    const clear = glassEnabled
-      ? (SURFACE_ALPHA_MAX - surfaceAlpha) / (SURFACE_ALPHA_MAX - SURFACE_ALPHA_MIN)
-      : 0;
-    root.style.setProperty("--glass-clear", clear.toFixed(3));
+    if (root.getAttribute("data-glass") === "on") {
+      setGlassClear(glassClearFor(surfaceAlpha));
+    }
     try {
       window.localStorage.setItem(SURFACE_ALPHA_STORAGE_KEY, surfaceAlpha.toFixed(2));
     } catch {
       // Best-effort persistence.
     }
-  }, [surfaceAlpha, glassEnabled]);
+  }, [surfaceAlpha]);
 
   async function activateSelectedRow(row = selectedRow) {
     if (!row || activationInFlightRef.current) {
