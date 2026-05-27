@@ -735,6 +735,13 @@ impl<S: StartupActions> DaemonRuntime<S> {
                         );
                         break;
                     }
+                    // A subscriber client that died while its session is still alive
+                    // leaves coverage stale (reported complete, so the interval stays
+                    // at the 300s self-heal). Detect it here, bounded by MAX_WAIT, and
+                    // reconcile to prune + re-attach and recompute coverage promptly.
+                    if self.control_mode.has_dead_subscriber() {
+                        self.reconcile_subscriber_clients();
+                    }
                     if Instant::now() >= self.next_reconcile_at {
                         self.apply_refresh_request(RefreshRequest::TimeoutReconcile)?;
                         self.reconcile_subscriber_clients();

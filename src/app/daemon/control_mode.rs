@@ -337,6 +337,17 @@ impl RunningTmuxControlModeClient {
             .retain_mut(|subscriber| !matches!(subscriber.child.try_wait(), Ok(Some(_))));
     }
 
+    // Whether any subscriber's client process has exited. A dead subscriber means
+    // its session is no longer event-covered, but `has_subscriber` (membership
+    // only) still reports it covered, so the run loop polls this on each timeout
+    // to trigger a prune + re-attach + coverage recompute promptly, instead of
+    // waiting for the self-heal reconcile that the stale coverage would delay.
+    pub(super) fn has_dead_subscriber(&mut self) -> bool {
+        self.subscribers
+            .iter_mut()
+            .any(|subscriber| matches!(subscriber.child.try_wait(), Ok(Some(_))))
+    }
+
     pub(super) fn subscriber_count(&self) -> usize {
         self.subscribers.len()
     }
