@@ -75,10 +75,18 @@
     0 6px 16px -8px rgba(0, 0, 0, 0.18);
   --row-live-ring: inset 0 0 0 1px rgba(0, 0, 0, 0.09);
   --text: #1a1a1c;
-  --text-muted: #57575d;
-  --text-dim: #87878d;
-  /* Indigo accent in light only; dark keeps the warm orange. White text on it. */
-  --accent-rgb: 106, 108, 240;
+  /* Light-mode secondary text runs dark: over the translucent glass a gray ramp
+     washes out and reads as illegible, so muted text is taken to full black. Dim
+     stays a readable gray — it carries placeholders, disabled states, and small
+     metadata (pane numbers, timestamps) that must read as de-emphasized. Genuine
+     *labels* that happen to use dim are pulled to black via a scoped rule below.
+     Dark mode keeps its own lighter ramp (above) — this only adjusts light. */
+  --text-muted: #1a1a1c;
+  --text-dim: #5a5a62;
+  /* Near-neutral graphite accent in light mode (dark keeps the warm orange):
+     an ultra-minimal, editorial look where filled controls read near-black and
+     color comes only from provider logos and status dots. White text on it. */
+  --accent-rgb: 39, 39, 42;
   --on-accent: #ffffff;
   /* Status dots stay yellow/green across themes (per request). */
   --dot-busy: #e3b341;
@@ -93,6 +101,21 @@
   --overlay-12: rgba(0, 0, 0, 0.1);
   --overlay-14: rgba(0, 0, 0, 0.12);
   --danger-text: #b3271e;
+}
+
+/* Light mode only: pull the secondary *labels* that use the dim token to full
+   black. These are content labels (tmux session headers, settings section and
+   field labels, the glass hints, the debug-log toggle), distinct from the
+   placeholders/metadata that dim otherwise carries and should stay gray. Scoped
+   to light so dark mode's gray ramp is untouched. */
+:root[data-theme="light"] :is(
+    .group-header,
+    .section-title > span:first-child,
+    .field-label,
+    .collapse-label,
+    .setting-hint
+  ) {
+  color: var(--text);
 }
 
 * {

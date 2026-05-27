@@ -14,11 +14,14 @@ const THEME_STORAGE_KEY = "agentscan.desktop.theme";
 // macOS "glass": vibrancy backdrop (Rust) + a translucent surface tint (CSS).
 const GLASS_STORAGE_KEY = "agentscan.desktop.glass";
 const SURFACE_ALPHA_STORAGE_KEY = "agentscan.desktop.surfaceAlpha";
-// Floor the tint above 0 so panels never become fully invisible; default leans
-// frosted rather than maximally clear.
-const SURFACE_ALPHA_MIN = 0.4;
+// Tint alpha floor of 0 allows fully clear (100% transparency): the surface tint
+// vanishes but the native vibrancy blur and the solid-filled cards remain, so the
+// UI stays usable.
+const SURFACE_ALPHA_MIN = 0;
 const SURFACE_ALPHA_MAX = 1;
-const SURFACE_ALPHA_DEFAULT = 0.72;
+// First-run default: 0.30 alpha == 70% transparency (the slider reads 1 - alpha),
+// a glassy frosted look over the desktop rather than a near-solid surface.
+const SURFACE_ALPHA_DEFAULT = 0.3;
 const DEBUG_LOG_LIMIT = 80;
 const LOCAL_PROFILE_ID = "local";
 
@@ -1948,13 +1951,17 @@ function loadStoredTheme(): ThemePreference {
 }
 
 function loadStoredGlass(): boolean {
+  // Glass is macOS-only (native vibrancy); other platforms never enable it.
   if (!IS_MAC) {
     return false;
   }
   try {
-    return window.localStorage.getItem(GLASS_STORAGE_KEY) === "on";
+    const raw = window.localStorage.getItem(GLASS_STORAGE_KEY);
+    // Default glass on for macOS on first run (no stored choice); once the user
+    // toggles it, "on"/"off" is persisted and respected.
+    return raw === null ? true : raw === "on";
   } catch {
-    return false;
+    return true;
   }
 }
 
