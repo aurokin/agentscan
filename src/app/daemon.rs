@@ -2077,31 +2077,32 @@ fn agent_metadata_from_row(row: &TmuxPaneRow) -> AgentMetadata {
 
 // Decide whether a targeted (title/pane) refresh should keep the pane's existing
 // provider instead of the freshly classified one. A control-mode title update only
-// changes the pane's title text; when the underlying process is unchanged we must
-// not let that weak signal drop a known agent.
+// changes the pane's title text; when a previously *process-tree-confirmed* agent's
+// title changes (e.g. Claude Code's title becoming the current task), we keep its
+// identity rather than re-running process inspection on every title tick.
 //
-// This matters most for providers whose title stops identifying them once they
-// start working — notably Claude Code, whose busy title is the task text
-// ("✳ <task>") rather than "Claude Code", and whose `pane_current_command` is its
-// version string rather than `claude`. A fresh classification of such a working
-// pane yields no provider, so without this the pane would silently disappear from
-// the list the moment a prompt is sent.
+// Restricted to `ProcFallbackOutcome::Resolved` identities on purpose: a provider
+// that came only from the old title (or a stable wrapper command) must NOT be made
+// sticky here, or a non-agent pane — or an agent that exited under a stable shell —
+// would keep a stale provider after its title changes away from the provider name.
+// Those panes instead fall through to `recover_targeted_pane_provider_via_proc`,
+// which consults the process tree and clears or corrects the match. The process
+// tree is the source of truth; this preservation is only the cheap fast path for
+// identities the process tree already confirmed.
 //
-// Preserve when: the pane already had a provider that did not come from agent
-// metadata/hooks (fresh metadata should win over a carried-forward guess), the
-// fresh row carries no agent metadata and resolves to no *different* provider, and
-// the row still matches the previous tmux process identity (same pane_pid, command,
-// path, and tty — only the title may differ). The previous provider may have been
-// established by any means (process-tree fallback, title, or command); it is the
-// unchanged process identity, not how it was first found, that makes carrying it
-// forward safe. A genuine change (different command/path/tty, or a fresh title that
-// names another provider) fails these guards and the fresh classification wins.
+// Preserve when: the previous identity was process-resolved and did not come from
+// agent metadata/hooks (fresh metadata should win), the fresh row carries no agent
+// metadata and resolves to no *different* provider, and the row still matches the
+// previous tmux process identity (same pane_pid, command, path, and tty — only the
+// title may differ). A genuine change fails these guards and fresh classification
+// (then proc recovery) wins.
 fn should_preserve_provider_identity_for_targeted_update(
     previous: &PaneRecord,
     row: &TmuxPaneRow,
     allow_title_change: bool,
 ) -> bool {
-    previous.provider.is_some()
+    previous.diagnostics.proc_fallback.outcome == ProcFallbackOutcome::Resolved
+        && previous.provider.is_some()
         && previous.agent_metadata.provider.is_none()
         && row.agent_provider.is_none()
         && previous.tmux.pane_pid == row.pane_pid

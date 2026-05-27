@@ -667,14 +667,16 @@ fn targeted_proc_recovery_leaves_already_resolved_pane_untouched() {
 }
 
 #[test]
-fn daemon_control_event_batch_preserves_title_resolved_provider_on_title_update() {
-    // Claude Code case: the provider was established without process-tree fallback
-    // (here it stands in as title-resolved, so proc_fallback is Skipped, not
-    // Resolved) and its working title no longer names the provider. Because the
-    // process is unchanged, the title event must keep the agent rather than dropping
-    // it from the list. Regression guard for "Claude disappears after I send a
-    // prompt".
-    let mut pane = proc_fallback_pane(42, "2.1.150", "Claude Code");
+fn daemon_control_event_batch_drops_title_only_provider_on_title_update() {
+    // A provider that was NOT process-tree-confirmed (here proc_fallback is Skipped,
+    // standing in for a title-only match) must not be carried across a title change,
+    // even when the process is otherwise unchanged. Otherwise a non-agent pane, or an
+    // agent that exited leaving a stable process, would keep a stale provider after
+    // its title changes away from the provider name. The command here (`vim`) is not
+    // an agent-shaped candidate, so the targeted proc recovery declines and the stale
+    // provider is correctly cleared. Regression guard for the review finding on
+    // sticky title-only providers.
+    let mut pane = proc_fallback_pane(42, "vim", "Claude Code");
     pane.provider = Some(Provider::Claude);
     pane.diagnostics.proc_fallback.outcome = ProcFallbackOutcome::Skipped;
     pane.diagnostics.proc_fallback.reason = "provider already resolved by title".to_string();
@@ -682,22 +684,19 @@ fn daemon_control_event_batch_preserves_title_resolved_provider_on_title_update(
     snapshot.panes = vec![pane];
     let mut row = daemon_refresh_row("%42", "$1", "@1", 0, "Claude Code");
     row.pane_pid = 42;
-    row.pane_current_command = "2.1.150".to_string();
+    row.pane_current_command = "vim".to_string();
     row.pane_tty = "/dev/pts/42".to_string();
     row.pane_current_path = "/tmp/proc-wrapper".to_string();
     let mut provider = FakeTmuxReadProvider::default().with_pane("%42", Some(row));
-    // The working title is the task text with a spinner glyph — no "Claude" token.
-    let lines = vec!["%output %42 \\033]0;Refactoring the parser\\007".to_string()];
+    let lines = vec!["%output %42 \\033]0;Editing notes.md\\007".to_string()];
 
-    let (changed, full_snapshot_refresh, fallback_to_full) =
+    let (changed, _full_snapshot_refresh, _fallback_to_full) =
         daemon::test_apply_control_event_lines_with_provider(&mut snapshot, &mut provider, &lines)
-            .expect("title event should preserve title-resolved provider");
+            .expect("title event should re-evaluate a title-only provider");
 
     assert!(changed);
-    assert!(!full_snapshot_refresh);
-    assert!(!fallback_to_full);
-    assert_eq!(snapshot.panes[0].provider, Some(Provider::Claude));
-    assert_eq!(snapshot.panes[0].tmux.pane_title_raw, "Refactoring the parser");
+    assert_eq!(snapshot.panes[0].provider, None);
+    assert_eq!(snapshot.panes[0].tmux.pane_title_raw, "Editing notes.md");
 }
 
 #[test]

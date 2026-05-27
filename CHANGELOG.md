@@ -8,8 +8,10 @@
   sent. Claude is identifiable only from its process (`claude` in the tree) — its
   command is its version string and its title is the current task — so the daemon
   now runs the bounded process-tree fallback on its live event path for
-  unidentified, agent-shaped panes instead of only on full snapshots, and carries
-  an existing provider across a title-only change when the process is unchanged.
+  unidentified, agent-shaped panes instead of only on full snapshots. The
+  process-tree check stays the source of truth: a provider is carried across a
+  title-only change only when it was process-confirmed and the process is
+  unchanged, so title-only matches cannot keep a stale provider listed.
 
 ## 0.4.0 - 2026-05-27
 
