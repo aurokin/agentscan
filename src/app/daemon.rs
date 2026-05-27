@@ -589,19 +589,14 @@ fn reconcile_subscribers<S: StartupActions>(
             return;
         }
     };
-    // Record whether every non-primary session can get its own event client. If
-    // the count exceeds the cap, coverage is incomplete and the reconcile poll
-    // must stay active (see `reconcile_interval_for`) rather than relaxing to the
-    // self-heal backstop, so the un-subscribed sessions are not starved.
-    control_mode
-        .set_subscriber_coverage_complete(session_ids.len() <= MAX_CONTROL_MODE_SUBSCRIBERS);
+    let under_cap = session_ids.len() <= MAX_CONTROL_MODE_SUBSCRIBERS;
     let session_ids = capped_subscriber_session_ids(session_ids);
     control_mode.retain_subscriber_sessions(&session_ids);
-    for session_id in session_ids {
-        if control_mode.has_subscriber(&session_id) {
+    for session_id in &session_ids {
+        if control_mode.has_subscriber(session_id) {
             continue;
         }
-        match startup.start_subscriber_client(&session_id) {
+        match startup.start_subscriber_client(session_id) {
             Ok(started) => {
                 if let Err(error) = control_mode.attach_subscriber(session_id.clone(), started) {
                     eprintln!(
@@ -616,6 +611,37 @@ fn reconcile_subscribers<S: StartupActions>(
             }
         }
     }
+    // Coverage is complete only when nothing was dropped by the cap *and* every
+    // desired session actually ended up with a live subscriber. A failed attach
+    // (transient tmux error, resource limit) leaves that session event-uncovered,
+    // so coverage is incomplete and the reconcile poll stays active (see
+    // `reconcile_interval_for`) until a later reconcile re-attaches it, rather than
+    // relaxing to the self-heal backstop and starving the session.
+    let coverage_complete = subscriber_coverage_complete(under_cap, &session_ids, |id| {
+        control_mode.has_subscriber(id)
+    });
+    control_mode.set_subscriber_coverage_complete(coverage_complete);
+}
+
+// Subscriber coverage is complete only if the cap dropped nothing (`under_cap`)
+// and every desired session currently has a subscriber. Pure for testability.
+fn subscriber_coverage_complete(
+    under_cap: bool,
+    desired: &[String],
+    has_subscriber: impl Fn(&str) -> bool,
+) -> bool {
+    under_cap && desired.iter().all(|id| has_subscriber(id))
+}
+
+#[cfg(test)]
+pub(crate) fn test_subscriber_coverage_complete(
+    under_cap: bool,
+    desired: &[String],
+    present: &[String],
+) -> bool {
+    subscriber_coverage_complete(under_cap, desired, |id| {
+        present.iter().any(|candidate| candidate == id)
+    })
 }
 
 impl<S: StartupActions> DaemonRuntime<S> {

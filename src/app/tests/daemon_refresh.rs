@@ -1017,6 +1017,29 @@ fn daemon_reconcile_interval_uses_self_heal_when_reconcile_disabled() {
 }
 
 #[test]
+fn daemon_subscriber_coverage_requires_every_desired_session_attached() {
+    let desired = vec!["$0".to_string(), "$1".to_string(), "$2".to_string()];
+
+    // Under the cap and all desired sessions attached: coverage is complete.
+    assert!(daemon::test_subscriber_coverage_complete(
+        true, &desired, &desired
+    ));
+    // A failed attach (one desired session missing a subscriber) is incomplete,
+    // even though the count is under the cap, so the poll stays active.
+    assert!(!daemon::test_subscriber_coverage_complete(
+        true,
+        &desired,
+        &["$0".to_string(), "$2".to_string()],
+    ));
+    // Over the cap is always incomplete regardless of attachments.
+    assert!(!daemon::test_subscriber_coverage_complete(
+        false, &desired, &desired
+    ));
+    // No desired sessions is vacuously complete.
+    assert!(daemon::test_subscriber_coverage_complete(true, &[], &[]));
+}
+
+#[test]
 fn daemon_reconcile_interval_stays_active_when_subscriber_coverage_is_incomplete() {
     // More sessions than the subscriber cap means some sessions have no event
     // client, so even with reconcile "disabled" the poll must stay at the active
