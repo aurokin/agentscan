@@ -27,6 +27,7 @@ pub(crate) use control_mode::{
     ControlModeCommandMarker, control_mode_command_marker, test_broker_health_after_error,
     test_broker_health_after_reconnect, test_broker_health_after_repeated_error,
     test_collect_control_mode_command_response, test_reconnect_preserves_deferred_lines,
+    test_subscriber_local_exit,
 };
 use control_mode::{
     DaemonClosingGuard, RunningTmuxControlModeClient, install_shutdown_signal_handlers,
@@ -542,9 +543,23 @@ impl RefreshOutcome {
 // so the same sessions keep their clients across reconciles instead of churning;
 // the dropped remainder relies on the self-heal reconcile for cross-session
 // coverage.
+// Numeric ordering key for a tmux session id (`$12` -> 12). Ids that do not fit
+// the `$<number>` shape sort last (by `u64::MAX`) and then fall back to the
+// lexical tiebreak in the caller, so selection stays deterministic.
+fn subscriber_session_sort_key(session_id: &str) -> u64 {
+    session_id
+        .strip_prefix('$')
+        .and_then(|digits| digits.parse::<u64>().ok())
+        .unwrap_or(u64::MAX)
+}
+
 fn capped_subscriber_session_ids(mut session_ids: Vec<String>) -> Vec<String> {
     if session_ids.len() > MAX_CONTROL_MODE_SUBSCRIBERS {
-        session_ids.sort();
+        // Sort by numeric session index, not lexically: tmux session ids are
+        // unpadded (`$2` sorts after `$19` as strings), so a plain string sort
+        // would mis-select which sessions keep their event clients. Keeping the
+        // lowest indices is deterministic and stable across reconciles.
+        session_ids.sort_by_key(|id| (subscriber_session_sort_key(id), id.clone()));
         eprintln!(
             "agentscan: {} non-primary sessions exceed the subscriber cap ({}); \
              {} sessions fall back to the self-heal reconcile for cross-session coverage",
@@ -574,6 +589,12 @@ fn reconcile_subscribers<S: StartupActions>(
             return;
         }
     };
+    // Record whether every non-primary session can get its own event client. If
+    // the count exceeds the cap, coverage is incomplete and the reconcile poll
+    // must stay active (see `reconcile_interval_for`) rather than relaxing to the
+    // self-heal backstop, so the un-subscribed sessions are not starved.
+    control_mode
+        .set_subscriber_coverage_complete(session_ids.len() <= MAX_CONTROL_MODE_SUBSCRIBERS);
     let session_ids = capped_subscriber_session_ids(session_ids);
     control_mode.retain_subscriber_sessions(&session_ids);
     for session_id in session_ids {
@@ -618,6 +639,7 @@ impl<S: StartupActions> DaemonRuntime<S> {
             + reconcile_interval_for(
                 control_mode.broker_enabled(),
                 runtime_options.disable_reconcile,
+                control_mode.subscriber_coverage_complete(),
             );
         socket_state.update_control_mode_broker_status(broker_status.clone());
         socket_state.update_runtime_telemetry(
@@ -671,6 +693,9 @@ impl<S: StartupActions> DaemonRuntime<S> {
                         self.apply_refresh_request(RefreshRequest::TimeoutReconcile)?;
                     }
                 }
+                // Best-effort backstop only: the control client keeps a retained
+                // sender, so in practice primary death arrives as a `%exit` event
+                // or a forwarded read error above, not as channel disconnection.
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
@@ -787,7 +812,11 @@ impl<S: StartupActions> DaemonRuntime<S> {
     }
 
     fn reconcile_interval(&self) -> Duration {
-        reconcile_interval_for(self.control_mode.broker_enabled(), self.disable_reconcile)
+        reconcile_interval_for(
+            self.control_mode.broker_enabled(),
+            self.disable_reconcile,
+            self.control_mode.subscriber_coverage_complete(),
+        )
     }
 
     fn apply_control_mode_refresh(&mut self, lines: &[String]) -> Result<RefreshOutcome> {
@@ -954,17 +983,24 @@ fn control_event_should_recover_broker(should_exit: bool) -> bool {
     !should_exit
 }
 
-fn reconcile_interval_for(broker_enabled: bool, disable_reconcile: bool) -> Duration {
+fn reconcile_interval_for(
+    broker_enabled: bool,
+    disable_reconcile: bool,
+    subscriber_coverage_complete: bool,
+) -> Duration {
     if !broker_enabled {
         // No event stream at all: the reconcile poll is the sole update path, so
         // it stays fast regardless of `disable_reconcile`.
         return CONTROL_MODE_FALLBACK_RECONCILE_INTERVAL;
     }
-    if disable_reconcile {
-        // All sessions are event-driven via per-session subscriber clients; the
+    if disable_reconcile && subscriber_coverage_complete {
+        // Every session is event-driven via its own subscriber client; the
         // reconcile is reduced to an infrequent self-heal/drift backstop.
         return control_mode_self_heal_interval();
     }
+    // Either redundancy reconcile is explicitly enabled, or subscriber coverage
+    // is incomplete (more sessions than the cap) so the poll must stay active to
+    // cover the sessions that have no event client.
     control_mode_active_reconcile_interval()
 }
 
@@ -2363,8 +2399,13 @@ pub(crate) fn test_control_event_should_recover_broker(should_exit: bool) -> boo
 pub(crate) fn test_reconcile_interval_for(
     broker_enabled: bool,
     disable_reconcile: bool,
+    subscriber_coverage_complete: bool,
 ) -> Duration {
-    reconcile_interval_for(broker_enabled, disable_reconcile)
+    reconcile_interval_for(
+        broker_enabled,
+        disable_reconcile,
+        subscriber_coverage_complete,
+    )
 }
 
 #[cfg(test)]

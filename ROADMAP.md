@@ -106,7 +106,10 @@ Implications:
   reconciled at startup and on every `%sessions-changed`, so sessions
   created/destroyed at runtime get event coverage immediately; dead subscriber
   clients are pruned and re-attached on the next reconcile, and the subscriber
-  count is capped (64) with self-heal fallback for pathological session counts.
+  count is capped (64) for pathological session counts; when the count exceeds the
+  cap the lowest-numbered sessions keep event clients and the reconcile poll stays
+  at its active interval (rather than the self-heal backstop) so the un-subscribed
+  sessions are not starved.
   This makes every session — not just the attached one — event-driven for
   status/title/command/metadata, which is the product-critical requirement
   (responsive cross-session agent appear/disappear/status).

@@ -250,13 +250,21 @@ pub(super) struct RunningTmuxControlModeClient {
     stdin: std::process::ChildStdin,
     line_rx: mpsc::Receiver<Result<String>>,
     // Retained so per-session subscriber clients and primary reconnects can feed
-    // the same shared event stream the run loop drains.
+    // the same shared event stream the run loop drains. Because this keeps a live
+    // sender, the channel never reports `Disconnected` on its own; primary-client
+    // death is instead detected by the events the primary forwards — `%exit` on a
+    // clean tmux exit and a `Fatal` read error on an abnormal one — not by channel
+    // closure.
     line_tx: mpsc::Sender<Result<String>>,
     // Event-only control clients, one per non-primary session. tmux control mode
     // is scoped to the attached session, so these provide event coverage for
     // panes the primary client cannot see. They never issue commands; their
     // reader threads feed the shared channel.
     subscribers: Vec<SubscriberClient>,
+    // False when there are more non-primary sessions than the subscriber cap, so
+    // some sessions have no event client. The run loop keeps the reconcile poll
+    // active in that case rather than relaxing to the self-heal backstop.
+    subscriber_coverage_complete: bool,
     deferred_lines: VecDeque<String>,
     broker_health: TmuxBrokerHealth,
 }
@@ -284,6 +292,7 @@ impl RunningTmuxControlModeClient {
             line_rx,
             line_tx,
             subscribers: Vec::new(),
+            subscriber_coverage_complete: true,
             deferred_lines: VecDeque::new(),
             broker_health: TmuxBrokerHealth::default(),
         })
@@ -330,6 +339,14 @@ impl RunningTmuxControlModeClient {
 
     pub(super) fn subscriber_count(&self) -> usize {
         self.subscribers.len()
+    }
+
+    pub(super) fn set_subscriber_coverage_complete(&mut self, complete: bool) {
+        self.subscriber_coverage_complete = complete;
+    }
+
+    pub(super) fn subscriber_coverage_complete(&self) -> bool {
+        self.subscriber_coverage_complete
     }
 
     // Drop subscriber clients whose sessions are no longer desired (each dropped
@@ -492,6 +509,24 @@ fn spawn_control_client_reader(
     Ok((child, stdin))
 }
 
+// A `%exit` on a subscriber (Quiet) client signals only that this one
+// non-primary control client is detaching, so it must not be forwarded to the
+// shared stream (where `%exit` parses as a server-wide `ControlEvent::Exit`).
+// The primary (Fatal) client still forwards `%exit` to drive daemon shutdown.
+fn subscriber_local_exit(error_mode: ClientErrorMode, line: &str) -> bool {
+    matches!(error_mode, ClientErrorMode::Quiet) && line.starts_with("%exit")
+}
+
+#[cfg(test)]
+pub(crate) fn test_subscriber_local_exit(quiet: bool, line: &str) -> bool {
+    let error_mode = if quiet {
+        ClientErrorMode::Quiet
+    } else {
+        ClientErrorMode::Fatal
+    };
+    subscriber_local_exit(error_mode, line)
+}
+
 fn spawn_control_mode_line_reader(
     stdout_reader: BufReader<std::process::ChildStdout>,
     line_tx: mpsc::Sender<Result<String>>,
@@ -502,6 +537,16 @@ fn spawn_control_mode_line_reader(
         loop {
             match read_control_mode_line(&mut reader) {
                 Ok(Some(line)) => {
+                    // A subscriber client's `%exit` reports only that this one
+                    // client is detaching (e.g. its session was killed); it must
+                    // not reach the shared stream, where `%exit` is parsed as a
+                    // server-wide `ControlEvent::Exit` that stops the daemon loop.
+                    // The subscriber's removal is handled by `%sessions-changed`
+                    // reconcile and dead-subscriber pruning instead. The primary
+                    // client (Fatal) still forwards `%exit` to drive shutdown.
+                    if subscriber_local_exit(error_mode, &line) {
+                        break;
+                    }
                     if line_tx.send(Ok(line)).is_err() {
                         break;
                     }

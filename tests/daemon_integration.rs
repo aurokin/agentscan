@@ -1948,6 +1948,52 @@ fn daemon_survives_when_attached_session_is_removed_but_server_remains() -> Resu
 }
 
 #[test]
+fn daemon_keeps_processing_events_after_a_subscribed_session_is_killed() -> Result<()> {
+    // A killed non-primary session's control client emits `%exit`. That must not
+    // be treated as a server-wide exit that stops the daemon loop: the daemon has
+    // to keep delivering events for the remaining and future sessions.
+    let harness = TestHarness::new()?;
+    let primary_pane_id = harness.start_session("survivor-primary", "sh")?;
+    let mut daemon = harness.start_daemon()?;
+    harness.wait_for_daemon_pane(&mut daemon, &primary_pane_id, |_| true)?;
+
+    // A runtime session gets its own subscriber client; killing it emits `%exit`
+    // on that subscriber's stream.
+    let doomed_pane_id = harness.start_session("survivor-doomed", "sh")?;
+    harness.wait_for_daemon_pane(&mut daemon, &doomed_pane_id, |_| true)?;
+    harness.tmux(["kill-session", "-t", "survivor-doomed"])?;
+    harness.wait_for_daemon_snapshot(&mut daemon, |snapshot| {
+        pane_from_snapshot(snapshot, &doomed_pane_id).is_none()
+    })?;
+
+    // Prove the event loop is still alive: a session created after the kill must
+    // still be picked up, and an in-place metadata write on it (no topology
+    // notification) must still propagate through its newly-attached subscriber.
+    let later_pane_id = harness.start_session("survivor-later", "sh")?;
+    harness.wait_for_daemon_pane(&mut daemon, &later_pane_id, |_| true)?;
+    harness.agentscan([
+        "tmux",
+        "set-metadata",
+        "--pane-id",
+        &later_pane_id,
+        "--provider",
+        "codex",
+        "--label",
+        "Still Alive",
+        "--state",
+        "busy",
+    ])?;
+    harness.wait_for_daemon_pane(&mut daemon, &later_pane_id, |pane| {
+        pane["provider"] == "codex"
+            && pane["status"]["kind"] == "busy"
+            && pane["status"]["source"] == "pane_metadata"
+    })?;
+
+    daemon.shutdown()?;
+    Ok(())
+}
+
+#[test]
 fn daemon_updates_socket_snapshot_when_sessions_are_added_and_removed() -> Result<()> {
     let harness = TestHarness::new()?;
     let root_pane_id = harness.start_session("session-root", "sleep 300")?;

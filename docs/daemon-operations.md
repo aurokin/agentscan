@@ -87,7 +87,10 @@ event channel. The subscriber set is reconciled at startup and on every
 coverage immediately; subscribers whose client process died are pruned and
 re-attached on the next reconcile. The number of subscriber clients is capped
 (64) so a pathological session count cannot spawn unbounded `tmux -C` processes;
-sessions beyond the cap fall back to the self-heal reconcile. `list-panes` is
+when there are more sessions than the cap, subscriber coverage is incomplete, so
+the daemon keeps the reconcile poll at its **active** interval (30s) instead of
+relaxing to the 300s self-heal backstop, ensuring the un-subscribed sessions are
+not starved. The lowest-numbered sessions keep their event clients. `list-panes` is
 server-wide, so it always runs on the primary regardless of how many sessions
 exist. Result: every session is event-driven for status/title/command/metadata
 (~1s), not just the attached one.

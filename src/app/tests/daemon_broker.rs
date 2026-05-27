@@ -203,6 +203,26 @@ fn daemon_broker_health_counts_only_fallback_transition() {
 }
 
 #[test]
+fn daemon_subscriber_exit_is_local_and_not_forwarded_as_server_exit() {
+    // A subscriber (Quiet) client's `%exit` is a local detach and must be
+    // swallowed so it never reaches the shared stream as a server-wide exit that
+    // would stop the daemon loop.
+    assert!(daemon::test_subscriber_local_exit(true, "%exit"));
+    assert!(daemon::test_subscriber_local_exit(
+        true,
+        "%exit client detached"
+    ));
+    // The primary (Fatal) client still forwards `%exit` to drive shutdown.
+    assert!(!daemon::test_subscriber_local_exit(false, "%exit"));
+    // Non-exit subscriber lines are always forwarded.
+    assert!(!daemon::test_subscriber_local_exit(
+        true,
+        "%subscription-changed agentscan $1 @1 0 %1 : %1:Codex:codex::::"
+    ));
+    assert!(!daemon::test_subscriber_local_exit(true, "%output %1 data"));
+}
+
+#[test]
 fn daemon_broker_health_returns_active_after_reconnect() {
     let status = daemon::test_broker_health_after_reconnect("broken pipe");
 

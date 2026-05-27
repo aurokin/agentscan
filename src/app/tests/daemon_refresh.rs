@@ -991,11 +991,11 @@ fn daemon_reconcile_interval_uses_fallback_when_broker_is_disabled() {
     // Broker fallback has no event stream, so the reconcile poll is the sole
     // update path and stays fast regardless of `disable_reconcile`.
     assert_eq!(
-        daemon::test_reconcile_interval_for(false, false),
+        daemon::test_reconcile_interval_for(false, false, true),
         std::time::Duration::from_secs(1)
     );
     assert_eq!(
-        daemon::test_reconcile_interval_for(false, true),
+        daemon::test_reconcile_interval_for(false, true, true),
         std::time::Duration::from_secs(1)
     );
 }
@@ -1006,13 +1006,29 @@ fn daemon_reconcile_interval_uses_self_heal_when_reconcile_disabled() {
     // per-session subscriber clients, so the poll is reduced to the infrequent
     // self-heal/drift backstop cadence.
     assert_eq!(
-        daemon::test_reconcile_interval_for(true, true),
+        daemon::test_reconcile_interval_for(true, true, true),
         std::time::Duration::from_secs(300)
     );
     // Broker active + reconcile enabled keeps the full redundancy interval.
     assert_eq!(
-        daemon::test_reconcile_interval_for(true, false),
+        daemon::test_reconcile_interval_for(true, false, true),
         std::time::Duration::from_secs(30)
+    );
+}
+
+#[test]
+fn daemon_reconcile_interval_stays_active_when_subscriber_coverage_is_incomplete() {
+    // More sessions than the subscriber cap means some sessions have no event
+    // client, so even with reconcile "disabled" the poll must stay at the active
+    // interval to cover them rather than relaxing to the 300s self-heal backstop.
+    assert_eq!(
+        daemon::test_reconcile_interval_for(true, true, false),
+        std::time::Duration::from_secs(30)
+    );
+    // Broker fallback still wins: no event stream means the fast poll regardless.
+    assert_eq!(
+        daemon::test_reconcile_interval_for(false, true, false),
+        std::time::Duration::from_secs(1)
     );
 }
 
@@ -1030,21 +1046,26 @@ fn daemon_subscriber_session_ids_pass_through_under_the_cap() {
 }
 
 #[test]
-fn daemon_subscriber_session_ids_capped_deterministically_when_over_the_cap() {
-    // Build more sessions than the cap in shuffled order; the cap must keep a
-    // deterministic (sorted) prefix so the same sessions retain their clients
-    // across reconciles instead of churning.
+fn daemon_subscriber_session_ids_capped_to_lowest_numeric_ids_over_the_cap() {
+    // Use real, unpadded tmux ids in shuffled order. The cap must keep the lowest
+    // numeric session indices, not a lexical prefix (where `$2` sorts after
+    // `$19`), and the result must be deterministic across reconciles.
     let over = daemon::MAX_CONTROL_MODE_SUBSCRIBERS + 10;
-    let mut session_ids: Vec<String> = (0..over).map(|index| format!("${index:03}")).collect();
+    let mut session_ids: Vec<String> = (0..over).map(|index| format!("${index}")).collect();
     session_ids.reverse();
 
-    let capped = daemon::test_capped_subscriber_session_ids(session_ids.clone());
+    let capped = daemon::test_capped_subscriber_session_ids(session_ids);
     assert_eq!(capped.len(), daemon::MAX_CONTROL_MODE_SUBSCRIBERS);
 
-    let mut expected = session_ids;
-    expected.sort();
-    expected.truncate(daemon::MAX_CONTROL_MODE_SUBSCRIBERS);
+    // Expect exactly the lowest-numbered ids, numerically ordered. A lexical sort
+    // would instead have kept ids like `$10`..`$19` ahead of `$2`..`$9` and
+    // dropped some low indices, so this also guards against regressing the sort.
+    let expected: Vec<String> = (0..daemon::MAX_CONTROL_MODE_SUBSCRIBERS)
+        .map(|index| format!("${index}"))
+        .collect();
     assert_eq!(capped, expected);
+    // The highest-numbered sessions are the ones dropped.
+    assert!(!capped.contains(&format!("${over}")));
 
     // Capping is idempotent: re-capping the already-capped set is a no-op.
     assert_eq!(
