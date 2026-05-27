@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.1 - 2026-05-27
+
 ### Fixed
 
 - Stopped Claude Code panes from disappearing from the list after a prompt was
