@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.2 - 2026-05-27
+
 ### Fixed
 
 - Stopped idle grok, pi, antigravity, and newer-build opencode panes from showing as
