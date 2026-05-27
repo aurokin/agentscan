@@ -220,6 +220,11 @@ fn daemon_subscriber_exit_is_local_and_not_forwarded_as_server_exit() {
         "%subscription-changed agentscan $1 @1 0 %1 : %1:Codex:codex::::"
     ));
     assert!(!daemon::test_subscriber_local_exit(true, "%output %1 data"));
+    // Match the exact `%exit` token, not a bare prefix: a hypothetical
+    // `%exit`-prefixed token must not be swallowed (and stays consistent with the
+    // main control-event parser, which uses the same predicate).
+    assert!(!daemon::test_subscriber_local_exit(true, "%exited"));
+    assert!(!daemon::test_subscriber_local_exit(true, "%exitfoo"));
 }
 
 #[test]

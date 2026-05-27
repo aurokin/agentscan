@@ -341,6 +341,16 @@ impl RunningTmuxControlModeClient {
         self.subscribers.len()
     }
 
+    // Whether the primary control client process has exited. Because the retained
+    // `line_tx` keeps the shared channel from ever reporting `Disconnected`, the
+    // run loop polls this to detect a primary that died without emitting `%exit`
+    // (e.g. the tmux server was SIGKILLed and the pipe closed at EOF). Checks the
+    // current primary child, so it is correct across reconnects (which install a
+    // fresh, live child).
+    pub(super) fn primary_child_exited(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(Some(_)))
+    }
+
     pub(super) fn set_subscriber_coverage_complete(&mut self, complete: bool) {
         self.subscriber_coverage_complete = complete;
     }
@@ -514,7 +524,7 @@ fn spawn_control_client_reader(
 // shared stream (where `%exit` parses as a server-wide `ControlEvent::Exit`).
 // The primary (Fatal) client still forwards `%exit` to drive daemon shutdown.
 fn subscriber_local_exit(error_mode: ClientErrorMode, line: &str) -> bool {
-    matches!(error_mode, ClientErrorMode::Quiet) && line.starts_with("%exit")
+    matches!(error_mode, ClientErrorMode::Quiet) && is_control_exit_line(line)
 }
 
 #[cfg(test)]

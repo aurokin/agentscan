@@ -693,14 +693,24 @@ impl<S: StartupActions> DaemonRuntime<S> {
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
+                    // The retained sender means the channel never reports
+                    // `Disconnected`, so poll the primary child directly to catch a
+                    // primary that died without a `%exit` (e.g. the tmux server was
+                    // SIGKILLed). MAX_WAIT bounds this to sub-second detection.
+                    if self.control_mode.primary_child_exited() {
+                        eprintln!(
+                            "agentscan: tmux control-mode primary client exited; daemon stopping"
+                        );
+                        break;
+                    }
                     if Instant::now() >= self.next_reconcile_at {
                         self.apply_refresh_request(RefreshRequest::TimeoutReconcile)?;
                         self.reconcile_subscriber_clients();
                     }
                 }
-                // Best-effort backstop only: the control client keeps a retained
-                // sender, so in practice primary death arrives as a `%exit` event
-                // or a forwarded read error above, not as channel disconnection.
+                // Best-effort backstop only: with the retained sender the channel
+                // does not disconnect on its own; primary death is detected by the
+                // `%exit` event, a forwarded read error, or the liveness poll above.
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
@@ -1379,8 +1389,17 @@ impl ControlEvent {
     }
 }
 
+// A tmux control-mode `%exit` notification: either bare `%exit` or `%exit
+// <reason>`. Matching the exact token (not a bare `%exit` prefix) avoids
+// classifying a hypothetical `%exit`-prefixed token as an exit. The subscriber
+// reader filter (`subscriber_local_exit`) reuses this so the per-session filter
+// and this parser cannot diverge on what counts as an exit line.
+pub(super) fn is_control_exit_line(line: &str) -> bool {
+    line == "%exit" || line.starts_with("%exit ")
+}
+
 fn control_event_from_line(line: &str) -> ControlEvent {
-    if line.starts_with("%exit") {
+    if is_control_exit_line(line) {
         return ControlEvent::Exit;
     }
 
