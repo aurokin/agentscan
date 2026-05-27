@@ -171,6 +171,15 @@ Implications:
   scanning. It is limited to concrete ambiguous panes, checks the foreground
   process group for shell or wrapper panes, and checks root/descendant process
   command, argv, and selected environment markers for known launcher panes.
+- the daemon runs this targeted fallback on its live event path too, not only on
+  full snapshots: when a control-event refresh (re)builds a pane that is still
+  unidentified but agent-shaped (version-like command, spinner/idle glyph, or a
+  shell/launcher foreground), it inspects that one process tree. This keeps
+  metadata-invisible agents detected without waiting for a full reconcile — most
+  importantly Claude Code, whose command is its version string and whose title is
+  the current task, so it is identifiable only from the `claude` process. It stays
+  bounded: only unidentified agent-shaped panes are inspected, and a resolved pane
+  is no longer a candidate.
 - process fallback should use native platform inspection only. Linux reads
   procfs directly; macOS reads `libproc` / `sysctl` data directly. Avoidable
   helper process launches such as `ps`, `pgrep`, and `grep` are not part of the
