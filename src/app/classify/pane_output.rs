@@ -651,18 +651,39 @@ fn opencode_pane_output_status(output: &str) -> Option<StatusKind> {
         .iter()
         .rposition(|line| opencode_current_busy_marker_line(line));
 
-    // The newer build's command bar is persistent chrome that stays pinned during a run,
-    // with the `esc interrupt` status rendered just above it. So a busy marker is also
-    // current when it sits in that prompt-footer region (only input-box rows between it and
-    // the command bar) — not only when it falls below the idle prompt.
     if let Some(index) = busy_index
-        && (idle_index.is_none_or(|idle_index| idle_index < index)
-            || opencode_busy_marker_in_current_footer(&lines, index, command_bar_index))
+        && opencode_busy_marker_is_current(&lines, index, idle_index, command_bar_index)
     {
         return Some(StatusKind::Busy);
     }
 
     idle_index.map(|_| StatusKind::Idle)
+}
+
+/// Whether a busy marker reflects the current bottom frame rather than stale scrollback.
+///
+/// The capture is the last 30 rows including scrollback, so an old approval/interrupt line
+/// can sit above a frame that has since scrolled on. A busy marker is current when it is
+/// below the live idle prompt (a new run started under it), pinned in the persistent
+/// command-bar footer region (`esc interrupt` rendered just above the command bar), or — when
+/// there is no current idle anchor at all — is itself in the current bottom frame. A stale
+/// marker scrolled up with no current prompt below it must stay unknown, not busy.
+fn opencode_busy_marker_is_current(
+    lines: &[&str],
+    busy_index: usize,
+    idle_index: Option<usize>,
+    command_bar_index: Option<usize>,
+) -> bool {
+    match idle_index {
+        Some(idle_index) => {
+            idle_index < busy_index
+                || opencode_busy_marker_in_current_footer(lines, busy_index, command_bar_index)
+        }
+        None => {
+            opencode_busy_marker_in_current_footer(lines, busy_index, command_bar_index)
+                || opencode_prompt_is_near_current_footer(lines, busy_index)
+        }
+    }
 }
 
 fn opencode_busy_marker_in_current_footer(

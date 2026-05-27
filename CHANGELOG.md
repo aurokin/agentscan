@@ -11,6 +11,10 @@
   taller than its UI. Refreshed grok idle detection to its current bordered `❯` input
   box, added antigravity status detection (`? for shortcuts` footer over a bordered `>`
   prompt), and taught opencode the newer "OpenCode Go" command-bar input box.
+- Anchored opencode busy detection to the current bottom frame: when no live idle
+  prompt or command bar is visible, a stale approval/interrupt line scrolled up in the
+  capture no longer forces `busy` — the busy marker must itself be in the current footer
+  region or near the bottom rows.
 
 ## 0.4.1 - 2026-05-27
 

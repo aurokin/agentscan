@@ -3409,6 +3409,32 @@ fn opencode_pane_output_uses_current_busy_marker_over_stale_idle_prompt() {
 }
 
 #[test]
+fn opencode_pane_output_does_not_force_busy_from_stale_approval_without_current_anchor() {
+    // The 30-row capture holds an old approval prompt near the top, but the current bottom
+    // frame is plain agent output with no live idle prompt or command bar below it. With no
+    // current anchor the stale approval must not force busy — the honest answer is unknown.
+    let mut opencode = pane_output_status_pane(795, Provider::Opencode, "OC | Working");
+
+    classify::apply_pane_output_status_fallback(
+        &mut opencode,
+        "Permission required\n\
+         → Bash sleep 10\n\
+         Allow once   Allow always   Reject\n\
+         \n\
+         Reading files\n\
+         Planning edits\n\
+         Updating code\n\
+         Running tests\n\
+         Collecting results\n\
+         Preparing response\n\
+         Current line\n",
+    );
+
+    assert_eq!(opencode.status.kind, StatusKind::Unknown);
+    assert_eq!(opencode.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
 fn opencode_pane_output_does_not_infer_idle_from_stale_prompt() {
     let mut opencode = pane_output_status_pane(786, Provider::Opencode, "OC | Working");
 
