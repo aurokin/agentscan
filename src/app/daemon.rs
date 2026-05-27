@@ -584,8 +584,13 @@ fn reconcile_subscribers<S: StartupActions>(
         Err(error) => {
             eprintln!(
                 "agentscan: failed to enumerate sessions for subscriber clients; \
-                 cross-session panes rely on the self-heal reconcile: {error:#}"
+                 keeping the active reconcile until coverage is re-established: {error:#}"
             );
+            // We could not verify subscriber coverage this pass (and may have
+            // started none yet, e.g. at startup where the flag defaults to true),
+            // so mark coverage incomplete to keep the active reconcile poll rather
+            // than relaxing to the self-heal backstop. A later reconcile retries.
+            control_mode.set_subscriber_coverage_complete(false);
             return;
         }
     };
