@@ -9,8 +9,18 @@ const PICKER_HOTKEY = "CommandOrControl+Shift+A";
 const LIVE_PICKER_EVENT = "agentscan-live-picker";
 const SETTINGS_STORAGE_KEY = "agentscan.desktop.localRunnerSettings";
 const PROFILES_STORAGE_KEY = "agentscan.desktop.profiles";
+// Keep in sync with the pre-paint theme script in index.html.
+const THEME_STORAGE_KEY = "agentscan.desktop.theme";
 const DEBUG_LOG_LIMIT = 80;
 const LOCAL_PROFILE_ID = "local";
+
+// Per-row picker hotkeys are triggered with Control rather than Command: the key
+// set (1-5, Q E R F G T Z X C V B) overlaps macOS ⌘ shortcuts — ⌘Q quits, ⌘C/V/X
+// are clipboard, ⌘F/Z/R are find/undo/refresh — so ⌘ would be hostile. Control has
+// no such collisions (only emacs text-nav in inputs, which we override on a match).
+const IS_MAC =
+  typeof navigator !== "undefined" && /Mac|iP(hone|ad|od)/.test(navigator.platform);
+const HOTKEY_MODIFIER_LABEL = IS_MAC ? "⌃" : "Ctrl ";
 
 let hotkeyOperationQueue = Promise.resolve();
 let liveOperationQueue = Promise.resolve();
@@ -132,6 +142,8 @@ type PickerRow = {
 
 type ShellView = "picker" | "settings";
 
+type ThemePreference = "dark" | "light" | "system";
+
 type PickerGroup = {
   project: string;
   rows: PickerRow[];
@@ -230,6 +242,8 @@ function App() {
   const sourceMenuRef = useRef<HTMLDivElement | null>(null);
   // Debug log is a diagnostic panel — collapsed by default to keep Settings calm.
   const [isDebugOpen, setIsDebugOpen] = useState(false);
+  // Appearance: dark / light / system (system follows the OS).
+  const [themePref, setThemePref] = useState<ThemePreference>(loadStoredTheme);
   // Tracks the active runner config so in-flight refreshes/focus can detect a
   // profile switch OR a settings change and discard results from the previous
   // target. Updated synchronously during render (below) so async completions
@@ -770,6 +784,30 @@ function App() {
     }
   }, [view]);
 
+  // Apply the theme to <html data-theme> and persist it. "system" resolves from
+  // prefers-color-scheme and re-resolves live when the OS appearance changes.
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, themePref);
+    } catch {
+      // Persistence is best-effort; the in-memory preference still applies.
+    }
+
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const apply = () => {
+      const resolved =
+        themePref === "system" ? (media.matches ? "dark" : "light") : themePref;
+      document.documentElement.setAttribute("data-theme", resolved);
+    };
+    apply();
+
+    if (themePref !== "system") {
+      return;
+    }
+    media.addEventListener("change", apply);
+    return () => media.removeEventListener("change", apply);
+  }, [themePref]);
+
   async function activateSelectedRow(row = selectedRow) {
     if (!row || activationInFlightRef.current) {
       return;
@@ -824,6 +862,31 @@ function App() {
   function handlePickerKeyDown(event: KeyboardEvent) {
     if (view !== "picker") {
       return;
+    }
+
+    // Control + a row's displayed hotkey jumps straight to that pane. Require
+    // Control alone so we never shadow ⌘ shortcuts or Ctrl+⌘ combos. On macOS,
+    // editing uses ⌘, so Ctrl is free even inside the search box — bypass the
+    // interactive-target gate so you can filter then jump in one motion. On
+    // Windows/Linux, Ctrl *is* the editing modifier (Ctrl+C/V/X/Z/F), so only
+    // honor the hotkey when no input/button is focused; otherwise native
+    // clipboard/find/undo wins. (Key match is character-based to mirror the kbd
+    // label and the CLI's char hotkeys; non-US layouts that shift the digit row
+    // may no-op on 1-5, which is a silent miss rather than a wrong action.)
+    const ctrlActivate =
+      event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey &&
+      !event.shiftKey &&
+      event.key.length === 1;
+    if (ctrlActivate && (IS_MAC || !isInteractiveShortcutTarget(event.target))) {
+      const target = pickerRows.find((row) => row.key === event.key.toUpperCase());
+      if (target) {
+        event.preventDefault();
+        setSelectedPaneId(target.pane_id);
+        void activateSelectedRow(target);
+        return;
+      }
     }
 
     if (isInteractiveShortcutTarget(event.target)) {
@@ -1292,6 +1355,25 @@ function App() {
             ) : null}
           </section>
 
+          <section className="settings-section" aria-label="Appearance">
+            <div className="section-title">
+              <span>Appearance</span>
+            </div>
+            <div className="theme-toggle" role="group" aria-label="Theme">
+              {(["dark", "light", "system"] as ThemePreference[]).map((option) => (
+                <button
+                  className={`theme-option${themePref === option ? " active" : ""}`}
+                  key={option}
+                  type="button"
+                  aria-pressed={themePref === option}
+                  onClick={() => setThemePref(option)}
+                >
+                  {option === "system" ? "System" : option === "light" ? "Light" : "Dark"}
+                </button>
+              ))}
+            </div>
+          </section>
+
           <section className="settings-section" aria-label="Debug log">
             <div className="section-title">
               <button
@@ -1648,6 +1730,18 @@ function loadStoredRunnerSettings(): RunnerSettings {
   } catch {
     return emptyRunnerSettings();
   }
+}
+
+function loadStoredTheme(): ThemePreference {
+  try {
+    const value = window.localStorage.getItem(THEME_STORAGE_KEY);
+    if (value === "dark" || value === "light" || value === "system") {
+      return value;
+    }
+  } catch {
+    // localStorage unavailable; fall back to following the OS.
+  }
+  return "system";
 }
 
 function loadStoredProfiles(): ProfileState {
@@ -2200,7 +2294,10 @@ function GroupedPicker({
                   )}
                   <span className="agent-label">{row.display_label}</span>
                   <span className="agent-suffix">{paneSuffix(row)}</span>
-                  <kbd>{row.key}</kbd>
+                  <kbd>
+                    <span className="kbd-mod">{HOTKEY_MODIFIER_LABEL}</span>
+                    {row.key}
+                  </kbd>
                 </li>
               );
             })}
