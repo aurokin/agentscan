@@ -26,11 +26,14 @@ pub(crate) use control_mode::{
     ControlModeBrokerTranscriptHarness, ControlModeBrokerTranscriptStep, ControlModeCommandFrameId,
     ControlModeCommandMarker, control_mode_command_marker, test_broker_health_after_error,
     test_broker_health_after_reconnect, test_broker_health_after_repeated_error,
-    test_collect_control_mode_command_response, test_reconnect_preserves_deferred_lines,
+    test_collect_control_mode_command_response,
+    test_drain_control_mode_channel_clears_stale_frames, test_reconnect_preserves_deferred_lines,
+    test_subscriber_local_exit,
 };
 use control_mode::{
     DaemonClosingGuard, RunningTmuxControlModeClient, install_shutdown_signal_handlers,
-    start_tmux_control_mode_client, startup_failure_message,
+    start_subscriber_control_mode_client, start_tmux_control_mode_client_for,
+    startup_failure_message,
 };
 pub(crate) use lifecycle::{
     AutoStartPolicy, DaemonSnapshotError, daemon_restart, daemon_run, daemon_start, daemon_status,
@@ -58,8 +61,17 @@ pub(crate) use socket_server::{
 
 const CONTROL_MODE_ACTIVE_RECONCILE_INTERVAL: Duration = Duration::from_secs(30);
 const CONTROL_MODE_FALLBACK_RECONCILE_INTERVAL: Duration = Duration::from_secs(1);
+// When the within-session redundancy reconcile is disabled, the periodic poll is
+// reduced to an infrequent self-heal/drift backstop rather than a cross-session
+// sweep: per-session subscriber clients now provide event coverage for every
+// session, so this `list-panes -a` pass exists only to recover from rare event
+// drift (a missed notification or a subscriber that failed to attach). It is not
+// responsible for cross-session latency, so it can run rarely.
+const CONTROL_MODE_SELF_HEAL_INTERVAL: Duration = Duration::from_secs(300);
 const CONTROL_MODE_ACTIVE_RECONCILE_INTERVAL_ENV_VAR: &str =
     "AGENTSCAN_CONTROL_MODE_ACTIVE_RECONCILE_INTERVAL_MS";
+const CONTROL_MODE_SELF_HEAL_INTERVAL_ENV_VAR: &str =
+    "AGENTSCAN_CONTROL_MODE_SELF_HEAL_INTERVAL_MS";
 const TRACE_EVENTS_ENV_VAR: &str = "AGENTSCAN_TRACE_EVENTS";
 const TRACE_EVENT_LIMIT_ENV_VAR: &str = "AGENTSCAN_TRACE_EVENT_LIMIT";
 const DEFAULT_TRACE_EVENT_LIMIT: usize = 1000;
@@ -76,6 +88,11 @@ const SUBSCRIBER_WRITE_TIMEOUT: Duration = Duration::from_millis(250);
 const SUBSCRIBER_MONITOR_POLL_INTERVAL: Duration = Duration::from_millis(250);
 pub(crate) const MAX_PENDING_HANDSHAKES: usize = 8;
 pub(crate) const MAX_SUBSCRIBERS: usize = 64;
+// Upper bound on per-session control-mode subscriber clients. Each subscriber is
+// a real `tmux -C attach-session` process, so a pathological session count must
+// not spawn unbounded clients/fds. Sessions beyond the cap fall back to the
+// self-heal reconcile for cross-session coverage instead of an event client.
+pub(crate) const MAX_CONTROL_MODE_SUBSCRIBERS: usize = 64;
 const LIFECYCLE_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const DAEMON_START_READINESS_TIMEOUT: Duration = Duration::from_secs(5);
 const DAEMON_STOP_TIMEOUT: Duration = Duration::from_secs(3);
@@ -232,6 +249,8 @@ struct RuntimeTelemetry {
     control_event_refresh_count: u64,
     control_event_batch_count: u64,
     control_event_line_count: u64,
+    control_event_output_line_count: u64,
+    control_event_output_byte_count: u64,
     control_event_pane_count: u64,
     control_event_title_count: u64,
     control_event_window_count: u64,
@@ -249,11 +268,24 @@ struct RuntimeTelemetry {
 }
 
 impl RuntimeTelemetry {
-    fn record_control_event_batch(&mut self, line_count: usize) {
+    // Always-on, integer-only volume accounting. This runs for every control-mode
+    // batch (including ignored-only `%output` firehose bursts) so the firehose is
+    // measurable without enabling deep telemetry. Cost is a handful of saturating
+    // integer adds and no allocation.
+    fn record_control_event_volume(&mut self, batch: &ControlEventBatch) {
         self.control_event_batch_count = self.control_event_batch_count.saturating_add(1);
         self.control_event_line_count = self
             .control_event_line_count
-            .saturating_add(line_count.try_into().unwrap_or(u64::MAX));
+            .saturating_add(batch.total_line_count);
+        self.control_event_output_line_count = self
+            .control_event_output_line_count
+            .saturating_add(batch.output_line_count);
+        self.control_event_output_byte_count = self
+            .control_event_output_byte_count
+            .saturating_add(batch.output_byte_count);
+        self.control_event_ignored_count = self
+            .control_event_ignored_count
+            .saturating_add(batch.ignored_count);
     }
 
     fn record_control_event_kinds(&mut self, batch: &ControlEventBatch) {
@@ -273,9 +305,6 @@ impl RuntimeTelemetry {
             self.control_event_resnapshot_count =
                 self.control_event_resnapshot_count.saturating_add(1);
         }
-        self.control_event_ignored_count = self
-            .control_event_ignored_count
-            .saturating_add(batch.ignored_count);
     }
 
     fn record_control_event_refresh(&mut self, outcome: &ControlEventOutcome) {
@@ -313,11 +342,14 @@ impl RuntimeTelemetry {
     fn frame(
         &self,
         broker_status: &ipc::ControlModeBrokerStatusFrame,
+        capture_stats: scanner::PaneOutputCaptureStats,
     ) -> ipc::RuntimeTelemetryFrame {
         ipc::RuntimeTelemetryFrame {
             control_event_refresh_count: self.control_event_refresh_count,
             control_event_batch_count: self.control_event_batch_count,
             control_event_line_count: self.control_event_line_count,
+            control_event_output_line_count: self.control_event_output_line_count,
+            control_event_output_byte_count: self.control_event_output_byte_count,
             control_event_pane_count: self.control_event_pane_count,
             control_event_title_count: self.control_event_title_count,
             control_event_window_count: self.control_event_window_count,
@@ -333,6 +365,9 @@ impl RuntimeTelemetry {
             full_snapshot_refresh_count: self.full_snapshot_refresh_count,
             targeted_refresh_fallback_to_full_count: self.targeted_refresh_fallback_to_full_count,
             broker_fallback_count: broker_status.fallback_count.unwrap_or_default(),
+            pane_output_capture_attempt_count: capture_stats.attempt_count,
+            pane_output_capture_hit_count: capture_stats.hit_count,
+            pane_output_capture_error_count: capture_stats.error_count,
         }
     }
 }
@@ -405,31 +440,52 @@ struct RefreshOutcome {
 }
 
 struct RefreshObservability {
-    source: String,
-    detail: Option<String>,
-    refresh: String,
+    source: &'static str,
+    detail: ObservabilityDetail,
+    refresh: &'static str,
     should_record: bool,
+}
+
+/// Deferred observability detail. Building the human-readable detail string is
+/// delayed until an event is actually recorded, so ignored-only `%output`
+/// firehose batches (which carry only `Ignored`) never pay the allocation.
+enum ObservabilityDetail {
+    None,
+    Static(&'static str),
+    Owned(String),
+    Ignored(u64),
+}
+
+impl ObservabilityDetail {
+    fn into_detail(self) -> Option<String> {
+        match self {
+            ObservabilityDetail::None => None,
+            ObservabilityDetail::Static(detail) => Some(detail.to_string()),
+            ObservabilityDetail::Owned(detail) => Some(detail),
+            ObservabilityDetail::Ignored(count) => Some(format!("ignored:{count}")),
+        }
+    }
 }
 
 impl RefreshObservability {
     fn from_request(request: &RefreshRequest<'_>) -> Self {
         match request {
             RefreshRequest::IntervalReconcile => Self {
-                source: "reconcile".to_string(),
-                detail: Some("interval".to_string()),
-                refresh: "full_snapshot".to_string(),
+                source: "reconcile",
+                detail: ObservabilityDetail::Static("interval"),
+                refresh: "full_snapshot",
                 should_record: true,
             },
             RefreshRequest::TimeoutReconcile => Self {
-                source: "reconcile".to_string(),
-                detail: Some("timeout".to_string()),
-                refresh: "full_snapshot".to_string(),
+                source: "reconcile",
+                detail: ObservabilityDetail::Static("timeout"),
+                refresh: "full_snapshot",
                 should_record: true,
             },
             RefreshRequest::ControlModeLines(lines) => {
                 let batch = ControlEventBatch::from_lines(lines);
                 Self {
-                    source: "control_event".to_string(),
+                    source: "control_event",
                     detail: batch.observability_detail(),
                     refresh: batch.observability_refresh(),
                     should_record: batch.has_telemetry_event(),
@@ -477,6 +533,124 @@ impl RefreshOutcome {
     }
 }
 
+// Reconcile the set of event-only subscriber clients against the live sessions:
+// attach a subscriber for every non-primary session that lacks one and drop
+// subscribers whose sessions have closed. Run at startup and on every
+// `%sessions-changed`, so sessions created or destroyed at runtime get event
+// coverage without relying on the periodic reconcile. Best-effort: failures are
+// logged and skipped (the primary session is always covered by the primary
+// client, and a failed subscriber falls back to self-heal reconcile latency).
+// Bound the subscriber set so a pathological session count cannot spawn an
+// unbounded number of `tmux -C` clients. The selection is deterministic (sorted)
+// so the same sessions keep their clients across reconciles instead of churning;
+// the dropped remainder relies on the self-heal reconcile for cross-session
+// coverage.
+// Numeric ordering key for a tmux session id (`$12` -> 12). Ids that do not fit
+// the `$<number>` shape sort last (by `u64::MAX`) and then fall back to the
+// lexical tiebreak in the caller, so selection stays deterministic.
+fn subscriber_session_sort_key(session_id: &str) -> u64 {
+    session_id
+        .strip_prefix('$')
+        .and_then(|digits| digits.parse::<u64>().ok())
+        .unwrap_or(u64::MAX)
+}
+
+fn capped_subscriber_session_ids(mut session_ids: Vec<String>) -> Vec<String> {
+    if session_ids.len() > MAX_CONTROL_MODE_SUBSCRIBERS {
+        // Sort by numeric session index, not lexically: tmux session ids are
+        // unpadded (`$2` sorts after `$19` as strings), so a plain string sort
+        // would mis-select which sessions keep their event clients. Keeping the
+        // lowest indices is deterministic and stable across reconciles.
+        session_ids.sort_by_key(|id| (subscriber_session_sort_key(id), id.clone()));
+        eprintln!(
+            "agentscan: {} non-primary sessions exceed the subscriber cap ({}); \
+             {} sessions fall back to the self-heal reconcile for cross-session coverage",
+            session_ids.len(),
+            MAX_CONTROL_MODE_SUBSCRIBERS,
+            session_ids.len() - MAX_CONTROL_MODE_SUBSCRIBERS,
+        );
+        session_ids.truncate(MAX_CONTROL_MODE_SUBSCRIBERS);
+    }
+    session_ids
+}
+
+fn reconcile_subscribers<S: StartupActions>(
+    startup: &S,
+    control_mode: &mut RunningTmuxControlModeClient,
+) {
+    // Drop subscribers whose client process died so the loop below re-attaches
+    // them; a closed session is handled separately by retain (it leaves the set).
+    control_mode.prune_dead_subscribers();
+    let session_ids = match startup.additional_subscriber_session_ids() {
+        Ok(session_ids) => session_ids,
+        Err(error) => {
+            eprintln!(
+                "agentscan: failed to enumerate sessions for subscriber clients; \
+                 keeping the active reconcile until coverage is re-established: {error:#}"
+            );
+            // We could not verify subscriber coverage this pass (and may have
+            // started none yet, e.g. at startup where the flag defaults to true),
+            // so mark coverage incomplete to keep the active reconcile poll rather
+            // than relaxing to the self-heal backstop. A later reconcile retries.
+            control_mode.set_subscriber_coverage_complete(false);
+            return;
+        }
+    };
+    let under_cap = session_ids.len() <= MAX_CONTROL_MODE_SUBSCRIBERS;
+    let session_ids = capped_subscriber_session_ids(session_ids);
+    control_mode.retain_subscriber_sessions(&session_ids);
+    for session_id in &session_ids {
+        if control_mode.has_subscriber(session_id) {
+            continue;
+        }
+        match startup.start_subscriber_client(session_id) {
+            Ok(started) => {
+                if let Err(error) = control_mode.attach_subscriber(session_id.clone(), started) {
+                    eprintln!(
+                        "agentscan: failed to attach subscriber client for session {session_id}: {error:#}"
+                    );
+                }
+            }
+            Err(error) => {
+                eprintln!(
+                    "agentscan: failed to start subscriber client for session {session_id}: {error:#}"
+                );
+            }
+        }
+    }
+    // Coverage is complete only when nothing was dropped by the cap *and* every
+    // desired session actually ended up with a live subscriber. A failed attach
+    // (transient tmux error, resource limit) leaves that session event-uncovered,
+    // so coverage is incomplete and the reconcile poll stays active (see
+    // `reconcile_interval_for`) until a later reconcile re-attaches it, rather than
+    // relaxing to the self-heal backstop and starving the session.
+    let coverage_complete = subscriber_coverage_complete(under_cap, &session_ids, |id| {
+        control_mode.has_subscriber(id)
+    });
+    control_mode.set_subscriber_coverage_complete(coverage_complete);
+}
+
+// Subscriber coverage is complete only if the cap dropped nothing (`under_cap`)
+// and every desired session currently has a subscriber. Pure for testability.
+fn subscriber_coverage_complete(
+    under_cap: bool,
+    desired: &[String],
+    has_subscriber: impl Fn(&str) -> bool,
+) -> bool {
+    under_cap && desired.iter().all(|id| has_subscriber(id))
+}
+
+#[cfg(test)]
+pub(crate) fn test_subscriber_coverage_complete(
+    under_cap: bool,
+    desired: &[String],
+    present: &[String],
+) -> bool {
+    subscriber_coverage_complete(under_cap, desired, |id| {
+        present.iter().any(|candidate| candidate == id)
+    })
+}
+
 impl<S: StartupActions> DaemonRuntime<S> {
     fn from_started(
         startup: S,
@@ -489,19 +663,27 @@ impl<S: StartupActions> DaemonRuntime<S> {
     ) -> Result<Self> {
         let snapshot = pending_snapshot.snapshot.clone();
         socket_state.publish_prepared_snapshot(pending_snapshot);
-        let control_mode = RunningTmuxControlModeClient::from_started(tmux_client)?;
+        let mut control_mode = RunningTmuxControlModeClient::from_started(tmux_client)?;
+        reconcile_subscribers(&startup, &mut control_mode);
         let telemetry = RuntimeTelemetry::default();
+        let pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
         let broker_status = control_mode.broker_status_frame();
-        let next_reconcile_at =
-            Instant::now() + reconcile_interval_for_broker_enabled(control_mode.broker_enabled());
+        let next_reconcile_at = Instant::now()
+            + reconcile_interval_for(
+                control_mode.broker_enabled(),
+                runtime_options.disable_reconcile,
+                control_mode.subscriber_coverage_complete(),
+            );
         socket_state.update_control_mode_broker_status(broker_status.clone());
-        socket_state.update_runtime_telemetry(telemetry.frame(&broker_status));
+        socket_state.update_runtime_telemetry(
+            telemetry.frame(&broker_status, pane_output_cache.capture_stats()),
+        );
         Ok(Self {
             startup,
             socket_state,
             tmux_version,
             snapshot,
-            pane_output_cache: scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL),
+            pane_output_cache,
             control_mode,
             next_reconcile_at,
             telemetry,
@@ -522,8 +704,12 @@ impl<S: StartupActions> DaemonRuntime<S> {
                 DAEMON_SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
                 break;
             }
-            if !self.disable_reconcile && Instant::now() >= self.next_reconcile_at {
+            if Instant::now() >= self.next_reconcile_at {
                 self.apply_refresh_request(RefreshRequest::IntervalReconcile)?;
+                // The periodic reconcile is also the self-heal backstop for the
+                // subscriber set: prune subscribers whose client died and re-attach
+                // any missing sessions, even without a `%sessions-changed` event.
+                self.reconcile_subscriber_clients();
             }
 
             let timeout = self.next_control_mode_wait();
@@ -531,15 +717,40 @@ impl<S: StartupActions> DaemonRuntime<S> {
                 Ok(line) => {
                     let line = line?;
                     let lines = self.collect_control_mode_batch(line)?;
+                    let session_set_changed = batch_changed_session_set(&lines);
                     if self.apply_refresh_request(RefreshRequest::ControlModeLines(&lines))? {
                         break;
                     }
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    if !self.disable_reconcile && Instant::now() >= self.next_reconcile_at {
-                        self.apply_refresh_request(RefreshRequest::TimeoutReconcile)?;
+                    if session_set_changed {
+                        self.reconcile_subscriber_clients();
                     }
                 }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    // The retained sender means the channel never reports
+                    // `Disconnected`, so poll the primary child directly to catch a
+                    // primary that died without a `%exit` (e.g. the tmux server was
+                    // SIGKILLed). MAX_WAIT bounds this to sub-second detection.
+                    if self.control_mode.primary_child_exited() {
+                        eprintln!(
+                            "agentscan: tmux control-mode primary client exited; daemon stopping"
+                        );
+                        break;
+                    }
+                    // A subscriber client that died while its session is still alive
+                    // leaves coverage stale (reported complete, so the interval stays
+                    // at the 300s self-heal). Detect it here, bounded by MAX_WAIT, and
+                    // reconcile to prune + re-attach and recompute coverage promptly.
+                    if self.control_mode.has_dead_subscriber() {
+                        self.reconcile_subscriber_clients();
+                    }
+                    if Instant::now() >= self.next_reconcile_at {
+                        self.apply_refresh_request(RefreshRequest::TimeoutReconcile)?;
+                        self.reconcile_subscriber_clients();
+                    }
+                }
+                // Best-effort backstop only: with the retained sender the channel
+                // does not disconnect on its own; primary death is detected by the
+                // `%exit` event, a forwarded read error, or the liveness poll above.
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
@@ -547,13 +758,29 @@ impl<S: StartupActions> DaemonRuntime<S> {
     }
 
     fn next_control_mode_wait(&self) -> Duration {
-        if self.disable_reconcile {
-            return CONTROL_MODE_MAX_WAIT;
-        }
         self.next_reconcile_at
             .saturating_duration_since(Instant::now())
             .max(CONTROL_MODE_MIN_WAIT)
             .min(CONTROL_MODE_MAX_WAIT)
+    }
+
+    // Re-derive the subscriber client set from the live sessions. Called when a
+    // `%sessions-changed` notification indicates a session was created or
+    // destroyed, so runtime session changes get event coverage immediately
+    // rather than waiting for the self-heal reconcile.
+    fn reconcile_subscriber_clients(&mut self) {
+        reconcile_subscribers(&self.startup, &mut self.control_mode);
+        // Republish broker status so the subscriber-count telemetry reflects the
+        // new set after sessions appeared or disappeared at runtime.
+        self.socket_state
+            .update_control_mode_broker_status(self.control_mode.broker_status_frame());
+        // Coverage may have just become incomplete (pushed over the cap), which
+        // shortens the reconcile interval. Pull the next reconcile in so we do not
+        // wait out an older, longer self-heal deadline before polling the
+        // un-subscribed sessions. Never push the deadline out (min only).
+        self.next_reconcile_at = self
+            .next_reconcile_at
+            .min(Instant::now() + self.reconcile_interval());
     }
 
     fn collect_control_mode_batch(&mut self, first_line: String) -> Result<Vec<String>> {
@@ -630,9 +857,9 @@ impl<S: StartupActions> DaemonRuntime<S> {
             .is_some_and(|(previous, current)| !snapshots_are_materially_equal(previous, current));
         let event = ipc::DaemonObservabilityEventFrame {
             at: snapshot::now_rfc3339().unwrap_or_else(|_| "unknown".to_string()),
-            source: observability.source,
-            detail: observability.detail,
-            refresh: observability.refresh,
+            source: observability.source.to_string(),
+            detail: observability.detail.into_detail(),
+            refresh: observability.refresh.to_string(),
             changed,
             published,
             duration_ms: Some(elapsed_millis_u64(duration)),
@@ -647,15 +874,19 @@ impl<S: StartupActions> DaemonRuntime<S> {
     }
 
     fn reconcile_interval(&self) -> Duration {
-        reconcile_interval_for_broker_enabled(self.control_mode.broker_enabled())
+        reconcile_interval_for(
+            self.control_mode.broker_enabled(),
+            self.disable_reconcile,
+            self.control_mode.subscriber_coverage_complete(),
+        )
     }
 
     fn apply_control_mode_refresh(&mut self, lines: &[String]) -> Result<RefreshOutcome> {
         let batch = ControlEventBatch::from_lines(lines);
+        self.telemetry.record_control_event_volume(&batch);
         let should_record_batch_telemetry =
             batch.has_telemetry_event() || self.deep_control_mode_telemetry;
         if should_record_batch_telemetry {
-            self.telemetry.record_control_event_batch(lines.len());
             self.telemetry.record_control_event_kinds(&batch);
         }
         let should_exit = batch.should_exit;
@@ -786,8 +1017,10 @@ impl<S: StartupActions> DaemonRuntime<S> {
         let broker_status = self.control_mode.broker_status_frame();
         self.socket_state
             .update_control_mode_broker_status(broker_status.clone());
-        self.socket_state
-            .update_runtime_telemetry(self.telemetry.frame(&broker_status));
+        self.socket_state.update_runtime_telemetry(
+            self.telemetry
+                .frame(&broker_status, self.pane_output_cache.capture_stats()),
+        );
     }
 
     fn shutdown_control_mode(mut self) -> Result<()> {
@@ -812,22 +1045,84 @@ fn control_event_should_recover_broker(should_exit: bool) -> bool {
     !should_exit
 }
 
-fn reconcile_interval_for_broker_enabled(broker_enabled: bool) -> Duration {
-    if broker_enabled {
-        control_mode_active_reconcile_interval()
-    } else {
-        CONTROL_MODE_FALLBACK_RECONCILE_INTERVAL
+fn reconcile_interval_for(
+    broker_enabled: bool,
+    disable_reconcile: bool,
+    subscriber_coverage_complete: bool,
+) -> Duration {
+    if !broker_enabled {
+        // No event stream at all: the reconcile poll is the sole update path, so
+        // it stays fast regardless of `disable_reconcile`.
+        return CONTROL_MODE_FALLBACK_RECONCILE_INTERVAL;
     }
+    if disable_reconcile && subscriber_coverage_complete {
+        // Every session is event-driven via its own subscriber client; the
+        // reconcile is reduced to an infrequent self-heal/drift backstop.
+        //
+        // Known, intentional trade-off (default `disable_reconcile = true`): a
+        // provider whose status comes from captured pane output
+        // (`status.source = "pane_output"`, i.e. no pane-metadata or tmux-title
+        // signal) only refreshes on a snapshot-changing event or a reconcile pass.
+        // With `%output` paused, a pure busy/idle content change emits no event,
+        // so such a provider's status can lag by up to this self-heal interval.
+        // Metadata/title-driven providers are unaffected (they are event-driven).
+        // This is accepted under the event-driven-first default; run with
+        // `disable_reconcile = false` for 30s status refresh. See
+        // docs/daemon-operations.md.
+        return control_mode_self_heal_interval();
+    }
+    // Either redundancy reconcile is explicitly enabled, or subscriber coverage
+    // is incomplete (more sessions than the cap) so the poll must stay active to
+    // cover the sessions that have no event client.
+    control_mode_active_reconcile_interval()
 }
 
 pub(crate) trait StartupActions {
     fn tmux_version(&self) -> Option<String>;
     fn initial_snapshot(&self, tmux_version: Option<&str>) -> Result<SnapshotEnvelope>;
     fn start_tmux_control_mode_client(&self) -> Result<StartedTmuxControlModeClient>;
+
+    // Sessions other than the primary's that should get an event-only subscriber
+    // client. Defaults to none so test startups stay single-session unless they
+    // opt in.
+    fn additional_subscriber_session_ids(&self) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    fn start_subscriber_client(&self, session_id: &str) -> Result<StartedTmuxControlModeClient> {
+        let _ = session_id;
+        bail!("subscriber control clients are not supported by this startup")
+    }
 }
 
 #[derive(Default)]
-struct DaemonStartup;
+struct DaemonStartup {
+    // The session the primary control client attaches to, resolved once (lazily)
+    // and cached. Caching it (rather than recomputing `default_session_target()`
+    // each reconcile) keeps the primary attach and the subscriber-exclusion set in
+    // agreement: `default_session_target()` follows the launching tmux client's
+    // current session and would drift if that client switched sessions, which
+    // could leave the switched-to session with no event client. Resolution is
+    // lazy so it happens on the first `start_tmux_control_mode_client` call, which
+    // runs inside the daemon startup-failure reporting region — a resolution error
+    // then surfaces as an observable `startup_failed` status, not a silent exit.
+    primary_session_id: std::sync::OnceLock<String>,
+}
+
+impl DaemonStartup {
+    fn primary_session_id(&self) -> Result<&str> {
+        if let Some(session_id) = self.primary_session_id.get() {
+            return Ok(session_id.as_str());
+        }
+        let session_id = tmux::default_session_target()?;
+        let _ = self.primary_session_id.set(session_id);
+        Ok(self
+            .primary_session_id
+            .get()
+            .expect("primary session id was just set")
+            .as_str())
+    }
+}
 
 impl StartupActions for DaemonStartup {
     fn tmux_version(&self) -> Option<String> {
@@ -839,7 +1134,21 @@ impl StartupActions for DaemonStartup {
     }
 
     fn start_tmux_control_mode_client(&self) -> Result<StartedTmuxControlModeClient> {
-        start_tmux_control_mode_client().map(StartedTmuxControlModeClient::from_real)
+        start_tmux_control_mode_client_for(self.primary_session_id()?)
+            .map(StartedTmuxControlModeClient::from_real)
+    }
+
+    fn additional_subscriber_session_ids(&self) -> Result<Vec<String>> {
+        let primary = self.primary_session_id()?;
+        Ok(tmux::list_session_ids()?
+            .into_iter()
+            .filter(|session_id| session_id.as_str() != primary)
+            .collect())
+    }
+
+    fn start_subscriber_client(&self, session_id: &str) -> Result<StartedTmuxControlModeClient> {
+        start_subscriber_control_mode_client(session_id)
+            .map(StartedTmuxControlModeClient::from_real)
     }
 }
 
@@ -981,6 +1290,9 @@ struct ControlEventBatch {
     should_exit: bool,
     next_sequence: u64,
     ignored_count: u64,
+    total_line_count: u64,
+    output_line_count: u64,
+    output_byte_count: u64,
     resnapshot_sequence: Option<u64>,
     sessions: BTreeMap<String, u64>,
     windows: BTreeMap<String, u64>,
@@ -998,6 +1310,22 @@ impl ControlEventBatch {
     fn from_lines(lines: &[String]) -> Self {
         let mut batch = Self::default();
         for line in lines {
+            batch.total_line_count = batch.total_line_count.saturating_add(1);
+            // Count every `%output` line (title-bearing or not) so the firehose is
+            // sized cheaply during the single parse pass; `%output` lines that yield
+            // a terminal title are also counted in `titles`, so the firehose waste is
+            // `output_line_count - title count`.
+            if line.starts_with("%output") {
+                batch.output_line_count = batch.output_line_count.saturating_add(1);
+                // `str::len()` is the UTF-8 *byte* length (not a char count), which is
+                // exactly the metric here: the on-the-wire size of the `%output` line
+                // we read and process. This sizes the firehose volume we pay for, not
+                // the decoded terminal payload (tmux octal-escapes non-printable bytes
+                // in `%output`, so the escaped line is what actually costs us).
+                batch.output_byte_count = batch
+                    .output_byte_count
+                    .saturating_add(u64::try_from(line.len()).unwrap_or(u64::MAX));
+            }
             batch.push(control_event_from_line(line));
         }
         batch
@@ -1077,41 +1405,44 @@ impl ControlEventBatch {
             || !self.titles.is_empty()
     }
 
-    fn observability_refresh(&self) -> String {
+    fn observability_refresh(&self) -> &'static str {
         if self.resnapshot_sequence.is_some() {
-            return "full_snapshot".to_string();
+            return "full_snapshot";
         }
         if !self.sessions.is_empty() || !self.windows.is_empty() {
-            return "targeted_scope".to_string();
+            return "targeted_scope";
         }
         if !self.panes.is_empty() || !self.titles.is_empty() {
-            return "targeted_pane".to_string();
+            return "targeted_pane";
         }
-        "none".to_string()
+        "none"
     }
 
-    fn observability_detail(&self) -> Option<String> {
+    fn observability_detail(&self) -> ObservabilityDetail {
         if self.resnapshot_sequence.is_some() {
-            return Some("resnapshot".to_string());
+            return ObservabilityDetail::Static("resnapshot");
         }
         let event_count =
             self.sessions.len() + self.windows.len() + self.panes.len() + self.titles.len();
         if event_count > 1 {
-            return Some("batch".to_string());
+            return ObservabilityDetail::Static("batch");
         }
         if let Some(session_id) = self.sessions.keys().next() {
-            return Some(format!("session:{session_id}"));
+            return ObservabilityDetail::Owned(format!("session:{session_id}"));
         }
         if let Some(window_id) = self.windows.keys().next() {
-            return Some(format!("window:{window_id}"));
+            return ObservabilityDetail::Owned(format!("window:{window_id}"));
         }
         if let Some(pane_id) = self.panes.keys().next() {
-            return Some(format!("pane:{pane_id}"));
+            return ObservabilityDetail::Owned(format!("pane:{pane_id}"));
         }
         if let Some(pane_id) = self.titles.keys().next() {
-            return Some(format!("title:{pane_id}"));
+            return ObservabilityDetail::Owned(format!("title:{pane_id}"));
         }
-        (self.ignored_count > 0).then(|| format!("ignored:{}", self.ignored_count))
+        if self.ignored_count > 0 {
+            return ObservabilityDetail::Ignored(self.ignored_count);
+        }
+        ObservabilityDetail::None
     }
 }
 
@@ -1141,8 +1472,28 @@ impl ControlEvent {
     }
 }
 
+// A tmux control-mode `%exit` notification: either bare `%exit` or `%exit
+// <reason>`. Matching the exact token (not a bare `%exit` prefix) avoids
+// classifying a hypothetical `%exit`-prefixed token as an exit. The subscriber
+// reader filter (`subscriber_local_exit`) reuses this so the per-session filter
+// and this parser cannot diverge on what counts as an exit line.
+pub(super) fn is_control_exit_line(line: &str) -> bool {
+    line == "%exit" || line.starts_with("%exit ")
+}
+
 fn control_event_from_line(line: &str) -> ControlEvent {
-    if line.starts_with("%exit") {
+    if is_control_exit_line(line) {
+        // A primary `%exit` stops the daemon. Note that tmux also emits `%exit` to a
+        // control client when only its *attached* session is killed while the server
+        // and other sessions survive (empirically confirmed) — so killing the
+        // session the primary attached to stops the daemon even though other sessions
+        // remain. This is long-standing behavior, not introduced here: `main` likewise
+        // attached the single primary to one session and stopped on its `%exit`. The
+        // daemon is re-spawned on the next CLI call (which re-resolves a live primary),
+        // so monitoring resumes; true mid-session failover to a surviving session
+        // would require un-pinning the primary and is a deliberate future enhancement,
+        // not a regression in this diff. Subscriber `%exit` is filtered upstream
+        // (`subscriber_local_exit`) and never reaches this parser.
         return ControlEvent::Exit;
     }
 
@@ -1401,6 +1752,15 @@ pub(crate) fn read_control_mode_line(reader: &mut impl BufRead) -> Result<Option
     }
 
     Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
+}
+
+// True when a batch contains a notification indicating the set of sessions on
+// the server changed (a session was created or destroyed), which is the trigger
+// to re-derive the per-session subscriber clients.
+fn batch_changed_session_set(lines: &[String]) -> bool {
+    lines
+        .iter()
+        .any(|line| notification_name(line) == Some("%sessions-changed"))
 }
 
 pub(crate) fn should_resnapshot_from_notification(line: &str) -> bool {
@@ -1963,6 +2323,15 @@ fn control_mode_active_reconcile_interval() -> Duration {
         .unwrap_or(CONTROL_MODE_ACTIVE_RECONCILE_INTERVAL)
 }
 
+fn control_mode_self_heal_interval() -> Duration {
+    env::var(CONTROL_MODE_SELF_HEAL_INTERVAL_ENV_VAR)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|millis| *millis > 0)
+        .map(Duration::from_millis)
+        .unwrap_or(CONTROL_MODE_SELF_HEAL_INTERVAL)
+}
+
 #[cfg_attr(not(test), allow(dead_code))]
 fn deep_control_mode_telemetry_value_enabled(value: &std::ffi::OsStr) -> bool {
     env_os_value_enabled(value)
@@ -2054,6 +2423,55 @@ pub(crate) fn test_deep_control_mode_telemetry_value_enabled(value: &str) -> boo
     deep_control_mode_telemetry_value_enabled(std::ffi::OsStr::new(value))
 }
 
+/// Parses a control-mode batch and folds its volume counters together. Used by the
+/// `core_paths` benchmark to track per-batch parse cost on `%output` firehose bursts;
+/// the fold keeps the parse from being optimized away.
+#[doc(hidden)]
+pub(crate) fn bench_control_event_batch_volume(lines: &[String]) -> u64 {
+    let batch = ControlEventBatch::from_lines(lines);
+    batch.total_line_count ^ batch.output_line_count ^ batch.output_byte_count ^ batch.ignored_count
+}
+
+#[cfg(test)]
+pub(crate) fn test_snapshot_observability(
+    snapshot: &SnapshotEnvelope,
+) -> ipc::SnapshotObservabilityFrame {
+    snapshot_store::snapshot_observability(snapshot)
+}
+
+#[cfg(test)]
+/// Returns `(total_line_count, output_line_count, output_byte_count, ignored_count)`
+/// for a parsed control-mode batch.
+pub(crate) fn test_control_event_batch_volume(lines: &[String]) -> (u64, u64, u64, u64) {
+    let batch = ControlEventBatch::from_lines(lines);
+    (
+        batch.total_line_count,
+        batch.output_line_count,
+        batch.output_byte_count,
+        batch.ignored_count,
+    )
+}
+
+#[cfg(test)]
+/// Records a single control-mode batch into otherwise-default telemetry, mirroring
+/// the always-on volume path the daemon runs even for ignored-only batches.
+pub(crate) fn test_runtime_telemetry_after_control_event_volume(
+    lines: &[String],
+) -> ipc::RuntimeTelemetryFrame {
+    let mut telemetry = RuntimeTelemetry::default();
+    telemetry.record_control_event_volume(&ControlEventBatch::from_lines(lines));
+    telemetry.frame(
+        &ipc::ControlModeBrokerStatusFrame {
+            mode: ipc::ControlModeBrokerMode::Active,
+            disabled_reason: None,
+            reconnect_count: 0,
+            fallback_count: Some(0),
+            subscriber_count: None,
+        },
+        scanner::PaneOutputCaptureStats::default(),
+    )
+}
+
 #[cfg(test)]
 pub(crate) fn test_control_event_observability_for_lines(
     lines: &[String],
@@ -2063,8 +2481,8 @@ pub(crate) fn test_control_event_observability_for_lines(
     (
         observability.should_record,
         observability.should_capture_snapshot_diff(),
-        observability.refresh,
-        observability.detail,
+        observability.refresh.to_string(),
+        observability.detail.into_detail(),
     )
 }
 
@@ -2103,8 +2521,21 @@ pub(crate) fn test_control_event_should_recover_broker(should_exit: bool) -> boo
 }
 
 #[cfg(test)]
-pub(crate) fn test_reconcile_interval_for_broker_enabled(broker_enabled: bool) -> Duration {
-    reconcile_interval_for_broker_enabled(broker_enabled)
+pub(crate) fn test_reconcile_interval_for(
+    broker_enabled: bool,
+    disable_reconcile: bool,
+    subscriber_coverage_complete: bool,
+) -> Duration {
+    reconcile_interval_for(
+        broker_enabled,
+        disable_reconcile,
+        subscriber_coverage_complete,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn test_capped_subscriber_session_ids(session_ids: Vec<String>) -> Vec<String> {
+    capped_subscriber_session_ids(session_ids)
 }
 
 #[cfg(test)]
@@ -2114,8 +2545,15 @@ pub(crate) fn test_runtime_telemetry_after_reconcile_results(
     changed_current: &SnapshotEnvelope,
 ) -> ipc::RuntimeTelemetryFrame {
     let mut telemetry = RuntimeTelemetry::default();
-    telemetry.record_control_event_batch(2);
-    telemetry.record_control_event_batch(3);
+    telemetry.record_control_event_volume(&ControlEventBatch::from_lines(&[
+        "%unknown-a".to_string(),
+        "%unknown-b".to_string(),
+    ]));
+    telemetry.record_control_event_volume(&ControlEventBatch::from_lines(&[
+        "%unknown-c".to_string(),
+        "%unknown-d".to_string(),
+        "%unknown-e".to_string(),
+    ]));
     telemetry.record_control_event_refresh(&ControlEventOutcome {
         changed: true,
         fallback_to_full: true,
@@ -2127,12 +2565,16 @@ pub(crate) fn test_runtime_telemetry_after_reconcile_results(
     telemetry.record_targeted_refresh_fallback_to_full();
     telemetry.record_reconcile_result(previous, noop_current);
     telemetry.record_reconcile_result(noop_current, changed_current);
-    telemetry.frame(&ipc::ControlModeBrokerStatusFrame {
-        mode: ipc::ControlModeBrokerMode::Fallback,
-        disabled_reason: Some("test fallback".to_string()),
-        reconnect_count: 1,
-        fallback_count: Some(2),
-    })
+    telemetry.frame(
+        &ipc::ControlModeBrokerStatusFrame {
+            mode: ipc::ControlModeBrokerMode::Fallback,
+            disabled_reason: Some("test fallback".to_string()),
+            reconnect_count: 1,
+            fallback_count: Some(2),
+            subscriber_count: None,
+        },
+        scanner::PaneOutputCaptureStats::default(),
+    )
 }
 
 #[cfg(test)]

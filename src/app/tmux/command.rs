@@ -77,6 +77,12 @@ fn tmux_stderr(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stderr).trim().to_string()
 }
 
+// tmux prints "no server running on <socket>" when no server is up, which means
+// there are simply zero sessions rather than a failure.
+pub(super) fn tmux_no_server_running(stderr: &str) -> bool {
+    stderr.contains("no server running")
+}
+
 pub(super) fn tmux_scope_target_is_missing(stderr: &str) -> bool {
     tmux_pane_target_is_missing(stderr) || stderr.contains("can't find session")
 }
@@ -138,11 +144,45 @@ pub(crate) fn default_session_target() -> Result<String> {
     Ok(session.trim().to_string())
 }
 
+pub(crate) fn list_session_ids() -> Result<Vec<String>> {
+    let Some(stdout) = run_tmux_text_output(
+        &["list-sessions", "-F", "#{session_id}"],
+        "tmux list-sessions",
+        "tmux list-sessions",
+        // Only "no server running" legitimately means zero sessions. Any other
+        // failure is a real error and must propagate so the caller keeps the
+        // current subscriber set rather than dropping all subscribers and
+        // mis-marking coverage as complete.
+        tmux_no_server_running,
+        "tmux sessions output was not UTF-8",
+    )?
+    else {
+        return Ok(Vec::new());
+    };
+    Ok(stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{env_has_utf8_locale, tmux_command_from_env};
+    use super::{env_has_utf8_locale, tmux_command_from_env, tmux_no_server_running};
     use crate::app::TMUX_SOCKET_ENV_VAR;
     use std::ffi::OsString;
+
+    #[test]
+    fn no_server_running_matches_only_the_empty_server_case() {
+        assert!(tmux_no_server_running(
+            "no server running on /tmp/tmux-501/default"
+        ));
+        // Real failures must not be mistaken for "zero sessions".
+        assert!(!tmux_no_server_running("error connecting to server"));
+        assert!(!tmux_no_server_running("can't find session: foo"));
+        assert!(!tmux_no_server_running(""));
+    }
 
     fn read_from<'a>(entries: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
         move |name| {

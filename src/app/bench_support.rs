@@ -29,6 +29,10 @@ pub fn deserialize_snapshot_pane_count(input: &str) -> Result<usize> {
     Ok(snapshot.panes.len())
 }
 
+pub fn control_event_batch_volume(lines: &[String]) -> u64 {
+    daemon::bench_control_event_batch_volume(lines)
+}
+
 #[doc(hidden)]
 pub fn daemon_protocol_version_for_tests() -> u32 {
     ipc::WIRE_PROTOCOL_VERSION

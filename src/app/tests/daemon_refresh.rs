@@ -844,6 +844,87 @@ fn daemon_deep_control_mode_telemetry_env_value_parser() {
 }
 
 #[test]
+fn snapshot_observability_breaks_down_paths_per_provider() {
+    // Two command-classified codex panes plus one wholly unclassified pane.
+    let mut unknown_row = daemon_refresh_row("%3", "$1", "@1", 2, "scratch");
+    unknown_row.pane_current_command = "bash".to_string();
+    unknown_row.pane_tty = "not a tty".to_string();
+    let snapshot = daemon_refresh_snapshot(vec![
+        daemon_refresh_row("%1", "$1", "@1", 0, "codex"),
+        daemon_refresh_row("%2", "$1", "@1", 1, "codex"),
+        unknown_row,
+    ]);
+
+    let observability = daemon::test_snapshot_observability(&snapshot);
+
+    let codex = observability
+        .per_provider
+        .get("codex")
+        .expect("codex bucket should be present");
+    assert_eq!(codex.pane_count, 2);
+    assert_eq!(codex.matched_pane_current_command_count, 2);
+    assert_eq!(codex.matched_proc_process_tree_count, 0);
+
+    let unknown = observability
+        .per_provider
+        .get("unknown")
+        .expect("unclassified panes bucket under `unknown`");
+    assert_eq!(unknown.pane_count, 1);
+    assert_eq!(unknown.matched_pane_current_command_count, 0);
+
+    // Per-provider pane counts reconcile with the snapshot total.
+    let bucketed: usize = observability
+        .per_provider
+        .values()
+        .map(|stats| stats.pane_count)
+        .sum();
+    assert_eq!(bucketed, snapshot.panes.len());
+}
+
+#[test]
+fn control_event_batch_counts_output_firehose_volume() {
+    let lines = vec![
+        "%output %1 \\033]0;Claude Code | repo\\007".to_string(),
+        "%output %2 ordinary streaming bytes".to_string(),
+        "%subscription-changed agentscan $1 @1 0 %1 : %1:claude:::::".to_string(),
+    ];
+
+    let (total, output_lines, output_bytes, ignored) =
+        daemon::test_control_event_batch_volume(&lines);
+
+    // Every line is counted, both `%output` lines are sized (title-bearing or not),
+    // and only the non-title `%output` line lands in the ignored bucket.
+    assert_eq!(total, 3);
+    assert_eq!(output_lines, 2);
+    assert_eq!(output_bytes, (lines[0].len() + lines[1].len()) as u64);
+    assert_eq!(ignored, 1);
+}
+
+#[test]
+fn runtime_telemetry_records_volume_for_ignored_only_output_batch() {
+    // A pure `%output` firehose burst with no title and no metadata change still
+    // updates the always-on volume counters, while leaving the gated kind counters
+    // (pane/title/window/session) at zero.
+    let lines = vec![
+        "%output %1 streaming tokens".to_string(),
+        "%output %1 more tokens".to_string(),
+    ];
+
+    let frame = daemon::test_runtime_telemetry_after_control_event_volume(&lines);
+
+    assert_eq!(frame.control_event_batch_count, 1);
+    assert_eq!(frame.control_event_line_count, 2);
+    assert_eq!(frame.control_event_output_line_count, 2);
+    assert_eq!(
+        frame.control_event_output_byte_count,
+        (lines[0].len() + lines[1].len()) as u64
+    );
+    assert_eq!(frame.control_event_ignored_count, 2);
+    assert_eq!(frame.control_event_pane_count, 0);
+    assert_eq!(frame.control_event_title_count, 0);
+}
+
+#[test]
 fn daemon_observability_skips_snapshot_diff_for_ignored_control_output() {
     let lines = vec!["%output %1 ordinary pane bytes".to_string()];
 
@@ -907,9 +988,112 @@ fn daemon_control_exit_event_skips_broker_recovery() {
 
 #[test]
 fn daemon_reconcile_interval_uses_fallback_when_broker_is_disabled() {
+    // Broker fallback has no event stream, so the reconcile poll is the sole
+    // update path and stays fast regardless of `disable_reconcile`.
     assert_eq!(
-        daemon::test_reconcile_interval_for_broker_enabled(false),
+        daemon::test_reconcile_interval_for(false, false, true),
         std::time::Duration::from_secs(1)
+    );
+    assert_eq!(
+        daemon::test_reconcile_interval_for(false, true, true),
+        std::time::Duration::from_secs(1)
+    );
+}
+
+#[test]
+fn daemon_reconcile_interval_uses_self_heal_when_reconcile_disabled() {
+    // Broker active + reconcile disabled: all sessions are event-driven via
+    // per-session subscriber clients, so the poll is reduced to the infrequent
+    // self-heal/drift backstop cadence.
+    assert_eq!(
+        daemon::test_reconcile_interval_for(true, true, true),
+        std::time::Duration::from_secs(300)
+    );
+    // Broker active + reconcile enabled keeps the full redundancy interval.
+    assert_eq!(
+        daemon::test_reconcile_interval_for(true, false, true),
+        std::time::Duration::from_secs(30)
+    );
+}
+
+#[test]
+fn daemon_subscriber_coverage_requires_every_desired_session_attached() {
+    let desired = vec!["$0".to_string(), "$1".to_string(), "$2".to_string()];
+
+    // Under the cap and all desired sessions attached: coverage is complete.
+    assert!(daemon::test_subscriber_coverage_complete(
+        true, &desired, &desired
+    ));
+    // A failed attach (one desired session missing a subscriber) is incomplete,
+    // even though the count is under the cap, so the poll stays active.
+    assert!(!daemon::test_subscriber_coverage_complete(
+        true,
+        &desired,
+        &["$0".to_string(), "$2".to_string()],
+    ));
+    // Over the cap is always incomplete regardless of attachments.
+    assert!(!daemon::test_subscriber_coverage_complete(
+        false, &desired, &desired
+    ));
+    // No desired sessions is vacuously complete.
+    assert!(daemon::test_subscriber_coverage_complete(true, &[], &[]));
+}
+
+#[test]
+fn daemon_reconcile_interval_stays_active_when_subscriber_coverage_is_incomplete() {
+    // More sessions than the subscriber cap means some sessions have no event
+    // client, so even with reconcile "disabled" the poll must stay at the active
+    // interval to cover them rather than relaxing to the 300s self-heal backstop.
+    assert_eq!(
+        daemon::test_reconcile_interval_for(true, true, false),
+        std::time::Duration::from_secs(30)
+    );
+    // Broker fallback still wins: no event stream means the fast poll regardless.
+    assert_eq!(
+        daemon::test_reconcile_interval_for(false, true, false),
+        std::time::Duration::from_secs(1)
+    );
+}
+
+#[test]
+fn daemon_subscriber_session_ids_pass_through_under_the_cap() {
+    // At or under the cap the set is returned unchanged (and un-reordered), so
+    // existing subscriber clients are never churned by reconcile.
+    let session_ids: Vec<String> = (0..daemon::MAX_CONTROL_MODE_SUBSCRIBERS)
+        .map(|index| format!("${index}"))
+        .collect();
+    assert_eq!(
+        daemon::test_capped_subscriber_session_ids(session_ids.clone()),
+        session_ids
+    );
+}
+
+#[test]
+fn daemon_subscriber_session_ids_capped_to_lowest_numeric_ids_over_the_cap() {
+    // Use real, unpadded tmux ids in shuffled order. The cap must keep the lowest
+    // numeric session indices, not a lexical prefix (where `$2` sorts after
+    // `$19`), and the result must be deterministic across reconciles.
+    let over = daemon::MAX_CONTROL_MODE_SUBSCRIBERS + 10;
+    let mut session_ids: Vec<String> = (0..over).map(|index| format!("${index}")).collect();
+    session_ids.reverse();
+
+    let capped = daemon::test_capped_subscriber_session_ids(session_ids);
+    assert_eq!(capped.len(), daemon::MAX_CONTROL_MODE_SUBSCRIBERS);
+
+    // Expect exactly the lowest-numbered ids, numerically ordered. A lexical sort
+    // would instead have kept ids like `$10`..`$19` ahead of `$2`..`$9` and
+    // dropped some low indices, so this also guards against regressing the sort.
+    let expected: Vec<String> = (0..daemon::MAX_CONTROL_MODE_SUBSCRIBERS)
+        .map(|index| format!("${index}"))
+        .collect();
+    assert_eq!(capped, expected);
+    // The highest-numbered sessions are the ones dropped.
+    assert!(!capped.contains(&format!("${over}")));
+
+    // Capping is idempotent: re-capping the already-capped set is a no-op.
+    assert_eq!(
+        daemon::test_capped_subscriber_session_ids(capped.clone()),
+        capped
     );
 }
 

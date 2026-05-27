@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+## 0.4.0 - 2026-05-27
+
+### Added
+
+- Made every tmux session event-driven through its own control-mode client: one
+  primary client (commands plus its session's events) and an event-only
+  subscriber client per other session, all feeding a shared event stream. Agent
+  pane detection now scales across many sessions without `ps` scans or repeated
+  `capture-pane`.
+- Added runtime config toggles for daemon control-mode behavior.
+- Added daemon observability diagnostics and expanded runtime telemetry with
+  control-event firehose volume and reconnect, fallback, and subscriber counts.
+- Captured tmux active-pane flags through the snapshot pipeline so the active
+  pane can be distinguished downstream.
+
+### Changed
+
+- Made the safety reconcile coverage-aware: it relaxes to an infrequent
+  self-heal/drift backstop once every session has an event client, and keeps the
+  active 30-second reconcile while sessions exceed the subscriber cap.
+- Paused `%output` globally on control clients (`-f ignore-size,no-output`) and
+  moved metadata subscriptions to throttled `refresh-client -B`, cutting idle
+  wakeups from high-volume pane output.
+
+### Fixed
+
+- Drained the retained shared control-mode channel on primary reconnect so a
+  timed-out command's leftover frames can no longer be misattributed to a later
+  brokered command and return a stale or mismatched snapshot.
+- Filtered subscriber `%exit` so one dying session no longer bounces the daemon,
+  and added a sub-second primary-liveness poll plus prompt dead-subscriber prune
+  and re-attach.
+
 ## 0.3.3 - 2026-05-25
 
 ### Changed

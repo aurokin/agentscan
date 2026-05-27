@@ -1023,11 +1023,16 @@ fn control_mode_command_response_reports_errors_and_interleaved_frames() {
 
 #[test]
 fn daemon_subscription_format_includes_wrapper_metadata_fields() {
-    assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{{pane_current_command}}"));
-    assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{{pane_title}}"));
-    assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{{@agent.provider}}"));
-    assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{{@agent.state}}"));
-    assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{{@agent.session_id}}"));
+    // Single-brace `#{...}` directives: the string is sent to tmux verbatim, so
+    // doubled braces would render every field as a literal `}` (see the constant's
+    // doc comment). These assertions guard against regressing back to that.
+    assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{pane_current_command}"));
+    assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{pane_title}"));
+    assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{@agent.provider}"));
+    assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{@agent.state}"));
+    assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{@agent.session_id}"));
+    // Explicitly reject the doubled-brace form that broke the subscription.
+    assert!(!DAEMON_SUBSCRIPTION_FORMAT.contains("#{{"));
 }
 
 #[test]
