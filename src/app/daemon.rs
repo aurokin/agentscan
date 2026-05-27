@@ -31,7 +31,8 @@ pub(crate) use control_mode::{
 };
 use control_mode::{
     DaemonClosingGuard, RunningTmuxControlModeClient, install_shutdown_signal_handlers,
-    start_subscriber_control_mode_client, start_tmux_control_mode_client, startup_failure_message,
+    start_subscriber_control_mode_client, start_tmux_control_mode_client_for,
+    startup_failure_message,
 };
 pub(crate) use lifecycle::{
     AutoStartPolicy, DaemonSnapshotError, daemon_restart, daemon_run, daemon_start, daemon_status,
@@ -1075,8 +1076,23 @@ pub(crate) trait StartupActions {
     }
 }
 
-#[derive(Default)]
-struct DaemonStartup;
+struct DaemonStartup {
+    // The session the primary control client attaches to, resolved once at daemon
+    // start. Holding it (rather than recomputing `default_session_target()` each
+    // reconcile) keeps the primary attach and the subscriber-exclusion set in
+    // agreement: `default_session_target()` follows the launching tmux client's
+    // current session and would drift if that client switched sessions, which
+    // could leave the switched-to session with no event client.
+    primary_session_id: String,
+}
+
+impl DaemonStartup {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            primary_session_id: tmux::default_session_target()?,
+        })
+    }
+}
 
 impl StartupActions for DaemonStartup {
     fn tmux_version(&self) -> Option<String> {
@@ -1088,14 +1104,14 @@ impl StartupActions for DaemonStartup {
     }
 
     fn start_tmux_control_mode_client(&self) -> Result<StartedTmuxControlModeClient> {
-        start_tmux_control_mode_client().map(StartedTmuxControlModeClient::from_real)
+        start_tmux_control_mode_client_for(&self.primary_session_id)
+            .map(StartedTmuxControlModeClient::from_real)
     }
 
     fn additional_subscriber_session_ids(&self) -> Result<Vec<String>> {
-        let primary = tmux::default_session_target()?;
         Ok(tmux::list_session_ids()?
             .into_iter()
-            .filter(|session_id| *session_id != primary)
+            .filter(|session_id| *session_id != self.primary_session_id)
             .collect())
     }
 

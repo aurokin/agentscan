@@ -632,13 +632,18 @@ pub(super) fn startup_failure_message(context: &str, error: &anyhow::Error) -> S
 //     This is what keeps cost flat as the number of active agents grows.
 const CONTROL_CLIENT_ATTACH_FLAGS: &str = "ignore-size,no-output";
 
-pub(super) fn start_tmux_control_mode_client() -> Result<(
+// Start the primary control client attached to an explicit session target. The
+// caller resolves and owns the primary session id (once, at startup) so the
+// primary attach and the subscriber-exclusion set agree and do not drift if the
+// launching tmux client later switches sessions.
+pub(super) fn start_tmux_control_mode_client_for(
+    session_target: &str,
+) -> Result<(
     std::process::Child,
     BufReader<std::process::ChildStdout>,
     std::process::ChildStdin,
 )> {
-    let session_target = tmux::default_session_target()?;
-    start_control_mode_client_for(&session_target)
+    start_control_mode_client_for(session_target)
 }
 
 pub(super) fn start_subscriber_control_mode_client(

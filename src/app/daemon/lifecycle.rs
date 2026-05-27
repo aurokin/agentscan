@@ -2266,7 +2266,7 @@ pub(crate) fn daemon_run() -> Result<()> {
         ipc::resolve_socket_path().map_err(|error| DaemonSnapshotError::UnexpectedFrame {
             message: error.to_string(),
         })?;
-    daemon_run_with_socket_path_and_startup(&socket_path, DaemonStartup)
+    daemon_run_with_socket_path_and_startup(&socket_path, DaemonStartup::new()?)
 }
 
 pub(crate) fn daemon_status(format: OutputFormat, include_events: bool) -> Result<()> {
