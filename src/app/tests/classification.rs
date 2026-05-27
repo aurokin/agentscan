@@ -2113,11 +2113,13 @@ fn copilot_pane_output_marks_busy_only_after_provider_is_known() {
 }
 
 #[test]
-fn pane_output_status_fallback_is_limited_to_supported_providers() {
-    let mut antigravity = pane_output_status_pane(747, Provider::Antigravity, "Antigravity");
+fn pane_output_status_fallback_requires_a_resolved_provider() {
+    // Pane output is a provider-scoped status fallback: a pane with no resolved provider
+    // must never be probed, even when its output looks agent-shaped.
+    let mut unprovidered = proc_fallback_pane(747, "node", "custom title");
 
     classify::apply_pane_output_status_fallback(
-        &mut antigravity,
+        &mut unprovidered,
         "❯ Review patch\n\n\
          ● Thinking (Esc to cancel · 616 B)\n\
          /tmp/probe [main]\n\
@@ -2127,8 +2129,9 @@ fn pane_output_status_fallback_is_limited_to_supported_providers() {
          / commands · ? help\n",
     );
 
-    assert_eq!(antigravity.status.kind, StatusKind::Unknown);
-    assert_eq!(antigravity.status.source, super::StatusSource::NotChecked);
+    assert!(unprovidered.provider.is_none());
+    assert_eq!(unprovidered.status.kind, StatusKind::Unknown);
+    assert_eq!(unprovidered.status.source, super::StatusSource::NotChecked);
 }
 
 #[test]
@@ -2485,64 +2488,53 @@ fn codex_pane_output_does_not_infer_idle_from_stale_prompt() {
 }
 
 #[test]
-fn grok_pane_output_marks_idle_only_after_provider_is_known() {
-    let mut grok = pane_output_status_pane(769, Provider::Grok, "agentscan - grok");
+fn grok_pane_output_marks_current_prompt_box_idle_only_after_provider_is_known() {
+    // Mirrors a real idle grok pane: the rounded input box is the current bottom UI and
+    // the rest of the taller pane is blank padding below it.
+    let idle_screen = "Update: v0.2.3 available — press ctrl+u to restart\n\
+         \n\
+         ╭────────────────────────────────────────────────╮\n\
+         │ ❯                                                │\n\
+         ╰──────────────── Grok Build · always-approve ─╯\n\
+         \n\
+         0.1.220 Beta\n\
+         \n\
+         \n\
+         \n\
+         \n";
 
-    classify::apply_pane_output_status_fallback(
-        &mut grok,
-        "Turn completed in 4.2s.\n\
-         Shift+Tab:mode │ Ctrl+.:shortcuts\n",
-    );
+    let mut grok = pane_output_status_pane(769, Provider::Grok, "grok");
+    classify::apply_pane_output_status_fallback(&mut grok, idle_screen);
 
     assert_eq!(grok.status.kind, StatusKind::Idle);
     assert_eq!(grok.status.source, super::StatusSource::PaneOutput);
 
     let mut unknown = proc_fallback_pane(770, "zsh", "custom title");
-    classify::apply_pane_output_status_fallback(
-        &mut unknown,
-        "Turn completed in 4.2s.\n\
-         Shift+Tab:mode │ Ctrl+.:shortcuts\n",
-    );
+    classify::apply_pane_output_status_fallback(&mut unknown, idle_screen);
 
     assert_eq!(unknown.status.kind, StatusKind::Unknown);
     assert_eq!(unknown.status.source, super::StatusSource::NotChecked);
 }
 
 #[test]
-fn grok_pane_output_does_not_mark_working_footer_idle() {
-    let mut grok = pane_output_status_pane(771, Provider::Grok, "⠹ - Running: shell - agentscan - grok");
+fn grok_pane_output_marks_running_spinner_busy() {
+    let mut grok = pane_output_status_pane(771, Provider::Grok, "grok");
 
     classify::apply_pane_output_status_fallback(
         &mut grok,
-        "Turn completed in 3.1s.\n\
-         ⠹ Running: shell - agentscan 8s … ⇣123 [✗]\n\
-         Shift+Tab:mode │ Ctrl+c:cancel │ Ctrl+Enter:interject │ Ctrl+.:shortcuts\n",
+        "╭────────────────────────────────────────────────╮\n\
+         │ ❯                                                │\n\
+         ╰──────────────── Grok Build · always-approve ─╯\n\
+         ⠹ Running: shell - agentscan 8s … ⇣123 [✗]\n",
     );
 
-    assert_eq!(grok.status.kind, StatusKind::Unknown);
-    assert_eq!(grok.status.source, super::StatusSource::NotChecked);
+    assert_eq!(grok.status.kind, StatusKind::Busy);
+    assert_eq!(grok.status.source, super::StatusSource::PaneOutput);
 }
 
 #[test]
-fn grok_pane_output_uses_current_footer_over_stale_completed_turn() {
-    let mut grok = pane_output_status_pane(772, Provider::Grok, "agentscan - grok");
-
-    classify::apply_pane_output_status_fallback(
-        &mut grok,
-        "Turn completed in 2.8s.\n\
-         Shift+Tab:mode │ Ctrl+.:shortcuts\n\
-         \n\
-         ⠸ Running: shell - agentscan 5s … ⇣42 [✗]\n\
-         Shift+Tab:mode │ Ctrl+c:cancel │ Ctrl+Enter:interject │ Ctrl+.:shortcuts\n",
-    );
-
-    assert_eq!(grok.status.kind, StatusKind::Unknown);
-    assert_eq!(grok.status.source, super::StatusSource::NotChecked);
-}
-
-#[test]
-fn grok_pane_output_uses_running_body_marker_over_stale_completed_turn() {
-    let mut grok = pane_output_status_pane(774, Provider::Grok, "agentscan - grok");
+fn grok_pane_output_marks_running_body_marker_busy() {
+    let mut grok = pane_output_status_pane(774, Provider::Grok, "grok");
 
     classify::apply_pane_output_status_fallback(
         &mut grok,
@@ -2550,22 +2542,209 @@ fn grok_pane_output_uses_running_body_marker_over_stale_completed_turn() {
          ⠹ Editing files 5s … ⇣42 [✗]\n",
     );
 
+    assert_eq!(grok.status.kind, StatusKind::Busy);
+    assert_eq!(grok.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn grok_pane_output_ignores_stale_spinner_above_current_prompt_box() {
+    // The 30-row capture still holds a prior turn's running spinner, but the current bottom
+    // UI is the idle input box, so the pane is idle — the stale spinner must not force busy.
+    let mut grok = pane_output_status_pane(775, Provider::Grok, "grok");
+
+    classify::apply_pane_output_status_fallback(
+        &mut grok,
+        "⠹ Running: shell - agentscan 8s … ⇣123 [✗]\n\
+         Turn completed in 4.2s.\n\
+         ╭────────────────────────────────────────────────╮\n\
+         │ ❯                                                │\n\
+         ╰──────────────── Grok Build · always-approve ─╯\n",
+    );
+
+    assert_eq!(grok.status.kind, StatusKind::Idle);
+    assert_eq!(grok.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn grok_pane_output_does_not_infer_idle_with_output_just_below_box_border() {
+    // Even a single output row below the box border means the box is a stale frame in the
+    // scrollback capture, not the current prompt — distance alone must not call it idle.
+    let mut grok = pane_output_status_pane(776, Provider::Grok, "grok");
+
+    classify::apply_pane_output_status_fallback(
+        &mut grok,
+        "╭────────────────────────────────────────────────╮\n\
+         │ ❯                                                │\n\
+         ╰──────────────── Grok Build · always-approve ─╯\n\
+         Reading files\n",
+    );
+
     assert_eq!(grok.status.kind, StatusKind::Unknown);
     assert_eq!(grok.status.source, super::StatusSource::NotChecked);
 }
 
 #[test]
-fn grok_pane_output_leaves_unprobed_approval_footer_unknown() {
-    let mut grok = pane_output_status_pane(773, Provider::Grok, "agentscan - grok");
+fn grok_pane_output_does_not_infer_idle_without_current_prompt_box() {
+    // A completed-turn line scrolled near the bottom with no current input box must not
+    // be read as idle.
+    let mut grok = pane_output_status_pane(772, Provider::Grok, "grok");
 
     classify::apply_pane_output_status_fallback(
         &mut grok,
-        "Approve command?\n\
-         Shift+Tab:mode │ Ctrl+y:approve │ Ctrl+n:reject │ Ctrl+.:shortcuts\n",
+        "Turn completed in 2.8s.\n\
+         Reviewing the diff before the next step.\n",
     );
 
     assert_eq!(grok.status.kind, StatusKind::Unknown);
     assert_eq!(grok.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn grok_pane_output_does_not_infer_idle_from_scrolled_away_prompt_box() {
+    // The input box exists in scrollback but a later turn pushed it far from the current
+    // bottom, so it is no longer the active prompt.
+    let mut grok = pane_output_status_pane(773, Provider::Grok, "grok");
+
+    classify::apply_pane_output_status_fallback(
+        &mut grok,
+        "╭────────────────────────────────────────────────╮\n\
+         │ ❯                                                │\n\
+         ╰──────────────── Grok Build · always-approve ─╯\n\
+         Reading files\n\
+         Planning edits\n\
+         Updating code\n\
+         Running tests\n\
+         Collecting output\n\
+         Drafting summary\n\
+         Current line\n",
+    );
+
+    assert_eq!(grok.status.kind, StatusKind::Unknown);
+    assert_eq!(grok.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn grok_pane_output_does_not_treat_release_channel_prose_below_box_as_chrome() {
+    // The version footer is shape-anchored (a couple of version/channel tokens). A prose
+    // line that merely mentions a channel word like "Beta" sits below the box as real output,
+    // so the box is a stale frame and the pane must not be inferred idle.
+    let mut grok = pane_output_status_pane(777, Provider::Grok, "grok");
+
+    classify::apply_pane_output_status_fallback(
+        &mut grok,
+        "╭────────────────────────────────────────────────╮\n\
+         │ ❯                                                │\n\
+         ╰──────────────── Grok Build · always-approve ─╯\n\
+         Beta access for the new planner is rolling out now\n",
+    );
+
+    assert_eq!(grok.status.kind, StatusKind::Unknown);
+    assert_eq!(grok.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn antigravity_pane_output_marks_current_prompt_idle_only_after_provider_is_known() {
+    // Mirrors a real idle antigravity pane: the bordered `>` prompt and `? for shortcuts`
+    // footer sit at the top of a much taller pane padded with blank rows below.
+    let idle_screen = "Antigravity CLI 1.0.1\n\
+         auro@hsadler.com\n\
+         Gemini 3.5 Flash (Medium)\n\
+         ~/code/agentscan\n\
+         ────────────────────────────────────────────────\n\
+         >\n\
+         ────────────────────────────────────────────────\n\
+         ? for shortcuts                       Gemini 3.5 Flash (Medium)\n\
+         \n\
+         \n\
+         \n\
+         \n";
+
+    let mut antigravity = pane_output_status_pane(795, Provider::Antigravity, "koopa.home.arpa");
+    classify::apply_pane_output_status_fallback(&mut antigravity, idle_screen);
+
+    assert_eq!(antigravity.status.kind, StatusKind::Idle);
+    assert_eq!(antigravity.status.source, super::StatusSource::PaneOutput);
+
+    let mut unknown = proc_fallback_pane(796, "zsh", "custom title");
+    classify::apply_pane_output_status_fallback(&mut unknown, idle_screen);
+
+    assert_eq!(unknown.status.kind, StatusKind::Unknown);
+    assert_eq!(unknown.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn antigravity_pane_output_leaves_non_idle_screen_unknown() {
+    // Antigravity has no observed busy screen, so we do not guess one. When its idle
+    // `? for shortcuts` footer is not the current bottom UI, the pane stays unknown rather
+    // than risk a false busy from a guessed marker (which would also over-match prose).
+    let mut antigravity = pane_output_status_pane(797, Provider::Antigravity, "koopa.home.arpa");
+
+    classify::apply_pane_output_status_fallback(
+        &mut antigravity,
+        "Working on the request\n\
+         The described approach will stop the leak.\n\
+         Streaming the diff now\n",
+    );
+
+    assert_eq!(antigravity.status.kind, StatusKind::Unknown);
+    assert_eq!(antigravity.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn antigravity_pane_output_does_not_infer_idle_from_scrolled_away_footer() {
+    let mut antigravity = pane_output_status_pane(798, Provider::Antigravity, "koopa.home.arpa");
+
+    classify::apply_pane_output_status_fallback(
+        &mut antigravity,
+        "? for shortcuts                       Gemini 3.5 Flash (Medium)\n\
+         Reading files\n\
+         Planning edits\n\
+         Running tests\n\
+         Current line\n",
+    );
+
+    assert_eq!(antigravity.status.kind, StatusKind::Unknown);
+    assert_eq!(antigravity.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn antigravity_pane_output_idle_survives_stale_cancel_hint_in_scrollback() {
+    // A prior turn's cancel hint is still in the scrollback capture above a fresh idle
+    // footer. Because the live footer is the current bottom, the pane is idle — the stale
+    // cancel hint must not force busy.
+    let mut antigravity = pane_output_status_pane(801, Provider::Antigravity, "koopa.home.arpa");
+
+    classify::apply_pane_output_status_fallback(
+        &mut antigravity,
+        "esc to cancel                         Gemini 3.5 Flash (Medium)\n\
+         Done with the previous request.\n\
+         ────────────────────────────────────────────────\n\
+         >\n\
+         ────────────────────────────────────────────────\n\
+         ? for shortcuts                       Gemini 3.5 Flash (Medium)\n",
+    );
+
+    assert_eq!(antigravity.status.kind, StatusKind::Idle);
+    assert_eq!(antigravity.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn antigravity_pane_output_does_not_infer_idle_with_output_just_below_footer() {
+    // A single output row below the `? for shortcuts` footer means it is a stale frame; only
+    // blank rows may follow the current idle footer.
+    let mut antigravity = pane_output_status_pane(800, Provider::Antigravity, "koopa.home.arpa");
+
+    classify::apply_pane_output_status_fallback(
+        &mut antigravity,
+        "────────────────────────────────────────────────\n\
+         >\n\
+         ────────────────────────────────────────────────\n\
+         ? for shortcuts                       Gemini 3.5 Flash (Medium)\n\
+         Reading files\n",
+    );
+
+    assert_eq!(antigravity.status.kind, StatusKind::Unknown);
+    assert_eq!(antigravity.status.source, super::StatusSource::NotChecked);
 }
 
 #[test]
@@ -3108,6 +3287,34 @@ fn pi_pane_output_does_not_infer_idle_from_stale_editor_frame() {
 }
 
 #[test]
+fn pi_pane_output_marks_idle_through_trailing_blank_padding() {
+    // Real-world regression: a freshly started pi renders its editor frame and footer at
+    // the top, leaving the rest of the taller pane blank. The trailing blank rows must not
+    // push the current footer out of the "near the bottom" window.
+    let mut pi = pane_output_status_pane(799, Provider::Pi, "π - agentscan");
+
+    classify::apply_pane_output_status_fallback(
+        &mut pi,
+        "────────────────────────────────\n\
+         \n\
+         ────────────────────────────────\n\
+         ~/code/agentscan (main)\n\
+         $0.000 (sub) 0.0%/272k (auto)              (openai-codex) gpt-5.5 • medium\n\
+         \n\
+         \n\
+         \n\
+         \n\
+         \n\
+         \n\
+         \n\
+         \n",
+    );
+
+    assert_eq!(pi.status.kind, StatusKind::Idle);
+    assert_eq!(pi.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
 fn opencode_pane_output_marks_current_tui_prompt_idle_only_after_provider_is_known() {
     let mut opencode = pane_output_status_pane(780, Provider::Opencode, "OpenCode");
 
@@ -3219,6 +3426,189 @@ fn opencode_pane_output_does_not_infer_idle_from_stale_prompt() {
          Preparing response\n\
          Still working\n\
          Current line\n",
+    );
+
+    assert_eq!(opencode.status.kind, StatusKind::Unknown);
+    assert_eq!(opencode.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn opencode_pane_output_marks_new_build_splash_idle() {
+    // Newer "OpenCode Go" splash: the input box is centered with the command bar below it,
+    // and the bottom status bar (path + version) sits far below at the true pane bottom.
+    let mut opencode = pane_output_status_pane(801, Provider::Opencode, "OpenCode");
+
+    classify::apply_pane_output_status_fallback(
+        &mut opencode,
+        "┃\n\
+         ┃  Ask anything... \"Fix a TODO in the codebase\"\n\
+         ┃\n\
+         ┃  Build · Kimi K2.6 OpenCode Go\n\
+         ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+         tab agents  ctrl+p commands\n\
+         \n\
+         ● Tip Use opencode run -f file.ts to attach files via CLI\n\
+         \n\
+         \n\
+         ~/code/agentscan:main                                  1.15.11\n",
+    );
+
+    assert_eq!(opencode.status.kind, StatusKind::Idle);
+    assert_eq!(opencode.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn opencode_pane_output_marks_new_build_active_session_idle() {
+    // After a turn completes the placeholder is gone, but the bordered input box and the
+    // command bar remain as the current idle prompt at the bottom of the pane.
+    let mut opencode = pane_output_status_pane(802, Provider::Opencode, "OC | Greeting");
+
+    classify::apply_pane_output_status_fallback(
+        &mut opencode,
+        "Hello! How can I help you today?\n\
+         ▣  Build · Kimi K2.6 · 4.0s\n\
+         ┃\n\
+         ┃\n\
+         ┃\n\
+         ┃  Build · Kimi K2.6 OpenCode Go\n\
+         ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+         tab agents  ctrl+p commands    • OpenCode 1.15.11\n",
+    );
+
+    assert_eq!(opencode.status.kind, StatusKind::Idle);
+    assert_eq!(opencode.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn opencode_pane_output_new_build_yields_to_current_busy_marker() {
+    // A busy marker still wins over the persistent command-bar input box.
+    let mut opencode = pane_output_status_pane(803, Provider::Opencode, "OC | Working");
+
+    classify::apply_pane_output_status_fallback(
+        &mut opencode,
+        "┃\n\
+         ┃  Build · Kimi K2.6 OpenCode Go\n\
+         ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+         tab agents  ctrl+p commands    • OpenCode 1.15.11\n\
+         Permission required\n\
+         Allow once   Allow always   Reject\n",
+    );
+
+    assert_eq!(opencode.status.kind, StatusKind::Busy);
+    assert_eq!(opencode.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn opencode_pane_output_does_not_infer_new_build_idle_with_output_below_command_bar() {
+    // A stale command bar + input box sit in the scrollback capture, but newer agent output
+    // scrolled below them with no recognized busy marker. The command bar is no longer the
+    // current prompt, so the pane must stay unknown rather than be reported idle.
+    let mut opencode = pane_output_status_pane(805, Provider::Opencode, "OpenCode");
+
+    classify::apply_pane_output_status_fallback(
+        &mut opencode,
+        "╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+         tab agents  ctrl+p commands    • OpenCode 1.15.11\n\
+         Reading files\n\
+         Planning edits\n\
+         Updating code\n\
+         Current line\n",
+    );
+
+    assert_eq!(opencode.status.kind, StatusKind::Unknown);
+    assert_eq!(opencode.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn opencode_pane_output_new_build_marks_busy_when_interrupt_hint_above_persistent_command_bar() {
+    // The newer build keeps its command bar pinned during a run, with the `esc interrupt`
+    // status rendered just above the input box. The persistent command bar must not be read
+    // as idle while that current interrupt hint is in the prompt footer.
+    let mut opencode = pane_output_status_pane(809, Provider::Opencode, "OC | Greeting");
+
+    classify::apply_pane_output_status_fallback(
+        &mut opencode,
+        "Reading the codebase\n\
+         esc interrupt\n\
+         ┃\n\
+         ┃  Build · Kimi K2.6 OpenCode Go\n\
+         ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+         tab agents  ctrl+p commands    • OpenCode 1.15.11\n",
+    );
+
+    assert_eq!(opencode.status.kind, StatusKind::Busy);
+    assert_eq!(opencode.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn opencode_pane_output_new_build_idle_survives_stale_approval_in_scrollback() {
+    // A resolved permission prompt is still in the scrollback capture above the current
+    // command-bar input box. Because the live prompt sits below it, the pane is idle — the
+    // stale approval must not preempt to busy.
+    let mut opencode = pane_output_status_pane(806, Provider::Opencode, "OC | Greeting");
+
+    classify::apply_pane_output_status_fallback(
+        &mut opencode,
+        "Permission required\n\
+         Allow once   Allow always   Reject\n\
+         Done. Applied the edit.\n\
+         ┃\n\
+         ┃  Build · Kimi K2.6 OpenCode Go\n\
+         ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+         tab agents  ctrl+p commands    • OpenCode 1.15.11\n",
+    );
+
+    assert_eq!(opencode.status.kind, StatusKind::Idle);
+    assert_eq!(opencode.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn opencode_pane_output_does_not_treat_path_output_below_command_bar_as_chrome() {
+    // A stale command bar sits in the scrollback capture with only file-path agent output
+    // below it (common in coding output). Paths are not opencode chrome, so the stale
+    // command bar is not the current prompt and the pane stays unknown.
+    let mut opencode = pane_output_status_pane(807, Provider::Opencode, "OpenCode");
+
+    classify::apply_pane_output_status_fallback(
+        &mut opencode,
+        "╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+         tab agents  ctrl+p commands\n\
+         ~/code/agentscan/src/app/classify/pane_output.rs\n\
+         /Users/auro/code/agentscan/src/app/scanner.rs\n",
+    );
+
+    assert_eq!(opencode.status.kind, StatusKind::Unknown);
+    assert_eq!(opencode.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn opencode_pane_output_does_not_treat_semver_prose_below_command_bar_as_chrome() {
+    // Agent output that merely mentions a semver or IP is not the pinned status bar, so a
+    // stale command bar above such output must not be read as the current idle prompt.
+    let mut opencode = pane_output_status_pane(808, Provider::Opencode, "OpenCode");
+
+    classify::apply_pane_output_status_fallback(
+        &mut opencode,
+        "╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+         tab agents  ctrl+p commands\n\
+         Updated SDK to 1.2.3 in the lockfile\n\
+         See RFC 192.168.1.1 for details\n",
+    );
+
+    assert_eq!(opencode.status.kind, StatusKind::Unknown);
+    assert_eq!(opencode.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn opencode_pane_output_does_not_infer_new_build_idle_without_input_box() {
+    // The command bar alone (no bordered input box above it) is not enough to call idle.
+    let mut opencode = pane_output_status_pane(804, Provider::Opencode, "OpenCode");
+
+    classify::apply_pane_output_status_fallback(
+        &mut opencode,
+        "Reading files\n\
+         Planning edits\n\
+         tab agents  ctrl+p commands    • OpenCode 1.15.11\n",
     );
 
     assert_eq!(opencode.status.kind, StatusKind::Unknown);

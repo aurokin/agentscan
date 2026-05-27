@@ -167,6 +167,10 @@ Implications:
 - pane output is not a provider-identity signal. When used, it must be
   provider-scoped, anchored to current prompt/footer/status shapes, and reported
   through `status.source="pane_output"`.
+- pane-output matchers anchor to the last *rendered* line: trailing blank rows are
+  trimmed once centrally before any provider matcher runs, so a top-rendered or
+  freshly started agent (whose prompt/footer is far above the pane's blank padding)
+  is still read from its current UI rather than the pane's physical bottom.
 - process fallback is targeted live process inspection, not broad system
   scanning. It is limited to concrete ambiguous panes, checks the foreground
   process group for shell or wrapper panes, and checks root/descendant process
