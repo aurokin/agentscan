@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Fixed
+
+- Stopped idle grok, pi, antigravity, and newer-build opencode panes from showing as
+  `unknown`. The pane-output status path now trims trailing blank rows once before any
+  provider matcher runs, so a top-rendered or freshly started agent's prompt/footer no
+  longer falls outside the "near the current footer" window just because the pane is
+  taller than its UI. Refreshed grok idle detection to its current bordered `❯` input
+  box, added antigravity status detection (`? for shortcuts` footer over a bordered `>`
+  prompt), and taught opencode the newer "OpenCode Go" command-bar input box.
+- Anchored opencode busy detection to the current bottom frame: when no live idle
+  prompt or command bar is visible, a stale approval/interrupt line scrolled up in the
+  capture no longer forces `busy` — the busy marker must itself be in the current footer
+  region or near the bottom rows.
+
 ## 0.4.1 - 2026-05-27
 
 ### Fixed
