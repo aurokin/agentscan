@@ -332,6 +332,12 @@ impl RunningTmuxControlModeClient {
     // re-attaches them. Covers the case where a subscriber client dies while its
     // session is still alive (a closed session is instead handled by
     // `retain_subscriber_sessions`, since the session leaves the desired set).
+    //
+    // Safe to run after `has_dead_subscriber` has already `try_wait`-ed the same
+    // children: `Child::try_wait` records the exit status on the `Child` and
+    // returns that cached `Ok(Some(status))` on every subsequent call (it does
+    // not reap-then-report-`None`). So the earlier detection call does not consume
+    // the status out from under this prune — both observe the exited child.
     pub(super) fn prune_dead_subscribers(&mut self) {
         self.subscribers
             .retain_mut(|subscriber| !matches!(subscriber.child.try_wait(), Ok(Some(_))));
@@ -342,6 +348,10 @@ impl RunningTmuxControlModeClient {
     // only) still reports it covered, so the run loop polls this on each timeout
     // to trigger a prune + re-attach + coverage recompute promptly, instead of
     // waiting for the self-heal reconcile that the stale coverage would delay.
+    //
+    // Calling `try_wait` here does not prevent the subsequent
+    // `prune_dead_subscribers` from seeing the same exit: the status is cached on
+    // the `Child` and re-reported by later `try_wait` calls (see that method).
     pub(super) fn has_dead_subscriber(&mut self) -> bool {
         self.subscribers
             .iter_mut()

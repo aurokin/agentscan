@@ -155,6 +155,16 @@ pub(crate) struct LifecycleStatusFrame {
     pub(crate) message: Option<String>,
 }
 
+// Telemetry counters are plain `u64` with `#[serde(default)]`, not `Option`, by
+// design: adding a counter is a backward/forward-compatible schema change that
+// does not bump the protocol version, so an older daemon that predates a given
+// counter simply omits it and a newer CLI deserializes it as `0`. The
+// availability boundary is the whole frame — `daemon status` reports every
+// counter as `null` only when `runtime_telemetry` itself is absent (daemon not
+// running / telemetry not initialized). Within a published frame, a counter of
+// `0` is treated as "zero so far," and the rare new-CLI-vs-older-daemon window
+// (resolved on the next `daemon restart`) is not worth giving every counter an
+// individual present/absent state inconsistent with the rest of the frame.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct RuntimeTelemetryFrame {
     pub(crate) control_event_refresh_count: u64,

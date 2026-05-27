@@ -1057,6 +1057,17 @@ fn reconcile_interval_for(
     if disable_reconcile && subscriber_coverage_complete {
         // Every session is event-driven via its own subscriber client; the
         // reconcile is reduced to an infrequent self-heal/drift backstop.
+        //
+        // Known, intentional trade-off (default `disable_reconcile = true`): a
+        // provider whose status comes from captured pane output
+        // (`status.source = "pane_output"`, i.e. no pane-metadata or tmux-title
+        // signal) only refreshes on a snapshot-changing event or a reconcile pass.
+        // With `%output` paused, a pure busy/idle content change emits no event,
+        // so such a provider's status can lag by up to this self-heal interval.
+        // Metadata/title-driven providers are unaffected (they are event-driven).
+        // This is accepted under the event-driven-first default; run with
+        // `disable_reconcile = false` for 30s status refresh. See
+        // docs/daemon-operations.md.
         return control_mode_self_heal_interval();
     }
     // Either redundancy reconcile is explicitly enabled, or subscriber coverage
