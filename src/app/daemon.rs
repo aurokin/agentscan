@@ -673,6 +673,10 @@ impl<S: StartupActions> DaemonRuntime<S> {
             }
             if Instant::now() >= self.next_reconcile_at {
                 self.apply_refresh_request(RefreshRequest::IntervalReconcile)?;
+                // The periodic reconcile is also the self-heal backstop for the
+                // subscriber set: prune subscribers whose client died and re-attach
+                // any missing sessions, even without a `%sessions-changed` event.
+                self.reconcile_subscriber_clients();
             }
 
             let timeout = self.next_control_mode_wait();
@@ -691,6 +695,7 @@ impl<S: StartupActions> DaemonRuntime<S> {
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if Instant::now() >= self.next_reconcile_at {
                         self.apply_refresh_request(RefreshRequest::TimeoutReconcile)?;
+                        self.reconcile_subscriber_clients();
                     }
                 }
                 // Best-effort backstop only: the control client keeps a retained
@@ -719,6 +724,13 @@ impl<S: StartupActions> DaemonRuntime<S> {
         // new set after sessions appeared or disappeared at runtime.
         self.socket_state
             .update_control_mode_broker_status(self.control_mode.broker_status_frame());
+        // Coverage may have just become incomplete (pushed over the cap), which
+        // shortens the reconcile interval. Pull the next reconcile in so we do not
+        // wait out an older, longer self-heal deadline before polling the
+        // un-subscribed sessions. Never push the deadline out (min only).
+        self.next_reconcile_at = self
+            .next_reconcile_at
+            .min(Instant::now() + self.reconcile_interval());
     }
 
     fn collect_control_mode_batch(&mut self, first_line: String) -> Result<Vec<String>> {
