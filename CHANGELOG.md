@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Fixed
+
+- Stopped Claude Code panes from disappearing from the list after a prompt was
+  sent. Claude is identifiable only from its process (`claude` in the tree) — its
+  command is its version string and its title is the current task — so the daemon
+  now runs the bounded process-tree fallback on its live event path for
+  unidentified, agent-shaped panes instead of only on full snapshots, and carries
+  an existing provider across a title-only change when the process is unchanged.
+
 ## 0.4.0 - 2026-05-27
 
 ### Added

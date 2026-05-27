@@ -311,8 +311,13 @@ fn daemon_refresh_window_clears_proc_identity_without_fresh_provider_signal() {
     let mut snapshot = empty_socket_snapshot("2026-05-03T00:00:00Z");
     snapshot.panes = vec![proc_pane];
 
+    // A plain editor: not an agent-shaped command, so the targeted proc recovery
+    // declines (Skipped) rather than inspecting. The stale Claude identity must be
+    // dropped because the process changed and nothing fresh identifies it.
+    // (An agent-shaped command like `node` would instead trigger proc recovery; see
+    // `targeted_proc_recovery_resolves_unprovidered_agent_candidate`.)
     let mut new_row = daemon_refresh_row("%42", "$1", "@1", 0, "shell");
-    new_row.pane_current_command = "node".to_string();
+    new_row.pane_current_command = "vim".to_string();
     let mut provider = FakeTmuxReadProvider::default().with_target_panes("@1", Some(vec![new_row]));
 
     daemon::test_refresh_snapshot_window_with_provider(&mut snapshot, &mut provider, "@1")
@@ -321,7 +326,7 @@ fn daemon_refresh_window_clears_proc_identity_without_fresh_provider_signal() {
     assert_eq!(snapshot.panes[0].provider, None);
     assert_eq!(
         snapshot.panes[0].diagnostics.proc_fallback.outcome,
-        ProcFallbackOutcome::NotRun
+        ProcFallbackOutcome::Skipped
     );
 }
 
@@ -584,6 +589,81 @@ fn daemon_control_event_batch_preserves_proc_identity_on_generic_title_update() 
         ProcFallbackOutcome::Resolved
     );
     assert_eq!(snapshot.panes[0].tmux.pane_title_raw, "Working");
+}
+
+#[test]
+fn targeted_proc_recovery_resolves_unprovidered_agent_candidate() {
+    // A Claude pane the metadata path cannot identify: its command is the version
+    // string and its title is the task text, so the freshly built pane has no
+    // provider. On the targeted path the bounded proc recovery inspects the process
+    // tree, finds `claude`, and keeps the pane visible instead of leaving it absent
+    // until the next full snapshot.
+    let mut pane = classify::pane_from_row(super::TmuxPaneRow {
+        session_name: "ambiguous".to_string(),
+        window_index: 1,
+        pane_index: 1,
+        pane_id: "%900".to_string(),
+        pane_pid: 900,
+        pane_current_command: "2.1.150".to_string(),
+        pane_title_raw: "✳ Replace local option".to_string(),
+        pane_tty: "/dev/pts/900".to_string(),
+        pane_current_path: "/tmp/claude".to_string(),
+        window_name: "ai".to_string(),
+        session_id: None,
+        window_id: None,
+        agent_provider: None,
+        agent_label: None,
+        agent_cwd: None,
+        agent_state: None,
+        agent_session_id: None,
+        pane_active: false,
+        window_active: false,
+    });
+    assert_eq!(pane.provider, None, "metadata path should not identify Claude");
+
+    let inspector = FakeProcessInspector::with_processes([(
+        900,
+        vec![proc::ProcessEvidence {
+            pid: 901,
+            command: "node".to_string(),
+            argv: vec!["claude".to_string()],
+            env: Vec::new(),
+        }],
+    )]);
+
+    daemon::test_recover_targeted_pane_provider_with_inspector(&mut pane, &inspector);
+
+    assert_eq!(pane.provider, Some(Provider::Claude));
+    assert_eq!(
+        pane.diagnostics.proc_fallback.outcome,
+        ProcFallbackOutcome::Resolved
+    );
+}
+
+#[test]
+fn targeted_proc_recovery_leaves_already_resolved_pane_untouched() {
+    // A pane that already has a provider must never be re-inspected, even if the
+    // process tree would resolve to something else.
+    let mut pane = classify::pane_from_row(daemon_refresh_row("%42", "$1", "@1", 0, "Working"));
+    pane.provider = Some(Provider::Codex);
+    pane.diagnostics.proc_fallback.outcome = ProcFallbackOutcome::NotRun;
+    let inspector = FakeProcessInspector::with_processes([(
+        42_001,
+        vec![proc::ProcessEvidence {
+            pid: 999,
+            command: "node".to_string(),
+            argv: vec!["claude".to_string()],
+            env: Vec::new(),
+        }],
+    )]);
+
+    daemon::test_recover_targeted_pane_provider_with_inspector(&mut pane, &inspector);
+
+    assert_eq!(pane.provider, Some(Provider::Codex));
+    assert_eq!(
+        pane.diagnostics.proc_fallback.outcome,
+        ProcFallbackOutcome::NotRun
+    );
 }
 
 #[test]
