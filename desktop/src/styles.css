@@ -6,6 +6,11 @@
   color-scheme: dark;
 
   --bg: #1a1a1c;
+  /* RGB channels of --bg, so the glass tint can vary its alpha (see [data-glass]).
+     Keep in sync with --bg. --surface-alpha is overwritten at runtime by the
+     transparency slider; 1 = fully opaque, which is the no-glass default. */
+  --bg-rgb: 26, 26, 28;
+  --surface-alpha: 1;
   --bg-elevated: #232325;
   --bg-hover: rgba(255, 255, 255, 0.05);
   --bg-selected: rgba(255, 255, 255, 0.08);
@@ -52,6 +57,7 @@
      inputs, which use --bg, read as inset) — the same depth relationship as
      dark, inverted. A faint shadow gives the cards their lift. */
   --bg: #f4f4f6;
+  --bg-rgb: 244, 244, 246;
   --bg-elevated: #ffffff;
   --bg-hover: rgba(0, 0, 0, 0.04);
   --bg-selected: rgba(0, 0, 0, 0.07);
@@ -88,6 +94,19 @@ body {
   min-height: 100vh;
   overflow: hidden;
   background: var(--bg);
+}
+
+/* macOS glass: the native vibrancy backdrop lives behind the webview (applied in
+   Rust). Letting it show means clearing the opaque window/body fill and tinting
+   only the base surface (.sidebar) with a slider-controlled alpha. Elevated panels
+   keep their solid fill, so text stays readable and cards float over the blur. */
+:root[data-glass="on"],
+:root[data-glass="on"] body {
+  background: transparent;
+}
+
+:root[data-glass="on"] .sidebar {
+  background: rgba(var(--bg-rgb), var(--surface-alpha));
 }
 
 button,
@@ -765,6 +784,84 @@ kbd {
 .theme-option.active {
   background: var(--accent);
   color: var(--on-accent);
+}
+
+/* ---------- Glass controls (macOS) ---------- */
+
+.glass-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.setting-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.setting-label > span:first-child {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.setting-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.switch {
+  flex: 0 0 auto;
+  position: relative;
+  width: 40px;
+  min-height: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 999px;
+  background: var(--surface-strong);
+  border: 1px solid var(--border);
+  transition: background 0.15s ease;
+}
+
+.switch.on {
+  background: var(--accent);
+  border-color: transparent;
+}
+
+.switch-thumb {
+  position: absolute;
+  top: 50%;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  transform: translateY(-50%);
+  transition: left 0.15s ease;
+}
+
+.switch.on .switch-thumb {
+  left: 19px;
+}
+
+.glass-slider {
+  flex: 0 0 140px;
+  width: 140px;
+  min-height: 0;
+  padding: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
 }
 
 button {

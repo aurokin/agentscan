@@ -11,6 +11,14 @@ const SETTINGS_STORAGE_KEY = "agentscan.desktop.localRunnerSettings";
 const PROFILES_STORAGE_KEY = "agentscan.desktop.profiles";
 // Keep in sync with the pre-paint theme script in index.html.
 const THEME_STORAGE_KEY = "agentscan.desktop.theme";
+// macOS "glass": vibrancy backdrop (Rust) + a translucent surface tint (CSS).
+const GLASS_STORAGE_KEY = "agentscan.desktop.glass";
+const SURFACE_ALPHA_STORAGE_KEY = "agentscan.desktop.surfaceAlpha";
+// Floor the tint above 0 so panels never become fully invisible; default leans
+// frosted rather than maximally clear.
+const SURFACE_ALPHA_MIN = 0.4;
+const SURFACE_ALPHA_MAX = 1;
+const SURFACE_ALPHA_DEFAULT = 0.72;
 const DEBUG_LOG_LIMIT = 80;
 const LOCAL_PROFILE_ID = "local";
 
@@ -25,6 +33,9 @@ const HOTKEY_MODIFIER_LABEL = IS_MAC ? "⌃" : "Ctrl ";
 let hotkeyOperationQueue = Promise.resolve();
 let liveOperationQueue = Promise.resolve();
 let windowOperationQueue = Promise.resolve();
+// Serializes set_window_glass invokes so a fast off→on toggle can't land its
+// native calls out of order and leave the blur layer out of sync with the UI.
+let glassOperationQueue = Promise.resolve();
 
 // Monotonic id assigned to each live-picker subscription. The backend stamps
 // every emitted event with the epoch of the worker that produced it so the
@@ -244,6 +255,10 @@ function App() {
   const [isDebugOpen, setIsDebugOpen] = useState(false);
   // Appearance: dark / light / system (system follows the OS).
   const [themePref, setThemePref] = useState<ThemePreference>(loadStoredTheme);
+  // macOS glass: the vibrancy backdrop toggle and the tint opacity over it. The
+  // toggle is only surfaced on macOS; elsewhere these stay inert.
+  const [glassEnabled, setGlassEnabled] = useState<boolean>(loadStoredGlass);
+  const [surfaceAlpha, setSurfaceAlpha] = useState<number>(loadStoredSurfaceAlpha);
   // Tracks the active runner config so in-flight refreshes/focus can detect a
   // profile switch OR a settings change and discard results from the previous
   // target. Updated synchronously during render (below) so async completions
@@ -807,6 +822,63 @@ function App() {
     media.addEventListener("change", apply);
     return () => media.removeEventListener("change", apply);
   }, [themePref]);
+
+  // Toggle the macOS glass backdrop. Order matters so we never flash the bare
+  // desktop through the transparent window: when enabling, raise the blur layer
+  // first, then mark the surface translucent; when disabling, go opaque first,
+  // then drop the blur. macOS-only — the toggle isn't offered anywhere else.
+  useEffect(() => {
+    if (!IS_MAC) {
+      return;
+    }
+    try {
+      window.localStorage.setItem(GLASS_STORAGE_KEY, glassEnabled ? "on" : "off");
+    } catch {
+      // Best-effort; the in-memory preference still applies this session.
+    }
+
+    let cancelled = false;
+    glassOperationQueue = glassOperationQueue.then(async () => {
+      // A newer toggle superseded this one before it ran; skip the native call
+      // entirely so the queue settles on the latest desired state.
+      if (cancelled) {
+        return;
+      }
+      try {
+        if (glassEnabled) {
+          await invoke("set_window_glass", { enabled: true });
+          if (!cancelled) {
+            document.documentElement.setAttribute("data-glass", "on");
+          }
+        } else {
+          document.documentElement.setAttribute("data-glass", "off");
+          await invoke("set_window_glass", { enabled: false });
+        }
+      } catch (error) {
+        document.documentElement.setAttribute("data-glass", "off");
+        appendDebugEntry({
+          kind: "command",
+          label: "Glass effect",
+          detail: errorMessage(error),
+        });
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [glassEnabled]);
+
+  // Drive the tint opacity via a CSS variable; the data-glass rules in styles.css
+  // only consume it while glass is on, so this is harmless when glass is off.
+  useEffect(() => {
+    document.documentElement.style.setProperty("--surface-alpha", String(surfaceAlpha));
+    try {
+      window.localStorage.setItem(SURFACE_ALPHA_STORAGE_KEY, surfaceAlpha.toFixed(2));
+    } catch {
+      // Best-effort persistence.
+    }
+  }, [surfaceAlpha]);
 
   async function activateSelectedRow(row = selectedRow) {
     if (!row || activationInFlightRef.current) {
@@ -1372,6 +1444,52 @@ function App() {
                 </button>
               ))}
             </div>
+
+            {IS_MAC ? (
+              <div className="glass-controls">
+                <div className="setting-row">
+                  <div className="setting-label">
+                    <span>Glass</span>
+                    <span className="setting-hint">Frost the window over your desktop</span>
+                  </div>
+                  <button
+                    className={`switch${glassEnabled ? " on" : ""}`}
+                    type="button"
+                    role="switch"
+                    aria-checked={glassEnabled}
+                    aria-label="Glass effect"
+                    onClick={() => setGlassEnabled((on) => !on)}
+                  >
+                    <span className="switch-thumb" />
+                  </button>
+                </div>
+
+                {glassEnabled ? (
+                  <label className="setting-row">
+                    <div className="setting-label">
+                      <span>Transparency</span>
+                      <span className="setting-hint">
+                        {Math.round((1 - surfaceAlpha) * 100)}%
+                      </span>
+                    </div>
+                    {/* Slider reads as transparency (right = clearer); state stores the
+                        inverse as the surface alpha the CSS tint consumes. */}
+                    <input
+                      className="glass-slider"
+                      type="range"
+                      min={0}
+                      max={SURFACE_ALPHA_MAX - SURFACE_ALPHA_MIN}
+                      step={0.02}
+                      value={SURFACE_ALPHA_MAX - surfaceAlpha}
+                      onChange={(event) =>
+                        setSurfaceAlpha(SURFACE_ALPHA_MAX - Number(event.target.value))
+                      }
+                      aria-label="Glass transparency"
+                    />
+                  </label>
+                ) : null}
+              </div>
+            ) : null}
           </section>
 
           <section className="settings-section" aria-label="Debug log">
@@ -1742,6 +1860,35 @@ function loadStoredTheme(): ThemePreference {
     // localStorage unavailable; fall back to following the OS.
   }
   return "system";
+}
+
+function loadStoredGlass(): boolean {
+  if (!IS_MAC) {
+    return false;
+  }
+  try {
+    return window.localStorage.getItem(GLASS_STORAGE_KEY) === "on";
+  } catch {
+    return false;
+  }
+}
+
+function loadStoredSurfaceAlpha(): number {
+  try {
+    // Guard the missing/empty case explicitly: Number(null) and Number("") are
+    // both 0 (finite), which would otherwise clamp first-time users to the most
+    // transparent setting instead of the frosted default.
+    const raw = window.localStorage.getItem(SURFACE_ALPHA_STORAGE_KEY);
+    if (raw !== null && raw.trim() !== "") {
+      const parsed = Number(raw);
+      if (Number.isFinite(parsed)) {
+        return Math.min(SURFACE_ALPHA_MAX, Math.max(SURFACE_ALPHA_MIN, parsed));
+      }
+    }
+  } catch {
+    // localStorage unavailable; use the default tint.
+  }
+  return SURFACE_ALPHA_DEFAULT;
 }
 
 function loadStoredProfiles(): ProfileState {

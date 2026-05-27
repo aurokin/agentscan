@@ -42,6 +42,23 @@ Packaging, signing, and notarization:
   dogfood builds.
 - Linux and Windows packaging are not part of the current release gate.
 
+Window appearance (glass):
+
+- Optional macOS "glass" uses `window-vibrancy` (`NSVisualEffectView`) behind the
+  webview, toggled at runtime by the `set_window_glass` command. The frontend
+  owns the on/off preference and a surface-tint alpha; Rust just raises or clears
+  the blur layer (clearing first each time to stay idempotent).
+- The blur requires a transparent window, which on macOS requires Tauri's
+  `macOSPrivateApi`. That is acceptable for direct distribution but would risk
+  Mac App Store review, so it must not become a dependency of any non-cosmetic
+  feature.
+- `transparent: true` is scoped to macOS via `tauri.macos.conf.json` so non-macOS
+  windows stay opaque (a transparent window with no glass handling risks black or
+  compositor artifacts). Config merge is RFC 7396, which replaces arrays rather
+  than deep-merging, so the macOS file must carry the **entire** `windows` array;
+  keep the window object there in sync with the base `tauri.conf.json`.
+- The glass toggle and transparency slider are only offered on macOS.
+
 Daemon auto-start trust:
 
 - macOS detached daemon starts require signed executable assessment.

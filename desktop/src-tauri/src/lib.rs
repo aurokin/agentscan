@@ -288,6 +288,63 @@ fn place_picker_window(window: tauri::Window) -> Result<(), String> {
     Ok(())
 }
 
+/// Toggle the macOS "glass" backdrop (NSVisualEffectView) behind the webview.
+/// The frontend owns the on/off preference and the surface tint; this just turns
+/// the OS blur layer on or off so a translucent webview reveals it. No-op off
+/// macOS, where the toggle isn't offered.
+#[tauri::command]
+fn set_window_glass(window: tauri::WebviewWindow, enabled: bool) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::sync::mpsc;
+
+        // apply_vibrancy/clear_vibrancy touch AppKit (NSView) and fail with
+        // Error::NotMainThread off the main thread — and Tauri command handlers run
+        // on a worker thread. Marshal the work onto the main thread and block this
+        // worker on the result so the command still reports success/failure.
+        let (tx, rx) = mpsc::channel();
+        let main_window = window.clone();
+        window
+            .run_on_main_thread(move || {
+                use window_vibrancy::{
+                    NSVisualEffectMaterial, NSVisualEffectState, apply_vibrancy, clear_vibrancy,
+                };
+
+                let outcome = (|| {
+                    // apply_vibrancy appends a fresh NSVisualEffectView each call while
+                    // clear_vibrancy only removes one, so always clear first. This keeps
+                    // the command idempotent: repeated enables (HMR, remounts, double
+                    // toggles) never stack blur layers, and disable fully removes it.
+                    clear_vibrancy(&main_window)
+                        .map_err(|error| format!("Unable to reset glass: {error}"))?;
+                    if enabled {
+                        apply_vibrancy(
+                            &main_window,
+                            // Sidebar reads as a translucent panel — the right register
+                            // for a narrow utility window. The tint sits on top of it.
+                            NSVisualEffectMaterial::Sidebar,
+                            Some(NSVisualEffectState::Active),
+                            None,
+                        )
+                        .map_err(|error| format!("Unable to enable glass: {error}"))?;
+                    }
+                    Ok::<(), String>(())
+                })();
+                let _ = tx.send(outcome);
+            })
+            .map_err(|error| format!("Unable to schedule glass update: {error}"))?;
+        rx.recv()
+            .map_err(|error| format!("Glass update did not complete: {error}"))??;
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Keep the signature stable across platforms; nothing to do without vibrancy.
+        let _ = (&window, enabled);
+    }
+
+    Ok(())
+}
+
 fn summon_monitor(window: &tauri::Window) -> Result<Option<tauri::Monitor>, String> {
     if let Ok(cursor) = window.cursor_position()
         && let Ok(Some(monitor)) = window.monitor_from_point(cursor.x, cursor.y)
@@ -1569,6 +1626,7 @@ pub fn run() {
             load_picker_rows,
             place_picker_window,
             preflight_agentscan,
+            set_window_glass,
             start_live_picker,
             stop_live_picker
         ])

@@ -22,6 +22,7 @@
         "fullscreen": false
       }
     ],
+    "macOSPrivateApi": true,
     "security": {
       "csp": null
     }
