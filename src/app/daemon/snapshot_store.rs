@@ -48,7 +48,9 @@ impl SnapshotStore {
     }
 }
 
-fn snapshot_observability(snapshot: &SnapshotEnvelope) -> ipc::SnapshotObservabilityFrame {
+pub(super) fn snapshot_observability(
+    snapshot: &SnapshotEnvelope,
+) -> ipc::SnapshotObservabilityFrame {
     let mut observability = ipc::SnapshotObservabilityFrame::default();
     for pane in &snapshot.panes {
         if pane.provider.is_some() {
@@ -71,6 +73,42 @@ fn snapshot_observability(snapshot: &SnapshotEnvelope) -> ipc::SnapshotObservabi
             ProcFallbackOutcome::Error => observability.proc_fallback_error_count += 1,
             ProcFallbackOutcome::Resolved => observability.proc_fallback_resolved_count += 1,
         }
+
+        accumulate_provider_path_stats(&mut observability, pane);
     }
     observability
+}
+
+/// Buckets a pane's identity match-kind and status-source into the per-provider
+/// breakdown. Unclassified panes accumulate under `unknown` so the buckets sum to
+/// the snapshot pane count.
+fn accumulate_provider_path_stats(
+    observability: &mut ipc::SnapshotObservabilityFrame,
+    pane: &PaneRecord,
+) {
+    let key = pane
+        .provider
+        .map(|provider| provider.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let stats = observability.per_provider.entry(key).or_default();
+    stats.pane_count += 1;
+
+    match pane.classification.matched_by {
+        Some(ClassificationMatchKind::PaneMetadata) => stats.matched_pane_metadata_count += 1,
+        Some(ClassificationMatchKind::PaneCurrentCommand) => {
+            stats.matched_pane_current_command_count += 1
+        }
+        Some(ClassificationMatchKind::PaneTitle) => stats.matched_pane_title_count += 1,
+        Some(ClassificationMatchKind::ProcProcessTree) => {
+            stats.matched_proc_process_tree_count += 1
+        }
+        None => {}
+    }
+
+    match pane.status.source {
+        StatusSource::PaneMetadata => stats.status_source_pane_metadata_count += 1,
+        StatusSource::TmuxTitle => stats.status_source_tmux_title_count += 1,
+        StatusSource::PaneOutput => stats.status_source_pane_output_count += 1,
+        StatusSource::NotChecked => stats.status_source_not_checked_count += 1,
+    }
 }

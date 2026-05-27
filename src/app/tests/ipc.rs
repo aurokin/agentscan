@@ -255,11 +255,14 @@ fn ipc_lifecycle_status_frame_roundtrips() {
                 disabled_reason: None,
                 reconnect_count: 1,
                 fallback_count: Some(2),
+                subscriber_count: Some(3),
             }),
             runtime_telemetry: Some(ipc::RuntimeTelemetryFrame {
                 control_event_refresh_count: 3,
                 control_event_batch_count: 4,
                 control_event_line_count: 5,
+                control_event_output_line_count: 0,
+                control_event_output_byte_count: 0,
                 control_event_pane_count: 6,
                 control_event_title_count: 7,
                 control_event_window_count: 8,
@@ -275,6 +278,9 @@ fn ipc_lifecycle_status_frame_roundtrips() {
                 full_snapshot_refresh_count: 10,
                 targeted_refresh_fallback_to_full_count: 7,
                 broker_fallback_count: 2,
+                pane_output_capture_attempt_count: 0,
+                pane_output_capture_hit_count: 0,
+                pane_output_capture_error_count: 0,
             }),
             latest_snapshot_observability: Some(ipc::SnapshotObservabilityFrame {
                 provider_known_count: 1,
@@ -288,6 +294,7 @@ fn ipc_lifecycle_status_frame_roundtrips() {
                 proc_fallback_no_match_count: 9,
                 proc_fallback_error_count: 10,
                 proc_fallback_resolved_count: 11,
+                per_provider: std::collections::BTreeMap::new(),
             }),
             recent_events: vec![ipc::DaemonObservabilityEventFrame {
                 at: "2026-05-03T00:00:02Z".to_string(),

@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use super::*;
@@ -161,6 +163,10 @@ pub(crate) struct RuntimeTelemetryFrame {
     #[serde(default)]
     pub(crate) control_event_line_count: u64,
     #[serde(default)]
+    pub(crate) control_event_output_line_count: u64,
+    #[serde(default)]
+    pub(crate) control_event_output_byte_count: u64,
+    #[serde(default)]
     pub(crate) control_event_pane_count: u64,
     #[serde(default)]
     pub(crate) control_event_title_count: u64,
@@ -185,6 +191,12 @@ pub(crate) struct RuntimeTelemetryFrame {
     pub(crate) full_snapshot_refresh_count: u64,
     pub(crate) targeted_refresh_fallback_to_full_count: u64,
     pub(crate) broker_fallback_count: u64,
+    #[serde(default)]
+    pub(crate) pane_output_capture_attempt_count: u64,
+    #[serde(default)]
+    pub(crate) pane_output_capture_hit_count: u64,
+    #[serde(default)]
+    pub(crate) pane_output_capture_error_count: u64,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -200,6 +212,23 @@ pub(crate) struct SnapshotObservabilityFrame {
     pub(crate) proc_fallback_no_match_count: usize,
     pub(crate) proc_fallback_error_count: usize,
     pub(crate) proc_fallback_resolved_count: usize,
+    /// Per-provider breakdown of identity match-kind and status-source reliance.
+    /// Keyed by canonical provider name; unclassified panes bucket under `unknown`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) per_provider: BTreeMap<String, ProviderPathStats>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct ProviderPathStats {
+    pub(crate) pane_count: usize,
+    pub(crate) matched_pane_metadata_count: usize,
+    pub(crate) matched_pane_current_command_count: usize,
+    pub(crate) matched_pane_title_count: usize,
+    pub(crate) matched_proc_process_tree_count: usize,
+    pub(crate) status_source_pane_metadata_count: usize,
+    pub(crate) status_source_tmux_title_count: usize,
+    pub(crate) status_source_pane_output_count: usize,
+    pub(crate) status_source_not_checked_count: usize,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -243,6 +272,11 @@ pub(crate) struct ControlModeBrokerStatusFrame {
     pub(crate) reconnect_count: u32,
     #[serde(default)]
     pub(crate) fallback_count: Option<u64>,
+    // Count of per-session event-only subscriber clients (one per non-primary
+    // session). `None` when published by an older daemon that predates the
+    // per-session-client architecture.
+    #[serde(default)]
+    pub(crate) subscriber_count: Option<usize>,
 }
 
 impl SocketPathConfig {

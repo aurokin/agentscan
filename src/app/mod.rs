@@ -88,18 +88,24 @@ const PANE_FORMAT: &str = concat!(
     r"\037",
     "#{window_active}"
 );
+// This string is sent to tmux verbatim (inserted as a `writeln!` named argument,
+// not reprocessed), so the format directives use single braces `#{...}` exactly
+// as tmux expects. Doubling them produced a subscription whose every field
+// rendered as a literal `}`, so the payload was constant and `%subscription-changed`
+// never fired on real field changes — detection silently relied on the reconcile
+// poll and on `%output`/`%window-renamed` notifications instead.
 const DAEMON_SUBSCRIPTION_FORMAT: &str = concat!(
     "agentscan:%*:",
-    "#{{pane_id}}:",
-    "#{{pane_current_command}}:",
-    "#{{pane_title}}:",
-    "#{{@agent.provider}}:",
-    "#{{@agent.label}}:",
-    "#{{@agent.cwd}}:",
-    "#{{@agent.state}}:",
-    "#{{@agent.session_id}}:",
-    "#{{pane_active}}:",
-    "#{{window_active}}"
+    "#{pane_id}:",
+    "#{pane_current_command}:",
+    "#{pane_title}:",
+    "#{@agent.provider}:",
+    "#{@agent.label}:",
+    "#{@agent.cwd}:",
+    "#{@agent.state}:",
+    "#{@agent.session_id}:",
+    "#{pane_active}:",
+    "#{window_active}"
 );
 
 fn default_if_empty<'a>(value: &'a str, fallback: &'a str) -> &'a str {

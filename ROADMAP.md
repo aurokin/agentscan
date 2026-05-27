@@ -89,6 +89,37 @@ Implications:
   `--refresh`, or foreground `agentscan daemon run`
 - when tmux disappears, the daemon reports failure through lifecycle/status
   paths; restart policy remains explicit user or supervisor policy
+- the control-mode subscription format is sent to tmux verbatim and therefore
+  uses single-brace `#{...}` directives; doubling them silently breaks the
+  subscription (every field renders as a literal `}`, so `%subscription-changed`
+  never fires on real changes). A unit test guards against regressing to `#{{`.
+- **tmux control mode is scoped to the attached session**, so the daemon runs one
+  control client per session: a primary (command channel + its own session's
+  events) plus an event-only subscriber client for every other session. All
+  clients attach with `-f ignore-size,no-output` and subscribe via
+  `refresh-client -B`, feeding one shared event channel. `ignore-size` keeps daemon
+  clients out of window-size calculation; `no-output` **pauses the per-pane
+  `%output` terminal firehose globally**, so status/title/command/metadata come
+  from the throttled (~1s) subscription rather than from scraping terminal output.
+  This keeps the daemon flat under heavy load (e.g. ~20 busy agents emitting tens
+  of thousands of output lines/sec) while staying responsive. The subscriber set is
+  reconciled at startup and on every `%sessions-changed`, so sessions
+  created/destroyed at runtime get event coverage immediately; dead subscriber
+  clients are pruned and re-attached on the next reconcile, and the subscriber
+  count is capped (64) with self-heal fallback for pathological session counts.
+  This makes every session — not just the attached one — event-driven for
+  status/title/command/metadata, which is the product-critical requirement
+  (responsive cross-session agent appear/disappear/status).
+- the within-session **redundancy** reconcile defaults to **off**
+  (`disable_reconcile` defaults to `true`); all sessions are event-driven via the
+  per-session subscriber clients. Disabling it does not stop the poll entirely — it
+  reduces it to an infrequent **self-heal/drift backstop** (`list-panes -a`,
+  default 300s) that only recovers from rare event drift or a failed subscriber
+  attach; it is no longer responsible for cross-session latency. Broker fallback
+  (no event stream) always keeps the fast 1s reconcile as the sole update path,
+  and the connect/reconnect bootstrap reconcile (initial truth + gap recovery)
+  runs unconditionally. Setting `disable_reconcile = false` restores the full 30s
+  redundancy reconcile and its meter (`reconcile_changed_snapshot_count`).
 
 ### Snapshot Contract
 

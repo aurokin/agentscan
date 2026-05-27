@@ -138,6 +138,25 @@ pub(crate) fn default_session_target() -> Result<String> {
     Ok(session.trim().to_string())
 }
 
+pub(crate) fn list_session_ids() -> Result<Vec<String>> {
+    let Some(stdout) = run_tmux_text_output(
+        &["list-sessions", "-F", "#{session_id}"],
+        "tmux list-sessions",
+        "tmux list-sessions",
+        |_| true,
+        "tmux sessions output was not UTF-8",
+    )?
+    else {
+        return Ok(Vec::new());
+    };
+    Ok(stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{env_has_utf8_locale, tmux_command_from_env};

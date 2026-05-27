@@ -140,6 +140,9 @@ impl TmuxBrokerHealth {
             disabled_reason: self.disabled_reason.clone(),
             reconnect_count: self.reconnect_count,
             fallback_count: Some(self.fallback_count),
+            // Filled in by `RunningTmuxControlModeClient::broker_status_frame`,
+            // which owns the subscriber set; broker health alone cannot see it.
+            subscriber_count: None,
         }
     }
 
@@ -246,20 +249,94 @@ pub(super) struct RunningTmuxControlModeClient {
     child: std::process::Child,
     stdin: std::process::ChildStdin,
     line_rx: mpsc::Receiver<Result<String>>,
+    // Retained so per-session subscriber clients and primary reconnects can feed
+    // the same shared event stream the run loop drains.
+    line_tx: mpsc::Sender<Result<String>>,
+    // Event-only control clients, one per non-primary session. tmux control mode
+    // is scoped to the attached session, so these provide event coverage for
+    // panes the primary client cannot see. They never issue commands; their
+    // reader threads feed the shared channel.
+    subscribers: Vec<SubscriberClient>,
     deferred_lines: VecDeque<String>,
     broker_health: TmuxBrokerHealth,
 }
 
+struct SubscriberClient {
+    session_id: String,
+    child: std::process::Child,
+    // Retained for keep-alive and per-pane output gating (`refresh-client -A`).
+    #[allow(dead_code)]
+    stdin: std::process::ChildStdin,
+}
+
+impl Drop for SubscriberClient {
+    fn drop(&mut self) {
+        cleanup_startup_child(&mut self.child);
+    }
+}
+
 impl RunningTmuxControlModeClient {
     pub(super) fn from_started(started: StartedTmuxControlModeClient) -> Result<Self> {
-        let (child, stdin, line_rx) = control_mode_connection_from_started(started)?;
+        let (child, stdin, line_rx, line_tx) = connect_primary_control_client(started)?;
         Ok(Self {
             child,
             stdin,
             line_rx,
+            line_tx,
+            subscribers: Vec::new(),
             deferred_lines: VecDeque::new(),
             broker_health: TmuxBrokerHealth::default(),
         })
+    }
+
+    // Attach an event-only subscriber client for a non-primary session. Its
+    // reader feeds the shared channel; a subscriber read error ends only its own
+    // thread (Quiet) so one failing session does not bounce the daemon.
+    pub(super) fn attach_subscriber(
+        &mut self,
+        session_id: String,
+        started: StartedTmuxControlModeClient,
+    ) -> Result<()> {
+        if self.subscribers.iter().any(|s| s.session_id == session_id) {
+            return Ok(());
+        }
+        let (child, stdin) =
+            spawn_control_client_reader(started, self.line_tx.clone(), ClientErrorMode::Quiet)
+                .with_context(|| {
+                    format!("failed to attach subscriber control client for session {session_id}")
+                })?;
+        self.subscribers.push(SubscriberClient {
+            session_id,
+            child,
+            stdin,
+        });
+        Ok(())
+    }
+
+    pub(super) fn has_subscriber(&self, session_id: &str) -> bool {
+        self.subscribers
+            .iter()
+            .any(|subscriber| subscriber.session_id == session_id)
+    }
+
+    // Drop subscribers whose client process has exited so a following reconcile
+    // re-attaches them. Covers the case where a subscriber client dies while its
+    // session is still alive (a closed session is instead handled by
+    // `retain_subscriber_sessions`, since the session leaves the desired set).
+    pub(super) fn prune_dead_subscribers(&mut self) {
+        self.subscribers
+            .retain_mut(|subscriber| !matches!(subscriber.child.try_wait(), Ok(Some(_))));
+    }
+
+    pub(super) fn subscriber_count(&self) -> usize {
+        self.subscribers.len()
+    }
+
+    // Drop subscriber clients whose sessions are no longer desired (each dropped
+    // `SubscriberClient` cleans up its child process).
+    pub(super) fn retain_subscriber_sessions(&mut self, desired: &[String]) {
+        self.subscribers
+            .retain(|subscriber| desired.iter().any(|id| id == &subscriber.session_id));
     }
 
     pub(super) fn read_provider(&mut self) -> TmuxDaemonReadProvider<'_> {
@@ -289,7 +366,10 @@ impl RunningTmuxControlModeClient {
     }
 
     pub(super) fn broker_status_frame(&self) -> ipc::ControlModeBrokerStatusFrame {
-        self.broker_health.status_frame()
+        ipc::ControlModeBrokerStatusFrame {
+            subscriber_count: Some(self.subscriber_count()),
+            ..self.broker_health.status_frame()
+        }
     }
 
     pub(super) fn broker_enabled(&self) -> bool {
@@ -324,14 +404,15 @@ impl RunningTmuxControlModeClient {
         let started = startup
             .start_tmux_control_mode_client()
             .context("failed to restart tmux control-mode client")?;
-        let (mut replacement_child, replacement_stdin, replacement_line_rx) =
-            control_mode_connection_from_started(started)
+        // Re-spawn the primary reader into the existing shared channel rather than
+        // recreating it, so any attached subscriber clients keep delivering events.
+        let (mut replacement_child, replacement_stdin) =
+            spawn_control_client_reader(started, self.line_tx.clone(), ClientErrorMode::Fatal)
                 .context("failed to configure restarted tmux control-mode client")?;
 
         std::mem::swap(&mut self.child, &mut replacement_child);
         cleanup_startup_child(&mut replacement_child);
         self.stdin = replacement_stdin;
-        self.line_rx = replacement_line_rx;
         self.broker_health.mark_reconnected();
         Ok(())
     }
@@ -348,6 +429,8 @@ impl RunningTmuxControlModeClient {
     }
 
     pub(super) fn terminate(&mut self) {
+        // Dropping each subscriber cleans up its child process.
+        self.subscribers.clear();
         cleanup_startup_child(&mut self.child);
     }
 }
@@ -358,13 +441,41 @@ impl Drop for RunningTmuxControlModeClient {
     }
 }
 
-fn control_mode_connection_from_started(
-    mut started: StartedTmuxControlModeClient,
-) -> Result<(
+// Connect a control client's stdout to a shared event channel. The channel is
+// owned at the broker level and stays stable across primary reconnects, so the
+// returned `line_tx` can be cloned to feed per-session subscriber clients into
+// the same stream the run loop drains.
+type PrimaryControlConnection = (
     std::process::Child,
     std::process::ChildStdin,
     mpsc::Receiver<Result<String>>,
-)> {
+    mpsc::Sender<Result<String>>,
+);
+
+fn connect_primary_control_client(
+    started: StartedTmuxControlModeClient,
+) -> Result<PrimaryControlConnection> {
+    let (line_tx, line_rx) = mpsc::channel();
+    let (child, stdin) =
+        spawn_control_client_reader(started, line_tx.clone(), ClientErrorMode::Fatal)?;
+    Ok((child, stdin, line_rx, line_tx))
+}
+
+// How a client's reader thread reports a read error on its stdout. The primary
+// client's errors are fatal (they propagate to the run loop and bounce the
+// daemon into broker recovery), but a subscriber client dying must not take the
+// daemon down — it just ends its own thread and is reconnected by the lifecycle.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ClientErrorMode {
+    Fatal,
+    Quiet,
+}
+
+fn spawn_control_client_reader(
+    mut started: StartedTmuxControlModeClient,
+    line_tx: mpsc::Sender<Result<String>>,
+    error_mode: ClientErrorMode,
+) -> Result<(std::process::Child, std::process::ChildStdin)> {
     let stdout_reader = started
         .stdout_reader
         .take()
@@ -377,14 +488,15 @@ fn control_mode_connection_from_started(
         .stdin
         .take()
         .context("tmux control-mode client did not provide stdin")?;
-    let line_rx = spawn_control_mode_line_reader(stdout_reader);
-    Ok((child, stdin, line_rx))
+    spawn_control_mode_line_reader(stdout_reader, line_tx, error_mode);
+    Ok((child, stdin))
 }
 
 fn spawn_control_mode_line_reader(
     stdout_reader: BufReader<std::process::ChildStdout>,
-) -> mpsc::Receiver<Result<String>> {
-    let (line_tx, line_rx) = mpsc::channel();
+    line_tx: mpsc::Sender<Result<String>>,
+    error_mode: ClientErrorMode,
+) {
     std::thread::spawn(move || {
         let mut reader = stdout_reader;
         loop {
@@ -396,13 +508,14 @@ fn spawn_control_mode_line_reader(
                 }
                 Ok(None) => break,
                 Err(error) => {
-                    let _ = line_tx.send(Err(error));
+                    if matches!(error_mode, ClientErrorMode::Fatal) {
+                        let _ = line_tx.send(Err(error));
+                    }
                     break;
                 }
             }
         }
     });
-    line_rx
 }
 
 extern "C" fn daemon_shutdown_signal_handler(_signal: libc::c_int) {
@@ -455,14 +568,50 @@ pub(super) fn startup_failure_message(context: &str, error: &anyhow::Error) -> S
     )
 }
 
+// All control clients attach with these flags:
+//   ignore-size: the client never participates in window-size calculation, so
+//     attaching (especially to a detached session) cannot resize the user's panes.
+//   no-output: tmux never sends `%output` to the client. The daemon does not need
+//     the pty firehose — status/title/command/metadata arrive via the 1s
+//     `%subscription-changed` stream and topology via structural notifications.
+//     This is what keeps cost flat as the number of active agents grows.
+const CONTROL_CLIENT_ATTACH_FLAGS: &str = "ignore-size,no-output";
+
 pub(super) fn start_tmux_control_mode_client() -> Result<(
     std::process::Child,
     BufReader<std::process::ChildStdout>,
     std::process::ChildStdin,
 )> {
     let session_target = tmux::default_session_target()?;
+    start_control_mode_client_for(&session_target)
+}
+
+pub(super) fn start_subscriber_control_mode_client(
+    session_id: &str,
+) -> Result<(
+    std::process::Child,
+    BufReader<std::process::ChildStdout>,
+    std::process::ChildStdin,
+)> {
+    start_control_mode_client_for(session_id)
+}
+
+fn start_control_mode_client_for(
+    session_target: &str,
+) -> Result<(
+    std::process::Child,
+    BufReader<std::process::ChildStdout>,
+    std::process::ChildStdin,
+)> {
     let mut child = tmux::tmux_command()
-        .args(["-C", "attach-session", "-t", &session_target])
+        .args([
+            "-C",
+            "attach-session",
+            "-f",
+            CONTROL_CLIENT_ATTACH_FLAGS,
+            "-t",
+            session_target,
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())

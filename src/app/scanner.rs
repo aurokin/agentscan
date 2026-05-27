@@ -76,9 +76,20 @@ fn apply_pane_output_status_fallbacks_with_capture(
     }
 }
 
+/// Cumulative `capture-pane` accounting for the daemon's pane-output status path.
+/// Lets us measure how heavily a session leans on the (relatively expensive)
+/// capture-pane fallback and how effective the TTL cache is at suppressing it.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct PaneOutputCaptureStats {
+    pub(crate) attempt_count: u64,
+    pub(crate) hit_count: u64,
+    pub(crate) error_count: u64,
+}
+
 pub(crate) struct PaneOutputStatusCache {
     ttl: Duration,
     entries: HashMap<String, PaneOutputStatusCacheEntry>,
+    stats: PaneOutputCaptureStats,
 }
 
 impl PaneOutputStatusCache {
@@ -86,7 +97,12 @@ impl PaneOutputStatusCache {
         Self {
             ttl,
             entries: HashMap::new(),
+            stats: PaneOutputCaptureStats::default(),
         }
+    }
+
+    pub(crate) fn capture_stats(&self) -> PaneOutputCaptureStats {
+        self.stats
     }
 
     pub(crate) fn apply(
@@ -104,12 +120,15 @@ impl PaneOutputStatusCache {
 
             let key = PaneOutputStatusCacheKey::from_pane(pane);
             if let Some(entry) = self.fresh_entry(&pane.pane_id, &key, now) {
-                if let Some(kind) = entry.status_kind {
+                let status_kind = entry.status_kind;
+                self.stats.hit_count = self.stats.hit_count.saturating_add(1);
+                if let Some(kind) = status_kind {
                     pane.status = PaneStatus::pane_output(kind);
                 }
                 continue;
             }
 
+            self.stats.attempt_count = self.stats.attempt_count.saturating_add(1);
             let status_kind = match capture.capture_tail(&pane.pane_id, PANE_OUTPUT_STATUS_LINES) {
                 Ok(output) => {
                     if let Some(output) = output {
@@ -118,7 +137,10 @@ impl PaneOutputStatusCache {
 
                     (pane.status.source == StatusSource::PaneOutput).then_some(pane.status.kind)
                 }
-                Err(_) => continue,
+                Err(_) => {
+                    self.stats.error_count = self.stats.error_count.saturating_add(1);
+                    continue;
+                }
             };
 
             self.entries.insert(
@@ -374,6 +396,34 @@ mod tests {
 
         assert_eq!(capture.call_count(), 1);
         assert_eq!(second[0].status, PaneStatus::pane_output(StatusKind::Busy));
+    }
+
+    #[test]
+    fn pane_output_cache_tracks_capture_attempts_hits_and_errors() {
+        let now = Instant::now();
+        let mut cache = PaneOutputStatusCache::new(Duration::from_secs(2));
+        // `%1` captures successfully; `%2` has no fake output configured, so the
+        // capture returns `Ok(None)` (an attempt that resolves nothing, not an error).
+        let mut capture = FakePaneOutputCapture::default().with_output("%1", copilot_busy_output());
+
+        let mut first = vec![
+            pane("%1", Some(Provider::Copilot), PaneStatus::not_checked()),
+            pane("%2", Some(Provider::Codex), PaneStatus::not_checked()),
+        ];
+        cache.apply(&mut first, &mut capture, now);
+
+        // Second pass within TTL: `%1` reuses the cached status (a hit, no capture).
+        let mut second = vec![pane(
+            "%1",
+            Some(Provider::Copilot),
+            PaneStatus::not_checked(),
+        )];
+        cache.apply(&mut second, &mut capture, now + Duration::from_millis(500));
+
+        let stats = cache.capture_stats();
+        assert_eq!(stats.attempt_count, 2);
+        assert_eq!(stats.hit_count, 1);
+        assert_eq!(stats.error_count, 0);
     }
 
     #[test]

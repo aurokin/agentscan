@@ -1442,9 +1442,12 @@ struct DaemonStatusJson {
     control_mode_broker_disabled_reason: Option<String>,
     control_mode_broker_reconnect_count: Option<u32>,
     control_mode_broker_fallback_count: Option<u64>,
+    control_mode_broker_subscriber_count: Option<usize>,
     control_event_refresh_count: Option<u64>,
     control_event_batch_count: Option<u64>,
     control_event_line_count: Option<u64>,
+    control_event_output_line_count: Option<u64>,
+    control_event_output_byte_count: Option<u64>,
     control_event_pane_count: Option<u64>,
     control_event_title_count: Option<u64>,
     control_event_window_count: Option<u64>,
@@ -1460,6 +1463,9 @@ struct DaemonStatusJson {
     full_snapshot_refresh_count: Option<u64>,
     targeted_refresh_fallback_to_full_count: Option<u64>,
     broker_fallback_count: Option<u64>,
+    pane_output_capture_attempt_count: Option<u64>,
+    pane_output_capture_hit_count: Option<u64>,
+    pane_output_capture_error_count: Option<u64>,
     latest_snapshot_observability: Option<ipc::SnapshotObservabilityFrame>,
     recent_events: Option<Vec<ipc::DaemonObservabilityEventFrame>>,
     unavailable_reason: Option<String>,
@@ -1496,9 +1502,12 @@ fn lifecycle_not_running_json(
         control_mode_broker_disabled_reason: None,
         control_mode_broker_reconnect_count: None,
         control_mode_broker_fallback_count: None,
+        control_mode_broker_subscriber_count: None,
         control_event_refresh_count: None,
         control_event_batch_count: None,
         control_event_line_count: None,
+        control_event_output_line_count: None,
+        control_event_output_byte_count: None,
         control_event_pane_count: None,
         control_event_title_count: None,
         control_event_window_count: None,
@@ -1514,6 +1523,9 @@ fn lifecycle_not_running_json(
         full_snapshot_refresh_count: None,
         targeted_refresh_fallback_to_full_count: None,
         broker_fallback_count: None,
+        pane_output_capture_attempt_count: None,
+        pane_output_capture_hit_count: None,
+        pane_output_capture_error_count: None,
         latest_snapshot_observability: None,
         recent_events: include_events.then(Vec::new),
         unavailable_reason: None,
@@ -1562,6 +1574,10 @@ fn lifecycle_status_json(
             .control_mode_broker
             .as_ref()
             .and_then(|broker| broker.fallback_count),
+        control_mode_broker_subscriber_count: status
+            .control_mode_broker
+            .as_ref()
+            .and_then(|broker| broker.subscriber_count),
         control_event_refresh_count: status
             .runtime_telemetry
             .as_ref()
@@ -1574,6 +1590,14 @@ fn lifecycle_status_json(
             .runtime_telemetry
             .as_ref()
             .map(|telemetry| telemetry.control_event_line_count),
+        control_event_output_line_count: status
+            .runtime_telemetry
+            .as_ref()
+            .map(|telemetry| telemetry.control_event_output_line_count),
+        control_event_output_byte_count: status
+            .runtime_telemetry
+            .as_ref()
+            .map(|telemetry| telemetry.control_event_output_byte_count),
         control_event_pane_count: status
             .runtime_telemetry
             .as_ref()
@@ -1634,6 +1658,18 @@ fn lifecycle_status_json(
             .runtime_telemetry
             .as_ref()
             .map(|telemetry| telemetry.broker_fallback_count),
+        pane_output_capture_attempt_count: status
+            .runtime_telemetry
+            .as_ref()
+            .map(|telemetry| telemetry.pane_output_capture_attempt_count),
+        pane_output_capture_hit_count: status
+            .runtime_telemetry
+            .as_ref()
+            .map(|telemetry| telemetry.pane_output_capture_hit_count),
+        pane_output_capture_error_count: status
+            .runtime_telemetry
+            .as_ref()
+            .map(|telemetry| telemetry.pane_output_capture_error_count),
         latest_snapshot_observability: status.latest_snapshot_observability.clone(),
         recent_events: include_events.then(|| status.recent_events.clone()),
         unavailable_reason: status
@@ -1765,6 +1801,11 @@ fn print_lifecycle_status(paths: &LifecyclePaths, status: &ipc::LifecycleStatusF
         } else {
             println!("control_mode_broker_fallback_count: unavailable");
         }
+        if let Some(subscriber_count) = broker.subscriber_count {
+            println!("control_mode_broker_subscriber_count: {subscriber_count}");
+        } else {
+            println!("control_mode_broker_subscriber_count: unavailable");
+        }
         if let Some(reason) = &broker.disabled_reason {
             println!("control_mode_broker_disabled_reason: {reason}");
         }
@@ -1781,6 +1822,14 @@ fn print_lifecycle_status(paths: &LifecyclePaths, status: &ipc::LifecycleStatusF
         println!(
             "control_event_line_count: {}",
             telemetry.control_event_line_count
+        );
+        println!(
+            "control_event_output_line_count: {}",
+            telemetry.control_event_output_line_count
+        );
+        println!(
+            "control_event_output_byte_count: {}",
+            telemetry.control_event_output_byte_count
         );
         println!(
             "control_event_pane_count: {}",
@@ -1836,6 +1885,18 @@ fn print_lifecycle_status(paths: &LifecyclePaths, status: &ipc::LifecycleStatusF
             telemetry.targeted_refresh_fallback_to_full_count
         );
         println!("broker_fallback_count: {}", telemetry.broker_fallback_count);
+        println!(
+            "pane_output_capture_attempt_count: {}",
+            telemetry.pane_output_capture_attempt_count
+        );
+        println!(
+            "pane_output_capture_hit_count: {}",
+            telemetry.pane_output_capture_hit_count
+        );
+        println!(
+            "pane_output_capture_error_count: {}",
+            telemetry.pane_output_capture_error_count
+        );
     } else {
         println!("runtime_telemetry: unavailable");
     }
@@ -1884,6 +1945,20 @@ fn print_lifecycle_status(paths: &LifecyclePaths, status: &ipc::LifecycleStatusF
             "latest_snapshot_proc_fallback_resolved_count: {}",
             observability.proc_fallback_resolved_count
         );
+        for (provider, stats) in &observability.per_provider {
+            println!(
+                "latest_snapshot_provider[{provider}]: panes={} matched(metadata={},command={},title={},proc={}) status(metadata={},title={},output={},not_checked={})",
+                stats.pane_count,
+                stats.matched_pane_metadata_count,
+                stats.matched_pane_current_command_count,
+                stats.matched_pane_title_count,
+                stats.matched_proc_process_tree_count,
+                stats.status_source_pane_metadata_count,
+                stats.status_source_tmux_title_count,
+                stats.status_source_pane_output_count,
+                stats.status_source_not_checked_count,
+            );
+        }
     }
     if let Some(reason) = status.unavailable_reason {
         println!("unavailable_reason: {}", unavailable_reason_label(reason));
