@@ -3,7 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
-import { providerLogo } from "./providerLogos";
+import { providerLogo, type LogoTheme } from "./providerLogos";
+import logoUrl from "./assets/agentscan-logo.png";
 
 const PICKER_HOTKEY = "CommandOrControl+Shift+A";
 const LIVE_PICKER_EVENT = "agentscan-live-picker";
@@ -14,14 +15,14 @@ const THEME_STORAGE_KEY = "agentscan.desktop.theme";
 // macOS "glass": vibrancy backdrop (Rust) + a translucent surface tint (CSS).
 const GLASS_STORAGE_KEY = "agentscan.desktop.glass";
 const SURFACE_ALPHA_STORAGE_KEY = "agentscan.desktop.surfaceAlpha";
-// Tint alpha floor of 0 allows fully clear (100% transparency): the surface tint
-// vanishes but the native vibrancy blur and the solid-filled cards remain, so the
-// UI stays usable.
-const SURFACE_ALPHA_MIN = 0;
+// Tint alpha floor of 0.20 caps transparency at 80% (the slider reads 1 - alpha):
+// the surface always keeps a little tint over the native vibrancy frost, so the UI
+// never washes out fully even at the most transparent setting.
+const SURFACE_ALPHA_MIN = 0.2;
 const SURFACE_ALPHA_MAX = 1;
-// First-run default: 0.30 alpha == 70% transparency (the slider reads 1 - alpha),
-// a glassy frosted look over the desktop rather than a near-solid surface.
-const SURFACE_ALPHA_DEFAULT = 0.3;
+// First-run default: 0.50 alpha == 50% transparency (the slider reads 1 - alpha),
+// a balanced frosted look — clearly glassy but still a substantial surface tint.
+const SURFACE_ALPHA_DEFAULT = 0.5;
 const DEBUG_LOG_LIMIT = 80;
 const LOCAL_PROFILE_ID = "local";
 
@@ -166,6 +167,19 @@ type ShellView = "picker" | "settings";
 
 type ThemePreference = "dark" | "light" | "system";
 
+// Collapse a preference to the concrete theme in effect, resolving "system" from
+// the OS appearance. Used to pick per-theme logo variants.
+function resolveThemeMode(pref: ThemePreference): LogoTheme {
+  if (pref !== "system") {
+    return pref;
+  }
+  try {
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  } catch {
+    return "dark";
+  }
+}
+
 type PickerGroup = {
   project: string;
   rows: PickerRow[];
@@ -266,6 +280,11 @@ function App() {
   const [isDebugOpen, setIsDebugOpen] = useState(false);
   // Appearance: dark / light / system (system follows the OS).
   const [themePref, setThemePref] = useState<ThemePreference>(loadStoredTheme);
+  // Concrete theme in effect, kept in sync by the theme effect; drives per-theme
+  // logo variant selection. Seeded so first paint picks the right logos.
+  const [resolvedTheme, setResolvedTheme] = useState<LogoTheme>(() =>
+    resolveThemeMode(loadStoredTheme()),
+  );
   // macOS glass: the vibrancy backdrop toggle and the tint opacity over it. The
   // toggle is only surfaced on macOS; elsewhere these stay inert.
   const [glassEnabled, setGlassEnabled] = useState<boolean>(loadStoredGlass);
@@ -888,6 +907,7 @@ function App() {
       const resolved =
         themePref === "system" ? (media.matches ? "dark" : "light") : themePref;
       document.documentElement.setAttribute("data-theme", resolved);
+      setResolvedTheme(resolved);
     };
     apply();
 
@@ -946,14 +966,23 @@ function App() {
 
   // Drive the tint opacity via a CSS variable; the data-glass rules in styles.css
   // only consume it while glass is on, so this is harmless when glass is off.
+  // Also expose `--glass-clear`: a 0..1 "how see-through is the surface" scalar
+  // (0 frosted/solid, 1 fully clear) that adaptive tokens interpolate against so
+  // borders firm up and text gains a scrim as transparency rises. It's 0 when
+  // glass is off so nothing adapts on a solid surface.
   useEffect(() => {
-    document.documentElement.style.setProperty("--surface-alpha", String(surfaceAlpha));
+    const root = document.documentElement;
+    root.style.setProperty("--surface-alpha", String(surfaceAlpha));
+    const clear = glassEnabled
+      ? (SURFACE_ALPHA_MAX - surfaceAlpha) / (SURFACE_ALPHA_MAX - SURFACE_ALPHA_MIN)
+      : 0;
+    root.style.setProperty("--glass-clear", clear.toFixed(3));
     try {
       window.localStorage.setItem(SURFACE_ALPHA_STORAGE_KEY, surfaceAlpha.toFixed(2));
     } catch {
       // Best-effort persistence.
     }
-  }, [surfaceAlpha]);
+  }, [surfaceAlpha, glassEnabled]);
 
   async function activateSelectedRow(row = selectedRow) {
     if (!row || activationInFlightRef.current) {
@@ -1650,6 +1679,7 @@ function App() {
           filterQuery={pickerFilter}
           focusedPaneId={focusedPaneId}
           groups={pickerGroups}
+          logoTheme={resolvedTheme}
           selectedPaneId={selectedPaneId}
           state={pickerDataState}
           totalRows={allPickerRows.length}
@@ -2446,6 +2476,7 @@ function GroupedPicker({
   filterQuery,
   focusedPaneId,
   groups,
+  logoTheme,
   selectedPaneId,
   state,
   totalRows,
@@ -2457,6 +2488,7 @@ function GroupedPicker({
   filterQuery: string;
   focusedPaneId: string | null;
   groups: PickerGroup[];
+  logoTheme: LogoTheme;
   selectedPaneId: string | null;
   state: PickerState;
   totalRows: number;
@@ -2491,7 +2523,12 @@ function GroupedPicker({
   }
 
   if (rowCount === 0) {
-    return <p className="empty-note">No agents detected.</p>;
+    return (
+      <div className="empty-detected">
+        <img className="empty-logo" src={logoUrl} alt="agentscan" />
+        <p className="empty-note">No agents detected.</p>
+      </div>
+    );
   }
 
   return (
@@ -2511,7 +2548,7 @@ function GroupedPicker({
               const isFocused = row.pane_id === focusedPaneId;
               const isFocusing =
                 activation.status === "running" && activation.paneId === row.pane_id;
-              const logo = providerLogo(row.provider);
+              const logo = providerLogo(row.provider, logoTheme);
               return (
                 <li
                   aria-selected={isSelected}

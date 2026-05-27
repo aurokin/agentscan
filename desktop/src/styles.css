@@ -11,16 +11,23 @@
      transparency slider; 1 = fully opaque, which is the no-glass default. */
   --bg-rgb: 26, 26, 28;
   --surface-alpha: 1;
+  /* 0..1 "how see-through the glass surface is" (set at runtime; 0 = frosted/solid
+     or glass off, 1 = fully clear). Adaptive tokens interpolate against it so the
+     UI firms up as transparency rises. Default 0 keeps the non-glass look. */
+  --glass-clear: 0;
   --bg-elevated: #232325;
   --bg-hover: rgba(255, 255, 255, 0.05);
   --bg-selected: rgba(255, 255, 255, 0.08);
-  --border: rgba(255, 255, 255, 0.08);
+  /* Borders firm up with transparency: faint when frosted, stronger when clear,
+     so structure survives the fading surface tint. */
+  --border: rgba(255, 255, 255, calc(0.08 + var(--glass-clear) * 0.13));
   --text: #ededef;
   --text-muted: #9b9ba1;
   --text-dim: #6c6c73;
   /* Accent is driven by --accent-rgb so washes/rings (rgba) and the solid color
-     stay in sync; light overrides the rgb only. Dark keeps the warm orange. */
-  --accent-rgb: 207, 125, 82;
+     stay in sync; light overrides the rgb only. Dark keeps the warm orange, a
+     touch lighter/warmer so it reads as a brighter accent against the dark base. */
+  --accent-rgb: 230, 158, 114;
   --accent: rgb(var(--accent-rgb));
   --on-accent: #1a1a1c;
   --dot-busy: #e3b341;
@@ -69,7 +76,7 @@
   --bg-elevated: #ffffff;
   --bg-hover: rgba(0, 0, 0, 0.04);
   --bg-selected: rgba(0, 0, 0, 0.07);
-  --border: rgba(0, 0, 0, 0.1);
+  --border: rgba(0, 0, 0, calc(0.1 + var(--glass-clear) * 0.14));
   --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.05), 0 2px 6px rgba(0, 0, 0, 0.05);
   --row-selected-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.14),
     0 6px 16px -8px rgba(0, 0, 0, 0.18);
@@ -116,6 +123,15 @@
     .setting-hint
   ) {
   color: var(--text);
+}
+
+/* Dark mode: the tmux session headers and the pane-index suffix (4.1, 5.1, …)
+   read too dim at the default gray — hard to see over the translucent glass and
+   underwhelming even on solid dark. Lift them close to white, a step below the
+   agent titles so a little hierarchy remains. Scoped to dark; light keeps its
+   black labels above. */
+:root[data-theme="dark"] :is(.group-header, .agent-suffix) {
+  color: #d2d2d9;
 }
 
 * {
@@ -478,6 +494,28 @@ kbd {
   color: var(--text-muted);
   font-size: 13px;
   text-align: center;
+}
+
+/* "No agents detected" rest state: lead with the brand mark so an empty
+   window still feels like the product, not a blank panel. */
+.empty-detected {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 48px 12px;
+}
+
+.empty-logo {
+  width: 132px;
+  height: auto;
+  opacity: 0.5;
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
+.empty-detected .empty-note {
+  padding: 0;
 }
 
 /* ---------- Bottom bar ---------- */

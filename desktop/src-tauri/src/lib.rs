@@ -320,9 +320,13 @@ fn set_window_glass(window: tauri::WebviewWindow, enabled: bool) -> Result<(), S
                     if enabled {
                         apply_vibrancy(
                             &main_window,
-                            // Sidebar reads as a translucent panel — the right register
-                            // for a narrow utility window. The tint sits on top of it.
-                            NSVisualEffectMaterial::Sidebar,
+                            // Popover is a frostier, appearance-adaptive material than
+                            // Sidebar: the native blur itself carries enough contrast to
+                            // keep text legible even when the CSS surface tint is fully
+                            // clear (transparency at 100%), so no per-glyph scrim is
+                            // needed. (HudWindow is frostier still but biased dark, which
+                            // would wreck light mode — Popover follows the appearance.)
+                            NSVisualEffectMaterial::Popover,
                             Some(NSVisualEffectState::Active),
                             None,
                         )

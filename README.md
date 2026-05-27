@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/agentscan-logo.png" alt="agentscan" width="280" />
+</p>
+
 # agentscan
 
 `agentscan` is a standalone replacement stack for tmux agent discovery.
