@@ -374,8 +374,9 @@ p {
 }
 
 kbd {
-  display: inline-grid;
-  place-items: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-width: 18px;
   height: 18px;
   padding: 0 5px;
@@ -390,6 +391,13 @@ kbd {
 .agent-row.selected kbd {
   background: var(--overlay-14);
   color: var(--text);
+}
+
+/* The Control glyph is a hint, not the payload — keep it quieter than the key. */
+.kbd-mod {
+  margin-right: 1px;
+  opacity: 0.6;
+  font-weight: 500;
 }
 
 .empty-note {
