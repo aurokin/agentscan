@@ -2080,46 +2080,32 @@ fn hermes_display_metadata_preserves_published_label_activity_state() {
 
 #[test]
 fn copilot_pane_output_marks_busy_only_after_provider_is_known() {
-    let mut copilot = pane_output_status_pane(745, Provider::Copilot, "GitHub Copilot");
-
-    classify::apply_pane_output_status_fallback(
-        &mut copilot,
-        "❯ Review patch\n\n\
+    let output = "❯ Review patch\n\n\
          ● Thinking (Esc to cancel · 616 B)\n\
          /tmp/probe [main]\n\
          ────────────────────\n\
          ❯\n\
          ────────────────────\n\
-         / commands · ? help\n",
+         / commands · ? help\n";
+    assert_pane_output_status(
+        745,
+        Provider::Copilot,
+        "GitHub Copilot",
+        output,
+        StatusKind::Busy,
+        super::StatusSource::PaneOutput,
     );
-
-    assert_eq!(copilot.status.kind, StatusKind::Busy);
-    assert_eq!(copilot.status.source, super::StatusSource::PaneOutput);
-
-    let mut unknown = proc_fallback_pane(746, "node", "custom title");
-    classify::apply_pane_output_status_fallback(
-        &mut unknown,
-        "❯ Review patch\n\n\
-         ● Thinking (Esc to cancel · 616 B)\n\
-         /tmp/probe [main]\n\
-         ────────────────────\n\
-         ❯\n\
-         ────────────────────\n\
-         / commands · ? help\n",
-    );
-
-    assert_eq!(unknown.status.kind, StatusKind::Unknown);
-    assert_eq!(unknown.status.source, super::StatusSource::NotChecked);
+    assert_unprovidered_pane_output_unchanged(746, "node", "custom title", output);
 }
 
 #[test]
 fn pane_output_status_fallback_requires_a_resolved_provider() {
     // Pane output is a provider-scoped status fallback: a pane with no resolved provider
     // must never be probed, even when its output looks agent-shaped.
-    let mut unprovidered = proc_fallback_pane(747, "node", "custom title");
-
-    classify::apply_pane_output_status_fallback(
-        &mut unprovidered,
+    assert_unprovidered_pane_output_unchanged(
+        747,
+        "node",
+        "custom title",
         "❯ Review patch\n\n\
          ● Thinking (Esc to cancel · 616 B)\n\
          /tmp/probe [main]\n\
@@ -2128,40 +2114,24 @@ fn pane_output_status_fallback_requires_a_resolved_provider() {
          ────────────────────\n\
          / commands · ? help\n",
     );
-
-    assert!(unprovidered.provider.is_none());
-    assert_eq!(unprovidered.status.kind, StatusKind::Unknown);
-    assert_eq!(unprovidered.status.source, super::StatusSource::NotChecked);
 }
 
 #[test]
 fn droid_pane_output_marks_current_prompt_idle_only_after_provider_is_known() {
-    let mut droid = pane_output_status_pane(810, Provider::Droid, "⛬ New Session");
-
-    classify::apply_pane_output_status_fallback(
-        &mut droid,
-        " Auto (High) - allow all commands            Droid Core (DeepSeek V4 Pro) (Max)\n\
+    let output = " Auto (High) - allow all commands            Droid Core (DeepSeek V4 Pro) (Max)\n\
          ╭──────────────────────────────────────────────────────────────────────────────╮\n\
          │ >                                                                            │\n\
          ╰──────────────────────────────────────────────────────────────────────────────╯\n\
-         [⏱ 5s] ? for help                                                          IDE ◌\n",
+         [⏱ 5s] ? for help                                                          IDE ◌\n";
+    assert_pane_output_status(
+        810,
+        Provider::Droid,
+        "⛬ New Session",
+        output,
+        StatusKind::Idle,
+        super::StatusSource::PaneOutput,
     );
-
-    assert_eq!(droid.status.kind, StatusKind::Idle);
-    assert_eq!(droid.status.source, super::StatusSource::PaneOutput);
-
-    let mut unknown = proc_fallback_pane(811, "zsh", "custom title");
-    classify::apply_pane_output_status_fallback(
-        &mut unknown,
-        " Auto (High) - allow all commands            Droid Core (DeepSeek V4 Pro) (Max)\n\
-         ╭──────────────────────────────────────────────────────────────────────────────╮\n\
-         │ >                                                                            │\n\
-         ╰──────────────────────────────────────────────────────────────────────────────╯\n\
-         [⏱ 5s] ? for help                                                          IDE ◌\n",
-    );
-
-    assert_eq!(unknown.status.kind, StatusKind::Unknown);
-    assert_eq!(unknown.status.source, super::StatusSource::NotChecked);
+    assert_unprovidered_pane_output_unchanged(811, "zsh", "custom title", output);
 }
 
 #[test]
