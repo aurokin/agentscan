@@ -8,6 +8,8 @@ pub(super) fn apply_control_event_batch(
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
     disable_proc_fallback: bool,
 ) -> Result<ControlEventOutcome> {
+    let mut refresh_context =
+        RefreshContext::new(tmux_reads, pane_output_cache, disable_proc_fallback);
     let pane_scopes_before_refresh = pane_scopes_by_id(snapshot);
     let mut changed = false;
     let mut fallback_to_full = false;
@@ -18,13 +20,7 @@ pub(super) fn apply_control_event_batch(
 
     if batch.resnapshot_sequence.is_some() {
         let tmux_version = snapshot.source.tmux_version.clone();
-        reconcile_full_snapshot(
-            snapshot,
-            tmux_reads,
-            tmux_version.as_deref(),
-            pane_output_cache,
-            disable_proc_fallback,
-        )?;
+        refresh_context.reconcile_full_snapshot(snapshot, tmux_version.as_deref())?;
         changed = true;
         full_snapshot_refresh = true;
     }
@@ -38,20 +34,11 @@ pub(super) fn apply_control_event_batch(
         }
         changed = true;
         targeted_scope_refreshes = targeted_scope_refreshes.saturating_add(1);
-        if let Err(error) = refresh_snapshot_session(
-            snapshot,
-            tmux_reads,
-            session_id,
-            pane_output_cache,
-            disable_proc_fallback,
-        ) {
-            fallback_to_full_resnapshot(
+        if let Err(error) = refresh_context.refresh_session(snapshot, session_id) {
+            refresh_context.fallback_to_full_resnapshot(
                 snapshot,
-                tmux_reads,
                 &format!("session:{session_id}"),
                 error,
-                pane_output_cache,
-                disable_proc_fallback,
             )?;
             fallback_to_full = true;
             full_snapshot_refresh = true;
@@ -67,20 +54,11 @@ pub(super) fn apply_control_event_batch(
         }
         changed = true;
         targeted_scope_refreshes = targeted_scope_refreshes.saturating_add(1);
-        if let Err(error) = refresh_snapshot_window(
-            snapshot,
-            tmux_reads,
-            window_id,
-            pane_output_cache,
-            disable_proc_fallback,
-        ) {
-            fallback_to_full_resnapshot(
+        if let Err(error) = refresh_context.refresh_window(snapshot, window_id) {
+            refresh_context.fallback_to_full_resnapshot(
                 snapshot,
-                tmux_reads,
                 &format!("window:{window_id}"),
                 error,
-                pane_output_cache,
-                disable_proc_fallback,
             )?;
             fallback_to_full = true;
             full_snapshot_refresh = true;
@@ -96,14 +74,7 @@ pub(super) fn apply_control_event_batch(
             pane_id,
         );
         let has_title_override = title_override.is_some();
-        if refresh_snapshot_pane_with_title(
-            snapshot,
-            tmux_reads,
-            pane_id,
-            title_override,
-            pane_output_cache,
-            disable_proc_fallback,
-        )? {
+        if refresh_context.refresh_pane_with_title(snapshot, pane_id, title_override)? {
             changed = true;
             targeted_pane_refreshes = targeted_pane_refreshes.saturating_add(1);
             if has_title_override {
@@ -124,14 +95,7 @@ pub(super) fn apply_control_event_batch(
         if batch.panes.contains_key(pane_id) {
             continue;
         }
-        if refresh_snapshot_pane_with_title(
-            snapshot,
-            tmux_reads,
-            pane_id,
-            Some(title),
-            pane_output_cache,
-            disable_proc_fallback,
-        )? {
+        if refresh_context.refresh_pane_with_title(snapshot, pane_id, Some(title))? {
             changed = true;
             targeted_pane_refreshes = targeted_pane_refreshes.saturating_add(1);
             targeted_title_updates = targeted_title_updates.saturating_add(1);
@@ -221,6 +185,89 @@ fn latest_refresh_sequence_for_scopes(
         );
     }
     latest_refresh_sequence
+}
+
+struct RefreshContext<'a, TmuxReads> {
+    tmux_reads: &'a mut TmuxReads,
+    pane_output_cache: &'a mut scanner::PaneOutputStatusCache,
+    disable_proc_fallback: bool,
+}
+
+impl<'a, TmuxReads: TmuxReadProvider> RefreshContext<'a, TmuxReads> {
+    fn new(
+        tmux_reads: &'a mut TmuxReads,
+        pane_output_cache: &'a mut scanner::PaneOutputStatusCache,
+        disable_proc_fallback: bool,
+    ) -> Self {
+        Self {
+            tmux_reads,
+            pane_output_cache,
+            disable_proc_fallback,
+        }
+    }
+
+    fn refresh_pane_with_title(
+        &mut self,
+        snapshot: &mut SnapshotEnvelope,
+        pane_id: &str,
+        title_override: Option<&str>,
+    ) -> Result<bool> {
+        refresh_snapshot_pane_with_title(
+            snapshot,
+            self.tmux_reads,
+            pane_id,
+            title_override,
+            self.pane_output_cache,
+            self.disable_proc_fallback,
+        )
+    }
+
+    fn refresh_window(&mut self, snapshot: &mut SnapshotEnvelope, window_id: &str) -> Result<()> {
+        refresh_snapshot_window(
+            snapshot,
+            self.tmux_reads,
+            window_id,
+            self.pane_output_cache,
+            self.disable_proc_fallback,
+        )
+    }
+
+    fn refresh_session(&mut self, snapshot: &mut SnapshotEnvelope, session_id: &str) -> Result<()> {
+        refresh_snapshot_session(
+            snapshot,
+            self.tmux_reads,
+            session_id,
+            self.pane_output_cache,
+            self.disable_proc_fallback,
+        )
+    }
+
+    fn fallback_to_full_resnapshot(
+        &mut self,
+        snapshot: &mut SnapshotEnvelope,
+        event_context: &str,
+        error: anyhow::Error,
+    ) -> Result<()> {
+        eprintln!(
+            "agentscan: targeted refresh failed for control-mode event {event_context:?}: {error:#}"
+        );
+        let tmux_version = snapshot.source.tmux_version.clone();
+        self.reconcile_full_snapshot(snapshot, tmux_version.as_deref())
+    }
+
+    fn reconcile_full_snapshot(
+        &mut self,
+        snapshot: &mut SnapshotEnvelope,
+        tmux_version: Option<&str>,
+    ) -> Result<()> {
+        reconcile_full_snapshot(
+            snapshot,
+            self.tmux_reads,
+            tmux_version,
+            self.pane_output_cache,
+            self.disable_proc_fallback,
+        )
+    }
 }
 
 pub(super) fn refresh_snapshot_pane_with_title(
@@ -508,27 +555,6 @@ fn refresh_snapshot_scope(
 
     snapshot::sort_snapshot_panes(snapshot);
     snapshot::mark_snapshot_as_daemon(snapshot)
-}
-
-fn fallback_to_full_resnapshot(
-    snapshot: &mut SnapshotEnvelope,
-    tmux_reads: &mut impl TmuxReadProvider,
-    event_context: &str,
-    error: anyhow::Error,
-    pane_output_cache: &mut scanner::PaneOutputStatusCache,
-    disable_proc_fallback: bool,
-) -> Result<()> {
-    eprintln!(
-        "agentscan: targeted refresh failed for control-mode event {event_context:?}: {error:#}"
-    );
-    let tmux_version = snapshot.source.tmux_version.clone();
-    reconcile_full_snapshot(
-        snapshot,
-        tmux_reads,
-        tmux_version.as_deref(),
-        pane_output_cache,
-        disable_proc_fallback,
-    )
 }
 
 pub(super) fn reconcile_full_snapshot(
