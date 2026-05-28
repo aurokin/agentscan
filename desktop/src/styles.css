@@ -1201,10 +1201,14 @@ button:disabled {
 
 .detail-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
-  flex: 0 0 auto;
-  /* When the header wraps at narrow widths, keep the actions flushed right on
-     their own line rather than left-aligned under the title. */
+  /* Keep the actions flushed right — on the header line, and on their own line
+     when the header wraps at narrow widths. Allowing the group to shrink (no
+     `flex: 0 0 auto`) lets its buttons wrap to a second sub-row inside the
+     single-source detail card, whose 14px padding leaves too little width for
+     all three SSH buttons (Delete/Reset/Apply) on one line at the 220px floor. */
+  justify-content: flex-end;
   margin-left: auto;
 }
 
@@ -1212,6 +1216,8 @@ button:disabled {
   min-height: 28px;
   padding: 0 12px;
   font-size: 12px;
+  /* Buttons keep their size and wrap as whole units rather than squashing. */
+  flex: 0 0 auto;
 }
 
 /* Preflight status banner */
