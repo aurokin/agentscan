@@ -1,22 +1,22 @@
-use super::StatusKind;
+use super::{PaneOutputFrame, StatusKind};
 
 pub(super) fn status(output: &str) -> Option<StatusKind> {
-    let lines: Vec<&str> = output.lines().collect();
-    let busy_index = lines.iter().rposition(|line| hermes_busy_prompt_line(line));
-    let idle_index = lines.iter().rposition(|line| hermes_idle_prompt_line(line));
+    let frame = PaneOutputFrame::new(output);
+    let busy_index = frame.rposition(hermes_busy_prompt_line);
+    let idle_index = frame.rposition(hermes_idle_prompt_line);
 
     if let Some(index) = busy_index
-        && hermes_status_bar_directly_above(&lines, index)
+        && hermes_status_bar_directly_above(&frame, index)
         && idle_index.is_none_or(|idle_index| idle_index < index)
-        && hermes_prompt_is_current_frame(&lines, index)
+        && hermes_prompt_is_current_frame(&frame, index)
     {
         return Some(StatusKind::Busy);
     }
 
     if let Some(index) = idle_index
-        && hermes_status_bar_directly_above(&lines, index)
+        && hermes_status_bar_directly_above(&frame, index)
         && busy_index.is_none_or(|busy_index| busy_index < index)
-        && hermes_prompt_is_current_frame(&lines, index)
+        && hermes_prompt_is_current_frame(&frame, index)
     {
         return Some(StatusKind::Idle);
     }
@@ -33,8 +33,8 @@ pub(super) fn status(output: &str) -> Option<StatusKind> {
 /// rules and blank rows follow the prompt: any real content below it (output from a turn that has
 /// since run) marks it stale. A multi-line draft conservatively reads as unknown rather than risk
 /// resurrecting a ghost prompt.
-fn hermes_prompt_is_current_frame(lines: &[&str], prompt_index: usize) -> bool {
-    lines[prompt_index + 1..].iter().all(|line| {
+fn hermes_prompt_is_current_frame(frame: &PaneOutputFrame<'_>, prompt_index: usize) -> bool {
+    frame.trailing_lines_after_are(prompt_index, |_, line, _| {
         let line = line.trim();
         line.is_empty() || hermes_box_rule_line(line)
     })
@@ -51,16 +51,19 @@ fn hermes_box_rule_line(line: &str) -> bool {
 /// sit between them. Requiring both proximity AND a clean intervening gap prevents an unrelated
 /// `❯ <text>` line — e.g. a quoted shell prompt like `❯ npm test` in agent output, possibly with
 /// prose like `Run this:` between it and an older status bar — from being classified idle.
-fn hermes_status_bar_directly_above(lines: &[&str], prompt_index: usize) -> bool {
-    let start = prompt_index.saturating_sub(3);
-    lines[start..prompt_index]
+fn hermes_status_bar_directly_above(frame: &PaneOutputFrame<'_>, prompt_index: usize) -> bool {
+    let Some(window) = frame.window_before(prompt_index, 3) else {
+        return false;
+    };
+    let start = prompt_index.saturating_sub(window.len());
+    window
         .iter()
         .enumerate()
         .rev()
         .find(|(_, line)| hermes_status_bar_line(line.trim()))
         .is_some_and(|(rel_index, _)| {
             let status_index = start + rel_index;
-            lines[status_index + 1..prompt_index].iter().all(|line| {
+            frame.forward_gap_before_all(status_index, prompt_index, |line| {
                 let line = line.trim();
                 line.is_empty() || hermes_box_rule_line(line)
             })

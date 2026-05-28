@@ -1,29 +1,26 @@
-use super::{StatusKind, dotted_version_token};
+use super::{PaneOutputFrame, StatusKind, dotted_version_token};
 
 pub(super) fn status(output: &str) -> Option<StatusKind> {
-    let lines: Vec<&str> = output.lines().collect();
+    let frame = PaneOutputFrame::new(output);
 
     // Bottom-most current idle prompt: either the placeholder input row (older build) near
     // the current footer, or the newer build's command-bar input box. Folding both into one
     // index lets a busy marker only win when it is below the live prompt — a stale
     // approval/question row above the current prompt must not force busy.
-    let placeholder_index = lines
-        .iter()
-        .rposition(|line| opencode_idle_prompt_line(line))
-        .filter(|&index| opencode_prompt_is_near_current_footer(&lines, index));
-    let command_bar_index = opencode_current_command_bar_index(&lines);
-    let input_box_index = opencode_current_input_box_index(&lines);
+    let placeholder_index = frame
+        .rposition(opencode_idle_prompt_line)
+        .filter(|&index| opencode_prompt_is_near_current_footer(&frame, index));
+    let command_bar_index = opencode_current_command_bar_index(&frame);
+    let input_box_index = opencode_current_input_box_index(&frame);
     let idle_index = placeholder_index
         .max(command_bar_index)
         .max(input_box_index);
 
-    let busy_index = lines
-        .iter()
-        .rposition(|line| opencode_current_busy_marker_line(line));
+    let busy_index = frame.rposition(opencode_current_busy_marker_line);
 
     if let Some(index) = busy_index
         && opencode_busy_marker_is_current(
-            &lines,
+            &frame,
             index,
             idle_index,
             command_bar_index,
@@ -50,33 +47,30 @@ pub(super) fn status(output: &str) -> Option<StatusKind> {
 /// border as the only footer landmark, so a current `esc interrupt` above that box must still
 /// win over the input-box idle anchor rather than fall through to idle.
 fn opencode_busy_marker_is_current(
-    lines: &[&str],
+    frame: &PaneOutputFrame<'_>,
     busy_index: usize,
     idle_index: Option<usize>,
     command_bar_index: Option<usize>,
     input_box_index: Option<usize>,
 ) -> bool {
     let in_current_footer =
-        opencode_busy_marker_in_current_footer(lines, busy_index, command_bar_index)
-            || opencode_busy_marker_in_current_footer(lines, busy_index, input_box_index);
+        opencode_busy_marker_in_current_footer(frame, busy_index, command_bar_index)
+            || opencode_busy_marker_in_current_footer(frame, busy_index, input_box_index);
     match idle_index {
         Some(idle_index) => idle_index < busy_index || in_current_footer,
-        None => in_current_footer || opencode_prompt_is_near_current_footer(lines, busy_index),
+        None => in_current_footer || opencode_prompt_is_near_current_footer(frame, busy_index),
     }
 }
 
 fn opencode_busy_marker_in_current_footer(
-    lines: &[&str],
+    frame: &PaneOutputFrame<'_>,
     busy_index: usize,
     command_bar_index: Option<usize>,
 ) -> bool {
     let Some(command_bar) = command_bar_index else {
         return false;
     };
-    busy_index < command_bar
-        && lines[busy_index + 1..command_bar]
-            .iter()
-            .all(|line| opencode_prompt_gap_line(line))
+    frame.forward_gap_before_all(busy_index, command_bar, opencode_prompt_gap_line)
 }
 
 fn opencode_prompt_gap_line(line: &str) -> bool {
@@ -100,30 +94,22 @@ fn opencode_idle_prompt_line(line: &str) -> bool {
 /// The capture is the last 30 rows including scrollback, so only opencode's own trailing
 /// chrome (blank rows, notices, the bottom status bar) may follow it; a command bar trailed
 /// by real agent output is a stale frame, not the current prompt.
-fn opencode_current_command_bar_index(lines: &[&str]) -> Option<usize> {
-    let footer_index = lines
-        .iter()
-        .rposition(|line| opencode_command_bar_footer_line(line))?;
-    let box_window_start = footer_index.saturating_sub(2);
-    let has_input_box = lines[box_window_start..footer_index]
+fn opencode_current_command_bar_index(frame: &PaneOutputFrame<'_>) -> Option<usize> {
+    let footer_index = frame.rposition(opencode_command_bar_footer_line)?;
+    let has_input_box = frame
+        .window_before(footer_index, 2)?
         .iter()
         .any(|line| opencode_input_box_bottom_border(line));
 
     // Only opencode's own chrome may follow the command bar: blank rows, a `● Tip` notice,
     // or the pinned bottom status bar as the final row. Anything else means the command bar
     // is a stale frame in the scrollback capture, not the current prompt.
-    let last_index = lines.len().saturating_sub(1);
-    let only_trailing_chrome =
-        lines
-            .iter()
-            .enumerate()
-            .skip(footer_index + 1)
-            .all(|(index, line)| {
-                let line = line.trim();
-                line.is_empty()
-                    || line.starts_with("● Tip")
-                    || (index == last_index && opencode_bottom_status_bar_line(line))
-            });
+    let only_trailing_chrome = frame.trailing_lines_after_are(footer_index, |_, line, is_last| {
+        let line = line.trim();
+        line.is_empty()
+            || line.starts_with("● Tip")
+            || (is_last && opencode_bottom_status_bar_line(line))
+    });
     (has_input_box && only_trailing_chrome).then_some(footer_index)
 }
 
@@ -137,23 +123,15 @@ fn opencode_current_command_bar_index(lines: &[&str]) -> Option<usize> {
 /// `tab agents` command bar, a `● Tip` notice, or the pinned bottom status bar as the final row).
 /// A border trailed by real agent output is a stale frame in the scrollback capture, not the
 /// current prompt. Busy markers still win — this only contributes to the idle anchor.
-fn opencode_current_input_box_index(lines: &[&str]) -> Option<usize> {
-    let border_index = lines
-        .iter()
-        .rposition(|line| opencode_input_box_bottom_border(line))?;
-    let last_index = lines.len().saturating_sub(1);
-    let only_trailing_chrome =
-        lines
-            .iter()
-            .enumerate()
-            .skip(border_index + 1)
-            .all(|(index, line)| {
-                let line = line.trim();
-                line.is_empty()
-                    || line.starts_with("● Tip")
-                    || opencode_command_bar_footer_line(line)
-                    || (index == last_index && opencode_bottom_status_bar_line(line))
-            });
+fn opencode_current_input_box_index(frame: &PaneOutputFrame<'_>) -> Option<usize> {
+    let border_index = frame.rposition(opencode_input_box_bottom_border)?;
+    let only_trailing_chrome = frame.trailing_lines_after_are(border_index, |_, line, is_last| {
+        let line = line.trim();
+        line.is_empty()
+            || line.starts_with("● Tip")
+            || opencode_command_bar_footer_line(line)
+            || (is_last && opencode_bottom_status_bar_line(line))
+    });
     only_trailing_chrome.then_some(border_index)
 }
 
@@ -209,7 +187,9 @@ fn opencode_question_prompt_line(line: &str) -> bool {
         || line.contains("# Questions")
 }
 
-fn opencode_prompt_is_near_current_footer(lines: &[&str], prompt_index: usize) -> bool {
-    let tail_len = lines.len().saturating_sub(prompt_index);
-    tail_len <= 8
+fn opencode_prompt_is_near_current_footer(
+    frame: &PaneOutputFrame<'_>,
+    prompt_index: usize,
+) -> bool {
+    frame.is_within_tail(prompt_index, 8)
 }

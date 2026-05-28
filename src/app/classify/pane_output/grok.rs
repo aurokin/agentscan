@@ -1,20 +1,20 @@
-use super::{StatusKind, dotted_version_token};
+use super::{PaneOutputFrame, StatusKind, dotted_version_token};
 
 pub(super) fn status(output: &str) -> Option<StatusKind> {
-    let lines: Vec<&str> = output.lines().collect();
+    let frame = PaneOutputFrame::new(output);
 
     // grok pins its rounded input box (`│ ❯ … │`) at the bottom in both idle and busy states.
     // The keybind footer just below it reflects grok's own state: an in-flight turn adds
     // `Ctrl+c:cancel` / `Ctrl+Enter:interject` hints, an idle prompt shows only
     // mode/shortcuts, and a fresh prompt shows the version line (e.g. `0.2.3 [stable] Beta`).
-    if let Some(border) = grok_current_input_box_border(&lines) {
+    if let Some(border) = grok_current_input_box_border(&frame) {
         // Busy when grok's footer shows interrupt keybinds OR a live run spinner sits
         // directly above the pinned box. The footer wording is the primary signal; the
         // spinner backstop keeps a live turn from reading idle if grok relabels its hints,
         // while a stale spinner (completed-turn output between it and the box) is not
         // directly above the box and so won't trip it.
-        let busy = grok_active_turn_footer_after(&lines, border)
-            || grok_running_spinner_above_box(&lines, border);
+        let busy = grok_active_turn_footer_after(&frame, border)
+            || grok_running_spinner_above_box(&frame, border);
         return Some(if busy {
             StatusKind::Busy
         } else {
@@ -24,7 +24,7 @@ pub(super) fn status(output: &str) -> Option<StatusKind> {
 
     // No current input box (a transient mid-stream frame): a running spinner as the current
     // bottom line still means an in-flight turn.
-    grok_current_running_spinner(&lines).then_some(StatusKind::Busy)
+    grok_current_running_spinner(&frame).then_some(StatusKind::Busy)
 }
 
 /// Index of the input box bottom border when the box is the current bottom frame.
@@ -33,12 +33,13 @@ pub(super) fn status(output: &str) -> Option<StatusKind> {
 /// border has the `│ ❯ … │` input row directly above it and only grok's own footer chrome
 /// (blank rows, the keybind footer, or the version line) below it. A box trailed by real turn
 /// output is a stale frame in the scrollback capture, not the live prompt.
-fn grok_current_input_box_border(lines: &[&str]) -> Option<usize> {
-    let border = lines
-        .iter()
-        .rposition(|line| grok_prompt_box_bottom_border(line))?;
-    let input_above = border > 0 && grok_prompt_box_input_line(lines[border - 1]);
-    let only_footer_below = lines[border + 1..].iter().all(|line| {
+fn grok_current_input_box_border(frame: &PaneOutputFrame<'_>) -> Option<usize> {
+    let border = frame.rposition(grok_prompt_box_bottom_border)?;
+    let input_above = border > 0
+        && frame
+            .line(border - 1)
+            .is_some_and(grok_prompt_box_input_line);
+    let only_footer_below = frame.trailing_lines_after_are(border, |_, line, _| {
         let line = line.trim();
         line.is_empty() || grok_footer_line(line)
     });
@@ -87,8 +88,8 @@ fn grok_keybind_token(token: &str) -> bool {
 /// An active turn's footer adds interrupt keybinds (`Ctrl+c:cancel`, `Ctrl+Enter:interject`)
 /// that the idle footer omits, so grok's own footer distinguishes a running turn from an idle
 /// prompt without having to anchor the spinner against stale scrollback.
-fn grok_active_turn_footer_after(lines: &[&str], border: usize) -> bool {
-    lines[border + 1..].iter().any(|line| {
+fn grok_active_turn_footer_after(frame: &PaneOutputFrame<'_>, border: usize) -> bool {
+    frame.trailing_lines_after_any(border, |line| {
         let line = line.trim();
         grok_keybind_footer_line(line) && (line.contains("cancel") || line.contains("interject"))
     })
@@ -100,18 +101,13 @@ fn grok_active_turn_footer_after(lines: &[&str], border: usize) -> bool {
 /// wording (a backstop if grok relabels its interrupt hints). A *stale* spinner from a prior
 /// turn has real output (e.g. `Turn completed…`) between it and the box, so it is not directly
 /// above and does not match.
-fn grok_running_spinner_above_box(lines: &[&str], border: usize) -> bool {
-    let Some(top) = lines[..border]
-        .iter()
-        .rposition(|line| grok_prompt_box_top_border(line))
-    else {
+fn grok_running_spinner_above_box(frame: &PaneOutputFrame<'_>, border: usize) -> bool {
+    let Some(top) = frame.rposition_before(border, grok_prompt_box_top_border) else {
         return false;
     };
-    lines[..top]
-        .iter()
-        .rev()
-        .find(|line| !line.trim().is_empty())
-        .is_some_and(|line| grok_running_status_line(line))
+    frame
+        .previous_nonblank_before(top)
+        .is_some_and(grok_running_status_line)
 }
 
 /// Grok's version footer, e.g. `0.2.3 [stable] Beta`. The dotted version leads the line and any
@@ -149,12 +145,8 @@ fn grok_release_channel_word(token: &str) -> bool {
 
 /// True when the bottom-most rendered line is a running spinner: a braille spinner glyph with
 /// grok's in-flight run marker (`[✗]`).
-fn grok_current_running_spinner(lines: &[&str]) -> bool {
-    lines
-        .iter()
-        .rev()
-        .find(|line| !line.trim().is_empty())
-        .is_some_and(|line| grok_running_status_line(line))
+fn grok_current_running_spinner(frame: &PaneOutputFrame<'_>) -> bool {
+    frame.last_nonblank().is_some_and(grok_running_status_line)
 }
 
 fn grok_running_status_line(line: &str) -> bool {
