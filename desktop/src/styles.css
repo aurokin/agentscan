@@ -406,8 +406,11 @@ p {
   /* Settings shares this window, so its widest fixed control — the 3-up
      Dark/Light/System theme toggle — also has to survive the tight floor. The
      even 1fr columns can't seat "System" at 13px here, so shave the label type
-     and button padding just in this range; the 280px default keeps full size. */
-  .theme-option {
+     and button padding just in this range; the 280px default keeps full size.
+     Scoped as `.theme-toggle .theme-option` (specificity 0,2,0) so it wins over
+     the base `.theme-option` rule, which is declared later in the file — a plain
+     `.theme-option` here has equal specificity and would lose on source order. */
+  .theme-toggle .theme-option {
     padding: 0 4px;
     font-size: 12px;
   }
