@@ -17,3 +17,8 @@ This note tracks implementation choices for the multi-PR refactor sequence.
 
 - Add a small `TmuxPaneRowBuilder` in test support so classification, TUI, and picker tests declare only the tmux fields relevant to each behavior.
 - Keep the builder test-only and reuse it from existing helper constructors rather than adding new production defaults.
+
+## PR 4: Pane-output scanner module
+
+- Move pane-output capture/cache machinery out of `scanner.rs` into `scanner::pane_output`, leaving snapshot assembly in the top-level scanner module.
+- Re-export the existing cache and fallback entry points so daemon refresh call sites keep their current API while the cache tests sit next to the cache implementation.
