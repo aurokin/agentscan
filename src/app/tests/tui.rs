@@ -1,54 +1,31 @@
 fn tui_test_pane(pane_index: u32) -> PaneRecord {
-    classify::pane_from_row(super::TmuxPaneRow {
-        session_name: "alpha".to_string(),
-        window_index: 1,
-        pane_index,
-        pane_id: format!("%{pane_index}"),
-        pane_pid: pane_index,
-        pane_current_command: if pane_index.is_multiple_of(2) {
-            "claude".to_string()
-        } else {
-            "codex".to_string()
-        },
-        pane_title_raw: format!("Task {pane_index:02}"),
-        pane_tty: format!("/dev/pts/{pane_index}"),
-        pane_current_path: "/tmp/alpha".to_string(),
-        window_name: "editor".to_string(),
-        session_id: None,
-        window_id: None,
-        agent_provider: None,
-        agent_label: None,
-        agent_cwd: None,
-        agent_state: None,
-        agent_session_id: None,
-        pane_active: false,
-        window_active: false,
-    })
+    let command = if pane_index.is_multiple_of(2) {
+        "claude"
+    } else {
+        "codex"
+    };
+
+    tmux_pane_row(pane_index)
+        .session_name("alpha")
+        .pane_index(pane_index)
+        .command(command)
+        .title(format!("Task {pane_index:02}"))
+        .current_path("/tmp/alpha")
+        .window_name("editor")
+        .pane()
 }
 
 #[test]
 fn tui_render_rows_include_location_status_and_key_labels() {
-    let pane = classify::pane_from_row(super::TmuxPaneRow {
-        session_name: "notes".to_string(),
-        window_index: 4,
-        pane_index: 1,
-        pane_id: "%41".to_string(),
-        pane_pid: 324026,
-        pane_current_command: "claude".to_string(),
-        pane_title_raw: "Claude Code | Working".to_string(),
-        pane_tty: "/dev/pts/44".to_string(),
-        pane_current_path: "/home/auro/notes".to_string(),
-        window_name: "ai".to_string(),
-        session_id: None,
-        window_id: None,
-        agent_provider: None,
-        agent_label: None,
-        agent_cwd: None,
-        agent_state: None,
-        agent_session_id: None,
-        pane_active: false,
-        window_active: false,
-    });
+    let pane = tmux_pane_row(324026)
+        .session_name("notes")
+        .window_index(4)
+        .pane_id("%41")
+        .command("claude")
+        .title("Claude Code | Working")
+        .tty("/dev/pts/44")
+        .current_path("/home/auro/notes")
+        .pane();
 
     let mut key_targets = std::collections::BTreeMap::new();
     super::tui::synchronize_key_targets(&mut key_targets, std::slice::from_ref(&pane));
@@ -153,27 +130,15 @@ fn provider_display_marker_uses_emoji_by_default_and_supports_nerd_font_modes() 
 
 #[test]
 fn tui_render_rows_can_use_nerd_font_provider_markers() {
-    let pane = classify::pane_from_row(super::TmuxPaneRow {
-        session_name: "notes".to_string(),
-        window_index: 4,
-        pane_index: 1,
-        pane_id: "%41".to_string(),
-        pane_pid: 324026,
-        pane_current_command: "claude".to_string(),
-        pane_title_raw: "Claude Code | Working".to_string(),
-        pane_tty: "/dev/pts/44".to_string(),
-        pane_current_path: "/home/auro/notes".to_string(),
-        window_name: "ai".to_string(),
-        session_id: None,
-        window_id: None,
-        agent_provider: None,
-        agent_label: None,
-        agent_cwd: None,
-        agent_state: None,
-        agent_session_id: None,
-        pane_active: false,
-        window_active: false,
-    });
+    let pane = tmux_pane_row(324026)
+        .session_name("notes")
+        .window_index(4)
+        .pane_id("%41")
+        .command("claude")
+        .title("Claude Code | Working")
+        .tty("/dev/pts/44")
+        .current_path("/home/auro/notes")
+        .pane();
 
     let mut key_targets = std::collections::BTreeMap::new();
     super::tui::synchronize_key_targets(&mut key_targets, std::slice::from_ref(&pane));
@@ -185,27 +150,15 @@ fn tui_render_rows_can_use_nerd_font_provider_markers() {
 
 #[test]
 fn tui_render_rows_respect_terminal_cell_width_with_wide_status_emoji() {
-    let pane = classify::pane_from_row(super::TmuxPaneRow {
-        session_name: "notes".to_string(),
-        window_index: 4,
-        pane_index: 1,
-        pane_id: "%41".to_string(),
-        pane_pid: 324026,
-        pane_current_command: "claude".to_string(),
-        pane_title_raw: "Claude Code | Working on a much longer task title".to_string(),
-        pane_tty: "/dev/pts/44".to_string(),
-        pane_current_path: "/home/auro/notes".to_string(),
-        window_name: "ai".to_string(),
-        session_id: None,
-        window_id: None,
-        agent_provider: None,
-        agent_label: None,
-        agent_cwd: None,
-        agent_state: None,
-        agent_session_id: None,
-        pane_active: false,
-        window_active: false,
-    });
+    let pane = tmux_pane_row(324026)
+        .session_name("notes")
+        .window_index(4)
+        .pane_id("%41")
+        .command("claude")
+        .title("Claude Code | Working on a much longer task title")
+        .tty("/dev/pts/44")
+        .current_path("/home/auro/notes")
+        .pane();
 
     let mut key_targets = std::collections::BTreeMap::new();
     super::tui::synchronize_key_targets(&mut key_targets, std::slice::from_ref(&pane));
@@ -220,27 +173,16 @@ fn tui_render_rows_respect_terminal_cell_width_with_wide_status_emoji() {
 
 #[test]
 fn tui_render_rows_sanitize_control_characters_and_escape_sequences() {
-    let pane = classify::pane_from_row(super::TmuxPaneRow {
-        session_name: "notes".to_string(),
-        window_index: 4,
-        pane_index: 1,
-        pane_id: "%41".to_string(),
-        pane_pid: 324026,
-        pane_current_command: "claude".to_string(),
-        pane_title_raw: "Claude Code | Working".to_string(),
-        pane_tty: "/dev/pts/44".to_string(),
-        pane_current_path: "/home/auro/notes".to_string(),
-        window_name: "ai".to_string(),
-        session_id: None,
-        window_id: None,
-        agent_provider: None,
-        agent_label: Some("Task\nnext\r\tstep \u{1b}[31mnow\u{1b}[0m\u{7}".to_string()),
-        agent_cwd: None,
-        agent_state: None,
-        agent_session_id: None,
-        pane_active: false,
-        window_active: false,
-    });
+    let pane = tmux_pane_row(324026)
+        .session_name("notes")
+        .window_index(4)
+        .pane_id("%41")
+        .command("claude")
+        .title("Claude Code | Working")
+        .tty("/dev/pts/44")
+        .current_path("/home/auro/notes")
+        .agent_label("Task\nnext\r\tstep \u{1b}[31mnow\u{1b}[0m\u{7}")
+        .pane();
 
     let mut key_targets = std::collections::BTreeMap::new();
     super::tui::synchronize_key_targets(&mut key_targets, std::slice::from_ref(&pane));
@@ -254,69 +196,9 @@ fn tui_render_rows_sanitize_control_characters_and_escape_sequences() {
 
 #[test]
 fn tui_key_assignments_stay_stable_across_rerenders() {
-    let pane_one = classify::pane_from_row(super::TmuxPaneRow {
-        session_name: "alpha".to_string(),
-        window_index: 1,
-        pane_index: 1,
-        pane_id: "%1".to_string(),
-        pane_pid: 1,
-        pane_current_command: "codex".to_string(),
-        pane_title_raw: "Working".to_string(),
-        pane_tty: "/dev/pts/1".to_string(),
-        pane_current_path: "/tmp/alpha".to_string(),
-        window_name: "editor".to_string(),
-        session_id: None,
-        window_id: None,
-        agent_provider: None,
-        agent_label: None,
-        agent_cwd: None,
-        agent_state: None,
-        agent_session_id: None,
-        pane_active: false,
-        window_active: false,
-    });
-    let pane_two = classify::pane_from_row(super::TmuxPaneRow {
-        session_name: "alpha".to_string(),
-        window_index: 1,
-        pane_index: 2,
-        pane_id: "%2".to_string(),
-        pane_pid: 2,
-        pane_current_command: "claude".to_string(),
-        pane_title_raw: "Ready".to_string(),
-        pane_tty: "/dev/pts/2".to_string(),
-        pane_current_path: "/tmp/alpha".to_string(),
-        window_name: "editor".to_string(),
-        session_id: None,
-        window_id: None,
-        agent_provider: None,
-        agent_label: None,
-        agent_cwd: None,
-        agent_state: None,
-        agent_session_id: None,
-        pane_active: false,
-        window_active: false,
-    });
-    let pane_three = classify::pane_from_row(super::TmuxPaneRow {
-        session_name: "alpha".to_string(),
-        window_index: 1,
-        pane_index: 3,
-        pane_id: "%3".to_string(),
-        pane_pid: 3,
-        pane_current_command: "claude".to_string(),
-        pane_title_raw: "Working".to_string(),
-        pane_tty: "/dev/pts/3".to_string(),
-        pane_current_path: "/tmp/alpha".to_string(),
-        window_name: "editor".to_string(),
-        session_id: None,
-        window_id: None,
-        agent_provider: None,
-        agent_label: None,
-        agent_cwd: None,
-        agent_state: None,
-        agent_session_id: None,
-        pane_active: false,
-        window_active: false,
-    });
+    let pane_one = tui_test_pane(1);
+    let pane_two = tui_test_pane(2);
+    let pane_three = tui_test_pane(3);
 
     let mut key_targets = std::collections::BTreeMap::new();
     super::tui::synchronize_key_targets(

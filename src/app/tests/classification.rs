@@ -121,27 +121,11 @@ fn proc_fallback_options_can_skip_process_inspection() {
 
 #[test]
 fn proc_fallback_leaves_candidate_unknown_without_provider_evidence() {
-    let mut pane = classify::pane_from_row(super::TmuxPaneRow {
-        session_name: "ambiguous".to_string(),
-        window_index: 1,
-        pane_index: 1,
-        pane_id: "%700".to_string(),
-        pane_pid: 700,
-        pane_current_command: "node".to_string(),
-        pane_title_raw: "Working".to_string(),
-        pane_tty: "/dev/pts/700".to_string(),
-        pane_current_path: "/tmp/node-wrapper".to_string(),
-        window_name: "ai".to_string(),
-        session_id: None,
-        window_id: None,
-        agent_provider: None,
-        agent_label: None,
-        agent_cwd: None,
-        agent_state: None,
-        agent_session_id: None,
-        pane_active: false,
-        window_active: false,
-    });
+    let mut pane = tmux_pane_row(700)
+        .command("node")
+        .title("Working")
+        .current_path("/tmp/node-wrapper")
+        .pane();
     let inspector =
         FakeProcessInspector::new([(700, vec!["node".to_string(), "helper".to_string()])]);
 
@@ -165,27 +149,11 @@ fn proc_fallback_leaves_candidate_unknown_without_provider_evidence() {
 
 #[test]
 fn proc_fallback_resolves_provider_from_argv0_when_command_is_interpreter() {
-    let mut pane = classify::pane_from_row(super::TmuxPaneRow {
-        session_name: "ambiguous".to_string(),
-        window_index: 1,
-        pane_index: 1,
-        pane_id: "%703".to_string(),
-        pane_pid: 703,
-        pane_current_command: "node".to_string(),
-        pane_title_raw: "Ready".to_string(),
-        pane_tty: "/dev/pts/703".to_string(),
-        pane_current_path: "/tmp/node-wrapper".to_string(),
-        window_name: "ai".to_string(),
-        session_id: None,
-        window_id: None,
-        agent_provider: None,
-        agent_label: None,
-        agent_cwd: None,
-        agent_state: None,
-        agent_session_id: None,
-        pane_active: false,
-        window_active: false,
-    });
+    let mut pane = tmux_pane_row(703)
+        .command("node")
+        .title("Ready")
+        .current_path("/tmp/node-wrapper")
+        .pane();
     let inspector = FakeProcessInspector::with_processes([(
         703,
         vec![proc::ProcessEvidence {
@@ -207,27 +175,11 @@ fn proc_fallback_resolves_provider_from_argv0_when_command_is_interpreter() {
 
 #[test]
 fn proc_fallback_resolves_claude_from_node_cli_path_and_title_status() {
-    let mut pane = classify::pane_from_row(super::TmuxPaneRow {
-        session_name: "ambiguous".to_string(),
-        window_index: 1,
-        pane_index: 1,
-        pane_id: "%704".to_string(),
-        pane_pid: 704,
-        pane_current_command: "node".to_string(),
-        pane_title_raw: "✳ Refactor auth flow".to_string(),
-        pane_tty: "/dev/pts/704".to_string(),
-        pane_current_path: "/tmp/node-wrapper".to_string(),
-        window_name: "ai".to_string(),
-        session_id: None,
-        window_id: None,
-        agent_provider: None,
-        agent_label: None,
-        agent_cwd: None,
-        agent_state: None,
-        agent_session_id: None,
-        pane_active: false,
-        window_active: false,
-    });
+    let mut pane = tmux_pane_row(704)
+        .command("node")
+        .title("✳ Refactor auth flow")
+        .current_path("/tmp/node-wrapper")
+        .pane();
     let inspector = FakeProcessInspector::with_processes([(
         704,
         vec![proc::ProcessEvidence {
@@ -259,27 +211,11 @@ fn proc_fallback_resolves_claude_from_node_cli_path_and_title_status() {
 
 #[test]
 fn proc_fallback_resolves_gemini_from_node_cli_path() {
-    let mut pane = classify::pane_from_row(super::TmuxPaneRow {
-        session_name: "ambiguous".to_string(),
-        window_index: 1,
-        pane_index: 1,
-        pane_id: "%705".to_string(),
-        pane_pid: 705,
-        pane_current_command: "node".to_string(),
-        pane_title_raw: "Review deployment plan".to_string(),
-        pane_tty: "/dev/pts/705".to_string(),
-        pane_current_path: "/tmp/node-wrapper".to_string(),
-        window_name: "ai".to_string(),
-        session_id: None,
-        window_id: None,
-        agent_provider: None,
-        agent_label: None,
-        agent_cwd: None,
-        agent_state: None,
-        agent_session_id: None,
-        pane_active: false,
-        window_active: false,
-    });
+    let mut pane = tmux_pane_row(705)
+        .command("node")
+        .title("Review deployment plan")
+        .current_path("/tmp/node-wrapper")
+        .pane();
     let inspector = FakeProcessInspector::with_processes([(
         705,
         vec![proc::ProcessEvidence {
@@ -308,27 +244,11 @@ fn proc_fallback_resolves_gemini_from_node_cli_path() {
 
 #[test]
 fn proc_fallback_resolves_gemini_from_node_bin_shim() {
-    let mut pane = classify::pane_from_row(super::TmuxPaneRow {
-        session_name: "ambiguous".to_string(),
-        window_index: 1,
-        pane_index: 1,
-        pane_id: "%706".to_string(),
-        pane_pid: 706,
-        pane_current_command: "node".to_string(),
-        pane_title_raw: "Review deployment plan".to_string(),
-        pane_tty: "/dev/pts/706".to_string(),
-        pane_current_path: "/tmp/node-wrapper".to_string(),
-        window_name: "ai".to_string(),
-        session_id: None,
-        window_id: None,
-        agent_provider: None,
-        agent_label: None,
-        agent_cwd: None,
-        agent_state: None,
-        agent_session_id: None,
-        pane_active: false,
-        window_active: false,
-    });
+    let mut pane = tmux_pane_row(706)
+        .command("node")
+        .title("Review deployment plan")
+        .current_path("/tmp/node-wrapper")
+        .pane();
     let inspector = FakeProcessInspector::with_processes([(
         706,
         vec![proc::ProcessEvidence {
@@ -350,27 +270,11 @@ fn proc_fallback_resolves_gemini_from_node_bin_shim() {
 
 #[test]
 fn proc_fallback_does_not_treat_arbitrary_gemini_paths_as_gemini() {
-    let mut pane = classify::pane_from_row(super::TmuxPaneRow {
-        session_name: "ambiguous".to_string(),
-        window_index: 1,
-        pane_index: 1,
-        pane_id: "%707".to_string(),
-        pane_pid: 707,
-        pane_current_command: "node".to_string(),
-        pane_title_raw: "Working".to_string(),
-        pane_tty: "/dev/pts/707".to_string(),
-        pane_current_path: "/tmp/node-wrapper".to_string(),
-        window_name: "ai".to_string(),
-        session_id: None,
-        window_id: None,
-        agent_provider: None,
-        agent_label: None,
-        agent_cwd: None,
-        agent_state: None,
-        agent_session_id: None,
-        pane_active: false,
-        window_active: false,
-    });
+    let mut pane = tmux_pane_row(707)
+        .command("node")
+        .title("Working")
+        .current_path("/tmp/node-wrapper")
+        .pane();
     let inspector = FakeProcessInspector::with_processes([(
         707,
         vec![proc::ProcessEvidence {
@@ -953,27 +857,11 @@ fn hermes_title_text_alone_does_not_classify_provider() {
 
 #[test]
 fn proc_fallback_resolves_claude_from_title_glyph_and_descendant_command() {
-    let mut pane = classify::pane_from_row(super::TmuxPaneRow {
-        session_name: "ambiguous".to_string(),
-        window_index: 1,
-        pane_index: 1,
-        pane_id: "%711".to_string(),
-        pane_pid: 711,
-        pane_current_command: "2.1.119".to_string(),
-        pane_title_raw: "✳ Analyze Linear Issue AUR-126 and plan implementation".to_string(),
-        pane_tty: "/dev/pts/711".to_string(),
-        pane_current_path: "/tmp/claude-wrapper".to_string(),
-        window_name: "ai".to_string(),
-        session_id: None,
-        window_id: None,
-        agent_provider: None,
-        agent_label: None,
-        agent_cwd: None,
-        agent_state: None,
-        agent_session_id: None,
-        pane_active: false,
-        window_active: false,
-    });
+    let mut pane = tmux_pane_row(711)
+        .command("2.1.119")
+        .title("✳ Analyze Linear Issue AUR-126 and plan implementation")
+        .current_path("/tmp/claude-wrapper")
+        .pane();
     let inspector = FakeProcessInspector::new([(711, vec!["claude".to_string()])]);
 
     classify::apply_proc_fallback(&mut pane, &inspector);
@@ -994,27 +882,11 @@ fn proc_fallback_resolves_claude_from_title_glyph_and_descendant_command() {
 
 #[test]
 fn proc_fallback_resolves_version_like_current_command_via_process_tree() {
-    let mut pane = classify::pane_from_row(super::TmuxPaneRow {
-        session_name: "ambiguous".to_string(),
-        window_index: 1,
-        pane_index: 1,
-        pane_id: "%712".to_string(),
-        pane_pid: 712,
-        pane_current_command: "2.1.119".to_string(),
-        pane_title_raw: "Ready".to_string(),
-        pane_tty: "/dev/pts/712".to_string(),
-        pane_current_path: "/tmp/claude-wrapper".to_string(),
-        window_name: "ai".to_string(),
-        session_id: None,
-        window_id: None,
-        agent_provider: None,
-        agent_label: None,
-        agent_cwd: None,
-        agent_state: None,
-        agent_session_id: None,
-        pane_active: false,
-        window_active: false,
-    });
+    let mut pane = tmux_pane_row(712)
+        .command("2.1.119")
+        .title("Ready")
+        .current_path("/tmp/claude-wrapper")
+        .pane();
     let inspector = FakeProcessInspector::new([(712, vec!["claude".to_string()])]);
 
     classify::apply_proc_fallback(&mut pane, &inspector);
@@ -1033,27 +905,11 @@ fn proc_fallback_resolves_version_like_current_command_via_process_tree() {
 
 #[test]
 fn proc_fallback_returns_no_match_for_version_like_command_without_provider_evidence() {
-    let mut pane = classify::pane_from_row(super::TmuxPaneRow {
-        session_name: "ambiguous".to_string(),
-        window_index: 1,
-        pane_index: 1,
-        pane_id: "%713".to_string(),
-        pane_pid: 713,
-        pane_current_command: "2.1.119".to_string(),
-        pane_title_raw: "Ready".to_string(),
-        pane_tty: "/dev/pts/713".to_string(),
-        pane_current_path: "/tmp/unknown".to_string(),
-        window_name: "ai".to_string(),
-        session_id: None,
-        window_id: None,
-        agent_provider: None,
-        agent_label: None,
-        agent_cwd: None,
-        agent_state: None,
-        agent_session_id: None,
-        pane_active: false,
-        window_active: false,
-    });
+    let mut pane = tmux_pane_row(713)
+        .command("2.1.119")
+        .title("Ready")
+        .current_path("/tmp/unknown")
+        .pane();
     let inspector = FakeProcessInspector::new([(713, vec!["unrelated".to_string()])]);
 
     classify::apply_proc_fallback(&mut pane, &inspector);
@@ -1068,27 +924,11 @@ fn proc_fallback_returns_no_match_for_version_like_command_without_provider_evid
 
 #[test]
 fn proc_fallback_resolves_claude_teammate_flags_with_claudecode_env() {
-    let mut pane = classify::pane_from_row(super::TmuxPaneRow {
-        session_name: "ambiguous".to_string(),
-        window_index: 1,
-        pane_index: 1,
-        pane_id: "%705".to_string(),
-        pane_pid: 705,
-        pane_current_command: "node".to_string(),
-        pane_title_raw: "worker-a".to_string(),
-        pane_tty: "/dev/pts/705".to_string(),
-        pane_current_path: "/tmp/node-wrapper".to_string(),
-        window_name: "ai".to_string(),
-        session_id: None,
-        window_id: None,
-        agent_provider: None,
-        agent_label: None,
-        agent_cwd: None,
-        agent_state: None,
-        agent_session_id: None,
-        pane_active: false,
-        window_active: false,
-    });
+    let mut pane = tmux_pane_row(705)
+        .command("node")
+        .title("worker-a")
+        .current_path("/tmp/node-wrapper")
+        .pane();
     let inspector = FakeProcessInspector::with_processes([(
         705,
         vec![proc::ProcessEvidence {
@@ -1120,27 +960,11 @@ fn proc_fallback_resolves_claude_teammate_flags_with_claudecode_env() {
 
 #[test]
 fn proc_fallback_resolves_claude_teammate_from_shell_env_assignment() {
-    let mut pane = classify::pane_from_row(super::TmuxPaneRow {
-        session_name: "ambiguous".to_string(),
-        window_index: 1,
-        pane_index: 1,
-        pane_id: "%707".to_string(),
-        pane_pid: 707,
-        pane_current_command: "node".to_string(),
-        pane_title_raw: "worker-a".to_string(),
-        pane_tty: "/dev/pts/707".to_string(),
-        pane_current_path: "/tmp/node-wrapper".to_string(),
-        window_name: "ai".to_string(),
-        session_id: None,
-        window_id: None,
-        agent_provider: None,
-        agent_label: None,
-        agent_cwd: None,
-        agent_state: None,
-        agent_session_id: None,
-        pane_active: false,
-        window_active: false,
-    });
+    let mut pane = tmux_pane_row(707)
+        .command("node")
+        .title("worker-a")
+        .current_path("/tmp/node-wrapper")
+        .pane();
     let inspector = FakeProcessInspector::with_processes([(
         707,
         vec![proc::ProcessEvidence {
@@ -1168,27 +992,11 @@ fn proc_fallback_resolves_claude_teammate_from_shell_env_assignment() {
 
 #[test]
 fn proc_fallback_does_not_treat_teammate_flags_without_claude_env_as_claude() {
-    let mut pane = classify::pane_from_row(super::TmuxPaneRow {
-        session_name: "ambiguous".to_string(),
-        window_index: 1,
-        pane_index: 1,
-        pane_id: "%706".to_string(),
-        pane_pid: 706,
-        pane_current_command: "node".to_string(),
-        pane_title_raw: "worker-a".to_string(),
-        pane_tty: "/dev/pts/706".to_string(),
-        pane_current_path: "/tmp/node-wrapper".to_string(),
-        window_name: "ai".to_string(),
-        session_id: None,
-        window_id: None,
-        agent_provider: None,
-        agent_label: None,
-        agent_cwd: None,
-        agent_state: None,
-        agent_session_id: None,
-        pane_active: false,
-        window_active: false,
-    });
+    let mut pane = tmux_pane_row(706)
+        .command("node")
+        .title("worker-a")
+        .current_path("/tmp/node-wrapper")
+        .pane();
     let inspector = FakeProcessInspector::with_processes([(
         706,
         vec![proc::ProcessEvidence {
@@ -1222,27 +1030,11 @@ fn proc_fallback_does_not_treat_claude_substrings_as_claude() {
         (710, "/workspace/tools/claude"),
         (711, "/workspace/tools/claude-code"),
     ] {
-        let mut pane = classify::pane_from_row(super::TmuxPaneRow {
-            session_name: "ambiguous".to_string(),
-            window_index: 1,
-            pane_index: 1,
-            pane_id: format!("%{pid}"),
-            pane_pid: pid,
-            pane_current_command: "node".to_string(),
-            pane_title_raw: "Working".to_string(),
-            pane_tty: format!("/dev/pts/{pid}"),
-            pane_current_path: "/tmp/node-wrapper".to_string(),
-            window_name: "ai".to_string(),
-            session_id: None,
-            window_id: None,
-            agent_provider: None,
-            agent_label: None,
-            agent_cwd: None,
-            agent_state: None,
-            agent_session_id: None,
-            pane_active: false,
-            window_active: false,
-        });
+        let mut pane = tmux_pane_row(pid)
+            .command("node")
+            .title("Working")
+            .current_path("/tmp/node-wrapper")
+            .pane();
         let inspector = FakeProcessInspector::with_processes([(
             pid,
             vec![proc::ProcessEvidence {
@@ -1265,27 +1057,13 @@ fn proc_fallback_does_not_treat_claude_substrings_as_claude() {
 
 #[test]
 fn proc_fallback_skips_panes_resolved_by_existing_precedence() {
-    let mut pane = classify::pane_from_row(super::TmuxPaneRow {
-        session_name: "metadata".to_string(),
-        window_index: 1,
-        pane_index: 1,
-        pane_id: "%701".to_string(),
-        pane_pid: 701,
-        pane_current_command: "node".to_string(),
-        pane_title_raw: "Working".to_string(),
-        pane_tty: "/dev/pts/701".to_string(),
-        pane_current_path: "/tmp/node-wrapper".to_string(),
-        window_name: "ai".to_string(),
-        session_id: None,
-        window_id: None,
-        agent_provider: Some("claude".to_string()),
-        agent_label: None,
-        agent_cwd: None,
-        agent_state: None,
-        agent_session_id: None,
-        pane_active: false,
-        window_active: false,
-    });
+    let mut pane = tmux_pane_row(701)
+        .session_name("metadata")
+        .command("node")
+        .title("Working")
+        .current_path("/tmp/node-wrapper")
+        .agent_provider("claude")
+        .pane();
     let inspector = FakeProcessInspector::new([(701, vec!["codex".to_string()])]);
 
     classify::apply_proc_fallback(&mut pane, &inspector);
@@ -1308,27 +1086,11 @@ fn proc_fallback_skips_panes_resolved_by_existing_precedence() {
 
 #[test]
 fn proc_fallback_records_skip_reason_for_untargeted_unresolved_pane() {
-    let mut pane = classify::pane_from_row(super::TmuxPaneRow {
-        session_name: "ambiguous".to_string(),
-        window_index: 1,
-        pane_index: 1,
-        pane_id: "%702".to_string(),
-        pane_pid: 702,
-        pane_current_command: "make".to_string(),
-        pane_title_raw: "(bront) ~/code/agent-wrapper".to_string(),
-        pane_tty: "/dev/pts/702".to_string(),
-        pane_current_path: "/tmp/wrapper".to_string(),
-        window_name: "ai".to_string(),
-        session_id: None,
-        window_id: None,
-        agent_provider: None,
-        agent_label: None,
-        agent_cwd: None,
-        agent_state: None,
-        agent_session_id: None,
-        pane_active: false,
-        window_active: false,
-    });
+    let mut pane = tmux_pane_row(702)
+        .command("make")
+        .title("(bront) ~/code/agent-wrapper")
+        .current_path("/tmp/wrapper")
+        .pane();
     let inspector = FakeProcessInspector::new([(702, vec!["codex".to_string()])]);
 
     classify::apply_proc_fallback(&mut pane, &inspector);

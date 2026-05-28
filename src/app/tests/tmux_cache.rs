@@ -775,27 +775,15 @@ fn parses_tmux_client_rows_with_escaped_delimiters() {
 
 #[test]
 fn pane_record_uses_canonical_shape() {
-    let pane = classify::pane_from_row(super::TmuxPaneRow {
-        session_name: "notes".to_string(),
-        window_index: 4,
-        pane_index: 1,
-        pane_id: "%41".to_string(),
-        pane_pid: 324026,
-        pane_current_command: "claude".to_string(),
-        pane_title_raw: "Claude Code | Query".to_string(),
-        pane_tty: "/dev/pts/44".to_string(),
-        pane_current_path: "/home/auro/notes".to_string(),
-        window_name: "ai".to_string(),
-        session_id: None,
-        window_id: None,
-        agent_provider: None,
-        agent_label: None,
-        agent_cwd: None,
-        agent_state: None,
-        agent_session_id: None,
-        pane_active: false,
-        window_active: false,
-    });
+    let pane = tmux_pane_row(324026)
+        .session_name("notes")
+        .window_index(4)
+        .pane_id("%41")
+        .command("claude")
+        .title("Claude Code | Query")
+        .tty("/dev/pts/44")
+        .current_path("/home/auro/notes")
+        .pane();
 
     assert_eq!(pane.provider, Some(Provider::Claude));
     assert_eq!(pane.location.session_name, "notes");
@@ -805,26 +793,17 @@ fn pane_record_uses_canonical_shape() {
 
 #[test]
 fn active_flags_propagate_through_pane_record_and_picker() {
-    let active_row = |pane_id: &str, pane_active: bool, window_active: bool| super::TmuxPaneRow {
-        session_name: "notes".to_string(),
-        window_index: 1,
-        pane_index: 1,
-        pane_id: pane_id.to_string(),
-        pane_pid: 1000,
-        pane_current_command: "claude".to_string(),
-        pane_title_raw: "Claude Code".to_string(),
-        pane_tty: "/dev/pts/1".to_string(),
-        pane_current_path: "/home/auro/notes".to_string(),
-        window_name: "ai".to_string(),
-        session_id: None,
-        window_id: None,
-        agent_provider: None,
-        agent_label: None,
-        agent_cwd: None,
-        agent_state: None,
-        agent_session_id: None,
-        pane_active,
-        window_active,
+    let active_row = |pane_id: &str, pane_active: bool, window_active: bool| {
+        tmux_pane_row(1000)
+            .session_name("notes")
+            .pane_id(pane_id)
+            .command("claude")
+            .title("Claude Code")
+            .tty("/dev/pts/1")
+            .current_path("/home/auro/notes")
+            .pane_active(pane_active)
+            .window_active(window_active)
+            .build()
     };
 
     // is_active requires BOTH the pane and its window to be active.
@@ -867,27 +846,17 @@ fn active_flags_propagate_through_pane_record_and_picker() {
 
 #[test]
 fn list_json_exposes_the_machine_readable_pane_fields() {
-    let pane = classify::pane_from_row(super::TmuxPaneRow {
-        session_name: "notes".to_string(),
-        window_index: 4,
-        pane_index: 1,
-        pane_id: "%41".to_string(),
-        pane_pid: 324026,
-        pane_current_command: "claude".to_string(),
-        pane_title_raw: "Claude Code | Query".to_string(),
-        pane_tty: "/dev/pts/44".to_string(),
-        pane_current_path: "/home/auro/notes".to_string(),
-        window_name: "ai".to_string(),
-        session_id: Some("$7".to_string()),
-        window_id: Some("@9".to_string()),
-        agent_provider: None,
-        agent_label: None,
-        agent_cwd: None,
-        agent_state: None,
-        agent_session_id: None,
-        pane_active: false,
-        window_active: false,
-    });
+    let pane = tmux_pane_row(324026)
+        .session_name("notes")
+        .window_index(4)
+        .pane_id("%41")
+        .command("claude")
+        .title("Claude Code | Query")
+        .tty("/dev/pts/44")
+        .current_path("/home/auro/notes")
+        .session_id("$7")
+        .window_id("@9")
+        .pane();
     let status_kind = pane.status.kind;
     let snapshot = SnapshotEnvelope {
         schema_version: CACHE_SCHEMA_VERSION,
