@@ -648,22 +648,35 @@ fn grok_running_status_line(line: &str) -> bool {
 fn antigravity_pane_output_status(output: &str) -> Option<StatusKind> {
     let lines: Vec<&str> = output.lines().collect();
 
-    // Antigravity is closed-source with no observed busy screen, so we only assert the idle
-    // state we can verify: its `? for shortcuts` footer under a bordered `>` input box, as
-    // the current bottom UI (only blank rows may follow it). Anything else stays unknown
-    // rather than risk a false busy from a guessed marker.
-    let footer_index = lines
-        .iter()
-        .rposition(|line| antigravity_idle_footer_line(line))?;
+    // Antigravity (closed-source) flips its own footer below the bordered `>` input box between
+    // an idle prompt (`? for shortcuts`) and an active turn (`esc to cancel`, shown with a
+    // `… Generating…`/`… Loading…` spinner above), so the footer is the current-frame busy/idle
+    // anchor. Require the `>` box just above and only blank rows after it, so a stale scrollback
+    // line carrying the phrase is not mistaken for the live footer; anything else stays unknown
+    // rather than risk a guessed state.
+    let footer_index = lines.iter().rposition(|line| {
+        antigravity_idle_footer_line(line) || antigravity_busy_footer_line(line)
+    })?;
     let only_blank_after = lines[footer_index + 1..]
         .iter()
         .all(|line| line.trim().is_empty());
-    (only_blank_after && antigravity_prompt_above_footer(&lines, footer_index))
-        .then_some(StatusKind::Idle)
+    if !(only_blank_after && antigravity_prompt_above_footer(&lines, footer_index)) {
+        return None;
+    }
+
+    Some(if antigravity_busy_footer_line(lines[footer_index]) {
+        StatusKind::Busy
+    } else {
+        StatusKind::Idle
+    })
 }
 
 fn antigravity_idle_footer_line(line: &str) -> bool {
     line.trim_start().starts_with("? for shortcuts")
+}
+
+fn antigravity_busy_footer_line(line: &str) -> bool {
+    line.trim_start().starts_with("esc to cancel")
 }
 
 fn antigravity_prompt_above_footer(lines: &[&str], footer_index: usize) -> bool {
@@ -677,18 +690,20 @@ fn antigravity_prompt_above_footer(lines: &[&str], footer_index: usize) -> bool 
 fn hermes_pane_output_status(output: &str) -> Option<StatusKind> {
     let lines: Vec<&str> = output.lines().collect();
     let busy_index = lines.iter().rposition(|line| hermes_busy_prompt_line(line));
-    let idle_index = lines.iter().rposition(|line| line.trim() == "❯");
+    let idle_index = lines.iter().rposition(|line| hermes_idle_prompt_line(line));
 
     if let Some(index) = busy_index
-        && hermes_status_bar_before(&lines, index).is_some()
+        && hermes_status_bar_directly_above(&lines, index)
         && idle_index.is_none_or(|idle_index| idle_index < index)
+        && hermes_prompt_is_current_frame(&lines, index)
     {
         return Some(StatusKind::Busy);
     }
 
     if let Some(index) = idle_index
-        && hermes_status_bar_before(&lines, index).is_some()
+        && hermes_status_bar_directly_above(&lines, index)
         && busy_index.is_none_or(|busy_index| busy_index < index)
+        && hermes_prompt_is_current_frame(&lines, index)
     {
         return Some(StatusKind::Idle);
     }
@@ -696,16 +711,59 @@ fn hermes_pane_output_status(output: &str) -> Option<StatusKind> {
     None
 }
 
-fn hermes_status_bar_before<'a>(lines: &'a [&'a str], index: usize) -> Option<&'a str> {
-    lines[..index]
+/// Whether a hermes prompt line reflects the current bottom frame rather than stale scrollback.
+///
+/// The live input box renders its `❯`/`⚕ ❯` prompt directly above the box's closing `────` rule
+/// at the bottom of what hermes has drawn. The idle matcher accepts any `❯ <draft>` line, so a
+/// submitted prompt or agent output that merely contains a `❯ …` line could otherwise sit deep in
+/// scrollback with later output below it and be misread as the live prompt. Require that only box
+/// rules and blank rows follow the prompt: any real content below it (output from a turn that has
+/// since run) marks it stale. A multi-line draft conservatively reads as unknown rather than risk
+/// resurrecting a ghost prompt.
+fn hermes_prompt_is_current_frame(lines: &[&str], prompt_index: usize) -> bool {
+    lines[prompt_index + 1..].iter().all(|line| {
+        let line = line.trim();
+        line.is_empty() || hermes_box_rule_line(line)
+    })
+}
+
+fn hermes_box_rule_line(line: &str) -> bool {
+    line.chars().count() >= 8 && line.chars().all(|ch| ch == '─' || ch == '━')
+}
+
+/// Whether the live hermes status bar sits directly above this prompt index.
+///
+/// The live input box renders as `<status bar>` → optional `────` rule → `❯`/`⚕ ❯` prompt, so
+/// the status bar is at most a couple of rows above the prompt and only a box rule or blank may
+/// sit between them. Requiring both proximity AND a clean intervening gap prevents an unrelated
+/// `❯ <text>` line — e.g. a quoted shell prompt like `❯ npm test` in agent output, possibly with
+/// prose like `Run this:` between it and an older status bar — from being classified idle.
+fn hermes_status_bar_directly_above(lines: &[&str], prompt_index: usize) -> bool {
+    let start = prompt_index.saturating_sub(3);
+    lines[start..prompt_index]
         .iter()
+        .enumerate()
         .rev()
-        .map(|line| line.trim())
-        .find(|line| hermes_status_bar_line(line))
+        .find(|(_, line)| hermes_status_bar_line(line.trim()))
+        .is_some_and(|(rel_index, _)| {
+            let status_index = start + rel_index;
+            lines[status_index + 1..prompt_index].iter().all(|line| {
+                let line = line.trim();
+                line.is_empty() || hermes_box_rule_line(line)
+            })
+        })
 }
 
 fn hermes_status_bar_line(line: &str) -> bool {
     line.starts_with("⚕ ") && line.contains('│') && (line.contains("ctx") || line.contains("K/"))
+}
+
+/// Hermes' live input prompt while idle: a bare `❯`, or `❯ <draft>` when the user has typed but
+/// not yet submitted (the agent is still not running a turn). The busy prompt is `⚕ ❯ …`, which
+/// starts with `⚕`, so this stays unambiguous against it.
+fn hermes_idle_prompt_line(line: &str) -> bool {
+    let line = line.trim();
+    line == "❯" || line.starts_with("❯ ")
 }
 
 fn hermes_busy_prompt_line(line: &str) -> bool {
@@ -728,14 +786,23 @@ fn opencode_pane_output_status(output: &str) -> Option<StatusKind> {
         .rposition(|line| opencode_idle_prompt_line(line))
         .filter(|&index| opencode_prompt_is_near_current_footer(&lines, index));
     let command_bar_index = opencode_current_command_bar_index(&lines);
-    let idle_index = placeholder_index.max(command_bar_index);
+    let input_box_index = opencode_current_input_box_index(&lines);
+    let idle_index = placeholder_index
+        .max(command_bar_index)
+        .max(input_box_index);
 
     let busy_index = lines
         .iter()
         .rposition(|line| opencode_current_busy_marker_line(line));
 
     if let Some(index) = busy_index
-        && opencode_busy_marker_is_current(&lines, index, idle_index, command_bar_index)
+        && opencode_busy_marker_is_current(
+            &lines,
+            index,
+            idle_index,
+            command_bar_index,
+            input_box_index,
+        )
     {
         return Some(StatusKind::Busy);
     }
@@ -747,25 +814,28 @@ fn opencode_pane_output_status(output: &str) -> Option<StatusKind> {
 ///
 /// The capture is the last 30 rows including scrollback, so an old approval/interrupt line
 /// can sit above a frame that has since scrolled on. A busy marker is current when it is
-/// below the live idle prompt (a new run started under it), pinned in the persistent
-/// command-bar footer region (`esc interrupt` rendered just above the command bar), or — when
-/// there is no current idle anchor at all — is itself in the current bottom frame. A stale
-/// marker scrolled up with no current prompt below it must stay unknown, not busy.
+/// below the live idle prompt (a new run started under it), pinned in the persistent prompt
+/// footer region (`esc interrupt` rendered just above the command bar or the input box border),
+/// or — when there is no current idle anchor at all — is itself in the current bottom frame. A
+/// stale marker scrolled up with no current prompt below it must stay unknown, not busy.
+///
+/// Both the command bar (`tab agents …`) and the input box border (`╹▀▀▀`) are valid footer
+/// anchors: a used session folds the command bar into the bottom status bar, leaving the box
+/// border as the only footer landmark, so a current `esc interrupt` above that box must still
+/// win over the input-box idle anchor rather than fall through to idle.
 fn opencode_busy_marker_is_current(
     lines: &[&str],
     busy_index: usize,
     idle_index: Option<usize>,
     command_bar_index: Option<usize>,
+    input_box_index: Option<usize>,
 ) -> bool {
+    let in_current_footer =
+        opencode_busy_marker_in_current_footer(lines, busy_index, command_bar_index)
+            || opencode_busy_marker_in_current_footer(lines, busy_index, input_box_index);
     match idle_index {
-        Some(idle_index) => {
-            idle_index < busy_index
-                || opencode_busy_marker_in_current_footer(lines, busy_index, command_bar_index)
-        }
-        None => {
-            opencode_busy_marker_in_current_footer(lines, busy_index, command_bar_index)
-                || opencode_prompt_is_near_current_footer(lines, busy_index)
-        }
+        Some(idle_index) => idle_index < busy_index || in_current_footer,
+        None => in_current_footer || opencode_prompt_is_near_current_footer(lines, busy_index),
     }
 }
 
@@ -829,6 +899,36 @@ fn opencode_current_command_bar_index(lines: &[&str]) -> Option<usize> {
                     || (index == last_index && opencode_bottom_status_bar_line(line))
             });
     (has_input_box && only_trailing_chrome).then_some(footer_index)
+}
+
+/// Index of the bordered input box's bottom border when that box is the current idle prompt.
+///
+/// `opencode_current_command_bar_index` anchors on the `tab agents  ctrl+p commands` hint, but
+/// the live build drops that hint once a session has activity, folding the command bar into the
+/// bottom status bar (`<tokens> (<pct>) · $<cost>  ctrl+p commands  • OpenCode <ver>`). The stable
+/// element across fresh and used sessions is the input box's `╹▀▀▀` bottom border, so anchor on
+/// it: it is the current prompt when only opencode's own trailing chrome follows (blank rows, the
+/// `tab agents` command bar, a `● Tip` notice, or the pinned bottom status bar as the final row).
+/// A border trailed by real agent output is a stale frame in the scrollback capture, not the
+/// current prompt. Busy markers still win — this only contributes to the idle anchor.
+fn opencode_current_input_box_index(lines: &[&str]) -> Option<usize> {
+    let border_index = lines
+        .iter()
+        .rposition(|line| opencode_input_box_bottom_border(line))?;
+    let last_index = lines.len().saturating_sub(1);
+    let only_trailing_chrome =
+        lines
+            .iter()
+            .enumerate()
+            .skip(border_index + 1)
+            .all(|(index, line)| {
+                let line = line.trim();
+                line.is_empty()
+                    || line.starts_with("● Tip")
+                    || opencode_command_bar_footer_line(line)
+                    || (index == last_index && opencode_bottom_status_bar_line(line))
+            });
+    only_trailing_chrome.then_some(border_index)
 }
 
 fn opencode_command_bar_footer_line(line: &str) -> bool {

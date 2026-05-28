@@ -2845,10 +2845,53 @@ fn antigravity_pane_output_marks_current_prompt_idle_only_after_provider_is_know
 }
 
 #[test]
-fn antigravity_pane_output_leaves_non_idle_screen_unknown() {
-    // Antigravity has no observed busy screen, so we do not guess one. When its idle
-    // `? for shortcuts` footer is not the current bottom UI, the pane stays unknown rather
-    // than risk a false busy from a guessed marker (which would also over-match prose).
+fn antigravity_pane_output_marks_active_turn_busy() {
+    // Mirrors a real busy antigravity pane (CLI 1.0.2): a `… Generating…` spinner above the
+    // `>` box, with the footer flipped from `? for shortcuts` to `esc to cancel` — the
+    // current-frame busy anchor in the same position as the idle footer.
+    let mut antigravity = pane_output_status_pane(802, Provider::Antigravity, "koopa.home.arpa");
+
+    classify::apply_pane_output_status_fallback(
+        &mut antigravity,
+        "● Read(/Users/auro/code/agentscan/src/app/proc.rs) (ctrl+o to expand)\n\
+         ⡿ Generating...\n\
+         ────────────────────────────────────────────────\n\
+         >\n\
+         ────────────────────────────────────────────────\n\
+         esc to cancel                         Gemini 3.5 Flash (Medium)\n\
+         \n\
+         \n",
+    );
+
+    assert_eq!(antigravity.status.kind, StatusKind::Busy);
+    assert_eq!(antigravity.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn antigravity_pane_output_marks_busy_with_stale_idle_footer_in_scrollback() {
+    // A prior turn's idle footer sits in scrollback above a fresh active turn. Because the
+    // live bottom footer is `esc to cancel`, the pane is busy — the stale idle footer above
+    // must not win.
+    let mut antigravity = pane_output_status_pane(803, Provider::Antigravity, "koopa.home.arpa");
+
+    classify::apply_pane_output_status_fallback(
+        &mut antigravity,
+        "? for shortcuts                       Gemini 3.5 Flash (Medium)\n\
+         ⡿ Generating...\n\
+         ────────────────────────────────────────────────\n\
+         >\n\
+         ────────────────────────────────────────────────\n\
+         esc to cancel                         Gemini 3.5 Flash (Medium)\n",
+    );
+
+    assert_eq!(antigravity.status.kind, StatusKind::Busy);
+    assert_eq!(antigravity.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn antigravity_pane_output_leaves_footerless_screen_unknown() {
+    // Busy/idle are anchored on the footer below the `>` box. Free prose with neither footer
+    // (nor the box) stays unknown rather than risk a guessed state.
     let mut antigravity = pane_output_status_pane(797, Provider::Antigravity, "koopa.home.arpa");
 
     classify::apply_pane_output_status_fallback(
@@ -3235,6 +3278,94 @@ fn hermes_pane_output_marks_current_prompt_idle() {
 
     assert_eq!(hermes.status.kind, StatusKind::Idle);
     assert_eq!(hermes.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn hermes_pane_output_marks_idle_with_unsubmitted_draft_prompt() {
+    // The user has typed a message but not submitted it: the agent is not running a turn, so the
+    // honest label is idle even though the prompt is no longer a bare `❯`. The busy prompt is
+    // `⚕ ❯ …` (leading `⚕`), so a `❯ <draft>` line cannot be mistaken for it.
+    let mut hermes = pane_output_status_pane(769, Provider::Hermes, "agentscan: hermes");
+
+    classify::apply_pane_output_status_fallback(
+        &mut hermes,
+        "⚕ gpt-5.5 │ ctx -- │ [░░░░░░░░░░] -- │ 5s │ ⏲ 0s │ ⚠ YOLO\n\
+         ─────────────────────────────────────────────────────────────\n\
+         ❯ Analyze the entire repo, tell me what you like, tell me what you don't\n\
+         ─────────────────────────────────────────────────────────────\n",
+    );
+
+    assert_eq!(hermes.status.kind, StatusKind::Idle);
+    assert_eq!(hermes.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn hermes_pane_output_does_not_infer_idle_from_stale_draft_prompt_in_scrollback() {
+    // A `❯ …` draft prompt (with its status bar) sits in the scrollback capture, but the turn
+    // ran and agent output scrolled below it with no current prompt/busy footer at the bottom.
+    // The broadened `❯ <draft>` idle match must not resurrect that stale line — the prompt is
+    // far from the current footer, so the pane stays unknown.
+    let mut hermes = pane_output_status_pane(770, Provider::Hermes, "agentscan: hermes");
+
+    classify::apply_pane_output_status_fallback(
+        &mut hermes,
+        "⚕ gpt-5.5 │ ctx -- │ [░░░░░░░░░░] -- │ 5s │ ⏲ 0s │ ⚠ YOLO\n\
+         ─────────────────────────────────────────────────────────────\n\
+         ❯ Analyze the entire repo, tell me what you like\n\
+         ─────────────────────────────────────────────────────────────\n\
+         ⚕ Reading src/app/classify/pane_output.rs\n\
+         ⚕ Reading src/app/classify/provider_match.rs\n\
+         ⚕ Grepping for hermes_idle_prompt_line\n\
+         Found 3 matches across the classify module.\n\
+         Next I will outline the strengths and weaknesses I see.\n\
+         Starting with the daemon event loop and classification ladder.\n",
+    );
+
+    assert_eq!(hermes.status.kind, StatusKind::Unknown);
+    assert_eq!(hermes.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn hermes_pane_output_does_not_infer_idle_from_prompt_like_line_with_prose_above() {
+    // A status bar in scrollback followed by prose (`Run this:`) and a `❯ <command>` line is
+    // agent output, not the live input box. Proximity alone would accept it; the intervening
+    // line between the status bar and the prompt must be a box rule or blank.
+    let mut hermes = pane_output_status_pane(772, Provider::Hermes, "agentscan: hermes");
+
+    classify::apply_pane_output_status_fallback(
+        &mut hermes,
+        "⚕ gpt-5.5 │ ctx -- │ [░░░░░░░░░░] -- │ 5s │ ⏲ 0s │ ⚠ YOLO\n\
+         Run this:\n\
+         ❯ npm test\n",
+    );
+
+    assert_eq!(hermes.status.kind, StatusKind::Unknown);
+    assert_eq!(hermes.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn hermes_pane_output_does_not_infer_idle_from_terminal_output_line_at_bottom() {
+    // Agent output (e.g. a quoted shell prompt like `❯ npm test`) ends up as the last line of
+    // the capture with a hermes status bar still sitting far above in scrollback. Nothing
+    // follows the matched line so the current-frame guard trivially passes, but proximity to
+    // the status bar must hold — an unrelated bottom line with no adjacent status bar is not
+    // the live prompt.
+    let mut hermes = pane_output_status_pane(771, Provider::Hermes, "agentscan: hermes");
+
+    classify::apply_pane_output_status_fallback(
+        &mut hermes,
+        "⚕ gpt-5.5 │ ctx -- │ [░░░░░░░░░░] -- │ 5s │ ⏲ 0s │ ⚠ YOLO\n\
+         ─────────────────────────────────────────────────────────────\n\
+         ❯ Audit the build scripts\n\
+         ─────────────────────────────────────────────────────────────\n\
+         ⚕ Reading scripts/build.sh\n\
+         ⚕ Reading scripts/test.sh\n\
+         Run this to reproduce locally:\n\
+         ❯ npm test\n",
+    );
+
+    assert_eq!(hermes.status.kind, StatusKind::Unknown);
+    assert_eq!(hermes.status.source, super::StatusSource::NotChecked);
 }
 
 #[test]
@@ -3657,8 +3788,10 @@ fn opencode_pane_output_marks_new_build_splash_idle() {
 
 #[test]
 fn opencode_pane_output_marks_new_build_active_session_idle() {
-    // After a turn completes the placeholder is gone, but the bordered input box and the
-    // command bar remain as the current idle prompt at the bottom of the pane.
+    // After a turn completes the placeholder is gone AND the live build drops the `tab agents`
+    // hint, folding the command bar into the bottom status bar with token/cost usage stats. The
+    // bordered input box's `╹▀▀▀` border is the stable anchor that keeps this the current idle
+    // prompt — anchoring on `tab agents` alone would miss every used session.
     let mut opencode = pane_output_status_pane(802, Provider::Opencode, "OC | Greeting");
 
     classify::apply_pane_output_status_fallback(
@@ -3669,11 +3802,86 @@ fn opencode_pane_output_marks_new_build_active_session_idle() {
          ┃\n\
          ┃\n\
          ┃  Build · Kimi K2.6 OpenCode Go\n\
-         ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
-         tab agents  ctrl+p commands    • OpenCode 1.15.11\n",
+         ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+         11.8K (4%) · $0.01  ctrl+p commands    • OpenCode 1.15.11\n",
     );
 
     assert_eq!(opencode.status.kind, StatusKind::Idle);
+    assert_eq!(opencode.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn opencode_pane_output_marks_live_build_used_session_idle() {
+    // Real capture (build 1.15.11): a used session sits idle with the input box centered, a wide
+    // blank gap below it, and the merged command/status bar (`<stats> ctrl+p commands · OpenCode`)
+    // pinned at the true pane bottom. No placeholder, no `tab agents` — only the `╹▀▀▀` border
+    // anchors it.
+    let mut opencode = pane_output_status_pane(810, Provider::Opencode, "OC | Greeting");
+
+    classify::apply_pane_output_status_fallback(
+        &mut opencode,
+        "  ┃  hi\n\
+         \n\
+         \n\
+         \n\
+         \n\
+         \n\
+            Hello! How can I help you today?\n\
+            ▣  Build · Kimi K2.6 · 4.3s\n\
+         \n\
+         \n\
+         \n\
+           ┃\n\
+           ┃\n\
+           ┃  Build · Kimi K2.6 OpenCode Go                              ~/code/agentscan:main\n\
+           ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+         \n\
+         \n\
+            11.8K (4%) · $0.01  ctrl+p commands    • OpenCode 1.15.11\n",
+    );
+
+    assert_eq!(opencode.status.kind, StatusKind::Idle);
+    assert_eq!(opencode.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn opencode_pane_output_live_build_marks_busy_when_interrupt_hint_in_merged_bottom_bar() {
+    // Real capture: the live build renders `esc interrupt` plus the braille run spinner in the
+    // merged command/status bar directly *below* the input box border, not above it. The current
+    // busy marker must win over the input box that the idle anchor now also recognizes.
+    let mut opencode = pane_output_status_pane(811, Provider::Opencode, "OC | Repo review");
+
+    classify::apply_pane_output_status_fallback(
+        &mut opencode,
+        "  ┃\n\
+           ┃  Build · Kimi K2.6 OpenCode Go                              ~/code/agentscan:main\n\
+           ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+            ⬝⬝⬝⬝⬝⬝⬝⬝  esc interrupt    139.2K (53%) · $0.23  ctrl+p commands    • OpenCode 1.15.11\n",
+    );
+
+    assert_eq!(opencode.status.kind, StatusKind::Busy);
+    assert_eq!(opencode.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn opencode_pane_output_live_build_marks_busy_when_interrupt_hint_above_box_without_command_bar() {
+    // Used session (no `tab agents`, so `command_bar_index` is None) with `esc interrupt`
+    // rendered just *above* the input box. The box border is the only footer anchor, so the
+    // current busy marker must still win over the input-box idle anchor rather than fall
+    // through to idle.
+    let mut opencode = pane_output_status_pane(812, Provider::Opencode, "OC | Greeting");
+
+    classify::apply_pane_output_status_fallback(
+        &mut opencode,
+        "  Reading the codebase\n\
+            esc interrupt\n\
+           ┃\n\
+           ┃  Build · Kimi K2.6 OpenCode Go\n\
+           ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+            11.8K (4%) · $0.01  ctrl+p commands    • OpenCode 1.15.11\n",
+    );
+
+    assert_eq!(opencode.status.kind, StatusKind::Busy);
     assert_eq!(opencode.status.source, super::StatusSource::PaneOutput);
 }
 
