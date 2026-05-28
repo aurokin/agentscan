@@ -29,6 +29,30 @@ fn pane_output_status_pane(pid: u32, provider: Provider, title: &str) -> PaneRec
     pane
 }
 
+fn assert_pane_output_status(
+    pid: u32,
+    provider: Provider,
+    title: &str,
+    output: &str,
+    expected_kind: StatusKind,
+    expected_source: super::StatusSource,
+) {
+    let mut pane = pane_output_status_pane(pid, provider, title);
+    classify::apply_pane_output_status_fallback(&mut pane, output);
+
+    assert_eq!(pane.status.kind, expected_kind);
+    assert_eq!(pane.status.source, expected_source);
+}
+
+fn assert_unprovidered_pane_output_unchanged(pid: u32, command: &str, title: &str, output: &str) {
+    let mut pane = proc_fallback_pane(pid, command, title);
+    classify::apply_pane_output_status_fallback(&mut pane, output);
+
+    assert!(pane.provider.is_none());
+    assert_eq!(pane.status.kind, StatusKind::Unknown);
+    assert_eq!(pane.status.source, super::StatusSource::NotChecked);
+}
+
 struct FakeProcessInspector {
     processes_by_pid: std::collections::HashMap<u32, Vec<proc::ProcessEvidence>>,
     foreground_by_tty: std::collections::HashMap<String, Vec<proc::ProcessEvidence>>,

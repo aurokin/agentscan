@@ -358,6 +358,19 @@ enum SubscriptionConnect {
     Unexpected(String),
 }
 
+enum DaemonClientOpen {
+    NotRunning(String),
+    Connected(BufReader<std::os::unix::net::UnixStream>),
+}
+
+enum DaemonHello {
+    Acked,
+    Busy(String),
+    Rejected(String),
+    Incompatible(String),
+    Unexpected(ipc::DaemonFrame),
+}
+
 struct SubscriptionState {
     bootstrapped: bool,
     attempted_start: bool,
@@ -656,14 +669,21 @@ fn lifecycle_status_from_socket(socket_path: &Path, timeout: Duration) -> Result
     }
 }
 
-fn lifecycle_status_once(socket_path: &Path) -> Result<LifecycleQuery> {
+fn open_daemon_client(
+    socket_path: &Path,
+    mode: ipc::ClientMode,
+    operation: &str,
+    close_write: bool,
+) -> Result<DaemonClientOpen> {
     let mut stream = match std::os::unix::net::UnixStream::connect(socket_path) {
         Ok(stream) => stream,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(LifecycleQuery::NotRunning("socket is missing".to_string()));
+            return Ok(DaemonClientOpen::NotRunning(
+                "socket is missing".to_string(),
+            ));
         }
         Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
-            return Ok(LifecycleQuery::NotRunning(
+            return Ok(DaemonClientOpen::NotRunning(
                 "socket exists but no daemon accepted the connection".to_string(),
             ));
         }
@@ -678,34 +698,34 @@ fn lifecycle_status_once(socket_path: &Path) -> Result<LifecycleQuery> {
     };
     stream
         .set_read_timeout(Some(CLIENT_WRITE_TIMEOUT))
-        .context("failed to set daemon lifecycle read timeout")?;
+        .with_context(|| format!("failed to set daemon {operation} read timeout"))?;
     stream
         .set_write_timeout(Some(CLIENT_WRITE_TIMEOUT))
-        .context("failed to set daemon lifecycle write timeout")?;
+        .with_context(|| format!("failed to set daemon {operation} write timeout"))?;
     let hello = ipc::ClientFrame::Hello {
         protocol_version: ipc::WIRE_PROTOCOL_VERSION,
         snapshot_schema_version: CACHE_SCHEMA_VERSION,
-        mode: ipc::ClientMode::LifecycleStatus,
+        mode,
     };
     stream
         .write_all(&ipc::encode_frame(&hello)?)
-        .context("failed to write daemon lifecycle hello")?;
-    stream
-        .shutdown(std::net::Shutdown::Write)
-        .context("failed to close daemon lifecycle write side")?;
-    let mut reader = BufReader::new(stream);
-    let Some(first_frame) = ipc::read_daemon_frame(&mut reader)? else {
-        return Ok(LifecycleQuery::Incompatible(
-            "daemon closed without lifecycle response".to_string(),
-        ));
-    };
-    match first_frame {
+        .with_context(|| format!("failed to write daemon {operation} hello"))?;
+    if close_write {
+        stream
+            .shutdown(std::net::Shutdown::Write)
+            .with_context(|| format!("failed to close daemon {operation} write side"))?;
+    }
+    Ok(DaemonClientOpen::Connected(BufReader::new(stream)))
+}
+
+fn classify_daemon_hello_frame(frame: ipc::DaemonFrame, operation: &str) -> DaemonHello {
+    match frame {
         ipc::DaemonFrame::Shutdown {
             reason: ipc::ShutdownReason::ServerBusy,
             message,
-        } => Ok(LifecycleQuery::Busy(message)),
-        ipc::DaemonFrame::Shutdown { reason, message } => Ok(LifecycleQuery::Incompatible(
-            format!("daemon rejected lifecycle handshake ({reason:?}): {message}"),
+        } => DaemonHello::Busy(message),
+        ipc::DaemonFrame::Shutdown { reason, message } => DaemonHello::Rejected(format!(
+            "daemon rejected {operation} handshake ({reason:?}): {message}"
         )),
         ipc::DaemonFrame::HelloAck {
             protocol_version,
@@ -713,6 +733,41 @@ fn lifecycle_status_once(socket_path: &Path) -> Result<LifecycleQuery> {
         } if protocol_version == ipc::WIRE_PROTOCOL_VERSION
             && snapshot_schema_version == CACHE_SCHEMA_VERSION =>
         {
+            DaemonHello::Acked
+        }
+        ipc::DaemonFrame::HelloAck {
+            protocol_version,
+            snapshot_schema_version,
+        } => DaemonHello::Incompatible(format!(
+            "daemon acknowledged incompatible {operation} handshake (protocol {protocol_version}, schema {snapshot_schema_version}; expected protocol {}, schema {})",
+            ipc::WIRE_PROTOCOL_VERSION,
+            CACHE_SCHEMA_VERSION
+        )),
+        other => DaemonHello::Unexpected(other),
+    }
+}
+
+fn lifecycle_status_once(socket_path: &Path) -> Result<LifecycleQuery> {
+    let mut reader = match open_daemon_client(
+        socket_path,
+        ipc::ClientMode::LifecycleStatus,
+        "lifecycle",
+        true,
+    )? {
+        DaemonClientOpen::NotRunning(reason) => return Ok(LifecycleQuery::NotRunning(reason)),
+        DaemonClientOpen::Connected(reader) => reader,
+    };
+    let Some(first_frame) = ipc::read_daemon_frame(&mut reader)? else {
+        return Ok(LifecycleQuery::Incompatible(
+            "daemon closed without lifecycle response".to_string(),
+        ));
+    };
+    match classify_daemon_hello_frame(first_frame, "lifecycle") {
+        DaemonHello::Busy(message) => Ok(LifecycleQuery::Busy(message)),
+        DaemonHello::Rejected(message) | DaemonHello::Incompatible(message) => {
+            Ok(LifecycleQuery::Incompatible(message))
+        }
+        DaemonHello::Acked => {
             let Some(second_frame) = ipc::read_daemon_frame(&mut reader)? else {
                 return Ok(LifecycleQuery::Incompatible(
                     "daemon acknowledged lifecycle hello but did not send status".to_string(),
@@ -725,15 +780,7 @@ fn lifecycle_status_once(socket_path: &Path) -> Result<LifecycleQuery> {
                 ))),
             }
         }
-        ipc::DaemonFrame::HelloAck {
-            protocol_version,
-            snapshot_schema_version,
-        } => Ok(LifecycleQuery::Incompatible(format!(
-            "daemon acknowledged incompatible lifecycle handshake (protocol {protocol_version}, schema {snapshot_schema_version}; expected protocol {}, schema {})",
-            ipc::WIRE_PROTOCOL_VERSION,
-            CACHE_SCHEMA_VERSION
-        ))),
-        other => Ok(LifecycleQuery::Incompatible(format!(
+        DaemonHello::Unexpected(other) => Ok(LifecycleQuery::Incompatible(format!(
             "daemon returned unexpected lifecycle frame {other:?}"
         ))),
     }
@@ -741,62 +788,22 @@ fn lifecycle_status_once(socket_path: &Path) -> Result<LifecycleQuery> {
 
 #[allow(dead_code)]
 fn snapshot_once_from_socket(socket_path: &Path) -> Result<SnapshotQuery> {
-    let mut stream = match std::os::unix::net::UnixStream::connect(socket_path) {
-        Ok(stream) => stream,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(SnapshotQuery::NotRunning("socket is missing".to_string()));
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
-            return Ok(SnapshotQuery::NotRunning(
-                "socket exists but no daemon accepted the connection".to_string(),
-            ));
-        }
-        Err(error) => {
-            return Err(error).with_context(|| {
-                format!(
-                    "failed to connect to daemon socket {}",
-                    socket_path.display()
-                )
-            });
-        }
-    };
-    stream
-        .set_read_timeout(Some(CLIENT_WRITE_TIMEOUT))
-        .context("failed to set daemon snapshot read timeout")?;
-    stream
-        .set_write_timeout(Some(CLIENT_WRITE_TIMEOUT))
-        .context("failed to set daemon snapshot write timeout")?;
-    let hello = ipc::ClientFrame::Hello {
-        protocol_version: ipc::WIRE_PROTOCOL_VERSION,
-        snapshot_schema_version: CACHE_SCHEMA_VERSION,
-        mode: ipc::ClientMode::Snapshot,
-    };
-    stream
-        .write_all(&ipc::encode_frame(&hello)?)
-        .context("failed to write daemon snapshot hello")?;
-    stream
-        .shutdown(std::net::Shutdown::Write)
-        .context("failed to close daemon snapshot write side")?;
-    let mut reader = BufReader::new(stream);
+    let mut reader =
+        match open_daemon_client(socket_path, ipc::ClientMode::Snapshot, "snapshot", true)? {
+            DaemonClientOpen::NotRunning(reason) => return Ok(SnapshotQuery::NotRunning(reason)),
+            DaemonClientOpen::Connected(reader) => reader,
+        };
     let Some(first_frame) = ipc::read_daemon_frame(&mut reader)? else {
         return Ok(SnapshotQuery::Unexpected(
             "daemon closed without snapshot response".to_string(),
         ));
     };
-    match first_frame {
-        ipc::DaemonFrame::Shutdown {
-            reason: ipc::ShutdownReason::ServerBusy,
-            message,
-        } => Ok(SnapshotQuery::Busy(message)),
-        ipc::DaemonFrame::Shutdown { reason, message } => Ok(SnapshotQuery::Incompatible(format!(
-            "daemon rejected snapshot handshake ({reason:?}): {message}"
-        ))),
-        ipc::DaemonFrame::HelloAck {
-            protocol_version,
-            snapshot_schema_version,
-        } if protocol_version == ipc::WIRE_PROTOCOL_VERSION
-            && snapshot_schema_version == CACHE_SCHEMA_VERSION =>
-        {
+    match classify_daemon_hello_frame(first_frame, "snapshot") {
+        DaemonHello::Busy(message) => Ok(SnapshotQuery::Busy(message)),
+        DaemonHello::Rejected(message) | DaemonHello::Incompatible(message) => {
+            Ok(SnapshotQuery::Incompatible(message))
+        }
+        DaemonHello::Acked => {
             let Some(second_frame) = ipc::read_daemon_frame(&mut reader)? else {
                 return Ok(SnapshotQuery::Unexpected(
                     "daemon acknowledged snapshot hello but did not send snapshot".to_string(),
@@ -824,15 +831,7 @@ fn snapshot_once_from_socket(socket_path: &Path) -> Result<SnapshotQuery> {
                 ))),
             }
         }
-        ipc::DaemonFrame::HelloAck {
-            protocol_version,
-            snapshot_schema_version,
-        } => Ok(SnapshotQuery::Incompatible(format!(
-            "daemon acknowledged incompatible snapshot handshake (protocol {protocol_version}, schema {snapshot_schema_version}; expected protocol {}, schema {})",
-            ipc::WIRE_PROTOCOL_VERSION,
-            CACHE_SCHEMA_VERSION
-        ))),
-        other => Ok(SnapshotQuery::Unexpected(format!(
+        DaemonHello::Unexpected(other) => Ok(SnapshotQuery::Unexpected(format!(
             "daemon returned unexpected snapshot frame {other:?}"
         ))),
     }
@@ -1109,42 +1108,17 @@ fn subscription_worker_loop(
 }
 
 fn subscribe_once_from_socket(socket_path: &Path) -> Result<SubscriptionConnect> {
-    let mut stream = match std::os::unix::net::UnixStream::connect(socket_path) {
-        Ok(stream) => stream,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(SubscriptionConnect::NotRunning(
-                "socket is missing".to_string(),
-            ));
+    let mut reader = match open_daemon_client(
+        socket_path,
+        ipc::ClientMode::Subscribe,
+        "subscription",
+        false,
+    )? {
+        DaemonClientOpen::NotRunning(reason) => {
+            return Ok(SubscriptionConnect::NotRunning(reason));
         }
-        Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
-            return Ok(SubscriptionConnect::NotRunning(
-                "socket exists but no daemon accepted the connection".to_string(),
-            ));
-        }
-        Err(error) => {
-            return Err(error).with_context(|| {
-                format!(
-                    "failed to connect to daemon socket {}",
-                    socket_path.display()
-                )
-            });
-        }
+        DaemonClientOpen::Connected(reader) => reader,
     };
-    stream
-        .set_read_timeout(Some(CLIENT_WRITE_TIMEOUT))
-        .context("failed to set daemon subscription read timeout")?;
-    stream
-        .set_write_timeout(Some(CLIENT_WRITE_TIMEOUT))
-        .context("failed to set daemon subscription write timeout")?;
-    let hello = ipc::ClientFrame::Hello {
-        protocol_version: ipc::WIRE_PROTOCOL_VERSION,
-        snapshot_schema_version: CACHE_SCHEMA_VERSION,
-        mode: ipc::ClientMode::Subscribe,
-    };
-    stream
-        .write_all(&ipc::encode_frame(&hello)?)
-        .context("failed to write daemon subscription hello")?;
-    let mut reader = BufReader::new(stream);
     let Some(first_frame) = (match read_subscription_bootstrap_frame(&mut reader) {
         BootstrapFrameRead::Frame(frame) => frame,
         BootstrapFrameRead::Connect(connect) => return Ok(connect),
@@ -1153,20 +1127,12 @@ fn subscribe_once_from_socket(socket_path: &Path) -> Result<SubscriptionConnect>
             "daemon closed without subscription response".to_string(),
         ));
     };
-    match first_frame {
-        ipc::DaemonFrame::Shutdown {
-            reason: ipc::ShutdownReason::ServerBusy,
-            message,
-        } => Ok(SubscriptionConnect::Retryable(message)),
-        ipc::DaemonFrame::Shutdown { reason, message } => Ok(SubscriptionConnect::Incompatible(
-            format!("daemon rejected subscription handshake ({reason:?}): {message}"),
-        )),
-        ipc::DaemonFrame::HelloAck {
-            protocol_version,
-            snapshot_schema_version,
-        } if protocol_version == ipc::WIRE_PROTOCOL_VERSION
-            && snapshot_schema_version == CACHE_SCHEMA_VERSION =>
-        {
+    match classify_daemon_hello_frame(first_frame, "subscription") {
+        DaemonHello::Busy(message) => Ok(SubscriptionConnect::Retryable(message)),
+        DaemonHello::Rejected(message) | DaemonHello::Incompatible(message) => {
+            Ok(SubscriptionConnect::Incompatible(message))
+        }
+        DaemonHello::Acked => {
             let Some(second_frame) = (match read_subscription_bootstrap_frame(&mut reader) {
                 BootstrapFrameRead::Frame(frame) => frame,
                 BootstrapFrameRead::Connect(connect) => return Ok(connect),
@@ -1217,15 +1183,7 @@ fn subscribe_once_from_socket(socket_path: &Path) -> Result<SubscriptionConnect>
                 ))),
             }
         }
-        ipc::DaemonFrame::HelloAck {
-            protocol_version,
-            snapshot_schema_version,
-        } => Ok(SubscriptionConnect::Incompatible(format!(
-            "daemon acknowledged incompatible subscription handshake (protocol {protocol_version}, schema {snapshot_schema_version}; expected protocol {}, schema {})",
-            ipc::WIRE_PROTOCOL_VERSION,
-            CACHE_SCHEMA_VERSION
-        ))),
-        other => Ok(SubscriptionConnect::Unexpected(format!(
+        DaemonHello::Unexpected(other) => Ok(SubscriptionConnect::Unexpected(format!(
             "daemon returned unexpected subscription frame {other:?}"
         ))),
     }
@@ -1851,161 +1809,172 @@ fn print_lifecycle_status(paths: &LifecyclePaths, status: &ipc::LifecycleStatusF
             println!("control_mode_broker_disabled_reason: {reason}");
         }
     }
-    if let Some(telemetry) = &status.runtime_telemetry {
-        println!(
-            "control_event_refresh_count: {}",
-            telemetry.control_event_refresh_count
-        );
-        println!(
-            "control_event_batch_count: {}",
-            telemetry.control_event_batch_count
-        );
-        println!(
-            "control_event_line_count: {}",
-            telemetry.control_event_line_count
-        );
-        println!(
-            "control_event_output_line_count: {}",
-            telemetry.control_event_output_line_count
-        );
-        println!(
-            "control_event_output_byte_count: {}",
-            telemetry.control_event_output_byte_count
-        );
-        println!(
-            "control_event_pane_count: {}",
-            telemetry.control_event_pane_count
-        );
-        println!(
-            "control_event_title_count: {}",
-            telemetry.control_event_title_count
-        );
-        println!(
-            "control_event_window_count: {}",
-            telemetry.control_event_window_count
-        );
-        println!(
-            "control_event_session_count: {}",
-            telemetry.control_event_session_count
-        );
-        println!(
-            "control_event_resnapshot_count: {}",
-            telemetry.control_event_resnapshot_count
-        );
-        println!(
-            "control_event_ignored_count: {}",
-            telemetry.control_event_ignored_count
-        );
-        println!(
-            "reconcile_attempt_count: {}",
-            telemetry.reconcile_attempt_count
-        );
-        println!("reconcile_noop_count: {}", telemetry.reconcile_noop_count);
-        println!(
-            "reconcile_changed_snapshot_count: {}",
-            telemetry.reconcile_changed_snapshot_count
-        );
-        println!(
-            "targeted_title_update_count: {}",
-            telemetry.targeted_title_update_count
-        );
-        println!(
-            "targeted_pane_refresh_count: {}",
-            telemetry.targeted_pane_refresh_count
-        );
-        println!(
-            "targeted_scope_refresh_count: {}",
-            telemetry.targeted_scope_refresh_count
-        );
-        println!(
-            "full_snapshot_refresh_count: {}",
-            telemetry.full_snapshot_refresh_count
-        );
-        println!(
-            "targeted_refresh_fallback_to_full_count: {}",
-            telemetry.targeted_refresh_fallback_to_full_count
-        );
-        println!("broker_fallback_count: {}", telemetry.broker_fallback_count);
-        println!(
-            "pane_output_capture_attempt_count: {}",
-            telemetry.pane_output_capture_attempt_count
-        );
-        println!(
-            "pane_output_capture_hit_count: {}",
-            telemetry.pane_output_capture_hit_count
-        );
-        println!(
-            "pane_output_capture_error_count: {}",
-            telemetry.pane_output_capture_error_count
-        );
-    } else {
-        println!("runtime_telemetry: unavailable");
-    }
-    if let Some(observability) = &status.latest_snapshot_observability {
-        println!(
-            "latest_snapshot_provider_known_count: {}",
-            observability.provider_known_count
-        );
-        println!(
-            "latest_snapshot_provider_unknown_count: {}",
-            observability.provider_unknown_count
-        );
-        println!(
-            "latest_snapshot_status_source_pane_metadata_count: {}",
-            observability.status_source_pane_metadata_count
-        );
-        println!(
-            "latest_snapshot_status_source_tmux_title_count: {}",
-            observability.status_source_tmux_title_count
-        );
-        println!(
-            "latest_snapshot_status_source_pane_output_count: {}",
-            observability.status_source_pane_output_count
-        );
-        println!(
-            "latest_snapshot_status_source_not_checked_count: {}",
-            observability.status_source_not_checked_count
-        );
-        println!(
-            "latest_snapshot_proc_fallback_not_run_count: {}",
-            observability.proc_fallback_not_run_count
-        );
-        println!(
-            "latest_snapshot_proc_fallback_skipped_count: {}",
-            observability.proc_fallback_skipped_count
-        );
-        println!(
-            "latest_snapshot_proc_fallback_no_match_count: {}",
-            observability.proc_fallback_no_match_count
-        );
-        println!(
-            "latest_snapshot_proc_fallback_error_count: {}",
-            observability.proc_fallback_error_count
-        );
-        println!(
-            "latest_snapshot_proc_fallback_resolved_count: {}",
-            observability.proc_fallback_resolved_count
-        );
-        for (provider, stats) in &observability.per_provider {
-            println!(
-                "latest_snapshot_provider[{provider}]: panes={} matched(metadata={},command={},title={},proc={}) status(metadata={},title={},output={},not_checked={})",
-                stats.pane_count,
-                stats.matched_pane_metadata_count,
-                stats.matched_pane_current_command_count,
-                stats.matched_pane_title_count,
-                stats.matched_proc_process_tree_count,
-                stats.status_source_pane_metadata_count,
-                stats.status_source_tmux_title_count,
-                stats.status_source_pane_output_count,
-                stats.status_source_not_checked_count,
-            );
-        }
-    }
+    print_runtime_telemetry(status.runtime_telemetry.as_ref());
+    print_snapshot_observability(status.latest_snapshot_observability.as_ref());
     if let Some(reason) = status.unavailable_reason {
         println!("unavailable_reason: {}", unavailable_reason_label(reason));
     }
     if let Some(message) = &status.message {
         println!("message: {message}");
+    }
+}
+
+fn print_runtime_telemetry(telemetry: Option<&ipc::RuntimeTelemetryFrame>) {
+    let Some(telemetry) = telemetry else {
+        println!("runtime_telemetry: unavailable");
+        return;
+    };
+
+    println!(
+        "control_event_refresh_count: {}",
+        telemetry.control_event_refresh_count
+    );
+    println!(
+        "control_event_batch_count: {}",
+        telemetry.control_event_batch_count
+    );
+    println!(
+        "control_event_line_count: {}",
+        telemetry.control_event_line_count
+    );
+    println!(
+        "control_event_output_line_count: {}",
+        telemetry.control_event_output_line_count
+    );
+    println!(
+        "control_event_output_byte_count: {}",
+        telemetry.control_event_output_byte_count
+    );
+    println!(
+        "control_event_pane_count: {}",
+        telemetry.control_event_pane_count
+    );
+    println!(
+        "control_event_title_count: {}",
+        telemetry.control_event_title_count
+    );
+    println!(
+        "control_event_window_count: {}",
+        telemetry.control_event_window_count
+    );
+    println!(
+        "control_event_session_count: {}",
+        telemetry.control_event_session_count
+    );
+    println!(
+        "control_event_resnapshot_count: {}",
+        telemetry.control_event_resnapshot_count
+    );
+    println!(
+        "control_event_ignored_count: {}",
+        telemetry.control_event_ignored_count
+    );
+    println!(
+        "reconcile_attempt_count: {}",
+        telemetry.reconcile_attempt_count
+    );
+    println!("reconcile_noop_count: {}", telemetry.reconcile_noop_count);
+    println!(
+        "reconcile_changed_snapshot_count: {}",
+        telemetry.reconcile_changed_snapshot_count
+    );
+    println!(
+        "targeted_title_update_count: {}",
+        telemetry.targeted_title_update_count
+    );
+    println!(
+        "targeted_pane_refresh_count: {}",
+        telemetry.targeted_pane_refresh_count
+    );
+    println!(
+        "targeted_scope_refresh_count: {}",
+        telemetry.targeted_scope_refresh_count
+    );
+    println!(
+        "full_snapshot_refresh_count: {}",
+        telemetry.full_snapshot_refresh_count
+    );
+    println!(
+        "targeted_refresh_fallback_to_full_count: {}",
+        telemetry.targeted_refresh_fallback_to_full_count
+    );
+    println!("broker_fallback_count: {}", telemetry.broker_fallback_count);
+    println!(
+        "pane_output_capture_attempt_count: {}",
+        telemetry.pane_output_capture_attempt_count
+    );
+    println!(
+        "pane_output_capture_hit_count: {}",
+        telemetry.pane_output_capture_hit_count
+    );
+    println!(
+        "pane_output_capture_error_count: {}",
+        telemetry.pane_output_capture_error_count
+    );
+}
+
+fn print_snapshot_observability(observability: Option<&ipc::SnapshotObservabilityFrame>) {
+    let Some(observability) = observability else {
+        return;
+    };
+
+    println!(
+        "latest_snapshot_provider_known_count: {}",
+        observability.provider_known_count
+    );
+    println!(
+        "latest_snapshot_provider_unknown_count: {}",
+        observability.provider_unknown_count
+    );
+    println!(
+        "latest_snapshot_status_source_pane_metadata_count: {}",
+        observability.status_source_pane_metadata_count
+    );
+    println!(
+        "latest_snapshot_status_source_tmux_title_count: {}",
+        observability.status_source_tmux_title_count
+    );
+    println!(
+        "latest_snapshot_status_source_pane_output_count: {}",
+        observability.status_source_pane_output_count
+    );
+    println!(
+        "latest_snapshot_status_source_not_checked_count: {}",
+        observability.status_source_not_checked_count
+    );
+    println!(
+        "latest_snapshot_proc_fallback_not_run_count: {}",
+        observability.proc_fallback_not_run_count
+    );
+    println!(
+        "latest_snapshot_proc_fallback_skipped_count: {}",
+        observability.proc_fallback_skipped_count
+    );
+    println!(
+        "latest_snapshot_proc_fallback_no_match_count: {}",
+        observability.proc_fallback_no_match_count
+    );
+    println!(
+        "latest_snapshot_proc_fallback_error_count: {}",
+        observability.proc_fallback_error_count
+    );
+    println!(
+        "latest_snapshot_proc_fallback_resolved_count: {}",
+        observability.proc_fallback_resolved_count
+    );
+    for (provider, stats) in &observability.per_provider {
+        println!(
+            "latest_snapshot_provider[{provider}]: panes={} matched(metadata={},command={},title={},proc={}) status(metadata={},title={},output={},not_checked={})",
+            stats.pane_count,
+            stats.matched_pane_metadata_count,
+            stats.matched_pane_current_command_count,
+            stats.matched_pane_title_count,
+            stats.matched_proc_process_tree_count,
+            stats.status_source_pane_metadata_count,
+            stats.status_source_tmux_title_count,
+            stats.status_source_pane_output_count,
+            stats.status_source_not_checked_count,
+        );
     }
 }
 

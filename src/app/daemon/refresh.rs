@@ -1,0 +1,863 @@
+use super::*;
+use std::collections::{HashMap, HashSet};
+
+pub(super) fn apply_control_event_batch(
+    snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &mut impl TmuxReadProvider,
+    batch: &ControlEventBatch,
+    pane_output_cache: &mut scanner::PaneOutputStatusCache,
+    disable_proc_fallback: bool,
+) -> Result<ControlEventOutcome> {
+    let pane_scopes_before_refresh = pane_scopes_by_id(snapshot);
+    let mut changed = false;
+    let mut fallback_to_full = false;
+    let mut full_snapshot_refresh = false;
+    let mut targeted_title_updates = 0_u64;
+    let mut targeted_pane_refreshes = 0_u64;
+    let mut targeted_scope_refreshes = 0_u64;
+
+    if batch.resnapshot_sequence.is_some() {
+        let tmux_version = snapshot.source.tmux_version.clone();
+        reconcile_full_snapshot(
+            snapshot,
+            tmux_reads,
+            tmux_version.as_deref(),
+            pane_output_cache,
+            disable_proc_fallback,
+        )?;
+        changed = true;
+        full_snapshot_refresh = true;
+    }
+
+    for (session_id, sequence) in &batch.sessions {
+        if batch
+            .resnapshot_sequence
+            .is_some_and(|resnapshot_sequence| *sequence <= resnapshot_sequence)
+        {
+            continue;
+        }
+        changed = true;
+        targeted_scope_refreshes = targeted_scope_refreshes.saturating_add(1);
+        if let Err(error) = refresh_snapshot_session(
+            snapshot,
+            tmux_reads,
+            session_id,
+            pane_output_cache,
+            disable_proc_fallback,
+        ) {
+            fallback_to_full_resnapshot(
+                snapshot,
+                tmux_reads,
+                &format!("session:{session_id}"),
+                error,
+                pane_output_cache,
+                disable_proc_fallback,
+            )?;
+            fallback_to_full = true;
+            full_snapshot_refresh = true;
+        }
+    }
+
+    for (window_id, sequence) in &batch.windows {
+        if batch
+            .resnapshot_sequence
+            .is_some_and(|resnapshot_sequence| *sequence <= resnapshot_sequence)
+        {
+            continue;
+        }
+        changed = true;
+        targeted_scope_refreshes = targeted_scope_refreshes.saturating_add(1);
+        if let Err(error) = refresh_snapshot_window(
+            snapshot,
+            tmux_reads,
+            window_id,
+            pane_output_cache,
+            disable_proc_fallback,
+        ) {
+            fallback_to_full_resnapshot(
+                snapshot,
+                tmux_reads,
+                &format!("window:{window_id}"),
+                error,
+                pane_output_cache,
+                disable_proc_fallback,
+            )?;
+            fallback_to_full = true;
+            full_snapshot_refresh = true;
+        }
+    }
+
+    let pane_scopes_after_scope_refresh = pane_scopes_by_id(snapshot);
+    for pane_id in batch.panes.keys() {
+        let title_override = title_override_after_latest_refresh(
+            batch,
+            &pane_scopes_before_refresh,
+            &pane_scopes_after_scope_refresh,
+            pane_id,
+        );
+        let has_title_override = title_override.is_some();
+        if refresh_snapshot_pane_with_title(
+            snapshot,
+            tmux_reads,
+            pane_id,
+            title_override,
+            pane_output_cache,
+            disable_proc_fallback,
+        )? {
+            changed = true;
+            targeted_pane_refreshes = targeted_pane_refreshes.saturating_add(1);
+            if has_title_override {
+                targeted_title_updates = targeted_title_updates.saturating_add(1);
+            }
+        }
+    }
+
+    for pane_id in batch.titles.keys() {
+        let Some(title) = title_override_after_latest_refresh(
+            batch,
+            &pane_scopes_before_refresh,
+            &pane_scopes_after_scope_refresh,
+            pane_id,
+        ) else {
+            continue;
+        };
+        if batch.panes.contains_key(pane_id) {
+            continue;
+        }
+        if refresh_snapshot_pane_with_title(
+            snapshot,
+            tmux_reads,
+            pane_id,
+            Some(title),
+            pane_output_cache,
+            disable_proc_fallback,
+        )? {
+            changed = true;
+            targeted_pane_refreshes = targeted_pane_refreshes.saturating_add(1);
+            targeted_title_updates = targeted_title_updates.saturating_add(1);
+        }
+    }
+
+    Ok(ControlEventOutcome {
+        changed,
+        fallback_to_full,
+        full_snapshot_refresh,
+        targeted_title_updates,
+        targeted_pane_refreshes,
+        targeted_scope_refreshes,
+    })
+}
+
+fn pane_scopes_by_id(
+    snapshot: &SnapshotEnvelope,
+) -> HashMap<String, (Option<String>, Option<String>)> {
+    snapshot
+        .panes
+        .iter()
+        .map(|pane| {
+            (
+                pane.pane_id.clone(),
+                (pane.tmux.session_id.clone(), pane.tmux.window_id.clone()),
+            )
+        })
+        .collect()
+}
+
+fn title_override_after_latest_refresh<'a>(
+    batch: &'a ControlEventBatch,
+    pane_scopes_before_refresh: &HashMap<String, (Option<String>, Option<String>)>,
+    pane_scopes_after_scope_refresh: &HashMap<String, (Option<String>, Option<String>)>,
+    pane_id: &str,
+) -> Option<&'a str> {
+    let title = batch.titles.get(pane_id)?;
+    let mut latest_refresh_sequence = batch
+        .resnapshot_sequence
+        .into_iter()
+        .chain(batch.panes.get(pane_id).copied())
+        .max();
+
+    for pane_scopes in [
+        pane_scopes_before_refresh.get(pane_id),
+        pane_scopes_after_scope_refresh.get(pane_id),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        latest_refresh_sequence =
+            latest_refresh_sequence_for_scopes(batch, pane_scopes, latest_refresh_sequence);
+    }
+
+    latest_refresh_sequence
+        .is_none_or(|latest_refresh_sequence| title.sequence > latest_refresh_sequence)
+        .then_some(title.title.as_str())
+}
+
+fn latest_refresh_sequence_for_scopes(
+    batch: &ControlEventBatch,
+    pane_scopes: &(Option<String>, Option<String>),
+    latest_refresh_sequence: Option<u64>,
+) -> Option<u64> {
+    let mut latest_refresh_sequence = latest_refresh_sequence;
+    if let Some(sequence) = pane_scopes
+        .0
+        .as_deref()
+        .and_then(|session_id| batch.sessions.get(session_id))
+    {
+        latest_refresh_sequence = Some(
+            latest_refresh_sequence
+                .map(|latest| latest.max(*sequence))
+                .unwrap_or(*sequence),
+        );
+    }
+    if let Some(sequence) = pane_scopes
+        .1
+        .as_deref()
+        .and_then(|window_id| batch.windows.get(window_id))
+    {
+        latest_refresh_sequence = Some(
+            latest_refresh_sequence
+                .map(|latest| latest.max(*sequence))
+                .unwrap_or(*sequence),
+        );
+    }
+    latest_refresh_sequence
+}
+
+pub(super) fn refresh_snapshot_pane_with_title(
+    snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &mut impl TmuxReadProvider,
+    pane_id: &str,
+    title_override: Option<&str>,
+    pane_output_cache: &mut scanner::PaneOutputStatusCache,
+    disable_proc_fallback: bool,
+) -> Result<bool> {
+    let previous = snapshot
+        .panes
+        .iter()
+        .find(|existing| existing.pane_id == pane_id)
+        .cloned();
+    let allow_title_change_for_identity = title_override.is_some();
+    let pane = tmux_reads.list_pane(pane_id)?.map(|mut row| {
+        if let Some(title) = title_override {
+            row.pane_title_raw = title.to_string();
+        }
+        let mut pane = pane_from_targeted_row_preserving_provider_identity(
+            row,
+            previous.as_ref(),
+            allow_title_change_for_identity,
+            disable_proc_fallback,
+        );
+        scanner::apply_pane_output_status_fallbacks_with_cache(
+            std::slice::from_mut(&mut pane),
+            pane_output_cache,
+            Instant::now(),
+        );
+        pane.diagnostics.cache_origin = "daemon_update".to_string();
+        pane
+    });
+
+    if let Some(index) = snapshot
+        .panes
+        .iter()
+        .position(|existing| existing.pane_id == pane_id)
+    {
+        if let Some(pane) = pane {
+            snapshot.panes[index] = pane;
+        } else {
+            snapshot.panes.remove(index);
+        }
+    } else if pane.is_none() {
+        return Ok(false);
+    } else if let Some(pane) = pane {
+        snapshot.panes.push(pane);
+    }
+
+    snapshot::sort_snapshot_panes(snapshot);
+    snapshot::mark_snapshot_as_daemon(snapshot)?;
+    Ok(true)
+}
+
+// Carry the previous pane's identity (provider, how it was classified, and the
+// proc-fallback diagnostics) onto the freshly built pane. Status and display are
+// deliberately left as the fresh row computed them, so a preserved agent still
+// reflects its new title (e.g. idle -> busy) while keeping its provider.
+fn preserve_provider_identity_for_targeted_update(pane: &mut PaneRecord, previous: &PaneRecord) {
+    pane.provider = previous.provider;
+    pane.classification = previous.classification.clone();
+    pane.diagnostics.proc_fallback = previous.diagnostics.proc_fallback.clone();
+}
+
+fn pane_from_targeted_row_preserving_provider_identity(
+    mut row: TmuxPaneRow,
+    previous: Option<&PaneRecord>,
+    allow_title_change_for_identity: bool,
+    disable_proc_fallback: bool,
+) -> PaneRecord {
+    let should_preserve = previous.is_some_and(|previous| {
+        should_preserve_provider_identity_for_targeted_update(
+            previous,
+            &row,
+            allow_title_change_for_identity,
+        )
+    });
+    let fresh_agent_metadata = should_preserve.then(|| agent_metadata_from_row(&row));
+    if should_preserve {
+        row.agent_provider = previous
+            .and_then(|previous| previous.provider)
+            .map(|provider| provider.to_string());
+    }
+
+    let mut pane = classify::pane_from_row(row);
+    if should_preserve && let Some(previous) = previous {
+        if let Some(fresh_agent_metadata) = fresh_agent_metadata {
+            pane.agent_metadata = fresh_agent_metadata;
+        }
+        preserve_provider_identity_for_targeted_update(&mut pane, previous);
+    }
+    recover_targeted_pane_provider_via_proc(&mut pane, disable_proc_fallback);
+    pane
+}
+
+// The targeted (event) path normally avoids process inspection, but some agents
+// cannot be identified from tmux metadata at all — notably Claude Code, whose
+// `pane_current_command` is its version string and whose title is the current task
+// rather than "Claude Code". Such a pane, when freshly built here, has no provider
+// and (because nothing carried one forward) would stay invisible until the next
+// full snapshot — up to the self-heal interval away under the default
+// `disable_reconcile = true`. Run the bounded single-pane proc fallback for exactly
+// these cases to recover identity from the process tree, which finds `claude` even
+// when the foreground briefly flips to a tool subprocess.
+//
+// This is self-limiting: `apply_proc_fallback_with_options` only inspects panes that
+// `is_proc_fallback_candidate` accepts (no provider yet, and an agent-shaped command
+// or title — version-like command, spinner/idle glyph, or shell/launcher), so plain
+// panes cost nothing, and once a pane resolves it is no longer a candidate. It does
+// revisit the "targeted refreshes avoid process inspection" stance, but only for the
+// ambiguous-agent panes that the metadata-only path cannot otherwise see.
+fn recover_targeted_pane_provider_via_proc(pane: &mut PaneRecord, disable_proc_fallback: bool) {
+    recover_targeted_pane_provider_with_inspector(
+        pane,
+        &proc::ProcProcessInspector,
+        disable_proc_fallback,
+    );
+}
+
+fn recover_targeted_pane_provider_with_inspector(
+    pane: &mut PaneRecord,
+    inspector: &impl proc::ProcessInspector,
+    disable_proc_fallback: bool,
+) {
+    // Only ambiguous panes that the metadata path could not identify. A pane that
+    // already has a provider (fresh classification or a carried-forward identity)
+    // is left untouched; `apply_proc_fallback_with_options` further self-gates to
+    // agent-shaped candidates, so plain panes never trigger process inspection.
+    if pane.provider.is_some() {
+        return;
+    }
+    classify::apply_proc_fallback_with_options(pane, inspector, disable_proc_fallback);
+}
+
+fn agent_metadata_from_row(row: &TmuxPaneRow) -> AgentMetadata {
+    AgentMetadata {
+        provider: row.agent_provider.clone(),
+        label: row.agent_label.clone(),
+        cwd: row.agent_cwd.clone(),
+        state: row.agent_state.clone(),
+        session_id: row.agent_session_id.clone(),
+    }
+}
+
+// Decide whether a targeted (title/pane) refresh should keep the pane's existing
+// provider instead of the freshly classified one. A control-mode title update only
+// changes the pane's title text; when a previously *process-tree-confirmed* agent's
+// title changes (e.g. Claude Code's title becoming the current task), we keep its
+// identity rather than re-running process inspection on every title tick.
+//
+// Restricted to `ProcFallbackOutcome::Resolved` identities on purpose: a provider
+// that came only from the old title (or a stable wrapper command) must NOT be made
+// sticky here, or a non-agent pane — or an agent that exited under a stable shell —
+// would keep a stale provider after its title changes away from the provider name.
+// Those panes instead fall through to `recover_targeted_pane_provider_via_proc`,
+// which consults the process tree and clears or corrects the match. The process
+// tree is the source of truth; this preservation is only the cheap fast path for
+// identities the process tree already confirmed.
+//
+// Preserve when: the previous identity was process-resolved and did not come from
+// agent metadata/hooks (fresh metadata should win), the fresh row carries no agent
+// metadata and resolves to no *different* provider, and the row still matches the
+// previous tmux process identity (same pane_pid, command, path, and tty — only the
+// title may differ). A genuine change fails these guards and fresh classification
+// (then proc recovery) wins.
+fn should_preserve_provider_identity_for_targeted_update(
+    previous: &PaneRecord,
+    row: &TmuxPaneRow,
+    allow_title_change: bool,
+) -> bool {
+    previous.diagnostics.proc_fallback.outcome == ProcFallbackOutcome::Resolved
+        && previous.provider.is_some()
+        && previous.agent_metadata.provider.is_none()
+        && row.agent_provider.is_none()
+        && previous.tmux.pane_pid == row.pane_pid
+        && {
+            let fresh_provider = fresh_row_provider(row);
+            fresh_provider == previous.provider
+                || (fresh_provider.is_none()
+                    && row_matches_previous_tmux_identity(previous, row, allow_title_change))
+        }
+}
+
+fn fresh_row_provider(row: &TmuxPaneRow) -> Option<Provider> {
+    classify::pane_from_row(row.clone()).provider
+}
+
+fn row_matches_previous_tmux_identity(
+    previous: &PaneRecord,
+    row: &TmuxPaneRow,
+    allow_title_change: bool,
+) -> bool {
+    previous.tmux.pane_current_command == row.pane_current_command
+        && (allow_title_change || previous.tmux.pane_title_raw == row.pane_title_raw)
+        && previous.tmux.pane_current_path == row.pane_current_path
+        && previous.tmux.pane_tty == row.pane_tty
+}
+
+pub(super) fn refresh_snapshot_window(
+    snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &mut impl TmuxReadProvider,
+    window_id: &str,
+    pane_output_cache: &mut scanner::PaneOutputStatusCache,
+    disable_proc_fallback: bool,
+) -> Result<()> {
+    refresh_snapshot_scope(
+        snapshot,
+        tmux_reads,
+        TargetScope::Window,
+        window_id,
+        pane_output_cache,
+        disable_proc_fallback,
+    )
+}
+
+pub(super) fn refresh_snapshot_session(
+    snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &mut impl TmuxReadProvider,
+    session_id: &str,
+    pane_output_cache: &mut scanner::PaneOutputStatusCache,
+    disable_proc_fallback: bool,
+) -> Result<()> {
+    refresh_snapshot_scope(
+        snapshot,
+        tmux_reads,
+        TargetScope::Session,
+        session_id,
+        pane_output_cache,
+        disable_proc_fallback,
+    )
+}
+
+fn refresh_snapshot_scope(
+    snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &mut impl TmuxReadProvider,
+    scope: TargetScope,
+    target_id: &str,
+    pane_output_cache: &mut scanner::PaneOutputStatusCache,
+    disable_proc_fallback: bool,
+) -> Result<()> {
+    let rows = tmux_reads.list_target_panes(target_id)?;
+    let previous_by_pane_id = snapshot
+        .panes
+        .iter()
+        .map(|pane| (pane.pane_id.clone(), pane.clone()))
+        .collect::<HashMap<_, _>>();
+    let refreshed_pane_ids = rows
+        .as_ref()
+        .map(|rows| {
+            rows.iter()
+                .map(|row| row.pane_id.clone())
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default();
+
+    snapshot.panes.retain(|pane| {
+        !scope.matches(pane, target_id) && !refreshed_pane_ids.contains(&pane.pane_id)
+    });
+
+    if let Some(rows) = rows {
+        let mut panes = rows
+            .into_iter()
+            .map(|row| {
+                let previous = previous_by_pane_id.get(&row.pane_id);
+                pane_from_targeted_row_preserving_provider_identity(
+                    row,
+                    previous,
+                    false,
+                    disable_proc_fallback,
+                )
+            })
+            .collect::<Vec<_>>();
+        scanner::apply_pane_output_status_fallbacks_with_cache(
+            &mut panes,
+            pane_output_cache,
+            Instant::now(),
+        );
+        snapshot.panes.extend(panes.into_iter().map(|mut pane| {
+            pane.diagnostics.cache_origin = "daemon_update".to_string();
+            pane
+        }));
+    }
+
+    snapshot::sort_snapshot_panes(snapshot);
+    snapshot::mark_snapshot_as_daemon(snapshot)
+}
+
+fn fallback_to_full_resnapshot(
+    snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &mut impl TmuxReadProvider,
+    event_context: &str,
+    error: anyhow::Error,
+    pane_output_cache: &mut scanner::PaneOutputStatusCache,
+    disable_proc_fallback: bool,
+) -> Result<()> {
+    eprintln!(
+        "agentscan: targeted refresh failed for control-mode event {event_context:?}: {error:#}"
+    );
+    let tmux_version = snapshot.source.tmux_version.clone();
+    reconcile_full_snapshot(
+        snapshot,
+        tmux_reads,
+        tmux_version.as_deref(),
+        pane_output_cache,
+        disable_proc_fallback,
+    )
+}
+
+pub(super) fn reconcile_full_snapshot(
+    snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &mut impl TmuxReadProvider,
+    tmux_version: Option<&str>,
+    pane_output_cache: &mut scanner::PaneOutputStatusCache,
+    disable_proc_fallback: bool,
+) -> Result<()> {
+    *snapshot = daemon_snapshot_from_tmux_with_provider(
+        tmux_reads,
+        tmux_version,
+        pane_output_cache,
+        Instant::now(),
+        disable_proc_fallback,
+    )?;
+    Ok(())
+}
+
+pub(super) fn reconcile_refresh_outcome(
+    previous: &SnapshotEnvelope,
+    current: &SnapshotEnvelope,
+    publish_context: SnapshotPublishContext,
+) -> RefreshOutcome {
+    if snapshots_are_materially_equal(previous, current) {
+        RefreshOutcome::no_publish_and_reset_reconcile_timer()
+    } else {
+        RefreshOutcome::publish_and_reset_reconcile_timer(publish_context)
+    }
+}
+
+pub(super) fn snapshots_are_materially_equal(
+    left: &SnapshotEnvelope,
+    right: &SnapshotEnvelope,
+) -> bool {
+    let mut left = left.clone();
+    let mut right = right.clone();
+    normalize_snapshot_for_material_comparison(&mut left);
+    normalize_snapshot_for_material_comparison(&mut right);
+    left == right
+}
+
+pub(super) fn snapshot_diff(
+    left: &SnapshotEnvelope,
+    right: &SnapshotEnvelope,
+) -> ipc::SnapshotDiffFrame {
+    const MAX_DIFF_ITEMS: usize = 24;
+    let left_by_id = left
+        .panes
+        .iter()
+        .map(|pane| (pane.pane_id.as_str(), pane))
+        .collect::<HashMap<_, _>>();
+    let right_by_id = right
+        .panes
+        .iter()
+        .map(|pane| (pane.pane_id.as_str(), pane))
+        .collect::<HashMap<_, _>>();
+    let mut diff = ipc::SnapshotDiffFrame::default();
+
+    for pane_id in left_by_id.keys() {
+        if !right_by_id.contains_key(pane_id) {
+            push_bounded(
+                &mut diff.removed_pane_ids,
+                (*pane_id).to_string(),
+                &mut diff.truncated,
+            );
+        }
+    }
+    for pane_id in right_by_id.keys() {
+        if !left_by_id.contains_key(pane_id) {
+            push_bounded(
+                &mut diff.added_pane_ids,
+                (*pane_id).to_string(),
+                &mut diff.truncated,
+            );
+        }
+    }
+    for (pane_id, left_pane) in &left_by_id {
+        let Some(right_pane) = right_by_id.get(pane_id) else {
+            continue;
+        };
+        let fields = pane_diff_fields(left_pane, right_pane);
+        if fields.is_empty() {
+            continue;
+        }
+        if diff.changed_panes.len() >= MAX_DIFF_ITEMS {
+            diff.truncated = true;
+            continue;
+        }
+        diff.changed_panes.push(ipc::SnapshotPaneDiffFrame {
+            pane_id: (*pane_id).to_string(),
+            fields,
+        });
+    }
+
+    diff
+}
+
+fn push_bounded(items: &mut Vec<String>, item: String, truncated: &mut bool) {
+    const MAX_DIFF_ITEMS: usize = 24;
+    if items.len() >= MAX_DIFF_ITEMS {
+        *truncated = true;
+    } else {
+        items.push(item);
+    }
+}
+
+fn pane_diff_fields(left: &PaneRecord, right: &PaneRecord) -> Vec<String> {
+    let mut fields = Vec::new();
+    if left.provider != right.provider {
+        fields.push("provider".to_string());
+    }
+    if left.status != right.status {
+        fields.push("status".to_string());
+    }
+    if left.tmux.pane_title_raw != right.tmux.pane_title_raw {
+        fields.push("title".to_string());
+    }
+    if left.location != right.location {
+        fields.push("location".to_string());
+    }
+    if left.agent_metadata != right.agent_metadata {
+        fields.push("metadata".to_string());
+    }
+    if left.display != right.display {
+        fields.push("display".to_string());
+    }
+    if left.classification != right.classification {
+        fields.push("classification".to_string());
+    }
+    fields
+}
+
+fn normalize_snapshot_for_material_comparison(snapshot: &mut SnapshotEnvelope) {
+    snapshot.generated_at.clear();
+    snapshot.source.daemon_generated_at = None;
+    for pane in &mut snapshot.panes {
+        pane.diagnostics.cache_origin.clear();
+    }
+}
+
+pub(super) fn daemon_snapshot_from_tmux_with_provider(
+    tmux_reads: &mut impl TmuxReadProvider,
+    tmux_version: Option<&str>,
+    pane_output_cache: &mut scanner::PaneOutputStatusCache,
+    now: Instant,
+    disable_proc_fallback: bool,
+) -> Result<SnapshotEnvelope> {
+    let rows = tmux_reads.list_all_panes()?;
+    let proc_inspector = proc::ProcProcessInspector;
+    let mut panes = classify::panes_from_rows_with_proc_fallback_options(
+        rows,
+        &proc_inspector,
+        disable_proc_fallback,
+    );
+    scanner::apply_pane_output_status_fallbacks_with_cache(&mut panes, pane_output_cache, now);
+
+    let mut snapshot = SnapshotEnvelope {
+        schema_version: CACHE_SCHEMA_VERSION,
+        generated_at: snapshot::now_rfc3339()?,
+        source: SnapshotSource {
+            kind: SourceKind::Snapshot,
+            tmux_version: tmux_version.map(str::to_string),
+            daemon_generated_at: None,
+        },
+        panes,
+    };
+    snapshot::sort_snapshot_panes(&mut snapshot);
+    for pane in &mut snapshot.panes {
+        pane.diagnostics.cache_origin = "daemon_snapshot".to_string();
+    }
+    snapshot::mark_snapshot_as_daemon(&mut snapshot)?;
+    Ok(snapshot)
+}
+
+#[cfg(test)]
+pub(crate) fn test_refresh_snapshot_pane_with_provider(
+    snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &mut impl TmuxReadProvider,
+    pane_id: &str,
+) -> Result<()> {
+    let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
+    refresh_snapshot_pane_with_title(
+        snapshot,
+        tmux_reads,
+        pane_id,
+        None,
+        &mut pane_output_cache,
+        false,
+    )
+    .map(|_| ())
+}
+
+#[cfg(test)]
+pub(crate) fn test_apply_resnapshot_control_event_with_provider(
+    snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &mut impl TmuxReadProvider,
+) -> Result<(bool, bool)> {
+    let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
+    let mut batch = ControlEventBatch::default();
+    batch.push(ControlEvent::Resnapshot);
+    let outcome =
+        apply_control_event_batch(snapshot, tmux_reads, &batch, &mut pane_output_cache, false)?;
+    Ok((outcome.changed, outcome.full_snapshot_refresh))
+}
+
+#[cfg(test)]
+pub(crate) fn test_apply_control_event_lines_with_provider(
+    snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &mut impl TmuxReadProvider,
+    lines: &[String],
+) -> Result<(bool, bool, bool)> {
+    let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
+    let batch = ControlEventBatch::from_lines(lines);
+    let outcome =
+        apply_control_event_batch(snapshot, tmux_reads, &batch, &mut pane_output_cache, false)?;
+    Ok((
+        outcome.changed,
+        outcome.full_snapshot_refresh,
+        outcome.fallback_to_full,
+    ))
+}
+
+#[cfg(test)]
+pub(crate) fn test_apply_control_event_lines_with_provider_counts(
+    snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &mut impl TmuxReadProvider,
+    lines: &[String],
+) -> Result<(bool, bool, bool, u64, u64, u64)> {
+    let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
+    let batch = ControlEventBatch::from_lines(lines);
+    let outcome =
+        apply_control_event_batch(snapshot, tmux_reads, &batch, &mut pane_output_cache, false)?;
+    Ok((
+        outcome.changed,
+        outcome.full_snapshot_refresh,
+        outcome.fallback_to_full,
+        outcome.targeted_title_updates,
+        outcome.targeted_pane_refreshes,
+        outcome.targeted_scope_refreshes,
+    ))
+}
+
+#[cfg(test)]
+pub(crate) fn test_recover_targeted_pane_provider_with_inspector(
+    pane: &mut PaneRecord,
+    inspector: &impl proc::ProcessInspector,
+) {
+    recover_targeted_pane_provider_with_inspector(pane, inspector, false);
+}
+
+#[cfg(test)]
+pub(crate) fn test_refresh_snapshot_pane_title_with_provider(
+    snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &mut impl TmuxReadProvider,
+    pane_id: &str,
+    title_override: &str,
+) -> Result<()> {
+    let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
+    refresh_snapshot_pane_with_title(
+        snapshot,
+        tmux_reads,
+        pane_id,
+        Some(title_override),
+        &mut pane_output_cache,
+        false,
+    )
+    .map(|_| ())
+}
+
+#[cfg(test)]
+pub(crate) fn test_refresh_snapshot_window_with_provider(
+    snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &mut impl TmuxReadProvider,
+    window_id: &str,
+) -> Result<()> {
+    let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
+    refresh_snapshot_window(
+        snapshot,
+        tmux_reads,
+        window_id,
+        &mut pane_output_cache,
+        false,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn test_refresh_snapshot_session_with_provider(
+    snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &mut impl TmuxReadProvider,
+    session_id: &str,
+) -> Result<()> {
+    let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
+    refresh_snapshot_session(
+        snapshot,
+        tmux_reads,
+        session_id,
+        &mut pane_output_cache,
+        false,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn test_reconcile_full_snapshot_with_provider(
+    snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &mut impl TmuxReadProvider,
+    tmux_version: Option<&str>,
+) -> Result<()> {
+    let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
+    reconcile_full_snapshot(
+        snapshot,
+        tmux_reads,
+        tmux_version,
+        &mut pane_output_cache,
+        false,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum TargetScope {
+    Window,
+    Session,
+}
+
+impl TargetScope {
+    fn matches(self, pane: &PaneRecord, target_id: &str) -> bool {
+        match self {
+            Self::Window => pane.tmux.window_id.as_deref() == Some(target_id),
+            Self::Session => pane.tmux.session_id.as_deref() == Some(target_id),
+        }
+    }
+}
