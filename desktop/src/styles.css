@@ -140,7 +140,11 @@
 
 body {
   margin: 0;
-  min-width: 320px;
+  /* Follow the picker window's own min-width (220 on macOS, set in
+     tauri.{macos.,}conf.json) rather than enforcing a hidden 320px floor here
+     — leaving that floor in place clipped the trailing kbd/suffix off-screen
+     whenever the user dragged the sidebar narrower than 320. */
+  min-width: 0;
   min-height: 100vh;
   overflow: hidden;
   background: var(--bg);
@@ -358,11 +362,58 @@ p {
   display: grid;
   grid-template-columns: 14px 16px minmax(0, 1fr) auto auto;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   padding: 7px 8px;
   border-radius: 8px;
   cursor: pointer;
   user-select: none;
+}
+
+/* Two-row variant for tight widths: when the user drags the sidebar below ~250,
+   the agent-row reflows so the title gets the full label width while the suffix
+   (e.g. `4.1`) and per-row hotkey drop to a second indented line beneath it. The
+   dot and logo span both rows so they read as the row's leading rail rather than
+   floating with one half. */
+@media (max-width: 249px) {
+  .agent-row {
+    grid-template-columns: 14px 16px minmax(0, 1fr) auto;
+    grid-template-areas:
+      "dot logo label  label"
+      "dot logo suffix kbd";
+    row-gap: 1px;
+    column-gap: 8px;
+  }
+  .agent-row .status-dot {
+    grid-area: dot;
+    align-self: center;
+  }
+  .agent-row .provider-logo {
+    grid-area: logo;
+    align-self: center;
+  }
+  .agent-row .agent-label {
+    grid-area: label;
+  }
+  .agent-row .agent-suffix {
+    grid-area: suffix;
+    justify-self: start;
+  }
+  .agent-row kbd {
+    grid-area: kbd;
+    justify-self: end;
+  }
+
+  /* Settings shares this window, so its widest fixed control — the 3-up
+     Dark/Light/System theme toggle — also has to survive the tight floor. The
+     even 1fr columns can't seat "System" at 13px here, so shave the label type
+     and button padding just in this range; the 280px default keeps full size.
+     Scoped as `.theme-toggle .theme-option` (specificity 0,2,0) so it wins over
+     the base `.theme-option` rule, which is declared later in the file — a plain
+     `.theme-option` here has equal specificity and would lose on source order. */
+  .theme-toggle .theme-option {
+    padding: 0 4px;
+    font-size: 12px;
+  }
 }
 
 /* Provider brand logo (leading column). The empty variant reserves the column
@@ -777,7 +828,8 @@ kbd {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px 10px;
   padding-left: 2px;
 }
 
@@ -868,6 +920,7 @@ kbd {
 
 .theme-option {
   min-height: 32px;
+  min-width: 0;
   padding: 0 10px;
   border-radius: 7px;
   background: transparent;
@@ -902,7 +955,8 @@ kbd {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 8px 12px;
 }
 
 .setting-label {
@@ -959,8 +1013,13 @@ kbd {
 }
 
 .glass-slider {
-  flex: 0 0 140px;
-  width: 140px;
+  /* Shrink the slider (down to a still-usable 80px) before the row is forced to
+     wrap, so the "Transparency" label keeps its line at the 220px window floor.
+     Cap at 140 so it doesn't stretch on a wide window. */
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 80px;
+  max-width: 140px;
   min-height: 0;
   padding: 0;
   accent-color: var(--accent);
@@ -1120,7 +1179,8 @@ button:disabled {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px 10px;
 }
 
 .detail-head-title {
@@ -1141,14 +1201,23 @@ button:disabled {
 
 .detail-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
-  flex: 0 0 auto;
+  /* Keep the actions flushed right — on the header line, and on their own line
+     when the header wraps at narrow widths. Allowing the group to shrink (no
+     `flex: 0 0 auto`) lets its buttons wrap to a second sub-row inside the
+     single-source detail card, whose 14px padding leaves too little width for
+     all three SSH buttons (Delete/Reset/Apply) on one line at the 220px floor. */
+  justify-content: flex-end;
+  margin-left: auto;
 }
 
 .detail-actions button {
   min-height: 28px;
   padding: 0 12px;
   font-size: 12px;
+  /* Buttons keep their size and wrap as whole units rather than squashing. */
+  flex: 0 0 auto;
 }
 
 /* Preflight status banner */
