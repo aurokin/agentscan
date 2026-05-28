@@ -816,7 +816,8 @@ kbd {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px 10px;
   padding-left: 2px;
 }
 
@@ -1159,7 +1160,8 @@ button:disabled {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px 10px;
 }
 
 .detail-head-title {
@@ -1182,6 +1184,9 @@ button:disabled {
   display: flex;
   gap: 6px;
   flex: 0 0 auto;
+  /* When the header wraps at narrow widths, keep the actions flushed right on
+     their own line rather than left-aligned under the title. */
+  margin-left: auto;
 }
 
 .detail-actions button {
