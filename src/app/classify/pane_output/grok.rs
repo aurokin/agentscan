@@ -1,4 +1,4 @@
-use super::*;
+use super::{StatusKind, dotted_version_token};
 
 pub(super) fn status(output: &str) -> Option<StatusKind> {
     let lines: Vec<&str> = output.lines().collect();

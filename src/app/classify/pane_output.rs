@@ -1,4 +1,4 @@
-use super::*;
+use super::{PaneRecord, PaneStatus, Provider, StatusKind, StatusSource};
 
 mod antigravity;
 mod claude;
@@ -12,28 +12,22 @@ mod hermes;
 mod opencode;
 mod pi;
 
+type PaneOutputClassifier = fn(&str) -> Option<StatusKind>;
+
 pub(crate) fn pane_output_status_fallback_candidate(pane: &PaneRecord) -> bool {
-    matches!(
-        pane.provider,
-        Some(Provider::Codex)
-            | Some(Provider::Claude)
-            | Some(Provider::Copilot)
-            | Some(Provider::CursorCli)
-            | Some(Provider::Gemini)
-            | Some(Provider::Grok)
-            | Some(Provider::Hermes)
-            | Some(Provider::Opencode)
-            | Some(Provider::Pi)
-            | Some(Provider::Antigravity)
-            | Some(Provider::Droid)
-    ) && pane.status.kind == StatusKind::Unknown
+    pane.provider.and_then(classifier_for).is_some()
+        && pane.status.kind == StatusKind::Unknown
         && pane.status.source == StatusSource::NotChecked
 }
 
 pub(crate) fn apply_pane_output_status_fallback(pane: &mut PaneRecord, output: &str) {
-    if !pane_output_status_fallback_candidate(pane) {
+    if pane.status.kind != StatusKind::Unknown || pane.status.source != StatusSource::NotChecked {
         return;
     }
+
+    let Some(classifier) = pane.provider.and_then(classifier_for) else {
+        return;
+    };
 
     // Agent TUIs render their current prompt/footer at the bottom of what they have
     // drawn, but a pane is often taller than that — a freshly started or top-rendered
@@ -42,23 +36,24 @@ pub(crate) fn apply_pane_output_status_fallback(pane: &mut PaneRecord, output: &
     // once here, so each provider matcher does not have to fight pane padding.
     let output = trim_trailing_blank_lines(output);
 
-    let status = match pane.provider {
-        Some(Provider::Codex) => codex::status(output),
-        Some(Provider::Claude) => claude::status(output),
-        Some(Provider::Copilot) => copilot::status(output),
-        Some(Provider::CursorCli) => cursor_cli::status(output),
-        Some(Provider::Gemini) => gemini::status(output),
-        Some(Provider::Grok) => grok::status(output),
-        Some(Provider::Hermes) => hermes::status(output),
-        Some(Provider::Opencode) => opencode::status(output),
-        Some(Provider::Pi) => pi::status(output),
-        Some(Provider::Antigravity) => antigravity::status(output),
-        Some(Provider::Droid) => droid::status(output),
-        _ => None,
-    };
-
-    if let Some(kind) = status {
+    if let Some(kind) = classifier(output) {
         pane.status = PaneStatus::pane_output(kind);
+    }
+}
+
+fn classifier_for(provider: Provider) -> Option<PaneOutputClassifier> {
+    match provider {
+        Provider::Codex => Some(codex::status),
+        Provider::Claude => Some(claude::status),
+        Provider::Copilot => Some(copilot::status),
+        Provider::CursorCli => Some(cursor_cli::status),
+        Provider::Gemini => Some(gemini::status),
+        Provider::Grok => Some(grok::status),
+        Provider::Hermes => Some(hermes::status),
+        Provider::Opencode => Some(opencode::status),
+        Provider::Pi => Some(pi::status),
+        Provider::Antigravity => Some(antigravity::status),
+        Provider::Droid => Some(droid::status),
     }
 }
 

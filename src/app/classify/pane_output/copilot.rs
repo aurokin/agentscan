@@ -1,4 +1,4 @@
-use super::*;
+use super::StatusKind;
 
 pub(super) fn status(output: &str) -> Option<StatusKind> {
     if copilot_pane_output_indicates_busy(output) {
