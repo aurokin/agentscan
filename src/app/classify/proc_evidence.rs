@@ -171,195 +171,249 @@ fn proc_provider_env_match(
     )
 }
 
-fn claude_argv0_has_binary_shape(arg: &str) -> bool {
-    let lower = normalize_proc_arg(arg);
-    arg_ends_with_any(
-        &lower,
-        &["/claude", "/claude-code", "/node_modules/.bin/claude"],
-    ) || claude_arg_has_known_package_path(&lower)
+struct ProcArgPathPatterns {
+    contains: &'static [&'static str],
+    suffixes: &'static [&'static str],
+    node_module_files: &'static [NodeModuleFilePattern],
+    bin_shims: &'static [BinShimPattern],
 }
 
-fn claude_arg_has_known_package_path(arg: &str) -> bool {
-    let lower = normalize_proc_arg(arg);
-    arg_contains_any(&lower, &["/node_modules/@anthropic-ai/claude-code/"])
+struct NodeModuleFilePattern {
+    package: &'static str,
+    relative_path: &'static str,
 }
 
-fn gemini_arg_has_known_package_path(arg: &str) -> bool {
-    let lower = normalize_proc_arg(arg);
-
-    arg_contains_any(
-        &lower,
-        &[
-            "/node_modules/@google/gemini-cli/dist/index.js",
-            "/node_modules/@google/gemini-cli/bundle/gemini.js",
-        ],
-    ) || arg_ends_with_any(
-        &lower,
-        &[
-            "/node_modules/@google/gemini-cli",
-            "/gemini-cli/packages/cli/index.ts",
-            "/gemini-cli/packages/cli/dist/index.js",
-            "/gemini-cli/bundle/gemini.js",
-            "/gemini-cli/sea/sea-launch.cjs",
-        ],
-    ) || gemini_arg_has_known_bin_shim_path(&lower)
+struct BinShimPattern {
+    binary: &'static str,
+    direct_bin_dirs: &'static [&'static str],
+    allow_node_manager_bin: bool,
 }
 
-fn gemini_arg_has_known_bin_shim_path(lower: &str) -> bool {
-    arg_has_known_bin_shim_path(
-        lower,
-        "gemini",
-        &[
-            "/opt/homebrew/bin",
-            "/usr/local/bin",
-            "/usr/bin",
-            "/.volta/bin",
-        ],
-        true,
-    )
-}
+const HOMEBREW_LOCAL_BIN_DIRS: &[&str] = &["/opt/homebrew/bin", "/usr/local/bin"];
+const VOLTA_SYSTEM_BIN_DIRS: &[&str] = &[
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "/.volta/bin",
+];
 
-fn pi_arg_has_known_package_path(arg: &str) -> bool {
-    let lower = normalize_proc_arg(arg);
+const CLAUDE_ARGV0_PATTERNS: ProcArgPathPatterns = ProcArgPathPatterns {
+    contains: CLAUDE_ARG_CONTAINS,
+    suffixes: &["/claude", "/claude-code", "/node_modules/.bin/claude"],
+    node_module_files: &[],
+    bin_shims: &[],
+};
 
-    arg_contains_any(&lower, &["/node_modules/@mariozechner/pi-coding-agent/"])
-        || arg_ends_with_any(
-            &lower,
-            &[
-                "/pi-mono/packages/coding-agent/dist/cli.js",
-                "/pi-mono/packages/coding-agent/dist/pi",
-            ],
-        )
-        || pi_arg_has_known_bin_shim_path(&lower)
-}
+const CLAUDE_ARG_CONTAINS: &[&str] = &["/node_modules/@anthropic-ai/claude-code/"];
 
-fn pi_arg_has_known_bin_shim_path(lower: &str) -> bool {
-    arg_has_known_bin_shim_path(lower, "pi", &["/opt/homebrew/bin", "/usr/local/bin"], false)
-}
+const CLAUDE_ARG_PATTERNS: ProcArgPathPatterns = ProcArgPathPatterns {
+    contains: CLAUDE_ARG_CONTAINS,
+    suffixes: &[],
+    node_module_files: &[],
+    bin_shims: &[],
+};
 
-fn hermes_arg_has_known_package_path(arg: &str) -> bool {
-    let lower = normalize_proc_arg(arg);
+const GEMINI_ARG_PATTERNS: ProcArgPathPatterns = ProcArgPathPatterns {
+    contains: &[
+        "/node_modules/@google/gemini-cli/dist/index.js",
+        "/node_modules/@google/gemini-cli/bundle/gemini.js",
+    ],
+    suffixes: &[
+        "/node_modules/@google/gemini-cli",
+        "/gemini-cli/packages/cli/index.ts",
+        "/gemini-cli/packages/cli/dist/index.js",
+        "/gemini-cli/bundle/gemini.js",
+        "/gemini-cli/sea/sea-launch.cjs",
+    ],
+    node_module_files: &[],
+    bin_shims: &[BinShimPattern {
+        binary: "gemini",
+        direct_bin_dirs: VOLTA_SYSTEM_BIN_DIRS,
+        allow_node_manager_bin: true,
+    }],
+};
 
-    arg_ends_with_any(
-        &lower,
-        &[
-            "/.local/bin/hermes",
-            "/.local/bin/hermes-agent",
-            "/hermes-agent/hermes",
-            "/hermes-agent/run_agent.py",
-            "/hermes-agent/hermes_cli/main.py",
-        ],
-    ) || arg_contains_any(
-        &lower,
-        &["/.hermes/hermes-agent/", "/site-packages/hermes_cli/"],
-    ) || hermes_arg_has_known_bin_shim_path(&lower)
-}
+const PI_ARG_PATTERNS: ProcArgPathPatterns = ProcArgPathPatterns {
+    contains: &["/node_modules/@mariozechner/pi-coding-agent/"],
+    suffixes: &[
+        "/pi-mono/packages/coding-agent/dist/cli.js",
+        "/pi-mono/packages/coding-agent/dist/pi",
+    ],
+    node_module_files: &[],
+    bin_shims: &[BinShimPattern {
+        binary: "pi",
+        direct_bin_dirs: HOMEBREW_LOCAL_BIN_DIRS,
+        allow_node_manager_bin: false,
+    }],
+};
 
-fn hermes_arg_has_known_bin_shim_path(lower: &str) -> bool {
-    arg_has_known_bin_shim_path(
-        lower,
-        "hermes",
-        &["/opt/homebrew/bin", "/usr/local/bin"],
-        false,
-    ) || arg_has_known_bin_shim_path(
-        lower,
-        "hermes-agent",
-        &["/opt/homebrew/bin", "/usr/local/bin"],
-        false,
-    )
-}
+const HERMES_ARG_PATTERNS: ProcArgPathPatterns = ProcArgPathPatterns {
+    contains: &["/.hermes/hermes-agent/", "/site-packages/hermes_cli/"],
+    suffixes: &[
+        "/.local/bin/hermes",
+        "/.local/bin/hermes-agent",
+        "/hermes-agent/hermes",
+        "/hermes-agent/run_agent.py",
+        "/hermes-agent/hermes_cli/main.py",
+    ],
+    node_module_files: &[],
+    bin_shims: &[
+        BinShimPattern {
+            binary: "hermes",
+            direct_bin_dirs: HOMEBREW_LOCAL_BIN_DIRS,
+            allow_node_manager_bin: false,
+        },
+        BinShimPattern {
+            binary: "hermes-agent",
+            direct_bin_dirs: HOMEBREW_LOCAL_BIN_DIRS,
+            allow_node_manager_bin: false,
+        },
+    ],
+};
 
-fn opencode_arg_has_known_package_path(arg: &str) -> bool {
-    let lower = normalize_proc_arg(arg);
+const OPENCODE_ARG_PATTERNS: ProcArgPathPatterns = ProcArgPathPatterns {
+    contains: &[],
+    suffixes: &[
+        "/node_modules/opencode/bin/opencode",
+        "/node_modules/opencode-ai/bin/opencode",
+        "/opencode/packages/opencode/bin/opencode",
+        "/opencode/packages/opencode/src/index.ts",
+    ],
+    node_module_files: &[
+        NodeModuleFilePattern {
+            package: "opencode-darwin-arm64",
+            relative_path: "bin/opencode",
+        },
+        NodeModuleFilePattern {
+            package: "opencode-darwin-x64",
+            relative_path: "bin/opencode",
+        },
+        NodeModuleFilePattern {
+            package: "opencode-darwin-x64-baseline",
+            relative_path: "bin/opencode",
+        },
+        NodeModuleFilePattern {
+            package: "opencode-linux-arm64",
+            relative_path: "bin/opencode",
+        },
+        NodeModuleFilePattern {
+            package: "opencode-linux-arm64-musl",
+            relative_path: "bin/opencode",
+        },
+        NodeModuleFilePattern {
+            package: "opencode-linux-x64",
+            relative_path: "bin/opencode",
+        },
+        NodeModuleFilePattern {
+            package: "opencode-linux-x64-baseline",
+            relative_path: "bin/opencode",
+        },
+        NodeModuleFilePattern {
+            package: "opencode-linux-x64-musl",
+            relative_path: "bin/opencode",
+        },
+        NodeModuleFilePattern {
+            package: "opencode-linux-x64-baseline-musl",
+            relative_path: "bin/opencode",
+        },
+        NodeModuleFilePattern {
+            package: "opencode-windows-arm64",
+            relative_path: "bin/opencode",
+        },
+        NodeModuleFilePattern {
+            package: "opencode-windows-x64",
+            relative_path: "bin/opencode",
+        },
+        NodeModuleFilePattern {
+            package: "opencode-windows-x64-baseline",
+            relative_path: "bin/opencode",
+        },
+    ],
+    bin_shims: &[BinShimPattern {
+        binary: "opencode",
+        direct_bin_dirs: VOLTA_SYSTEM_BIN_DIRS,
+        allow_node_manager_bin: true,
+    }],
+};
 
-    arg_ends_with_any(
-        &lower,
-        &[
-            "/node_modules/opencode/bin/opencode",
-            "/node_modules/opencode-ai/bin/opencode",
-            "/opencode/packages/opencode/bin/opencode",
-            "/opencode/packages/opencode/src/index.ts",
-        ],
-    ) || opencode_arg_has_platform_package_path(&lower)
-        || opencode_arg_has_known_bin_shim_path(&lower)
-}
-
-fn opencode_arg_has_platform_package_path(lower: &str) -> bool {
-    const PACKAGES: &[&str] = &[
-        "opencode-darwin-arm64",
-        "opencode-darwin-x64",
-        "opencode-darwin-x64-baseline",
-        "opencode-linux-arm64",
-        "opencode-linux-arm64-musl",
-        "opencode-linux-x64",
-        "opencode-linux-x64-baseline",
-        "opencode-linux-x64-musl",
-        "opencode-linux-x64-baseline-musl",
-        "opencode-windows-arm64",
-        "opencode-windows-x64",
-        "opencode-windows-x64-baseline",
-    ];
-
-    PACKAGES
-        .iter()
-        .any(|package| arg_has_node_module_bin(lower, package, "opencode"))
-}
-
-fn copilot_arg_has_known_package_path(arg: &str) -> bool {
-    let lower = normalize_proc_arg(arg);
-
-    arg_ends_with_any(
-        &lower,
-        &[
-            "/node_modules/@github/copilot/npm-loader.js",
-            "/node_modules/@github/copilot/index.js",
-            "/node_modules/@github/copilot/app.js",
-        ],
-    ) || copilot_arg_has_platform_package_path(&lower)
-        || copilot_arg_has_known_bin_shim_path(&lower)
-}
-
-fn copilot_arg_has_platform_package_path(lower: &str) -> bool {
-    const PACKAGES: &[&str] = &[
-        "copilot-darwin-arm64",
-        "copilot-darwin-x64",
-        "copilot-linux-arm64",
-        "copilot-linux-x64",
-        "copilot-win32-arm64",
-        "copilot-win32-x64",
-    ];
-
-    PACKAGES
-        .iter()
-        .any(|package| arg_has_node_module_file(lower, &format!("@github/{package}"), "copilot"))
-}
-
-fn copilot_arg_has_known_bin_shim_path(lower: &str) -> bool {
-    arg_has_known_bin_shim_path(
-        lower,
-        "copilot",
-        &[
+const COPILOT_ARG_PATTERNS: ProcArgPathPatterns = ProcArgPathPatterns {
+    contains: &[],
+    suffixes: &[
+        "/node_modules/@github/copilot/npm-loader.js",
+        "/node_modules/@github/copilot/index.js",
+        "/node_modules/@github/copilot/app.js",
+    ],
+    node_module_files: &[
+        NodeModuleFilePattern {
+            package: "@github/copilot-darwin-arm64",
+            relative_path: "copilot",
+        },
+        NodeModuleFilePattern {
+            package: "@github/copilot-darwin-x64",
+            relative_path: "copilot",
+        },
+        NodeModuleFilePattern {
+            package: "@github/copilot-linux-arm64",
+            relative_path: "copilot",
+        },
+        NodeModuleFilePattern {
+            package: "@github/copilot-linux-x64",
+            relative_path: "copilot",
+        },
+        NodeModuleFilePattern {
+            package: "@github/copilot-win32-arm64",
+            relative_path: "copilot",
+        },
+        NodeModuleFilePattern {
+            package: "@github/copilot-win32-x64",
+            relative_path: "copilot",
+        },
+    ],
+    bin_shims: &[BinShimPattern {
+        binary: "copilot",
+        direct_bin_dirs: &[
             "/opt/homebrew/bin",
             "/usr/local/bin",
             "/usr/bin",
             "/.local/bin",
         ],
-        true,
-    )
+        allow_node_manager_bin: true,
+    }],
+};
+
+fn claude_argv0_has_binary_shape(arg: &str) -> bool {
+    let lower = normalize_proc_arg(arg);
+    arg_matches_patterns(&lower, &CLAUDE_ARGV0_PATTERNS)
 }
 
-fn opencode_arg_has_known_bin_shim_path(lower: &str) -> bool {
-    arg_has_known_bin_shim_path(
-        lower,
-        "opencode",
-        &[
-            "/opt/homebrew/bin",
-            "/usr/local/bin",
-            "/usr/bin",
-            "/.volta/bin",
-        ],
-        true,
-    )
+fn claude_arg_has_known_package_path(arg: &str) -> bool {
+    let lower = normalize_proc_arg(arg);
+    arg_matches_patterns(&lower, &CLAUDE_ARG_PATTERNS)
+}
+
+fn gemini_arg_has_known_package_path(arg: &str) -> bool {
+    let lower = normalize_proc_arg(arg);
+    arg_matches_patterns(&lower, &GEMINI_ARG_PATTERNS)
+}
+
+fn pi_arg_has_known_package_path(arg: &str) -> bool {
+    let lower = normalize_proc_arg(arg);
+    arg_matches_patterns(&lower, &PI_ARG_PATTERNS)
+}
+
+fn hermes_arg_has_known_package_path(arg: &str) -> bool {
+    let lower = normalize_proc_arg(arg);
+    arg_matches_patterns(&lower, &HERMES_ARG_PATTERNS)
+}
+
+fn opencode_arg_has_known_package_path(arg: &str) -> bool {
+    let lower = normalize_proc_arg(arg);
+    arg_matches_patterns(&lower, &OPENCODE_ARG_PATTERNS)
+}
+
+fn copilot_arg_has_known_package_path(arg: &str) -> bool {
+    let lower = normalize_proc_arg(arg);
+    arg_matches_patterns(&lower, &COPILOT_ARG_PATTERNS)
 }
 
 fn normalize_proc_arg(arg: &str) -> String {
@@ -374,8 +428,21 @@ fn arg_contains_any(lower: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| lower.contains(needle))
 }
 
-fn arg_has_node_module_bin(lower: &str, package: &str, binary: &str) -> bool {
-    arg_has_node_module_file(lower, package, &format!("bin/{binary}"))
+fn arg_matches_patterns(lower: &str, patterns: &ProcArgPathPatterns) -> bool {
+    arg_contains_any(lower, patterns.contains)
+        || arg_ends_with_any(lower, patterns.suffixes)
+        || patterns
+            .node_module_files
+            .iter()
+            .any(|pattern| arg_has_node_module_file(lower, pattern.package, pattern.relative_path))
+        || patterns.bin_shims.iter().any(|pattern| {
+            arg_has_known_bin_shim_path(
+                lower,
+                pattern.binary,
+                pattern.direct_bin_dirs,
+                pattern.allow_node_manager_bin,
+            )
+        })
 }
 
 fn arg_has_node_module_file(lower: &str, package: &str, relative_path: &str) -> bool {
@@ -509,21 +576,21 @@ mod tests {
     }
 
     #[test]
-    fn node_module_bin_matcher_requires_package_and_binary_boundary() {
-        assert!(arg_has_node_module_bin(
+    fn node_module_file_matcher_requires_package_and_relative_path_boundary() {
+        assert!(arg_has_node_module_file(
             "/work/app/node_modules/opencode/bin/opencode",
             "opencode",
-            "opencode"
+            "bin/opencode"
         ));
-        assert!(!arg_has_node_module_bin(
+        assert!(!arg_has_node_module_file(
             "/work/app/node_modules/opencode-helper/bin/opencode",
             "opencode",
-            "opencode"
+            "bin/opencode"
         ));
-        assert!(!arg_has_node_module_bin(
+        assert!(!arg_has_node_module_file(
             "/work/app/node_modules/opencode/bin/opencode-helper",
             "opencode",
-            "opencode"
+            "bin/opencode"
         ));
     }
 
