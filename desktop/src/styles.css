@@ -140,7 +140,11 @@
 
 body {
   margin: 0;
-  min-width: 320px;
+  /* Follow the picker window's own min-width (220 on macOS, set in
+     tauri.{macos.,}conf.json) rather than enforcing a hidden 320px floor here
+     — leaving that floor in place clipped the trailing kbd/suffix off-screen
+     whenever the user dragged the sidebar narrower than 320. */
+  min-width: 0;
   min-height: 100vh;
   overflow: hidden;
   background: var(--bg);
@@ -358,11 +362,46 @@ p {
   display: grid;
   grid-template-columns: 14px 16px minmax(0, 1fr) auto auto;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   padding: 7px 8px;
   border-radius: 8px;
   cursor: pointer;
   user-select: none;
+}
+
+/* Two-row variant for tight widths: when the user drags the sidebar below ~250,
+   the agent-row reflows so the title gets the full label width while the suffix
+   (e.g. `4.1`) and per-row hotkey drop to a second indented line beneath it. The
+   dot and logo span both rows so they read as the row's leading rail rather than
+   floating with one half. */
+@media (max-width: 249px) {
+  .agent-row {
+    grid-template-columns: 14px 16px minmax(0, 1fr) auto;
+    grid-template-areas:
+      "dot logo label  label"
+      "dot logo suffix kbd";
+    row-gap: 1px;
+    column-gap: 8px;
+  }
+  .agent-row .status-dot {
+    grid-area: dot;
+    align-self: center;
+  }
+  .agent-row .provider-logo {
+    grid-area: logo;
+    align-self: center;
+  }
+  .agent-row .agent-label {
+    grid-area: label;
+  }
+  .agent-row .agent-suffix {
+    grid-area: suffix;
+    justify-self: start;
+  }
+  .agent-row kbd {
+    grid-area: kbd;
+    justify-self: end;
+  }
 }
 
 /* Provider brand logo (leading column). The empty variant reserves the column
