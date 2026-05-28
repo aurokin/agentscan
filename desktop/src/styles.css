@@ -402,6 +402,15 @@ p {
     grid-area: kbd;
     justify-self: end;
   }
+
+  /* Settings shares this window, so its widest fixed control — the 3-up
+     Dark/Light/System theme toggle — also has to survive the tight floor. The
+     even 1fr columns can't seat "System" at 13px here, so shave the label type
+     and button padding just in this range; the 280px default keeps full size. */
+  .theme-option {
+    padding: 0 4px;
+    font-size: 12px;
+  }
 }
 
 /* Provider brand logo (leading column). The empty variant reserves the column
@@ -908,6 +917,7 @@ kbd {
 
 .theme-option {
   min-height: 32px;
+  min-width: 0;
   padding: 0 10px;
   border-radius: 7px;
   background: transparent;
