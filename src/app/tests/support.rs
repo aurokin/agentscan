@@ -1,25 +1,125 @@
+#[derive(Clone)]
+struct TmuxPaneRowBuilder {
+    row: super::TmuxPaneRow,
+}
+
+impl TmuxPaneRowBuilder {
+    fn new(pane_pid: u32) -> Self {
+        Self {
+            row: super::TmuxPaneRow {
+                session_name: "ambiguous".to_string(),
+                window_index: 1,
+                pane_index: 1,
+                pane_id: format!("%{pane_pid}"),
+                pane_pid,
+                pane_current_command: "zsh".to_string(),
+                pane_title_raw: String::new(),
+                pane_tty: format!("/dev/pts/{pane_pid}"),
+                pane_current_path: "/tmp/proc-wrapper".to_string(),
+                window_name: "ai".to_string(),
+                session_id: None,
+                window_id: None,
+                agent_provider: None,
+                agent_label: None,
+                agent_cwd: None,
+                agent_state: None,
+                agent_session_id: None,
+                pane_active: false,
+                window_active: false,
+            },
+        }
+    }
+
+    fn session_name(mut self, session_name: impl Into<String>) -> Self {
+        self.row.session_name = session_name.into();
+        self
+    }
+
+    fn window_index(mut self, window_index: u32) -> Self {
+        self.row.window_index = window_index;
+        self
+    }
+
+    fn pane_index(mut self, pane_index: u32) -> Self {
+        self.row.pane_index = pane_index;
+        self
+    }
+
+    fn pane_id(mut self, pane_id: impl Into<String>) -> Self {
+        self.row.pane_id = pane_id.into();
+        self
+    }
+
+    fn command(mut self, command: impl Into<String>) -> Self {
+        self.row.pane_current_command = command.into();
+        self
+    }
+
+    fn title(mut self, title: impl Into<String>) -> Self {
+        self.row.pane_title_raw = title.into();
+        self
+    }
+
+    fn tty(mut self, tty: impl Into<String>) -> Self {
+        self.row.pane_tty = tty.into();
+        self
+    }
+
+    fn current_path(mut self, current_path: impl Into<String>) -> Self {
+        self.row.pane_current_path = current_path.into();
+        self
+    }
+
+    fn window_name(mut self, window_name: impl Into<String>) -> Self {
+        self.row.window_name = window_name.into();
+        self
+    }
+
+    fn session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.row.session_id = Some(session_id.into());
+        self
+    }
+
+    fn window_id(mut self, window_id: impl Into<String>) -> Self {
+        self.row.window_id = Some(window_id.into());
+        self
+    }
+
+    fn agent_provider(mut self, agent_provider: impl Into<String>) -> Self {
+        self.row.agent_provider = Some(agent_provider.into());
+        self
+    }
+
+    fn agent_label(mut self, agent_label: impl Into<String>) -> Self {
+        self.row.agent_label = Some(agent_label.into());
+        self
+    }
+
+    fn pane_active(mut self, pane_active: bool) -> Self {
+        self.row.pane_active = pane_active;
+        self
+    }
+
+    fn window_active(mut self, window_active: bool) -> Self {
+        self.row.window_active = window_active;
+        self
+    }
+
+    fn build(self) -> super::TmuxPaneRow {
+        self.row
+    }
+
+    fn pane(self) -> PaneRecord {
+        classify::pane_from_row(self.build())
+    }
+}
+
+fn tmux_pane_row(pane_pid: u32) -> TmuxPaneRowBuilder {
+    TmuxPaneRowBuilder::new(pane_pid)
+}
+
 fn proc_fallback_pane(pid: u32, command: &str, title: &str) -> PaneRecord {
-    classify::pane_from_row(super::TmuxPaneRow {
-        session_name: "ambiguous".to_string(),
-        window_index: 1,
-        pane_index: 1,
-        pane_id: format!("%{pid}"),
-        pane_pid: pid,
-        pane_current_command: command.to_string(),
-        pane_title_raw: title.to_string(),
-        pane_tty: format!("/dev/pts/{pid}"),
-        pane_current_path: "/tmp/proc-wrapper".to_string(),
-        window_name: "ai".to_string(),
-        session_id: None,
-        window_id: None,
-        agent_provider: None,
-        agent_label: None,
-        agent_cwd: None,
-        agent_state: None,
-        agent_session_id: None,
-        pane_active: false,
-        window_active: false,
-    })
+    tmux_pane_row(pid).command(command).title(title).pane()
 }
 
 fn pane_output_status_pane(pid: u32, provider: Provider, title: &str) -> PaneRecord {
