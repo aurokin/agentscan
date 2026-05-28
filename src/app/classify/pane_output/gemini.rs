@@ -1,13 +1,9 @@
-use super::StatusKind;
+use super::{PaneOutputFrame, StatusKind};
 
 pub(super) fn status(output: &str) -> Option<StatusKind> {
-    let lines: Vec<&str> = output.lines().collect();
-    let idle_index = lines
-        .iter()
-        .rposition(|line| gemini_idle_input_prompt_line(line));
-    let busy_index = lines
-        .iter()
-        .rposition(|line| gemini_current_busy_marker_line(line));
+    let frame = PaneOutputFrame::new(output);
+    let idle_index = frame.rposition(gemini_idle_input_prompt_line);
+    let busy_index = frame.rposition(gemini_current_busy_marker_line);
 
     if let Some(index) = busy_index
         && idle_index.is_none_or(|idle_index| idle_index < index)
@@ -16,7 +12,7 @@ pub(super) fn status(output: &str) -> Option<StatusKind> {
     }
 
     idle_index
-        .is_some_and(|index| gemini_prompt_is_near_current_footer(&lines, index))
+        .is_some_and(|index| gemini_prompt_is_near_current_footer(&frame, index))
         .then_some(StatusKind::Idle)
 }
 
@@ -33,7 +29,6 @@ fn gemini_current_busy_marker_line(line: &str) -> bool {
         || (line.contains("Running Agent") && line.contains("ctrl+o to collapse"))
 }
 
-fn gemini_prompt_is_near_current_footer(lines: &[&str], prompt_index: usize) -> bool {
-    let tail_len = lines.len().saturating_sub(prompt_index);
-    tail_len <= 8
+fn gemini_prompt_is_near_current_footer(frame: &PaneOutputFrame<'_>, prompt_index: usize) -> bool {
+    frame.is_within_tail(prompt_index, 8)
 }

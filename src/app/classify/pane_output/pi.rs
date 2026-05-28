@@ -1,22 +1,20 @@
-use super::StatusKind;
+use super::{PaneOutputFrame, StatusKind};
 
 pub(super) fn status(output: &str) -> Option<StatusKind> {
-    let lines: Vec<&str> = output.lines().collect();
-    let idle_index = lines.iter().rposition(|line| pi_editor_border_line(line));
-    let busy_index = lines
-        .iter()
-        .rposition(|line| pi_current_busy_marker_line(line));
+    let frame = PaneOutputFrame::new(output);
+    let idle_index = frame.rposition(pi_editor_border_line);
+    let busy_index = frame.rposition(pi_current_busy_marker_line);
 
     if let Some(index) = busy_index
         && idle_index.is_none_or(|idle_index| {
-            idle_index < index || pi_busy_marker_is_near_current_editor(&lines, index, idle_index)
+            idle_index < index || pi_busy_marker_is_near_current_editor(&frame, index, idle_index)
         })
     {
         return Some(StatusKind::Busy);
     }
 
     idle_index
-        .is_some_and(|index| pi_editor_frame_is_near_current_footer(&lines, index))
+        .is_some_and(|index| pi_editor_frame_is_near_current_footer(&frame, index))
         .then_some(StatusKind::Idle)
 }
 
@@ -29,15 +27,12 @@ fn pi_current_busy_marker_line(line: &str) -> bool {
 }
 
 fn pi_busy_marker_is_near_current_editor(
-    lines: &[&str],
+    frame: &PaneOutputFrame<'_>,
     busy_index: usize,
     idle_index: usize,
 ) -> bool {
-    idle_index.saturating_sub(busy_index) <= 4
-        && lines[busy_index + 1..idle_index]
-            .iter()
-            .all(|line| pi_editor_gap_line(line))
-        && pi_editor_frame_is_near_current_footer(lines, idle_index)
+    frame.forward_gap_before_is_within(busy_index, idle_index, 4, pi_editor_gap_line)
+        && pi_editor_frame_is_near_current_footer(frame, idle_index)
 }
 
 fn pi_editor_gap_line(line: &str) -> bool {
@@ -67,12 +62,11 @@ fn pi_editor_border_line(line: &str) -> bool {
     line.chars().count() >= 8 && line.chars().all(|ch| ch == '─')
 }
 
-fn pi_editor_frame_is_near_current_footer(lines: &[&str], border_index: usize) -> bool {
-    let tail_len = lines.len().saturating_sub(border_index);
-    tail_len <= 6
-        && lines[border_index..]
-            .iter()
-            .any(|line| pi_footer_context_line(line))
+fn pi_editor_frame_is_near_current_footer(
+    frame: &PaneOutputFrame<'_>,
+    border_index: usize,
+) -> bool {
+    frame.tail_contains(border_index, 6, pi_footer_context_line)
 }
 
 fn pi_footer_context_line(line: &str) -> bool {

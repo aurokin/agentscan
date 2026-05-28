@@ -1,23 +1,21 @@
-use super::StatusKind;
+use super::{PaneOutputFrame, StatusKind};
 
 pub(super) fn status(output: &str) -> Option<StatusKind> {
-    let lines: Vec<&str> = output.lines().collect();
-    let idle_index = lines.iter().rposition(|line| codex_idle_prompt_line(line));
-    let busy_index = lines
-        .iter()
-        .rposition(|line| codex_current_busy_marker_line(line));
+    let frame = PaneOutputFrame::new(output);
+    let idle_index = frame.rposition(codex_idle_prompt_line);
+    let busy_index = frame.rposition(codex_current_busy_marker_line);
 
     if let Some(index) = busy_index
         && idle_index.is_none_or(|idle_index| {
             idle_index < index
-                || codex_busy_marker_is_near_current_prompt(&lines, index, idle_index)
+                || codex_busy_marker_is_near_current_prompt(&frame, index, idle_index)
         })
     {
         return Some(StatusKind::Busy);
     }
 
     idle_index
-        .is_some_and(|index| codex_prompt_is_near_current_footer(&lines, index))
+        .is_some_and(|index| codex_prompt_is_near_current_footer(&frame, index))
         .then_some(StatusKind::Idle)
 }
 
@@ -42,15 +40,12 @@ fn codex_approval_prompt_line(line: &str) -> bool {
 }
 
 fn codex_busy_marker_is_near_current_prompt(
-    lines: &[&str],
+    frame: &PaneOutputFrame<'_>,
     busy_index: usize,
     idle_index: usize,
 ) -> bool {
-    idle_index.saturating_sub(busy_index) <= 4
-        && lines[busy_index + 1..idle_index]
-            .iter()
-            .all(|line| codex_status_gap_line(line))
-        && codex_prompt_is_near_current_footer(lines, idle_index)
+    frame.forward_gap_before_is_within(busy_index, idle_index, 4, codex_status_gap_line)
+        && codex_prompt_is_near_current_footer(frame, idle_index)
 }
 
 fn codex_status_gap_line(line: &str) -> bool {
@@ -58,12 +53,8 @@ fn codex_status_gap_line(line: &str) -> bool {
     line.is_empty() || line.starts_with('└')
 }
 
-fn codex_prompt_is_near_current_footer(lines: &[&str], prompt_index: usize) -> bool {
-    let tail_len = lines.len().saturating_sub(prompt_index);
-    tail_len <= 6
-        && lines[prompt_index..]
-            .iter()
-            .any(|line| codex_footer_line(line))
+fn codex_prompt_is_near_current_footer(frame: &PaneOutputFrame<'_>, prompt_index: usize) -> bool {
+    frame.tail_contains(prompt_index, 6, codex_footer_line)
 }
 
 fn codex_footer_line(line: &str) -> bool {
