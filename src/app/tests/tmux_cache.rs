@@ -161,6 +161,35 @@ fn does_not_classify_bare_pi_command_without_other_signal() {
 }
 
 #[test]
+fn stale_pi_glyph_title_over_foreign_agent_runtime_defers_to_process_evidence() {
+    // A `π - ` OSC title left by a prior pi session persists after a *different* agent launches in
+    // the same shell — e.g. hermes, whose pty foreground is `python3.11`. The residual glyph title
+    // must not shadow the real provider: with no live pi runtime foreground and no spinner, this
+    // matcher returns None so process evidence (which finds hermes) can take over.
+    assert!(
+        classify::classify_provider(None, "python3.11", "π - agentscan").is_none(),
+        "stale pi glyph title over a foreign agent runtime must not classify as pi"
+    );
+
+    // A genuine live pi session holds the pty foreground as a pi runtime (`node`/`bun`/`pi`) and
+    // still classifies by its glyph title.
+    let live = classify::classify_provider(None, "node", "π - refactor - agentscan")
+        .expect("live pi runtime under a glyph title should classify as pi");
+    assert_eq!(live.provider, Provider::Pi);
+    assert_eq!(live.matched_by, super::ClassificationMatchKind::PaneTitle);
+
+    // A spinner glyph is live evidence the title is being actively repainted, so it classifies
+    // even when tmux momentarily reports the shell as the foreground command.
+    let spinning = classify::classify_provider(None, "zsh", "⠋ π - refactor - agentscan")
+        .expect("spinner glyph over a pi title should classify as pi");
+    assert_eq!(spinning.provider, Provider::Pi);
+    assert_eq!(
+        spinning.matched_by,
+        super::ClassificationMatchKind::PaneTitle
+    );
+}
+
+#[test]
 fn classifies_from_title_when_command_is_generic() {
     let matched = classify::classify_provider(None, "zsh", "Claude Code | Working")
         .expect("should match claude");
