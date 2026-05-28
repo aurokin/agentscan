@@ -173,28 +173,36 @@ fn proc_provider_env_match(
 
 fn claude_argv0_has_binary_shape(arg: &str) -> bool {
     let lower = normalize_proc_arg(arg);
-    lower.ends_with("/claude")
-        || lower.ends_with("/claude-code")
-        || lower.ends_with("/node_modules/.bin/claude")
-        || claude_arg_has_known_package_path(&lower)
+    arg_ends_with_any(
+        &lower,
+        &["/claude", "/claude-code", "/node_modules/.bin/claude"],
+    ) || claude_arg_has_known_package_path(&lower)
 }
 
 fn claude_arg_has_known_package_path(arg: &str) -> bool {
     let lower = normalize_proc_arg(arg);
-    lower.contains("/node_modules/@anthropic-ai/claude-code/")
+    arg_contains_any(&lower, &["/node_modules/@anthropic-ai/claude-code/"])
 }
 
 fn gemini_arg_has_known_package_path(arg: &str) -> bool {
     let lower = normalize_proc_arg(arg);
 
-    lower.contains("/node_modules/@google/gemini-cli/dist/index.js")
-        || lower.contains("/node_modules/@google/gemini-cli/bundle/gemini.js")
-        || lower.ends_with("/node_modules/@google/gemini-cli")
-        || gemini_arg_has_known_bin_shim_path(&lower)
-        || lower.ends_with("/gemini-cli/packages/cli/index.ts")
-        || lower.ends_with("/gemini-cli/packages/cli/dist/index.js")
-        || lower.ends_with("/gemini-cli/bundle/gemini.js")
-        || lower.ends_with("/gemini-cli/sea/sea-launch.cjs")
+    arg_contains_any(
+        &lower,
+        &[
+            "/node_modules/@google/gemini-cli/dist/index.js",
+            "/node_modules/@google/gemini-cli/bundle/gemini.js",
+        ],
+    ) || arg_ends_with_any(
+        &lower,
+        &[
+            "/node_modules/@google/gemini-cli",
+            "/gemini-cli/packages/cli/index.ts",
+            "/gemini-cli/packages/cli/dist/index.js",
+            "/gemini-cli/bundle/gemini.js",
+            "/gemini-cli/sea/sea-launch.cjs",
+        ],
+    ) || gemini_arg_has_known_bin_shim_path(&lower)
 }
 
 fn gemini_arg_has_known_bin_shim_path(lower: &str) -> bool {
@@ -214,9 +222,14 @@ fn gemini_arg_has_known_bin_shim_path(lower: &str) -> bool {
 fn pi_arg_has_known_package_path(arg: &str) -> bool {
     let lower = normalize_proc_arg(arg);
 
-    lower.contains("/node_modules/@mariozechner/pi-coding-agent/")
-        || lower.ends_with("/pi-mono/packages/coding-agent/dist/cli.js")
-        || lower.ends_with("/pi-mono/packages/coding-agent/dist/pi")
+    arg_contains_any(&lower, &["/node_modules/@mariozechner/pi-coding-agent/"])
+        || arg_ends_with_any(
+            &lower,
+            &[
+                "/pi-mono/packages/coding-agent/dist/cli.js",
+                "/pi-mono/packages/coding-agent/dist/pi",
+            ],
+        )
         || pi_arg_has_known_bin_shim_path(&lower)
 }
 
@@ -227,14 +240,19 @@ fn pi_arg_has_known_bin_shim_path(lower: &str) -> bool {
 fn hermes_arg_has_known_package_path(arg: &str) -> bool {
     let lower = normalize_proc_arg(arg);
 
-    lower.ends_with("/.local/bin/hermes")
-        || lower.ends_with("/.local/bin/hermes-agent")
-        || lower.contains("/.hermes/hermes-agent/")
-        || lower.contains("/site-packages/hermes_cli/")
-        || lower.ends_with("/hermes-agent/hermes")
-        || lower.ends_with("/hermes-agent/run_agent.py")
-        || lower.ends_with("/hermes-agent/hermes_cli/main.py")
-        || hermes_arg_has_known_bin_shim_path(&lower)
+    arg_ends_with_any(
+        &lower,
+        &[
+            "/.local/bin/hermes",
+            "/.local/bin/hermes-agent",
+            "/hermes-agent/hermes",
+            "/hermes-agent/run_agent.py",
+            "/hermes-agent/hermes_cli/main.py",
+        ],
+    ) || arg_contains_any(
+        &lower,
+        &["/.hermes/hermes-agent/", "/site-packages/hermes_cli/"],
+    ) || hermes_arg_has_known_bin_shim_path(&lower)
 }
 
 fn hermes_arg_has_known_bin_shim_path(lower: &str) -> bool {
@@ -254,11 +272,15 @@ fn hermes_arg_has_known_bin_shim_path(lower: &str) -> bool {
 fn opencode_arg_has_known_package_path(arg: &str) -> bool {
     let lower = normalize_proc_arg(arg);
 
-    lower.ends_with("/node_modules/opencode/bin/opencode")
-        || lower.ends_with("/node_modules/opencode-ai/bin/opencode")
-        || opencode_arg_has_platform_package_path(&lower)
-        || lower.ends_with("/opencode/packages/opencode/bin/opencode")
-        || lower.ends_with("/opencode/packages/opencode/src/index.ts")
+    arg_ends_with_any(
+        &lower,
+        &[
+            "/node_modules/opencode/bin/opencode",
+            "/node_modules/opencode-ai/bin/opencode",
+            "/opencode/packages/opencode/bin/opencode",
+            "/opencode/packages/opencode/src/index.ts",
+        ],
+    ) || opencode_arg_has_platform_package_path(&lower)
         || opencode_arg_has_known_bin_shim_path(&lower)
 }
 
@@ -280,16 +302,20 @@ fn opencode_arg_has_platform_package_path(lower: &str) -> bool {
 
     PACKAGES
         .iter()
-        .any(|package| lower.ends_with(&format!("/node_modules/{package}/bin/opencode")))
+        .any(|package| arg_has_node_module_bin(lower, package, "opencode"))
 }
 
 fn copilot_arg_has_known_package_path(arg: &str) -> bool {
     let lower = normalize_proc_arg(arg);
 
-    lower.ends_with("/node_modules/@github/copilot/npm-loader.js")
-        || lower.ends_with("/node_modules/@github/copilot/index.js")
-        || lower.ends_with("/node_modules/@github/copilot/app.js")
-        || copilot_arg_has_platform_package_path(&lower)
+    arg_ends_with_any(
+        &lower,
+        &[
+            "/node_modules/@github/copilot/npm-loader.js",
+            "/node_modules/@github/copilot/index.js",
+            "/node_modules/@github/copilot/app.js",
+        ],
+    ) || copilot_arg_has_platform_package_path(&lower)
         || copilot_arg_has_known_bin_shim_path(&lower)
 }
 
@@ -305,7 +331,7 @@ fn copilot_arg_has_platform_package_path(lower: &str) -> bool {
 
     PACKAGES
         .iter()
-        .any(|package| lower.ends_with(&format!("/node_modules/@github/{package}/copilot")))
+        .any(|package| arg_has_node_module_file(lower, &format!("@github/{package}"), "copilot"))
 }
 
 fn copilot_arg_has_known_bin_shim_path(lower: &str) -> bool {
@@ -338,6 +364,22 @@ fn opencode_arg_has_known_bin_shim_path(lower: &str) -> bool {
 
 fn normalize_proc_arg(arg: &str) -> String {
     arg.replace('\\', "/").trim().to_ascii_lowercase()
+}
+
+fn arg_ends_with_any(lower: &str, suffixes: &[&str]) -> bool {
+    suffixes.iter().any(|suffix| lower.ends_with(suffix))
+}
+
+fn arg_contains_any(lower: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| lower.contains(needle))
+}
+
+fn arg_has_node_module_bin(lower: &str, package: &str, binary: &str) -> bool {
+    arg_has_node_module_file(lower, package, &format!("bin/{binary}"))
+}
+
+fn arg_has_node_module_file(lower: &str, package: &str, relative_path: &str) -> bool {
+    lower.ends_with(&format!("/node_modules/{package}/{relative_path}"))
 }
 
 fn arg_has_known_bin_shim_path(
@@ -452,4 +494,50 @@ fn proc_arg_reason(process: &proc::ProcessEvidence) -> String {
     claude_arg_for_reason(process)
         .or_else(|| process.argv.first().cloned())
         .unwrap_or_else(|| process.command.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn proc_arg_normalization_handles_case_whitespace_and_windows_separators() {
+        assert_eq!(
+            normalize_proc_arg("  C:\\Users\\Auro\\AppData\\Roaming\\npm\\opencode  "),
+            "c:/users/auro/appdata/roaming/npm/opencode"
+        );
+    }
+
+    #[test]
+    fn node_module_bin_matcher_requires_package_and_binary_boundary() {
+        assert!(arg_has_node_module_bin(
+            "/work/app/node_modules/opencode/bin/opencode",
+            "opencode",
+            "opencode"
+        ));
+        assert!(!arg_has_node_module_bin(
+            "/work/app/node_modules/opencode-helper/bin/opencode",
+            "opencode",
+            "opencode"
+        ));
+        assert!(!arg_has_node_module_bin(
+            "/work/app/node_modules/opencode/bin/opencode-helper",
+            "opencode",
+            "opencode"
+        ));
+    }
+
+    #[test]
+    fn node_module_file_matcher_preserves_package_root_executables() {
+        assert!(arg_has_node_module_file(
+            "/work/app/node_modules/@github/copilot-darwin-arm64/copilot",
+            "@github/copilot-darwin-arm64",
+            "copilot"
+        ));
+        assert!(!arg_has_node_module_file(
+            "/work/app/node_modules/@github/copilot-darwin-arm64/bin/copilot",
+            "@github/copilot-darwin-arm64",
+            "copilot"
+        ));
+    }
 }
