@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 0.4.4 - 2026-05-28
+
+### Added
+
+- Antigravity busy detection. The closed-source antigravity CLI flips its footer between
+  the idle `? for shortcuts` form and the active-turn `esc to cancel` form (alongside a
+  `… Generating…`/`… Loading…` spinner above the bordered `>` input box). The pane-output
+  matcher now anchors on the bottom-most footer line and discriminates by which form it
+  carries, so an in-flight turn is reported busy and a stale idle footer in scrollback
+  cannot shadow the live busy footer.
+- Hermes idle detection now also accepts an un-submitted `❯ <draft>` prompt as idle, so
+  a pane parked with a typed-but-not-sent message reads as idle rather than unknown. The
+  busy prompt (`⚕ ❯ msg=interrupt …`) leads with `⚕`, so the two forms stay unambiguous.
+
 ### Fixed
 
 - Hardened grok busy detection against footer rewording. In addition to the active-turn
@@ -11,6 +25,26 @@
   stale spinner from a prior turn — which has completed-turn output (e.g. `Turn
   completed…`) between it and the box — is not directly above the box and so is still
   correctly read as idle.
+- Hermes provider classification no longer trusts a stale `π -` OSC title left by a
+  prior `pi` session in the same shell. The stale-title guard now defers to process
+  evidence whenever the pane foreground is not a live pi runtime (`pi`/`node`/`bun`) and
+  no spinner is repainting the title — a superset of the previous bare-shell check — so
+  a different agent's runtime (e.g. hermes' python) inheriting the residual title no
+  longer shadows the real provider.
+- Hermes idle/busy classification is now anchored to the live input box rather than to
+  any matching line in scrollback. The status bar must sit directly above the prompt
+  (within ~3 rows, with only box rules or blanks between), and only box rules / blanks
+  may follow the prompt. A `❯ <command>` line that appears in agent output (e.g. a quoted
+  shell prompt like `❯ npm test`) or a stale prompt with later output below it is no
+  longer mistaken for the live prompt.
+- Opencode idle detection now works for used sessions. The live build (1.15.11) drops
+  the `tab agents` command-bar hint after the first turn, folding the command bar into
+  the bottom status bar (`<tokens> (<pct>) · $<cost>  ctrl+p commands  • OpenCode <ver>`).
+  Anchoring idle on `tab agents` alone missed every session that had completed at least
+  one turn. Idle is now also anchored on the stable `╹▀▀▀` input-box bottom border with
+  a trailing-chrome guard, and the busy-marker currency check treats the input-box
+  border as a valid footer anchor too — so an `esc interrupt` rendered above the box
+  still wins over the new idle anchor.
 
 ## 0.4.3 - 2026-05-27
 
