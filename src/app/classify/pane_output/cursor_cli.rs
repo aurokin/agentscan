@@ -1,18 +1,17 @@
-use super::StatusKind;
+use super::{PaneOutputFrame, StatusKind};
 
 pub(super) fn status(output: &str) -> Option<StatusKind> {
-    let lines: Vec<&str> = output.lines().collect();
-    let footer_top_index = lines
-        .iter()
-        .rposition(|line| cursor_cli_footer_top_border(line))?;
+    let frame = PaneOutputFrame::new(output);
+    let footer_top_index = frame.rposition(cursor_cli_footer_top_border)?;
 
-    let current_footer = lines[footer_top_index..]
+    let current_footer = frame
+        .lines_from(footer_top_index)?
         .iter()
         .map(|line| line.trim())
         .find(|line| line.starts_with('→'));
 
     if current_footer.is_some_and(|line| line.contains("ctrl+c to stop"))
-        || cursor_cli_current_status_line(&lines, footer_top_index)
+        || cursor_cli_current_status_line(&frame, footer_top_index)
             .is_some_and(cursor_cli_status_line_indicates_running)
     {
         return Some(StatusKind::Busy);
@@ -24,14 +23,12 @@ pub(super) fn status(output: &str) -> Option<StatusKind> {
 }
 
 fn cursor_cli_current_status_line<'a>(
-    lines: &'a [&'a str],
+    frame: &'a PaneOutputFrame<'a>,
     footer_top_index: usize,
 ) -> Option<&'a str> {
-    lines[..footer_top_index]
-        .iter()
-        .rev()
-        .map(|line| line.trim())
-        .find(|line| !line.is_empty())
+    frame
+        .previous_nonblank_before(footer_top_index)
+        .map(str::trim)
 }
 
 fn cursor_cli_status_line_indicates_running(line: &str) -> bool {

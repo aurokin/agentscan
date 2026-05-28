@@ -1,12 +1,9 @@
-use super::StatusKind;
+use super::{PaneOutputFrame, StatusKind};
 
 pub(super) fn status(output: &str) -> Option<StatusKind> {
-    let lines: Vec<&str> = output.lines().collect();
-    let footer_index = lines
-        .iter()
-        .rposition(|line| droid_current_footer_line(line))?;
-    let prompt_window_start = footer_index.saturating_sub(8);
-    let current_prompt_lines = &lines[prompt_window_start..=footer_index];
+    let frame = PaneOutputFrame::new(output);
+    let footer_index = frame.rposition(droid_current_footer_line)?;
+    let current_prompt_lines = frame.window_ending_at(footer_index, 8)?;
 
     if current_prompt_lines
         .iter()
