@@ -693,7 +693,7 @@ fn hermes_pane_output_status(output: &str) -> Option<StatusKind> {
     let idle_index = lines.iter().rposition(|line| hermes_idle_prompt_line(line));
 
     if let Some(index) = busy_index
-        && hermes_status_bar_before(&lines, index).is_some()
+        && hermes_status_bar_directly_above(&lines, index)
         && idle_index.is_none_or(|idle_index| idle_index < index)
         && hermes_prompt_is_current_frame(&lines, index)
     {
@@ -701,7 +701,7 @@ fn hermes_pane_output_status(output: &str) -> Option<StatusKind> {
     }
 
     if let Some(index) = idle_index
-        && hermes_status_bar_before(&lines, index).is_some()
+        && hermes_status_bar_directly_above(&lines, index)
         && busy_index.is_none_or(|busy_index| busy_index < index)
         && hermes_prompt_is_current_frame(&lines, index)
     {
@@ -731,12 +731,18 @@ fn hermes_box_rule_line(line: &str) -> bool {
     line.chars().count() >= 8 && line.chars().all(|ch| ch == '─' || ch == '━')
 }
 
-fn hermes_status_bar_before<'a>(lines: &'a [&'a str], index: usize) -> Option<&'a str> {
-    lines[..index]
+/// Whether the live hermes status bar sits directly above this prompt index.
+///
+/// The live input box renders as `<status bar>` → optional `────` rule → `❯`/`⚕ ❯` prompt, so
+/// the status bar is at most a couple of rows above the prompt. Requiring proximity (not "any
+/// status bar somewhere above in scrollback") prevents an unrelated `❯ <text>` line at the bottom
+/// of the capture — e.g. a quoted shell prompt like `❯ npm test` in agent output — from being
+/// classified idle just because an older status bar still exists far up in scrollback.
+fn hermes_status_bar_directly_above(lines: &[&str], prompt_index: usize) -> bool {
+    let start = prompt_index.saturating_sub(3);
+    lines[start..prompt_index]
         .iter()
-        .rev()
-        .map(|line| line.trim())
-        .find(|line| hermes_status_bar_line(line))
+        .any(|line| hermes_status_bar_line(line.trim()))
 }
 
 fn hermes_status_bar_line(line: &str) -> bool {

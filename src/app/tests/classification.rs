@@ -3326,6 +3326,31 @@ fn hermes_pane_output_does_not_infer_idle_from_stale_draft_prompt_in_scrollback(
 }
 
 #[test]
+fn hermes_pane_output_does_not_infer_idle_from_terminal_output_line_at_bottom() {
+    // Agent output (e.g. a quoted shell prompt like `❯ npm test`) ends up as the last line of
+    // the capture with a hermes status bar still sitting far above in scrollback. Nothing
+    // follows the matched line so the current-frame guard trivially passes, but proximity to
+    // the status bar must hold — an unrelated bottom line with no adjacent status bar is not
+    // the live prompt.
+    let mut hermes = pane_output_status_pane(771, Provider::Hermes, "agentscan: hermes");
+
+    classify::apply_pane_output_status_fallback(
+        &mut hermes,
+        "⚕ gpt-5.5 │ ctx -- │ [░░░░░░░░░░] -- │ 5s │ ⏲ 0s │ ⚠ YOLO\n\
+         ─────────────────────────────────────────────────────────────\n\
+         ❯ Audit the build scripts\n\
+         ─────────────────────────────────────────────────────────────\n\
+         ⚕ Reading scripts/build.sh\n\
+         ⚕ Reading scripts/test.sh\n\
+         Run this to reproduce locally:\n\
+         ❯ npm test\n",
+    );
+
+    assert_eq!(hermes.status.kind, StatusKind::Unknown);
+    assert_eq!(hermes.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
 fn hermes_pane_output_uses_current_prompt_over_stale_busy_footer() {
     let mut hermes = pane_output_status_pane(768, Provider::Hermes, "agentscan: hermes");
 
