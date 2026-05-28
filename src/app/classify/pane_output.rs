@@ -734,15 +734,24 @@ fn hermes_box_rule_line(line: &str) -> bool {
 /// Whether the live hermes status bar sits directly above this prompt index.
 ///
 /// The live input box renders as `<status bar>` → optional `────` rule → `❯`/`⚕ ❯` prompt, so
-/// the status bar is at most a couple of rows above the prompt. Requiring proximity (not "any
-/// status bar somewhere above in scrollback") prevents an unrelated `❯ <text>` line at the bottom
-/// of the capture — e.g. a quoted shell prompt like `❯ npm test` in agent output — from being
-/// classified idle just because an older status bar still exists far up in scrollback.
+/// the status bar is at most a couple of rows above the prompt and only a box rule or blank may
+/// sit between them. Requiring both proximity AND a clean intervening gap prevents an unrelated
+/// `❯ <text>` line — e.g. a quoted shell prompt like `❯ npm test` in agent output, possibly with
+/// prose like `Run this:` between it and an older status bar — from being classified idle.
 fn hermes_status_bar_directly_above(lines: &[&str], prompt_index: usize) -> bool {
     let start = prompt_index.saturating_sub(3);
     lines[start..prompt_index]
         .iter()
-        .any(|line| hermes_status_bar_line(line.trim()))
+        .enumerate()
+        .rev()
+        .find(|(_, line)| hermes_status_bar_line(line.trim()))
+        .is_some_and(|(rel_index, _)| {
+            let status_index = start + rel_index;
+            lines[status_index + 1..prompt_index].iter().all(|line| {
+                let line = line.trim();
+                line.is_empty() || hermes_box_rule_line(line)
+            })
+        })
 }
 
 fn hermes_status_bar_line(line: &str) -> bool {
