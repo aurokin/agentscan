@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Hardened grok busy detection against footer rewording. In addition to the active-turn
+  footer keybinds (`Ctrl+c:cancel` / `Ctrl+Enter:interject`), a live run spinner
+  (`⠋ … [✗]`) sitting directly above the pinned input box now also marks the turn busy,
+  so an in-flight turn is not misread as idle if grok relabels its interrupt hints. A
+  stale spinner from a prior turn — which has completed-turn output (e.g. `Turn
+  completed…`) between it and the box — is not directly above the box and so is still
+  correctly read as idle.
+
 ## 0.4.3 - 2026-05-27
 
 ### Added

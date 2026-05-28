@@ -158,6 +158,11 @@ enum SubscribeFrame {
     Offline { message: String, retrying: bool },
     Shutdown { message: String },
     Fatal { message: String },
+    // Idle heartbeat the daemon emits ~1/s so it can detect a closed consumer
+    // while the stream is otherwise silent. It carries no state, so the live
+    // worker ignores it (without it, every heartbeat would fail to parse and
+    // tear down the subscription with a spurious "Offline, retrying").
+    Keepalive,
 }
 
 // Wraps every emitted event with the epoch of the subscription that produced
@@ -988,7 +993,10 @@ fn handle_subscribe_frame(
     stop: &AtomicBool,
 ) -> LivePickerWorkerExit {
     match live_event_from_subscribe_frame(runner, frame, stop) {
-        Ok((event, exit)) => {
+        // A heartbeat (or any frame the worker doesn't act on) maps to no event:
+        // keep reading the stream without disturbing the picker.
+        Ok(None) => LivePickerWorkerExit::Retry,
+        Ok(Some((event, exit))) => {
             emit_live_picker_event(app, epoch, event);
             exit
         }
@@ -1010,35 +1018,35 @@ fn live_event_from_subscribe_frame(
     runner: &AgentscanRunner,
     frame: SubscribeFrame,
     stop: &AtomicBool,
-) -> Result<(LivePickerEvent, LivePickerWorkerExit), String> {
+) -> Result<Option<(LivePickerEvent, LivePickerWorkerExit)>, String> {
     match frame {
-        SubscribeFrame::Connecting { message } => Ok((
+        SubscribeFrame::Connecting { message } => Ok(Some((
             LivePickerEvent::Connecting { message },
             LivePickerWorkerExit::Retry,
-        )),
+        ))),
         SubscribeFrame::Snapshot { snapshot } => {
             // Pass the worker's stop flag so a profile/runner switch isn't blocked
             // for the full hotkeys timeout while this snapshot fetch is in flight.
             let rows = match load_picker_rows_from_runner_interruptible(runner, Some(stop)) {
                 Ok(rows) => rows,
                 Err(message) => {
-                    return Ok((
+                    return Ok(Some((
                         LivePickerEvent::Offline {
                             message: classify_desktop_failure(runner, "hotkeys", &message),
                             retrying: true,
                             diagnostics: load_daemon_status(runner).ok(),
                         },
                         LivePickerWorkerExit::Retry,
-                    ));
+                    )));
                 }
             };
             let snapshot = summarize_snapshot(&snapshot);
-            Ok((
+            Ok(Some((
                 LivePickerEvent::Rows { rows, snapshot },
                 LivePickerWorkerExit::Retry,
-            ))
+            )))
         }
-        SubscribeFrame::Offline { message, retrying } => Ok((
+        SubscribeFrame::Offline { message, retrying } => Ok(Some((
             LivePickerEvent::Offline {
                 message,
                 retrying,
@@ -1052,18 +1060,20 @@ fn live_event_from_subscribe_frame(
             } else {
                 LivePickerWorkerExit::Shutdown
             },
-        )),
-        SubscribeFrame::Shutdown { message } => Ok((
+        ))),
+        SubscribeFrame::Shutdown { message } => Ok(Some((
             LivePickerEvent::Shutdown { message },
             LivePickerWorkerExit::Shutdown,
-        )),
-        SubscribeFrame::Fatal { message } => Ok((
+        ))),
+        SubscribeFrame::Fatal { message } => Ok(Some((
             LivePickerEvent::Fatal {
                 message,
                 diagnostics: load_daemon_status(runner).ok(),
             },
             LivePickerWorkerExit::Fatal,
-        )),
+        ))),
+        // Heartbeat: no picker-visible state, so emit nothing and keep reading.
+        SubscribeFrame::Keepalive => Ok(None),
     }
 }
 
@@ -1864,6 +1874,34 @@ mod tests {
                 retrying: true
             }
         );
+    }
+
+    #[test]
+    fn subscribe_keepalive_frame_parses_to_keepalive_variant() {
+        // The daemon emits this idle heartbeat ~1/s; the consumer must accept it
+        // rather than tear the subscription down with a spurious "Offline, retrying".
+        let frame: SubscribeFrame =
+            serde_json::from_str(r#"{"type":"keepalive"}"#).expect("keepalive frame parses");
+
+        assert_eq!(frame, SubscribeFrame::Keepalive);
+    }
+
+    #[test]
+    fn keepalive_frame_maps_to_no_event() {
+        // Keepalive is a no-op for the picker: it produces no event and keeps the
+        // worker reading the stream.
+        let stop = AtomicBool::new(false);
+        let event = live_event_from_subscribe_frame(
+            &AgentscanRunner::Local(LocalRunnerSettings {
+                binary_path: None,
+                env: Vec::new(),
+            }),
+            SubscribeFrame::Keepalive,
+            &stop,
+        )
+        .expect("keepalive maps cleanly");
+
+        assert!(event.is_none(), "keepalive must not emit a picker event");
     }
 
     #[test]

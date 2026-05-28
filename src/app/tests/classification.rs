@@ -2609,6 +2609,31 @@ fn grok_pane_output_marks_active_turn_footer_busy() {
 }
 
 #[test]
+fn grok_pane_output_marks_active_turn_busy_via_spinner_when_footer_reworded() {
+    // Same live-turn layout as the active-turn footer case, but the footer hints are reworded
+    // so `cancel`/`interject` are absent (mirrors grok relabeling its interrupt keybinds). The
+    // run spinner sitting directly above the pinned box still proves the turn is in flight, so
+    // the pane stays busy without depending on the footer wording.
+    let mut grok = pane_output_status_pane(780, Provider::Grok, "grok");
+
+    classify::apply_pane_output_status_fallback(
+        &mut grok,
+        "     ◆ Search \"disable_reconcile\" in src (28 matches)\n\
+         \n\
+         ⠹ Thinking… 0.4s                              42s ⇣80.3k [✗]\n\
+         \n\
+         ╭────────────────────────────────────────────────╮\n\
+         │ ❯                                                │\n\
+         ╰──────────────── Grok Build · always-approve ─╯\n\
+         \n\
+         Shift+Tab:mode  │  Ctrl+x:stop  │  Ctrl+.:shortcuts\n",
+    );
+
+    assert_eq!(grok.status.kind, StatusKind::Busy);
+    assert_eq!(grok.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
 fn grok_pane_output_marks_running_spinner_busy() {
     let mut grok = pane_output_status_pane(771, Provider::Grok, "grok");
 

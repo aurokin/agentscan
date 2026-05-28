@@ -488,7 +488,14 @@ fn grok_pane_output_status(output: &str) -> Option<StatusKind> {
     // `Ctrl+c:cancel` / `Ctrl+Enter:interject` hints, an idle prompt shows only
     // mode/shortcuts, and a fresh prompt shows the version line (e.g. `0.2.3 [stable] Beta`).
     if let Some(border) = grok_current_input_box_border(&lines) {
-        return Some(if grok_active_turn_footer_after(&lines, border) {
+        // Busy when grok's footer shows interrupt keybinds OR a live run spinner sits
+        // directly above the pinned box. The footer wording is the primary signal; the
+        // spinner backstop keeps a live turn from reading idle if grok relabels its hints,
+        // while a stale spinner (completed-turn output between it and the box) is not
+        // directly above the box and so won't trip it.
+        let busy = grok_active_turn_footer_after(&lines, border)
+            || grok_running_spinner_above_box(&lines, border);
+        return Some(if busy {
             StatusKind::Busy
         } else {
             StatusKind::Idle
@@ -528,6 +535,11 @@ fn grok_prompt_box_bottom_border(line: &str) -> bool {
     line.starts_with('╰') && line.ends_with('╯')
 }
 
+fn grok_prompt_box_top_border(line: &str) -> bool {
+    let line = line.trim();
+    line.starts_with('╭') && line.ends_with('╮')
+}
+
 /// grok's footer chrome directly below the input box: the keybind hints
 /// (`Shift+Tab:mode │ Ctrl+.:shortcuts`) or, on a fresh prompt, the version line
 /// (`0.2.3 [stable] Beta`). Matched by shape so a stale turn line below the box is not
@@ -560,6 +572,26 @@ fn grok_active_turn_footer_after(lines: &[&str], border: usize) -> bool {
         let line = line.trim();
         grok_keybind_footer_line(line) && (line.contains("cancel") || line.contains("interject"))
     })
+}
+
+/// True when a live run spinner sits directly above the current input box — only blank rows
+/// between the spinner (`⠋ … [✗]`) and the box's top border. grok renders the active-turn
+/// spinner right above the pinned box, so this marks a running turn independent of footer
+/// wording (a backstop if grok relabels its interrupt hints). A *stale* spinner from a prior
+/// turn has real output (e.g. `Turn completed…`) between it and the box, so it is not directly
+/// above and does not match.
+fn grok_running_spinner_above_box(lines: &[&str], border: usize) -> bool {
+    let Some(top) = lines[..border]
+        .iter()
+        .rposition(|line| grok_prompt_box_top_border(line))
+    else {
+        return false;
+    };
+    lines[..top]
+        .iter()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .is_some_and(|line| grok_running_status_line(line))
 }
 
 /// Grok's version footer, e.g. `0.2.3 [stable] Beta`. The dotted version leads the line and any
