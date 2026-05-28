@@ -6,11 +6,14 @@ mod codex;
 mod copilot;
 mod cursor_cli;
 mod droid;
+mod frame;
 mod gemini;
 mod grok;
 mod hermes;
 mod opencode;
 mod pi;
+
+use frame::PaneOutputFrame;
 
 type PaneOutputClassifier = fn(&str) -> Option<StatusKind>;
 
