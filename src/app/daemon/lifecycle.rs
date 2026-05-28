@@ -557,6 +557,31 @@ mod subscription_state_tests {
 
         assert_eq!(state.backoff, TUI_SUBSCRIPTION_MAX_BACKOFF);
     }
+
+    #[test]
+    fn daemon_hello_write_stale_socket_errors_are_retryable_not_running() {
+        for kind in [
+            std::io::ErrorKind::BrokenPipe,
+            std::io::ErrorKind::ConnectionReset,
+            std::io::ErrorKind::NotConnected,
+        ] {
+            let error = std::io::Error::from(kind);
+            let reason = daemon_hello_write_not_running_reason(&error, "subscription")
+                .expect("stale socket write should be retryable");
+
+            assert!(
+                reason.contains("socket closed before accepting daemon subscription hello"),
+                "{reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn daemon_hello_write_other_errors_stay_fatal() {
+        let error = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+
+        assert!(daemon_hello_write_not_running_reason(&error, "subscription").is_none());
+    }
 }
 
 struct DaemonStartGuard {
@@ -707,15 +732,31 @@ fn open_daemon_client(
         snapshot_schema_version: CACHE_SCHEMA_VERSION,
         mode,
     };
-    stream
-        .write_all(&ipc::encode_frame(&hello)?)
-        .with_context(|| format!("failed to write daemon {operation} hello"))?;
+    if let Err(error) = stream.write_all(&ipc::encode_frame(&hello)?) {
+        if let Some(reason) = daemon_hello_write_not_running_reason(&error, operation) {
+            return Ok(DaemonClientOpen::NotRunning(reason));
+        }
+        return Err(error).with_context(|| format!("failed to write daemon {operation} hello"));
+    }
     if close_write {
         stream
             .shutdown(std::net::Shutdown::Write)
             .with_context(|| format!("failed to close daemon {operation} write side"))?;
     }
     Ok(DaemonClientOpen::Connected(BufReader::new(stream)))
+}
+
+fn daemon_hello_write_not_running_reason(
+    error: &std::io::Error,
+    operation: &str,
+) -> Option<String> {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::BrokenPipe
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::NotConnected
+    )
+    .then(|| format!("socket closed before accepting daemon {operation} hello"))
 }
 
 fn classify_daemon_hello_frame(frame: ipc::DaemonFrame, operation: &str) -> DaemonHello {
