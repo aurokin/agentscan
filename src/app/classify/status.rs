@@ -35,7 +35,7 @@ pub(super) fn infer_title_status_from_analysis(
     }
 
     if matches!(provider, Some(Provider::Codex)) {
-        if title_analysis.has_spinner_glyph {
+        if codex_title_has_spinner_indicator(title_analysis.raw) {
             return PaneStatus::title(StatusKind::Busy);
         }
         if let Some(status) = codex_run_state_from_title(&title_analysis.codex_status_title) {

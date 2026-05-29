@@ -502,11 +502,7 @@ fn normalize_codex_wrapper_title(title: &str) -> String {
 }
 
 fn normalize_codex_terminal_title_label(title: &str) -> String {
-    codex_activity_from_status_title(title).unwrap_or_else(|| {
-        let wrapper_label = normalize_codex_wrapper_title(title);
-        let command_label = strip_codex_args_from_title(&wrapper_label);
-        strip_codex_provider_suffix(&command_label)
-    })
+    codex_activity_from_status_title(title).unwrap_or_else(|| normalize_codex_activity_label(title))
 }
 
 fn normalize_codex_title_before_status(title: &str) -> String {
@@ -514,57 +510,131 @@ fn normalize_codex_title_before_status(title: &str) -> String {
 }
 
 pub(super) fn codex_activity_from_status_title(title: &str) -> Option<String> {
-    if let Some((activity, status)) = title.rsplit_once(" | ")
-        && status_from_codex_run_state_label(status).is_some()
-    {
-        let activity = activity.trim();
-        if !activity.is_empty() {
-            return Some(normalize_codex_activity_label(activity));
-        }
-    }
+    let segments = codex_title_segments(title);
+    let status_index = codex_run_state_segment_index(&segments)?;
+    let has_action_required = segments
+        .iter()
+        .any(|segment| codex_action_required_status_from_title_segment(segment).is_some());
+    let candidates: Vec<&str> = segments
+        .iter()
+        .enumerate()
+        .filter_map(|(index, segment)| {
+            let keep = index != status_index
+                && codex_action_required_status_from_title_segment(segment).is_none()
+                && !(has_action_required && codex_status_from_title_segment(segment).is_some());
+            keep.then_some(*segment)
+        })
+        .collect();
+    let activity = candidates.join(" | ");
+    let activity = normalize_codex_activity_label(&activity);
 
-    if let Some((status, activity)) = title.split_once(" | ")
-        && status_from_codex_run_state_label(status).is_some()
-    {
-        let activity = activity.trim();
-        if !activity.is_empty() {
-            return Some(normalize_codex_activity_label(activity));
-        }
-    }
-
-    None
+    (!activity.is_empty()).then_some(activity)
 }
 
 fn normalize_codex_activity_label(activity: &str) -> String {
-    if !looks_like_codex_title(activity) {
-        return activity.to_string();
+    let activity = strip_codex_activity_indicator_tokens(activity);
+    let wrapper_label = normalize_codex_wrapper_title(&activity);
+    let command_label = strip_codex_args_from_title(&wrapper_label);
+    if !looks_like_codex_title(&activity) {
+        return command_label;
     }
 
-    let wrapper_label = normalize_codex_wrapper_title(activity);
-    let command_label = strip_codex_args_from_title(&wrapper_label);
     strip_codex_provider_suffix(&command_label)
 }
 
 pub(super) fn codex_run_state_from_title(title: &str) -> Option<StatusKind> {
-    if let Some(status) = status_from_codex_run_state_label(title) {
-        return Some(status);
-    }
-    if let Some((_activity, status)) = title.rsplit_once(" | ")
-        && let Some(status) = status_from_codex_run_state_label(status)
+    let segments = codex_title_segments(title);
+    if segments
+        .iter()
+        .any(|segment| codex_action_required_status_from_title_segment(segment).is_some())
     {
-        return Some(status);
-    }
-    if let Some((status, _activity)) = title.split_once(" | ")
-        && let Some(status) = status_from_codex_run_state_label(status)
-    {
-        return Some(status);
+        return Some(StatusKind::Busy);
     }
 
-    None
+    let status_index = codex_run_state_segment_index(&segments)?;
+    codex_status_from_title_segment(segments[status_index])
+}
+
+pub(super) fn codex_title_has_spinner_indicator(title: &str) -> bool {
+    codex_title_segments(title)
+        .into_iter()
+        .any(codex_segment_has_boundary_spinner)
+}
+
+fn codex_title_segments(title: &str) -> Vec<&str> {
+    title
+        .split(" | ")
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+        .collect()
+}
+
+fn codex_run_state_segment_index(segments: &[&str]) -> Option<usize> {
+    // Upstream Codex lets users configure terminal-title items in any order, and it does not tag
+    // item provenance in the OSC title. Once provider identity is already resolved, prefer the
+    // rightmost run-state-like segment so `activity | run-state | project` works as well as
+    // status-first/last layouts. Pane-output fallback remains responsible when no run-state
+    // segment is present.
+    segments
+        .iter()
+        .rposition(|segment| codex_status_from_title_segment(segment).is_some())
+}
+
+fn codex_status_from_title_segment(segment: &str) -> Option<StatusKind> {
+    let segment = segment.trim();
+    status_from_codex_run_state_label(segment)
+        .or_else(|| {
+            status_from_codex_run_state_label(&strip_codex_activity_indicator_tokens(segment))
+        })
+        .or_else(|| codex_action_required_status_from_title_segment(segment))
+}
+
+fn codex_action_required_status_from_title_segment(segment: &str) -> Option<StatusKind> {
+    matches!(
+        segment.trim(),
+        "[ ! ] Action Required" | "[ . ] Action Required" | "Action Required"
+    )
+    .then_some(StatusKind::Busy)
+}
+
+fn strip_codex_activity_indicator_tokens(value: &str) -> String {
+    codex_title_segments(value)
+        .into_iter()
+        .map(strip_codex_boundary_spinner)
+        .collect::<Vec<_>>()
+        .join(" | ")
+        .trim()
+        .to_string()
+}
+
+fn codex_segment_has_boundary_spinner(segment: &str) -> bool {
+    let segment = segment.trim();
+    segment.chars().next().is_some_and(codex_spinner_glyph)
+        || segment.chars().next_back().is_some_and(codex_spinner_glyph)
+}
+
+fn strip_codex_boundary_spinner(segment: &str) -> String {
+    let segment = segment.trim();
+    let segment = segment
+        .strip_prefix(codex_spinner_glyph)
+        .unwrap_or(segment)
+        .trim_start();
+    let segment = segment
+        .strip_suffix(codex_spinner_glyph)
+        .unwrap_or(segment)
+        .trim_end();
+    segment.to_string()
+}
+
+fn codex_spinner_glyph(character: char) -> bool {
+    CLAUDE_SPINNER_GLYPHS.contains(&character)
 }
 
 fn strip_codex_args_from_title(title: &str) -> String {
-    if let Some((prefix, _suffix)) = title.split_once(" codex ") {
+    if let Some((prefix, suffix)) = title.split_once(" codex ")
+        && prefix.trim_end().ends_with(':')
+        && suffix.trim_start().starts_with('-')
+    {
         return format!("{prefix} codex");
     }
 

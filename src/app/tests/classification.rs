@@ -1444,6 +1444,10 @@ fn title_normalization_strips_claude_and_opencode_prefixes() {
         ),
         "Query planner"
     );
+}
+
+#[test]
+fn title_normalization_strips_droid_and_pi_prefixes() {
     assert_eq!(
         classify::normalize_title_for_display(Some(Provider::Droid), "⛬ Basic Math Question"),
         "Basic Math Question"
@@ -1456,6 +1460,10 @@ fn title_normalization_strips_claude_and_opencode_prefixes() {
         classify::normalize_title_for_display(Some(Provider::Pi), "pi - agentscan"),
         "pi - agentscan"
     );
+}
+
+#[test]
+fn title_normalization_strips_codex_wrapper_suffixes() {
     assert_eq!(
         classify::normalize_title_for_display(
             Some(Provider::Codex),
@@ -1469,6 +1477,13 @@ fn title_normalization_strips_claude_and_opencode_prefixes() {
             "(repo) task: codex --model gpt-5"
         ),
         "(repo) task"
+    );
+    assert_eq!(
+        classify::normalize_title_for_display(
+            Some(Provider::Codex),
+            "(repo) task codex --model gpt-5"
+        ),
+        "(repo) task codex --model gpt-5"
     );
     assert_eq!(
         classify::normalize_title_for_display(
@@ -1491,6 +1506,10 @@ fn title_normalization_strips_claude_and_opencode_prefixes() {
         ),
         "Cursor CLI | Parser work"
     );
+}
+
+#[test]
+fn title_normalization_strips_codex_run_state_segments() {
     assert_eq!(
         classify::normalize_title_for_display(
             Some(Provider::Codex),
@@ -1513,12 +1532,23 @@ fn title_normalization_strips_claude_and_opencode_prefixes() {
         ),
         "review codex login"
     );
+}
+
+#[test]
+fn title_normalization_strips_codex_command_args_only_after_wrapper_prefix() {
     assert_eq!(
         classify::normalize_title_for_display(
             Some(Provider::Codex),
             "(repo) task: codex --model gpt-5 | Working"
         ),
         "(repo) task"
+    );
+    assert_eq!(
+        classify::normalize_title_for_display(
+            Some(Provider::Codex),
+            "(repo) task codex --model gpt-5 | Working"
+        ),
+        "(repo) task codex --model gpt-5"
     );
     assert_eq!(
         classify::normalize_title_for_display(
@@ -1534,6 +1564,17 @@ fn title_normalization_strips_claude_and_opencode_prefixes() {
         ),
         "(repo) task"
     );
+    assert_eq!(
+        classify::normalize_title_for_display(
+            Some(Provider::Codex),
+            "Working | (repo) task codex --model gpt-5"
+        ),
+        "(repo) task codex --model gpt-5"
+    );
+}
+
+#[test]
+fn title_normalization_preserves_non_codex_status_like_titles() {
     assert_eq!(
         classify::normalize_title_for_display(None, "Working | deploy notes"),
         "Working | deploy notes"
@@ -3840,6 +3881,208 @@ fn codex_status_activity_labels_strip_wrapper_suffixes() {
     );
     assert_eq!(status_last.label, "Ready");
     assert_eq!(status_last.activity_label.as_deref(), Some("Ready"));
+
+    let status_middle = classify::display_metadata(
+        Some(Provider::Codex),
+        None,
+        None,
+        "gpt-5.5 | Ready | Review patch: codex",
+        "codex",
+        "editor",
+    );
+    assert_eq!(status_middle.label, "gpt-5.5 | Review patch");
+    assert_eq!(
+        status_middle.activity_label.as_deref(),
+        Some("gpt-5.5 | Review patch")
+    );
+
+    let status_like_activity_segment = classify::display_metadata(
+        Some(Provider::Codex),
+        None,
+        None,
+        "Ready | gpt-5.5 | Working",
+        "codex",
+        "editor",
+    );
+    assert_eq!(status_like_activity_segment.label, "Ready | gpt-5.5");
+    assert_eq!(
+        status_like_activity_segment.activity_label.as_deref(),
+        Some("Ready | gpt-5.5")
+    );
+
+    let ambiguous_middle_status = classify::display_metadata(
+        Some(Provider::Codex),
+        None,
+        None,
+        "Review | Ready | notes",
+        "codex",
+        "editor",
+    );
+    assert_eq!(ambiguous_middle_status.label, "Review | notes");
+    assert_eq!(
+        ambiguous_middle_status.activity_label.as_deref(),
+        Some("Review | notes")
+    );
+
+    let non_command_codex_flag_text = classify::display_metadata(
+        Some(Provider::Codex),
+        None,
+        None,
+        "Investigate codex --model flag parsing | Working",
+        "codex",
+        "editor",
+    );
+    assert_eq!(
+        non_command_codex_flag_text.label,
+        "Investigate codex --model flag parsing"
+    );
+    assert_eq!(
+        non_command_codex_flag_text.activity_label.as_deref(),
+        Some("Investigate codex --model flag parsing")
+    );
+
+    let default_spinner_last = classify::display_metadata(
+        Some(Provider::Codex),
+        None,
+        None,
+        "agentscan ⠹",
+        "codex",
+        "editor",
+    );
+    assert_eq!(default_spinner_last.label, "agentscan");
+    assert_eq!(
+        default_spinner_last.activity_label.as_deref(),
+        Some("agentscan")
+    );
+
+    let attached_spinner = classify::display_metadata(
+        Some(Provider::Codex),
+        None,
+        None,
+        "⠹agentscan",
+        "codex",
+        "editor",
+    );
+    assert_eq!(attached_spinner.label, "agentscan");
+    assert_eq!(attached_spinner.activity_label.as_deref(), Some("agentscan"));
+
+    let action_required = classify::display_metadata(
+        Some(Provider::Codex),
+        None,
+        None,
+        "[ ! ] Action Required | agentscan",
+        "codex",
+        "editor",
+    );
+    assert_eq!(action_required.label, "agentscan");
+    assert_eq!(action_required.activity_label.as_deref(), Some("agentscan"));
+}
+
+#[test]
+fn codex_display_label_corpus_covers_upstream_title_items() {
+    let cases = [
+        (
+            "⠹ agentscan",
+            "agentscan",
+            Some("agentscan"),
+            "default busy title",
+        ),
+        (
+            "agentscan⠹",
+            "agentscan",
+            Some("agentscan"),
+            "busy title with attached trailing spinner",
+        ),
+        (
+            "agent⠹scan",
+            "agent⠹scan",
+            Some("agent⠹scan"),
+            "spinner-like glyph inside normal title text",
+        ),
+        (
+            "agentscan",
+            "agentscan",
+            Some("agentscan"),
+            "default idle title has no state but still labels the known Codex pane",
+        ),
+        (
+            "Ready | Review code quality in repository",
+            "Review code quality in repository",
+            Some("Review code quality in repository"),
+            "this host's run-state/thread-title config",
+        ),
+        (
+            "Review code quality in repository | Ready",
+            "Review code quality in repository",
+            Some("Review code quality in repository"),
+            "thread-title/run-state reversed",
+        ),
+        (
+            "gpt-5.5 | Ready | Review code quality in repository",
+            "gpt-5.5 | Review code quality in repository",
+            Some("gpt-5.5 | Review code quality in repository"),
+            "run-state surrounded by other configured title items",
+        ),
+        (
+            "Ready | gpt-5.5 | Working",
+            "Ready | gpt-5.5",
+            Some("Ready | gpt-5.5"),
+            "status-like activity segment before rightmost run-state",
+        ),
+        (
+            "Tasks 2/5 | gpt-5.5 | Ready | main",
+            "Tasks 2/5 | gpt-5.5 | main",
+            Some("Tasks 2/5 | gpt-5.5 | main"),
+            "run-state before trailing configured title items",
+        ),
+        (
+            "Review | Ready | notes",
+            "Review | notes",
+            Some("Review | notes"),
+            "middle run-state segment without tagged item provenance",
+        ),
+        (
+            "[ ! ] Action Required | agentscan",
+            "agentscan",
+            Some("agentscan"),
+            "action-required activity prefix",
+        ),
+        (
+            "[ ! ] Action Required | Ready | agentscan",
+            "agentscan",
+            Some("agentscan"),
+            "action-required activity prefix takes precedence over later run-state",
+        ),
+        (
+            "Ready | [ ! ] Action Required | agentscan",
+            "agentscan",
+            Some("agentscan"),
+            "action-required activity prefix removes earlier run-state",
+        ),
+        (
+            "repo: /path/lgpt.sh | Working",
+            "repo",
+            Some("repo"),
+            "legacy wrapper title still strips wrapper suffix",
+        ),
+    ];
+
+    for (title, expected_label, expected_activity, context) in cases {
+        let display = classify::display_metadata(
+            Some(Provider::Codex),
+            None,
+            None,
+            title,
+            "codex",
+            "editor",
+        );
+        assert_eq!(display.label, expected_label, "{context}: label");
+        assert_eq!(
+            display.activity_label.as_deref(),
+            expected_activity,
+            "{context}: activity label"
+        );
+    }
 }
 
 #[test]
