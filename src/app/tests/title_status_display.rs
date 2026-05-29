@@ -94,6 +94,11 @@ fn codex_status_uses_title_only() {
         Some(super::ClassificationMatchKind::PaneTitle),
         "review codex login | Working",
     );
+    let spinner_prefixed_run_state = classify::infer_title_status(
+        Some(Provider::Codex),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "⠹ Working | agentscan",
+    );
     let lgpt_status_last = classify::infer_title_status(
         Some(Provider::Codex),
         Some(super::ClassificationMatchKind::PaneTitle),
@@ -109,6 +114,46 @@ fn codex_status_uses_title_only() {
         Some(super::ClassificationMatchKind::PaneTitle),
         "Ready",
     );
+    let default_spinner_last = classify::infer_title_status(
+        Some(Provider::Codex),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "agentscan ⠹",
+    );
+    let status_middle_idle = classify::infer_title_status(
+        Some(Provider::Codex),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "gpt-5.5 | Ready | Review code quality in repository",
+    );
+    let status_middle_busy = classify::infer_title_status(
+        Some(Provider::Codex),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "agentscan | Thinking | Review code quality in repository",
+    );
+    let hidden_action_required = classify::infer_title_status(
+        Some(Provider::Codex),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "[ . ] Action Required | agentscan",
+    );
+    let visible_action_required = classify::infer_title_status(
+        Some(Provider::Codex),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "[ ! ] Action Required | agentscan",
+    );
+    let action_required_over_ready = classify::infer_title_status(
+        Some(Provider::Codex),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "[ ! ] Action Required | Ready | agentscan",
+    );
+    let action_required_after_ready = classify::infer_title_status(
+        Some(Provider::Codex),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "Ready | [ ! ] Action Required | agentscan",
+    );
+    let default_idle_without_run_state = classify::infer_title_status(
+        Some(Provider::Codex),
+        Some(super::ClassificationMatchKind::PaneTitle),
+        "agentscan",
+    );
 
     assert_eq!(busy.kind, StatusKind::Busy);
     assert_eq!(default_spinner.kind, StatusKind::Busy);
@@ -117,9 +162,81 @@ fn codex_status_uses_title_only() {
     assert_eq!(status_first_idle.kind, StatusKind::Idle);
     assert_eq!(status_last_wins.kind, StatusKind::Busy);
     assert_eq!(status_last_with_codex_activity.kind, StatusKind::Busy);
+    assert_eq!(spinner_prefixed_run_state.kind, StatusKind::Busy);
     assert_eq!(lgpt_status_last.kind, StatusKind::Busy);
     assert_eq!(wrapped_status_last_wins.kind, StatusKind::Busy);
     assert_eq!(idle.kind, StatusKind::Idle);
+    assert_eq!(default_spinner_last.kind, StatusKind::Busy);
+    assert_eq!(status_middle_idle.kind, StatusKind::Idle);
+    assert_eq!(status_middle_busy.kind, StatusKind::Busy);
+    assert_eq!(hidden_action_required.kind, StatusKind::Busy);
+    assert_eq!(visible_action_required.kind, StatusKind::Busy);
+    assert_eq!(action_required_over_ready.kind, StatusKind::Busy);
+    assert_eq!(action_required_after_ready.kind, StatusKind::Busy);
+    assert_eq!(default_idle_without_run_state.kind, StatusKind::Unknown);
+}
+
+#[test]
+fn codex_title_status_corpus_covers_upstream_item_ordering() {
+    let cases = [
+        // Upstream default: ["activity", "project-name"]. Idle has no activity item,
+        // so the title alone has no state and must leave room for pane-output fallback.
+        ("agentscan", StatusKind::Unknown),
+        ("⠹ agentscan", StatusKind::Busy),
+        ("agentscan ⠹", StatusKind::Busy),
+        ("⠹agentscan", StatusKind::Busy),
+        ("agentscan⠹", StatusKind::Busy),
+        ("agent⠹scan", StatusKind::Unknown),
+        ("⠹ Working | agentscan", StatusKind::Busy),
+        ("Working ⠹ | agentscan", StatusKind::Busy),
+        ("[ ! ] Action Required | agentscan", StatusKind::Busy),
+        ("[ . ] Action Required | agentscan", StatusKind::Busy),
+        ("[ ! ] Action Required | Ready | agentscan", StatusKind::Busy),
+        ("Ready | [ ! ] Action Required | agentscan", StatusKind::Busy),
+        // Custom run-state/thread-title order, including this host's config.
+        ("Ready | Review code quality in repository", StatusKind::Idle),
+        (
+            "Thinking | Review code quality in repository",
+            StatusKind::Busy,
+        ),
+        ("Review code quality in repository | Ready", StatusKind::Idle),
+        (
+            "Review code quality in repository | Thinking",
+            StatusKind::Busy,
+        ),
+        // Other configured title items can surround run-state in either direction.
+        (
+            "gpt-5.5 | Ready | Review code quality in repository",
+            StatusKind::Idle,
+        ),
+        (
+            "Review code quality in repository | gpt-5.5 | Working",
+            StatusKind::Busy,
+        ),
+        (
+            "main | Waiting | gpt-5.5 | Tasks 2/5",
+            StatusKind::Busy,
+        ),
+        (
+            "Tasks 2/5 | gpt-5.5 | Ready | main",
+            StatusKind::Idle,
+        ),
+        // Non-state configured title items should not invent status.
+        ("gpt-5.5 | Review code quality in repository", StatusKind::Unknown),
+        ("main | Tasks 2/5 | agentscan", StatusKind::Unknown),
+        // A middle run-state-like segment is treated as status because Codex
+        // allows `activity | run-state | project` and does not tag item sources.
+        ("Review | Ready | notes", StatusKind::Idle),
+    ];
+
+    for (title, expected) in cases {
+        let status = classify::infer_title_status(
+            Some(Provider::Codex),
+            Some(super::ClassificationMatchKind::PaneTitle),
+            title,
+        );
+        assert_eq!(status.kind, expected, "title: {title}");
+    }
 }
 
 #[test]
