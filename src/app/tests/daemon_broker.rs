@@ -251,11 +251,41 @@ fn daemon_broker_reconnect_preserves_deferred_events() {
 fn daemon_broker_reconnect_drains_stale_command_frames() {
     // The retained shared channel is not replaced on reconnect, so leftover
     // `%begin`/`%end` from a timed-out command must be drained or a later brokered
-    // command would consume the stale response (the collector takes the first
-    // `%begin` it reads). The drain must clear every buffered frame.
+    // command would consume the stale response. The drain must clear every stale
+    // primary frame.
     assert_eq!(
         daemon::test_drain_control_mode_channel_clears_stale_frames(),
         0
+    );
+}
+
+#[test]
+fn daemon_broker_reconnect_preserves_queued_subscriber_events() {
+    // Subscribers share the event channel but are independent control clients;
+    // reconnecting the primary broker must not discard their queued events.
+    assert_eq!(
+        daemon::test_drain_control_mode_channel_preserves_subscriber_frames(),
+        1
+    );
+}
+
+#[test]
+fn daemon_broker_status_omits_recovered_dead_subscriber_tombstone() {
+    let (dead_count, subscribers) =
+        daemon::test_subscriber_status_drops_recovered_dead_tombstone();
+
+    assert_eq!(dead_count, 1);
+    assert_eq!(
+        subscribers,
+        vec![("$2".to_string(), false), ("$3".to_string(), true)]
+    );
+}
+
+#[test]
+fn daemon_broker_status_keeps_dead_tombstone_until_recovery() {
+    assert_eq!(
+        daemon::test_recent_dead_subscriber_tombstone_persists_without_new_dead(),
+        vec!["$2".to_string()]
     );
 }
 

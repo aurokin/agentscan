@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+## 0.4.5 - 2026-05-31
+
+### Added
+
+- Added always-on daemon control-mode observability for cross-session event
+  subscribers. `agentscan daemon status` now reports subscriber coverage,
+  subscriber monitor timing, missing/dead subscriber sessions, per-subscriber
+  liveness, and optional subscriber runtime counters so stale or dropped
+  cross-session event coverage can be diagnosed without enabling the deep debug
+  trace.
+- Added source-tagged control-mode event accounting for primary and subscriber
+  clients. Deep control-line tracing can now attribute each event batch to the
+  control client that produced it, while routine runtime telemetry stays cheap
+  and does not capture snapshot diffs for ignored-only output batches.
+
+### Fixed
+
+- Reattached event subscribers now recover cleanly after a subscriber control
+  client exits. Dead-subscriber diagnostics persist until that exact session is
+  reattached or leaves the desired subscriber set, and broker status no longer
+  reports a recovered session as both live and dead.
+- Control-mode broker command collection now ignores subscriber frames while
+  waiting for primary command responses, and primary reconnect draining preserves
+  queued subscriber events instead of dropping them with stale primary command
+  frames.
+- Output-only subscriber traffic now republishes runtime telemetry, keeping
+  subscriber `last_line_at` status fresh even when the output batch does not
+  materially change the daemon snapshot.
+
 ## 0.4.4 - 2026-05-28
 
 ### Added

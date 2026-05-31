@@ -105,11 +105,16 @@ Implications:
   of thousands of output lines/sec) while staying responsive. The subscriber set is
   reconciled at startup and on every `%sessions-changed`, so sessions
   created/destroyed at runtime get event coverage immediately; dead subscriber
-  clients are pruned and re-attached on the next reconcile, and the subscriber
-  count is capped (64) for pathological session counts; when the count exceeds the
-  cap the lowest-numbered sessions keep event clients and the reconcile poll stays
-  at its active interval (rather than the self-heal backstop) so the un-subscribed
-  sessions are not starved.
+  clients are also checked by a lightweight subscriber-health monitor (~250ms)
+  that runs independently of the event stream, so continuous events from one
+  session cannot delay detection that another session's subscriber went stale.
+  Subscriber health is reported through `agentscan daemon status` (desired/active
+  counts, missing/dead sessions, per-subscriber line/event timestamps, monitor and
+  reconcile deadlines, and cumulative monitor/start/reattach/failure/exit
+  counters). The subscriber count is capped (64) for pathological session counts;
+  when the count exceeds the cap the lowest-numbered sessions keep event clients
+  and the reconcile poll stays at its active interval (rather than the self-heal
+  backstop) so the un-subscribed sessions are not starved.
   This makes every session — not just the attached one — event-driven for
   status/title/command/metadata, which is the product-critical requirement
   (responsive cross-session agent appear/disappear/status).
@@ -123,6 +128,11 @@ Implications:
   and the connect/reconnect bootstrap reconcile (initial truth + gap recovery)
   runs unconditionally. Setting `disable_reconcile = false` restores the full 30s
   redundancy reconcile and its meter (`reconcile_changed_snapshot_count`).
+- control-event observability is always source-aware: recent daemon events record
+  whether a batch came from the primary control client or from a per-session
+  subscriber, with per-source line and parsed-event counts. Raw control-mode
+  lines remain debug-only and are included in recent events / the JSONL event
+  trace only when `AGENTSCAN_TRACE_CONTROL_LINES=1` is set.
 - **pane-output providers** (status read only from captured pane output, never from
   tmux metadata — e.g. pi without the `titlebar-spinner` extension, droid) are kept
   responsive without the `%output` pty firehose. The daemon subscription includes

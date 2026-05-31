@@ -57,8 +57,8 @@ impl TmuxReadProvider for TmuxDaemonReadProvider<'_> {
 
 struct TmuxControlModeReadBroker<'a> {
     stdin: &'a mut std::process::ChildStdin,
-    line_rx: &'a mpsc::Receiver<Result<String>>,
-    deferred_lines: &'a mut VecDeque<String>,
+    line_rx: &'a mpsc::Receiver<Result<ControlModeLine>>,
+    deferred_lines: &'a mut VecDeque<ControlModeLine>,
     broker_health: &'a mut TmuxBrokerHealth,
 }
 
@@ -143,6 +143,16 @@ impl TmuxBrokerHealth {
             // Filled in by `RunningTmuxControlModeClient::broker_status_frame`,
             // which owns the subscriber set; broker health alone cannot see it.
             subscriber_count: None,
+            primary_session_id: None,
+            subscriber_coverage_complete: None,
+            desired_subscriber_count: None,
+            active_subscriber_count: None,
+            missing_subscriber_session_ids: None,
+            dead_subscriber_count: None,
+            subscribers: None,
+            last_subscriber_reconcile_at: None,
+            next_subscriber_monitor_in_ms: None,
+            next_reconcile_in_ms: None,
         }
     }
 
@@ -194,16 +204,51 @@ pub(crate) fn test_broker_health_after_reconnect(
 // shared channel on reconnect. Returns the residual frame count (expected 0).
 #[cfg(test)]
 pub(crate) fn test_drain_control_mode_channel_clears_stale_frames() -> usize {
-    let (line_tx, line_rx) = mpsc::channel::<Result<String>>();
-    line_tx.send(Ok("%begin 1779870847 7 0".to_string())).ok();
-    line_tx.send(Ok("%1 stale pane row".to_string())).ok();
-    line_tx.send(Ok("%end 1779870847 7 0".to_string())).ok();
-    drain_control_mode_channel(&line_rx);
+    let (line_tx, line_rx) = mpsc::channel::<Result<ControlModeLine>>();
+    let mut deferred_lines = VecDeque::new();
+    let source = ControlModeLineSource::Primary { session_id: None };
+    line_tx
+        .send(Ok(ControlModeLine::new(
+            source.clone(),
+            "%begin 1779870847 7 0".to_string(),
+        )))
+        .ok();
+    line_tx
+        .send(Ok(ControlModeLine::new(
+            source.clone(),
+            "%1 stale pane row".to_string(),
+        )))
+        .ok();
+    line_tx
+        .send(Ok(ControlModeLine::new(
+            source,
+            "%end 1779870847 7 0".to_string(),
+        )))
+        .ok();
+    drain_control_mode_channel(&line_rx, &mut deferred_lines);
     // `line_tx` is still in scope, so the channel is open (not disconnected); a
     // correctly drained channel yields zero remaining frames.
     let residual = line_rx.try_iter().count();
     drop(line_tx);
-    residual
+    residual + deferred_lines.len()
+}
+
+#[cfg(test)]
+pub(crate) fn test_drain_control_mode_channel_preserves_subscriber_frames() -> usize {
+    let (line_tx, line_rx) = mpsc::channel::<Result<ControlModeLine>>();
+    let mut deferred_lines = VecDeque::new();
+    line_tx
+        .send(Ok(ControlModeLine::new(
+            ControlModeLineSource::Subscriber {
+                session_id: Arc::<str>::from("$2"),
+            },
+            "%subscription-changed agentscan $2 @4 0 %7 : %7:codex:::::".to_string(),
+        )))
+        .ok();
+    drain_control_mode_channel(&line_rx, &mut deferred_lines);
+    let residual = line_rx.try_iter().count();
+    drop(line_tx);
+    residual + deferred_lines.len()
 }
 
 #[cfg(test)]
@@ -267,33 +312,202 @@ impl StartedTmuxControlModeClient {
 pub(super) struct RunningTmuxControlModeClient {
     child: std::process::Child,
     stdin: std::process::ChildStdin,
-    line_rx: mpsc::Receiver<Result<String>>,
+    line_rx: mpsc::Receiver<Result<ControlModeLine>>,
     // Retained so per-session subscriber clients and primary reconnects can feed
     // the same shared event stream the run loop drains. Because this keeps a live
     // sender, the channel never reports `Disconnected` on its own; primary-client
     // death is instead detected by the events the primary forwards — `%exit` on a
     // clean tmux exit and a `Fatal` read error on an abnormal one — not by channel
     // closure.
-    line_tx: mpsc::Sender<Result<String>>,
+    line_tx: mpsc::Sender<Result<ControlModeLine>>,
     // Event-only control clients, one per non-primary session. tmux control mode
     // is scoped to the attached session, so these provide event coverage for
     // panes the primary client cannot see. They never issue commands; their
     // reader threads feed the shared channel.
     subscribers: Vec<SubscriberClient>,
+    recent_dead_subscribers: Vec<ipc::ControlModeSubscriberStatusFrame>,
+    primary_session_id: Option<String>,
+    desired_subscriber_session_ids: Vec<String>,
+    missing_subscriber_session_ids: Vec<String>,
+    subscriber_start_counts: HashMap<String, u64>,
+    last_subscriber_reconcile_at: Option<String>,
     // False when there are more non-primary sessions than the subscriber cap, so
     // some sessions have no event client. The run loop keeps the reconcile poll
     // active in that case rather than relaxing to the self-heal backstop.
     subscriber_coverage_complete: bool,
-    deferred_lines: VecDeque<String>,
+    deferred_lines: VecDeque<ControlModeLine>,
     broker_health: TmuxBrokerHealth,
 }
 
 struct SubscriberClient {
     session_id: String,
     child: std::process::Child,
+    started_at: String,
+    last_line_at: Option<String>,
+    last_event_at: Option<String>,
+    restart_count: u64,
+    known_dead: bool,
     // Retained for keep-alive and per-pane output gating (`refresh-client -A`).
     #[allow(dead_code)]
     stdin: std::process::ChildStdin,
+}
+
+fn subscriber_status_frame(subscriber: &SubscriberClient) -> ipc::ControlModeSubscriberStatusFrame {
+    ipc::ControlModeSubscriberStatusFrame {
+        session_id: subscriber.session_id.clone(),
+        pid: subscriber.child.id(),
+        started_at: subscriber.started_at.clone(),
+        last_line_at: subscriber.last_line_at.clone(),
+        last_event_at: subscriber.last_event_at.clone(),
+        restart_count: subscriber.restart_count,
+        dead: subscriber.known_dead,
+    }
+}
+
+fn remove_recent_dead_subscriber(
+    recent_dead_subscribers: &mut Vec<ipc::ControlModeSubscriberStatusFrame>,
+    session_id: &str,
+) {
+    recent_dead_subscribers.retain(|subscriber| subscriber.session_id != session_id);
+}
+
+fn record_recent_dead_subscribers(
+    recent_dead_subscribers: &mut Vec<ipc::ControlModeSubscriberStatusFrame>,
+    dead_subscribers: Vec<ipc::ControlModeSubscriberStatusFrame>,
+) {
+    for dead_subscriber in dead_subscribers {
+        remove_recent_dead_subscriber(recent_dead_subscribers, &dead_subscriber.session_id);
+        recent_dead_subscribers.push(dead_subscriber);
+    }
+}
+
+fn merge_subscriber_status_frames(
+    active_subscribers: Vec<ipc::ControlModeSubscriberStatusFrame>,
+    recent_dead_subscribers: &[ipc::ControlModeSubscriberStatusFrame],
+) -> (usize, Vec<ipc::ControlModeSubscriberStatusFrame>) {
+    let active_dead_count = active_subscribers
+        .iter()
+        .filter(|subscriber| subscriber.dead)
+        .count();
+    let mut subscribers = active_subscribers;
+    let visible_recent_dead_subscribers = recent_dead_subscribers
+        .iter()
+        .filter(|dead_subscriber| {
+            !subscribers
+                .iter()
+                .any(|subscriber| subscriber.session_id == dead_subscriber.session_id)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let dead_subscriber_count =
+        active_dead_count.saturating_add(visible_recent_dead_subscribers.len());
+    subscribers.extend(visible_recent_dead_subscribers);
+    (dead_subscriber_count, subscribers)
+}
+
+#[cfg(test)]
+fn test_subscriber_status_frame(
+    session_id: &str,
+    dead: bool,
+) -> ipc::ControlModeSubscriberStatusFrame {
+    ipc::ControlModeSubscriberStatusFrame {
+        session_id: session_id.to_string(),
+        pid: 123,
+        started_at: "2026-05-03T00:00:00Z".to_string(),
+        last_line_at: None,
+        last_event_at: None,
+        restart_count: 0,
+        dead,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_subscriber_status_drops_recovered_dead_tombstone() -> (usize, Vec<(String, bool)>)
+{
+    let active_subscribers = vec![test_subscriber_status_frame("$2", false)];
+    let recent_dead_subscribers = vec![
+        test_subscriber_status_frame("$2", true),
+        test_subscriber_status_frame("$3", true),
+    ];
+    let (dead_count, subscribers) =
+        merge_subscriber_status_frames(active_subscribers, &recent_dead_subscribers);
+
+    (
+        dead_count,
+        subscribers
+            .into_iter()
+            .map(|subscriber| (subscriber.session_id, subscriber.dead))
+            .collect(),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn test_recent_dead_subscriber_tombstone_persists_without_new_dead() -> Vec<String> {
+    let mut recent_dead_subscribers = vec![test_subscriber_status_frame("$2", true)];
+
+    record_recent_dead_subscribers(&mut recent_dead_subscribers, Vec::new());
+
+    recent_dead_subscribers
+        .into_iter()
+        .map(|subscriber| subscriber.session_id)
+        .collect()
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum ControlModeLineSource {
+    Primary { session_id: Option<Arc<str>> },
+    Subscriber { session_id: Arc<str> },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct ControlModeLine {
+    pub(super) source: ControlModeLineSource,
+    pub(super) line: String,
+}
+
+impl ControlModeLine {
+    pub(super) fn new(source: ControlModeLineSource, line: String) -> Self {
+        Self { source, line }
+    }
+
+    pub(super) fn is_subscriber(&self) -> bool {
+        matches!(self.source, ControlModeLineSource::Subscriber { .. })
+    }
+
+    pub(super) fn is_primary(&self) -> bool {
+        matches!(self.source, ControlModeLineSource::Primary { .. })
+    }
+
+    pub(super) fn source_frame_seed(&self) -> ipc::ControlModeSourceFrame {
+        match &self.source {
+            ControlModeLineSource::Primary { session_id } => ipc::ControlModeSourceFrame {
+                source: "primary".to_string(),
+                session_id: session_id.as_ref().map(ToString::to_string),
+                line_count: 0,
+                event_count: 0,
+            },
+            ControlModeLineSource::Subscriber { session_id } => ipc::ControlModeSourceFrame {
+                source: "subscriber".to_string(),
+                session_id: Some(session_id.to_string()),
+                line_count: 0,
+                event_count: 0,
+            },
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct SubscriberReconcileOutcome {
+    pub(super) pruned_dead_count: u64,
+    pub(super) started_count: u64,
+    pub(super) reattached_count: u64,
+    pub(super) attach_failure_count: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SubscriberAttachOutcome {
+    AlreadyPresent,
+    Attached { reattached: bool },
 }
 
 impl Drop for SubscriberClient {
@@ -303,14 +517,24 @@ impl Drop for SubscriberClient {
 }
 
 impl RunningTmuxControlModeClient {
-    pub(super) fn from_started(started: StartedTmuxControlModeClient) -> Result<Self> {
-        let (child, stdin, line_rx, line_tx) = connect_primary_control_client(started)?;
+    pub(super) fn from_started(
+        started: StartedTmuxControlModeClient,
+        primary_session_id: Option<String>,
+    ) -> Result<Self> {
+        let (child, stdin, line_rx, line_tx) =
+            connect_primary_control_client(started, primary_session_id.clone())?;
         Ok(Self {
             child,
             stdin,
             line_rx,
             line_tx,
             subscribers: Vec::new(),
+            recent_dead_subscribers: Vec::new(),
+            primary_session_id,
+            desired_subscriber_session_ids: Vec::new(),
+            missing_subscriber_session_ids: Vec::new(),
+            subscriber_start_counts: HashMap::new(),
+            last_subscriber_reconcile_at: None,
             subscriber_coverage_complete: true,
             deferred_lines: VecDeque::new(),
             broker_health: TmuxBrokerHealth::default(),
@@ -324,21 +548,42 @@ impl RunningTmuxControlModeClient {
         &mut self,
         session_id: String,
         started: StartedTmuxControlModeClient,
-    ) -> Result<()> {
+    ) -> Result<SubscriberAttachOutcome> {
         if self.subscribers.iter().any(|s| s.session_id == session_id) {
-            return Ok(());
+            return Ok(SubscriberAttachOutcome::AlreadyPresent);
         }
-        let (child, stdin) =
-            spawn_control_client_reader(started, self.line_tx.clone(), ClientErrorMode::Quiet)
-                .with_context(|| {
-                    format!("failed to attach subscriber control client for session {session_id}")
-                })?;
+        let previous_start_count = self
+            .subscriber_start_counts
+            .get(&session_id)
+            .copied()
+            .unwrap_or_default();
+        let (child, stdin) = spawn_control_client_reader(
+            started,
+            self.line_tx.clone(),
+            ClientErrorMode::Quiet,
+            ControlModeLineSource::Subscriber {
+                session_id: Arc::<str>::from(session_id.as_str()),
+            },
+        )
+        .with_context(|| {
+            format!("failed to attach subscriber control client for session {session_id}")
+        })?;
+        let start_count = previous_start_count.saturating_add(1);
+        self.subscriber_start_counts
+            .insert(session_id.clone(), start_count);
+        remove_recent_dead_subscriber(&mut self.recent_dead_subscribers, &session_id);
+        let reattached = previous_start_count > 0;
         self.subscribers.push(SubscriberClient {
             session_id,
             child,
+            started_at: snapshot::now_rfc3339().unwrap_or_else(|_| "unknown".to_string()),
+            last_line_at: None,
+            last_event_at: None,
+            restart_count: start_count.saturating_sub(1),
+            known_dead: false,
             stdin,
         });
-        Ok(())
+        Ok(SubscriberAttachOutcome::Attached { reattached })
     }
 
     pub(super) fn has_subscriber(&self, session_id: &str) -> bool {
@@ -357,9 +602,19 @@ impl RunningTmuxControlModeClient {
     // returns that cached `Ok(Some(status))` on every subsequent call (it does
     // not reap-then-report-`None`). So the earlier detection call does not consume
     // the status out from under this prune — both observe the exited child.
-    pub(super) fn prune_dead_subscribers(&mut self) {
-        self.subscribers
-            .retain_mut(|subscriber| !matches!(subscriber.child.try_wait(), Ok(Some(_))));
+    pub(super) fn prune_dead_subscribers(&mut self) -> usize {
+        let before = self.subscribers.len();
+        let mut dead_subscribers = Vec::new();
+        self.subscribers.retain_mut(|subscriber| {
+            let dead = matches!(subscriber.child.try_wait(), Ok(Some(_)));
+            if dead {
+                subscriber.known_dead = true;
+                dead_subscribers.push(subscriber_status_frame(subscriber));
+            }
+            !dead
+        });
+        record_recent_dead_subscribers(&mut self.recent_dead_subscribers, dead_subscribers);
+        before.saturating_sub(self.subscribers.len())
     }
 
     // Whether any subscriber's client process has exited. A dead subscriber means
@@ -372,9 +627,14 @@ impl RunningTmuxControlModeClient {
     // `prune_dead_subscribers` from seeing the same exit: the status is cached on
     // the `Child` and re-reported by later `try_wait` calls (see that method).
     pub(super) fn has_dead_subscriber(&mut self) -> bool {
-        self.subscribers
-            .iter_mut()
-            .any(|subscriber| matches!(subscriber.child.try_wait(), Ok(Some(_))))
+        let mut has_dead = false;
+        for subscriber in &mut self.subscribers {
+            if matches!(subscriber.child.try_wait(), Ok(Some(_))) {
+                subscriber.known_dead = true;
+                has_dead = true;
+            }
+        }
+        has_dead
     }
 
     pub(super) fn subscriber_count(&self) -> usize {
@@ -391,8 +651,17 @@ impl RunningTmuxControlModeClient {
         matches!(self.child.try_wait(), Ok(Some(_)))
     }
 
-    pub(super) fn set_subscriber_coverage_complete(&mut self, complete: bool) {
+    pub(super) fn set_subscriber_coverage(
+        &mut self,
+        desired: Vec<String>,
+        missing: Vec<String>,
+        complete: bool,
+    ) {
+        self.desired_subscriber_session_ids = desired;
+        self.missing_subscriber_session_ids = missing;
         self.subscriber_coverage_complete = complete;
+        self.last_subscriber_reconcile_at =
+            Some(snapshot::now_rfc3339().unwrap_or_else(|_| "unknown".to_string()));
     }
 
     pub(super) fn subscriber_coverage_complete(&self) -> bool {
@@ -402,8 +671,18 @@ impl RunningTmuxControlModeClient {
     // Drop subscriber clients whose sessions are no longer desired (each dropped
     // `SubscriberClient` cleans up its child process).
     pub(super) fn retain_subscriber_sessions(&mut self, desired: &[String]) {
+        let removed_session_ids = self
+            .subscribers
+            .iter()
+            .filter(|subscriber| !desired.iter().any(|id| id == &subscriber.session_id))
+            .map(|subscriber| subscriber.session_id.clone())
+            .collect::<Vec<_>>();
         self.subscribers
             .retain(|subscriber| desired.iter().any(|id| id == &subscriber.session_id));
+        for session_id in removed_session_ids {
+            self.subscriber_start_counts.remove(&session_id);
+            remove_recent_dead_subscriber(&mut self.recent_dead_subscribers, &session_id);
+        }
     }
 
     pub(super) fn read_provider(&mut self) -> TmuxDaemonReadProvider<'_> {
@@ -424,17 +703,64 @@ impl RunningTmuxControlModeClient {
     pub(super) fn recv_timeout(
         &mut self,
         timeout: Duration,
-    ) -> std::result::Result<Result<String>, mpsc::RecvTimeoutError> {
-        if let Some(line) = self.deferred_lines.pop_front() {
+    ) -> std::result::Result<Result<ControlModeLine>, mpsc::RecvTimeoutError> {
+        let result = if let Some(line) = self.deferred_lines.pop_front() {
             Ok(Ok(line))
         } else {
             self.line_rx.recv_timeout(timeout)
+        };
+        if let Ok(Ok(line)) = &result {
+            self.mark_line_seen(line);
+        }
+        result
+    }
+
+    fn mark_line_seen(&mut self, line: &ControlModeLine) {
+        let ControlModeLineSource::Subscriber { session_id } = &line.source else {
+            return;
+        };
+        let now = snapshot::now_rfc3339().unwrap_or_else(|_| "unknown".to_string());
+        if let Some(subscriber) = self
+            .subscribers
+            .iter_mut()
+            .find(|subscriber| subscriber.session_id.as_str() == session_id.as_ref())
+        {
+            subscriber.last_line_at = Some(now.clone());
+            if !matches!(control_event_from_line(&line.line), ControlEvent::Ignored) {
+                subscriber.last_event_at = Some(now);
+            }
         }
     }
 
     pub(super) fn broker_status_frame(&self) -> ipc::ControlModeBrokerStatusFrame {
+        self.broker_status_frame_with_deadlines(None, None)
+    }
+
+    pub(super) fn broker_status_frame_with_deadlines(
+        &self,
+        next_subscriber_monitor_in_ms: Option<u64>,
+        next_reconcile_in_ms: Option<u64>,
+    ) -> ipc::ControlModeBrokerStatusFrame {
+        let active_subscribers = self
+            .subscribers
+            .iter()
+            .map(subscriber_status_frame)
+            .collect::<Vec<_>>();
+        let (dead_subscriber_count, subscribers) =
+            merge_subscriber_status_frames(active_subscribers, &self.recent_dead_subscribers);
+
         ipc::ControlModeBrokerStatusFrame {
             subscriber_count: Some(self.subscriber_count()),
+            primary_session_id: self.primary_session_id.clone(),
+            subscriber_coverage_complete: Some(self.subscriber_coverage_complete),
+            desired_subscriber_count: Some(self.desired_subscriber_session_ids.len()),
+            active_subscriber_count: Some(self.subscribers.len()),
+            missing_subscriber_session_ids: Some(self.missing_subscriber_session_ids.clone()),
+            dead_subscriber_count: Some(dead_subscriber_count),
+            subscribers: Some(subscribers),
+            last_subscriber_reconcile_at: self.last_subscriber_reconcile_at.clone(),
+            next_subscriber_monitor_in_ms,
+            next_reconcile_in_ms,
             ..self.broker_health.status_frame()
         }
     }
@@ -474,19 +800,31 @@ impl RunningTmuxControlModeClient {
         // reader starts producing, so a stale command response from the dead
         // connection cannot be misattributed to a post-reconnect brokered command.
         // See `drain_control_mode_channel`.
-        drain_control_mode_channel(&self.line_rx);
+        drain_control_mode_channel(&self.line_rx, &mut self.deferred_lines);
         let started = startup
             .start_tmux_control_mode_client()
             .context("failed to restart tmux control-mode client")?;
+        let replacement_primary_session_id = startup
+            .primary_session_id_for_status()
+            .or_else(|| self.primary_session_id.clone());
         // Re-spawn the primary reader into the existing shared channel rather than
         // recreating it, so any attached subscriber clients keep delivering events.
-        let (mut replacement_child, replacement_stdin) =
-            spawn_control_client_reader(started, self.line_tx.clone(), ClientErrorMode::Fatal)
-                .context("failed to configure restarted tmux control-mode client")?;
+        let (mut replacement_child, replacement_stdin) = spawn_control_client_reader(
+            started,
+            self.line_tx.clone(),
+            ClientErrorMode::Fatal,
+            ControlModeLineSource::Primary {
+                session_id: replacement_primary_session_id
+                    .as_deref()
+                    .map(Arc::<str>::from),
+            },
+        )
+        .context("failed to configure restarted tmux control-mode client")?;
 
         std::mem::swap(&mut self.child, &mut replacement_child);
         cleanup_startup_child(&mut replacement_child);
         self.stdin = replacement_stdin;
+        self.primary_session_id = replacement_primary_session_id;
         self.broker_health.mark_reconnected();
         Ok(())
     }
@@ -522,16 +860,23 @@ impl Drop for RunningTmuxControlModeClient {
 type PrimaryControlConnection = (
     std::process::Child,
     std::process::ChildStdin,
-    mpsc::Receiver<Result<String>>,
-    mpsc::Sender<Result<String>>,
+    mpsc::Receiver<Result<ControlModeLine>>,
+    mpsc::Sender<Result<ControlModeLine>>,
 );
 
 fn connect_primary_control_client(
     started: StartedTmuxControlModeClient,
+    primary_session_id: Option<String>,
 ) -> Result<PrimaryControlConnection> {
     let (line_tx, line_rx) = mpsc::channel();
-    let (child, stdin) =
-        spawn_control_client_reader(started, line_tx.clone(), ClientErrorMode::Fatal)?;
+    let (child, stdin) = spawn_control_client_reader(
+        started,
+        line_tx.clone(),
+        ClientErrorMode::Fatal,
+        ControlModeLineSource::Primary {
+            session_id: primary_session_id.as_deref().map(Arc::<str>::from),
+        },
+    )?;
     Ok((child, stdin, line_rx, line_tx))
 }
 
@@ -548,8 +893,17 @@ fn connect_primary_control_client(
 // stale response and return an old or mismatched snapshot. Only the primary issues
 // commands, so the primary is the only source of stray `%begin`/`%end`; draining
 // here restores `main`'s discard-on-reconnect behavior for the shared channel.
-fn drain_control_mode_channel(line_rx: &mpsc::Receiver<Result<String>>) {
-    while line_rx.try_recv().is_ok() {}
+fn drain_control_mode_channel(
+    line_rx: &mpsc::Receiver<Result<ControlModeLine>>,
+    deferred_lines: &mut VecDeque<ControlModeLine>,
+) {
+    while let Ok(frame) = line_rx.try_recv() {
+        if let Ok(line) = frame
+            && line.is_subscriber()
+        {
+            deferred_lines.push_back(line);
+        }
+    }
 }
 
 // How a client's reader thread reports a read error on its stdout. The primary
@@ -564,8 +918,9 @@ enum ClientErrorMode {
 
 fn spawn_control_client_reader(
     mut started: StartedTmuxControlModeClient,
-    line_tx: mpsc::Sender<Result<String>>,
+    line_tx: mpsc::Sender<Result<ControlModeLine>>,
     error_mode: ClientErrorMode,
+    source: ControlModeLineSource,
 ) -> Result<(std::process::Child, std::process::ChildStdin)> {
     let stdout_reader = started
         .stdout_reader
@@ -579,7 +934,7 @@ fn spawn_control_client_reader(
         .stdin
         .take()
         .context("tmux control-mode client did not provide stdin")?;
-    spawn_control_mode_line_reader(stdout_reader, line_tx, error_mode);
+    spawn_control_mode_line_reader(stdout_reader, line_tx, error_mode, source);
     Ok((child, stdin))
 }
 
@@ -603,8 +958,9 @@ pub(crate) fn test_subscriber_local_exit(quiet: bool, line: &str) -> bool {
 
 fn spawn_control_mode_line_reader(
     stdout_reader: BufReader<std::process::ChildStdout>,
-    line_tx: mpsc::Sender<Result<String>>,
+    line_tx: mpsc::Sender<Result<ControlModeLine>>,
     error_mode: ClientErrorMode,
+    source: ControlModeLineSource,
 ) {
     std::thread::spawn(move || {
         let mut reader = stdout_reader;
@@ -621,7 +977,10 @@ fn spawn_control_mode_line_reader(
                     if subscriber_local_exit(error_mode, &line) {
                         break;
                     }
-                    if line_tx.send(Ok(line)).is_err() {
+                    if line_tx
+                        .send(Ok(ControlModeLine::new(source.clone(), line)))
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -803,8 +1162,8 @@ pub(super) fn control_mode_startup_response_from_line(line: &str, context: &str)
 
 fn control_mode_list_all_panes(
     stdin: &mut std::process::ChildStdin,
-    line_rx: &mpsc::Receiver<Result<String>>,
-    deferred_lines: &mut VecDeque<String>,
+    line_rx: &mpsc::Receiver<Result<ControlModeLine>>,
+    deferred_lines: &mut VecDeque<ControlModeLine>,
 ) -> Result<Vec<TmuxPaneRow>> {
     writeln!(stdin, "list-panes -a -F '{PANE_FORMAT}'")
         .context("failed to write brokered tmux list-panes -a")?;
@@ -828,9 +1187,9 @@ fn control_mode_list_all_panes(
 
 fn control_mode_list_panes_target(
     stdin: &mut std::process::ChildStdin,
-    line_rx: &mpsc::Receiver<Result<String>>,
+    line_rx: &mpsc::Receiver<Result<ControlModeLine>>,
     target: &str,
-    deferred_lines: &mut VecDeque<String>,
+    deferred_lines: &mut VecDeque<ControlModeLine>,
     missing_target_scope: MissingTargetScope,
 ) -> Result<Option<Vec<TmuxPaneRow>>> {
     writeln!(stdin, "list-panes -t {target} -F '{PANE_FORMAT}'")
@@ -859,9 +1218,9 @@ fn control_mode_list_panes_target(
 }
 
 fn collect_control_mode_command_outcome(
-    line_rx: &mpsc::Receiver<Result<String>>,
+    line_rx: &mpsc::Receiver<Result<ControlModeLine>>,
     timeout: Duration,
-    deferred_lines: &mut VecDeque<String>,
+    deferred_lines: &mut VecDeque<ControlModeLine>,
 ) -> Result<ControlModeBrokerCommandOutcome> {
     let deadline = Instant::now() + timeout;
     let mut active_id = None;
@@ -872,7 +1231,7 @@ fn collect_control_mode_command_outcome(
         if now >= deadline {
             bail!("timed out waiting for control-mode command response");
         }
-        let line = line_rx
+        let frame = line_rx
             .recv_timeout(deadline.saturating_duration_since(now))
             .map_err(|error| match error {
                 mpsc::RecvTimeoutError::Timeout => {
@@ -884,13 +1243,18 @@ fn collect_control_mode_command_outcome(
                     )
                 }
             })??;
+        if !frame.is_primary() {
+            deferred_lines.push_back(frame);
+            continue;
+        }
+        let line = frame.line.as_str();
 
-        if active_id.is_some() && control_mode_broker_line_is_command_output(&line) {
-            output.push(line);
+        if active_id.is_some() && control_mode_broker_line_is_command_output(line) {
+            output.push(frame.line);
             continue;
         }
 
-        match (active_id.as_ref(), control_mode_command_marker(&line)) {
+        match (active_id.as_ref(), control_mode_command_marker(line)) {
             (None, Some(ControlModeCommandMarker::Begin(id))) => active_id = Some(id),
             (Some(id), Some(ControlModeCommandMarker::End(end_id))) if *id == end_id => {
                 return Ok(ControlModeBrokerCommandOutcome::Response(
@@ -916,11 +1280,11 @@ fn collect_control_mode_command_outcome(
             (Some(_), Some(_)) => {
                 bail!("interleaved control-mode command frame before expected %end");
             }
-            (Some(_), None) if control_mode_broker_should_defer_line(&line) => {
-                deferred_lines.push_back(line);
+            (Some(_), None) if control_mode_broker_should_defer_line(line) => {
+                deferred_lines.push_back(frame);
             }
-            (Some(_), None) => output.push(line),
-            (None, Some(_)) | (None, None) => deferred_lines.push_back(line),
+            (Some(_), None) => output.push(frame.line),
+            (None, Some(_)) | (None, None) => deferred_lines.push_back(frame),
         }
     }
 }

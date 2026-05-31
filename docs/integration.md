@@ -167,6 +167,16 @@ clients and developers that need to evaluate event-driven behavior:
 - `broker_fallback_count`
 - `control_mode_broker_subscriber_count` — per-session event-only subscriber
   clients currently attached (one per non-primary session)
+- `control_mode_broker_subscriber_coverage_complete`
+- `control_mode_broker_missing_subscriber_session_ids`
+- `control_mode_broker_subscribers` — per-subscriber session id, pid,
+  start time, last line/event timestamps, restart count, and dead flag
+- `control_mode_broker_next_subscriber_monitor_in_ms`
+- `subscriber_monitor_count`
+- `subscriber_start_count`
+- `subscriber_reattach_count`
+- `subscriber_attach_failure_count`
+- `subscriber_exit_count`
 
 When the daemon is not running, has not finished initializing runtime
 telemetry, or is an older compatible daemon that does not publish these
