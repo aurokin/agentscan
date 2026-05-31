@@ -336,10 +336,20 @@ fn place_settings_window(window: tauri::Window) -> Result<(), String> {
         return Ok(());
     };
     let work_area = logical_work_area_for_monitor(&monitor);
+    // Convert the settings window's physical size with ITS OWN monitor's scale, not the
+    // dock/cursor monitor's: on a mixed-DPI setup (e.g. a 2x laptop plus a 1x external)
+    // the two windows can sit on displays with different scale factors, and using the
+    // wrong one yields a wrong logical size and a mis-centered (or partly off-screen)
+    // window. Logical points are a shared space, so the result still centers correctly
+    // against the dock monitor's logical work area.
+    let settings_scale = settings
+        .scale_factor()
+        .map_err(|error| format!("Unable to read settings window scale: {error}"))?
+        .max(1.0);
     let size = settings
         .outer_size()
         .map_err(|error| format!("Unable to read settings window size: {error}"))?
-        .to_logical::<f64>(monitor.scale_factor().max(1.0));
+        .to_logical::<f64>(settings_scale);
     let (x, y) = centered_placement_for_work_area(work_area, size.width, size.height);
     settings
         .set_position(tauri::LogicalPosition::new(x, y))
