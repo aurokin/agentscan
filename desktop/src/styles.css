@@ -874,6 +874,41 @@ kbd {
   animation: spin 0.8s linear infinite;
 }
 
+.boot-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Horizontal bar: lay the recovery out as a compact row so the heading, status, and the
+   only "Open settings" path fit the ~120px bar without clipping. No window resize is
+   involved, so an "auto" dock's orientation (derived from the window shape) is undisturbed. */
+.sidebar[data-orientation="horizontal"] .boot-state {
+  flex: 1 1 auto;
+  flex-direction: row;
+  gap: 16px;
+  padding: 12px 20px;
+}
+.sidebar[data-orientation="horizontal"] .boot-spinner,
+.sidebar[data-orientation="horizontal"] .boot-state button {
+  flex: 0 0 auto;
+}
+.sidebar[data-orientation="horizontal"] .boot-copy {
+  flex: 0 1 auto;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+  text-align: left;
+}
+.sidebar[data-orientation="horizontal"] .boot-state h1,
+.sidebar[data-orientation="horizontal"] .boot-state p {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ---------- Settings ---------- */
 
 .settings-topbar {

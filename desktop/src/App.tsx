@@ -211,7 +211,31 @@ type PrefsSync =
   | { kind: "theme"; theme: ThemePreference }
   | { kind: "orientation"; orientation: OrientationPreference }
   | { kind: "glass"; enabled: boolean; alpha: number }
-  | { kind: "profiles" };
+  | { kind: "profiles" }
+  // Dock -> settings: the dock's resolved preflight (with the runnerKey it
+  // describes) so the settings card can reuse it instead of probing itself.
+  // `status` mirrors the dock's LoadState discriminant so the card can reproduce
+  // its tones: "ready" carries `preflight`; "loading" reads as Checking; "failed"
+  // (dock IPC error) reads as Unreachable. `preflight` is non-null only on "ready".
+  | {
+      kind: "preflight";
+      status: LoadState["status"];
+      runnerKey: string;
+      preflight: AgentscanPreflight | null;
+    }
+  // Settings -> dock: ask the dock to re-emit its current preflight. emitTo has
+  // no replay, so a settings window shown after the dock probed would otherwise
+  // miss the result; it requests one on show to reconcile.
+  | { kind: "preflight-request" };
+
+// The dock's resolved preflight as held by the settings window, mirrored from the
+// "preflight" sync above (kind dropped). The settings card reproduces its tones from
+// `status` + `preflight`, guarded by `runnerKey` against its own active runner.
+type SyncedPreflight = {
+  status: LoadState["status"];
+  runnerKey: string;
+  preflight: AgentscanPreflight | null;
+};
 
 // Collapse a preference to the concrete theme in effect, resolving "system" from
 // the OS appearance. Used to pick per-theme logo variants.
@@ -294,10 +318,12 @@ type DraftValidation = {
 
 function App({ mode }: { mode: ShellMode }) {
   const [state, setState] = useState<LoadState>({ status: "loading" });
-  // Whether the (kept-warm) settings window is currently shown. Used to defer its
-  // preflight probe until it's actually opened, so a hidden settings window never fires
-  // a duplicate `ssh … --version` for remote profiles. Always false in the dock.
-  const [settingsVisible, setSettingsVisible] = useState(false);
+  // The settings window never runs its own preflight; instead it reuses the dock's
+  // resolved result, mirrored over the event bus (see the preflight sync below). This
+  // avoids a second `ssh … --version` for remote profiles (an extra round-trip and a
+  // possible duplicate passphrase prompt) every time Settings is opened, and keeps the
+  // card current even while the window is visible-but-unfocused. Always null in the dock.
+  const [syncedPreflight, setSyncedPreflight] = useState<SyncedPreflight | null>(null);
   const [profileState, setProfileState] = useState<ProfileState>(() => loadStoredProfiles());
   const activeProfile = useMemo(() => getActiveProfile(profileState), [profileState]);
   const runnerSettings = useMemo(() => runnerSettingsForProfile(activeProfile), [activeProfile]);
@@ -423,13 +449,11 @@ function App({ mode }: { mode: ShellMode }) {
   isSettingsDirtyRef.current = isSettingsDirty;
 
   useEffect(() => {
-    // The dock always probes (it gates the live picker). The settings window also needs
-    // preflight for its Configuration status card, but only while it's actually shown —
-    // otherwise a hidden, kept-warm settings window would fire a second preflight (an
-    // extra `ssh … --version` for remote profiles, with possible duplicate passphrase
-    // prompts) on every start/source switch/apply even when the user never opens it. The
-    // card refreshes when the window is shown (settingsVisible flips this effect on).
-    if (mode === "settings" && !settingsVisible) {
+    // Only the dock probes. It gates the live picker, so it must run preflight; the
+    // settings window reuses the dock's resolved result over the event bus instead of
+    // firing its own (which for SSH would be a second `ssh … --version` — an extra
+    // round-trip and a possible duplicate passphrase prompt). See the preflight sync.
+    if (mode !== "dock") {
       return;
     }
     let cancelled = false;
@@ -528,7 +552,14 @@ function App({ mode }: { mode: ShellMode }) {
     return () => {
       cancelled = true;
     };
-  }, [profileState, runnerSettings, mode, settingsVisible]);
+    // Keyed on runnerKey (the active runner's identity), NOT profileState/runnerSettings:
+    // editing or deleting an INACTIVE profile in Settings syncs a fresh profileState but
+    // leaves the active runner unchanged, so re-running here would needlessly re-probe
+    // (an extra ssh --version / passphrase prompt) for a target that didn't change.
+    // runnerKey is a stable string, so React skips this effect when its value is unchanged;
+    // activeProfile/runnerSettings are fully determined by it where the effect reads them.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runnerKey, mode]);
 
   // Derived directly from the active profile (not from async preflight state) so
   // a switch to a synchronously-invalid profile immediately gates the live
@@ -665,7 +696,13 @@ function App({ mode }: { mode: ShellMode }) {
         );
       });
     };
-  }, [activeProfile, runnerSettings, liveReady, liveRetryToken, mode]);
+    // Keyed on runnerKey (the active runner's identity) so an inactive-profile edit that
+    // leaves the active runner unchanged doesn't tear down and restart the live worker
+    // (a reconnect flicker + an extra ssh round-trip). commandPrefix(activeProfile) and
+    // runnerSettings are fully determined by runnerKey, so the closure stays correct
+    // across the re-renders this skips.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runnerKey, liveReady, liveRetryToken, mode]);
 
   useEffect(() => {
     // The global summon hotkey belongs to the dock; registering it in both windows
@@ -1106,6 +1143,38 @@ function App({ mode }: { mode: ShellMode }) {
     });
   };
 
+  // The preflight the dock currently has resolved, in the sync wire shape. Carries
+  // the dock's LoadState status plus the runnerKey it describes (which lags the active
+  // runner by one async cycle on a switch — exactly as the dock's own card guards);
+  // `preflight` is non-null only when ready. The dock pushes this to settings on every
+  // change and on request; the ref lets the []-dep listener answer a replay request
+  // without capturing stale state.
+  const dockPreflightSync: PrefsSync =
+    state.status === "ready"
+      ? {
+          kind: "preflight",
+          status: "ready",
+          runnerKey: state.runnerKey,
+          preflight: state.preflight,
+        }
+      : { kind: "preflight", status: state.status, runnerKey, preflight: null };
+  const dockPreflightSyncRef = useRef(dockPreflightSync);
+  dockPreflightSyncRef.current = dockPreflightSync;
+
+  // Mirror the dock's resolved preflight to the settings window whenever it changes,
+  // so the settings card reuses it instead of probing itself. Serializing on the JSON
+  // of the payload keeps this from re-emitting on unrelated re-renders (live row
+  // updates re-render the dock frequently). Settings ignores its own (mode-gated).
+  const dockPreflightSyncKey = JSON.stringify(dockPreflightSync);
+  useEffect(() => {
+    if (mode !== "dock") {
+      return;
+    }
+    broadcastPrefs(dockPreflightSync);
+    // dockPreflightSync is recomputed each render; gate on its stable serialization.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, dockPreflightSyncKey]);
+
   // Open the settings window (created hidden at launch, kept warm). The dock no
   // longer renders settings itself.
   const openSettings = () => {
@@ -1125,10 +1194,9 @@ function App({ mode }: { mode: ShellMode }) {
     })();
   };
   // The settings window closes by hiding (kept warm), so a back/Done press just
-  // hides this window. Clear the visibility flag too (same as the red/Cmd-W close path)
-  // so the hidden window stops running its preflight probe.
+  // hides this window. It never probes (it reuses the dock's synced preflight), so
+  // there's no per-window probe to stop on hide.
   const closeSettings = () => {
-    setSettingsVisible(false);
     void getCurrentWindow().hide();
   };
 
@@ -1158,6 +1226,24 @@ function App({ mode }: { mode: ShellMode }) {
           return;
         }
         setProfileState(loadStoredProfiles());
+      } else if (payload.kind === "preflight") {
+        // Settings adopts the dock's resolved preflight (keyed by the runnerKey it
+        // describes). The card guards on runnerKey === its own active runnerKey, so a
+        // result that arrives mid-switch (for the previous source) reads as "Checking"
+        // until the matching one lands. The dock ignores this (it's the producer).
+        if (mode === "settings") {
+          setSyncedPreflight({
+            status: payload.status,
+            runnerKey: payload.runnerKey,
+            preflight: payload.preflight,
+          });
+        }
+      } else if (payload.kind === "preflight-request") {
+        // The dock answers a settings-side replay request with its current preflight.
+        // Read through a ref so this []-dep listener never captures a stale state.
+        if (mode === "dock") {
+          broadcastPrefs(dockPreflightSyncRef.current);
+        }
       }
     }).then((fn) => {
       if (disposed) {
@@ -1188,11 +1274,6 @@ function App({ mode }: { mode: ShellMode }) {
     let unlisten: UnlistenFn | null = null;
     void win
       .onFocusChanged(({ payload: focused }) => {
-        // Drive the preflight gate off focus: a minimized, hidden, or background settings
-        // window is unfocused and must not run a duplicate (possibly SSH) preflight. This
-        // covers every not-visible path (minimize/hide/click-away) with one signal; the
-        // explicit hide handlers also clear it in case a platform skips blur on hide.
-        setSettingsVisible(focused);
         if (!focused) {
           return;
         }
@@ -1206,6 +1287,12 @@ function App({ mode }: { mode: ShellMode }) {
             return JSON.stringify(current) === JSON.stringify(reloaded) ? current : reloaded;
           });
         }
+        // Preflight has no localStorage to re-read and emitTo has no replay, so ask the
+        // dock to re-emit its current result. Covers a preflight broadcast missed while
+        // this window was hidden/unfocused (it isn't subscribed to the live picker, so
+        // it can't recompute the result itself) — fixing a card stuck on "Checking"
+        // after a dock-side source switch this window didn't see.
+        broadcastPrefs({ kind: "preflight-request" });
       })
       .then((fn) => {
         if (disposed) {
@@ -1244,8 +1331,6 @@ function App({ mode }: { mode: ShellMode }) {
     const win = getCurrentWindow();
     const unlistenPromise = win.onCloseRequested((event) => {
       event.preventDefault();
-      // Hidden again — stop its preflight probe until it's shown next.
-      setSettingsVisible(false);
       void win.hide();
     });
     return () => {
@@ -1666,11 +1751,16 @@ function App({ mode }: { mode: ShellMode }) {
   // the daemon/IPC is down — exactly when the binary path or SSH host needs fixing.
   if (mode === "dock" && state.status !== "ready") {
     return (
+      // Recovery UI renders in the live orientation: a centered column in the vertical
+      // strip, and a compact row in the horizontal bar (styles.css) so the heading and
+      // the only "Open settings" path stay visible without clipping in the ~120px bar.
       <main className="sidebar" data-orientation={effectiveOrientation}>
         <div className="boot-state" aria-live="polite">
           <span className="boot-spinner" aria-hidden="true" />
-          <h1>{state.status === "loading" ? "Connecting" : "Can’t reach agentscan"}</h1>
-          <p>{state.status === "failed" ? state.message : "Waiting for the daemon…"}</p>
+          <div className="boot-copy">
+            <h1>{state.status === "loading" ? "Connecting" : "Can’t reach agentscan"}</h1>
+            <p>{state.status === "failed" ? state.message : "Waiting for the daemon…"}</p>
+          </div>
           {/* Always offer a path into settings: a hung "loading" (e.g. a stalled
               profile/SSH preflight) otherwise traps the user with no way to fix
               the binary path or host. */}
@@ -1684,29 +1774,33 @@ function App({ mode }: { mode: ShellMode }) {
 
   if (mode === "settings") {
     // The profile list comes from profileState (the live source of truth) so
-    // add/delete/switch are reflected immediately, even while a kept-ready
-    // `state` still describes the previous profile during a reload. Preflight is
-    // only trusted when the resolved state matches the active profile.
-    // Preflight is only trusted when the resolved state matches the active
-    // source; otherwise it describes the previous one mid-switch.
-    const preflight =
-      state.status === "ready" && state.runnerKey === runnerKey ? state.preflight : null;
+    // add/delete/switch are reflected immediately. The settings window never runs
+    // its own preflight (which for SSH would be a duplicate `ssh … --version`); it
+    // reuses the dock's, mirrored over the event bus into `syncedPreflight`. That
+    // result is only trusted when its runnerKey matches this window's active source;
+    // otherwise it describes the previous one mid-switch and reads as "Checking" until
+    // the dock re-probes and pushes the matching one (or a focus-time replay request
+    // refreshes it). A failed dock status (IPC error) reads as "Unreachable".
+    const syncMatches =
+      syncedPreflight !== null && syncedPreflight.runnerKey === runnerKey;
+    const preflight = syncMatches ? syncedPreflight.preflight : null;
+    const syncFailed = syncMatches && syncedPreflight.status === "failed";
     const preflightTone = !preflight
-      ? state.status === "failed"
+      ? syncFailed
         ? "error"
         : "unknown"
       : preflight.ok
         ? "idle"
         : "error";
     const preflightLabel = !preflight
-      ? state.status === "failed"
+      ? syncFailed
         ? "Unreachable"
         : "Checking"
       : preflight.ok
         ? "Ready"
         : "Unavailable";
     const preflightDetail = !preflight
-      ? state.status === "failed"
+      ? syncFailed
         ? "Can’t reach agentscan"
         : "Probing agentscan…"
       : preflight.ok
