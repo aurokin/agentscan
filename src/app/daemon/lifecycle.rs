@@ -1483,6 +1483,16 @@ struct DaemonStatusJson {
     control_mode_broker_reconnect_count: Option<u32>,
     control_mode_broker_fallback_count: Option<u64>,
     control_mode_broker_subscriber_count: Option<usize>,
+    control_mode_broker_primary_session_id: Option<String>,
+    control_mode_broker_subscriber_coverage_complete: Option<bool>,
+    control_mode_broker_desired_subscriber_count: Option<usize>,
+    control_mode_broker_active_subscriber_count: Option<usize>,
+    control_mode_broker_missing_subscriber_session_ids: Option<Vec<String>>,
+    control_mode_broker_dead_subscriber_count: Option<usize>,
+    control_mode_broker_subscribers: Option<Vec<ipc::ControlModeSubscriberStatusFrame>>,
+    control_mode_broker_last_subscriber_reconcile_at: Option<String>,
+    control_mode_broker_next_subscriber_monitor_in_ms: Option<u64>,
+    control_mode_broker_next_reconcile_in_ms: Option<u64>,
     control_event_refresh_count: Option<u64>,
     control_event_batch_count: Option<u64>,
     control_event_line_count: Option<u64>,
@@ -1502,6 +1512,11 @@ struct DaemonStatusJson {
     targeted_scope_refresh_count: Option<u64>,
     full_snapshot_refresh_count: Option<u64>,
     targeted_refresh_fallback_to_full_count: Option<u64>,
+    subscriber_monitor_count: Option<u64>,
+    subscriber_start_count: Option<u64>,
+    subscriber_reattach_count: Option<u64>,
+    subscriber_attach_failure_count: Option<u64>,
+    subscriber_exit_count: Option<u64>,
     broker_fallback_count: Option<u64>,
     pane_output_capture_attempt_count: Option<u64>,
     pane_output_capture_hit_count: Option<u64>,
@@ -1543,6 +1558,16 @@ fn lifecycle_not_running_json(
         control_mode_broker_reconnect_count: None,
         control_mode_broker_fallback_count: None,
         control_mode_broker_subscriber_count: None,
+        control_mode_broker_primary_session_id: None,
+        control_mode_broker_subscriber_coverage_complete: None,
+        control_mode_broker_desired_subscriber_count: None,
+        control_mode_broker_active_subscriber_count: None,
+        control_mode_broker_missing_subscriber_session_ids: None,
+        control_mode_broker_dead_subscriber_count: None,
+        control_mode_broker_subscribers: None,
+        control_mode_broker_last_subscriber_reconcile_at: None,
+        control_mode_broker_next_subscriber_monitor_in_ms: None,
+        control_mode_broker_next_reconcile_in_ms: None,
         control_event_refresh_count: None,
         control_event_batch_count: None,
         control_event_line_count: None,
@@ -1562,6 +1587,11 @@ fn lifecycle_not_running_json(
         targeted_scope_refresh_count: None,
         full_snapshot_refresh_count: None,
         targeted_refresh_fallback_to_full_count: None,
+        subscriber_monitor_count: None,
+        subscriber_start_count: None,
+        subscriber_reattach_count: None,
+        subscriber_attach_failure_count: None,
+        subscriber_exit_count: None,
         broker_fallback_count: None,
         pane_output_capture_attempt_count: None,
         pane_output_capture_hit_count: None,
@@ -1618,6 +1648,46 @@ fn lifecycle_status_json(
             .control_mode_broker
             .as_ref()
             .and_then(|broker| broker.subscriber_count),
+        control_mode_broker_primary_session_id: status
+            .control_mode_broker
+            .as_ref()
+            .and_then(|broker| broker.primary_session_id.clone()),
+        control_mode_broker_subscriber_coverage_complete: status
+            .control_mode_broker
+            .as_ref()
+            .and_then(|broker| broker.subscriber_coverage_complete),
+        control_mode_broker_desired_subscriber_count: status
+            .control_mode_broker
+            .as_ref()
+            .and_then(|broker| broker.desired_subscriber_count),
+        control_mode_broker_active_subscriber_count: status
+            .control_mode_broker
+            .as_ref()
+            .and_then(|broker| broker.active_subscriber_count),
+        control_mode_broker_missing_subscriber_session_ids: status
+            .control_mode_broker
+            .as_ref()
+            .and_then(|broker| broker.missing_subscriber_session_ids.clone()),
+        control_mode_broker_dead_subscriber_count: status
+            .control_mode_broker
+            .as_ref()
+            .and_then(|broker| broker.dead_subscriber_count),
+        control_mode_broker_subscribers: status
+            .control_mode_broker
+            .as_ref()
+            .and_then(|broker| broker.subscribers.clone()),
+        control_mode_broker_last_subscriber_reconcile_at: status
+            .control_mode_broker
+            .as_ref()
+            .and_then(|broker| broker.last_subscriber_reconcile_at.clone()),
+        control_mode_broker_next_subscriber_monitor_in_ms: status
+            .control_mode_broker
+            .as_ref()
+            .and_then(|broker| broker.next_subscriber_monitor_in_ms),
+        control_mode_broker_next_reconcile_in_ms: status
+            .control_mode_broker
+            .as_ref()
+            .and_then(|broker| broker.next_reconcile_in_ms),
         control_event_refresh_count: status
             .runtime_telemetry
             .as_ref()
@@ -1694,6 +1764,26 @@ fn lifecycle_status_json(
             .runtime_telemetry
             .as_ref()
             .map(|telemetry| telemetry.targeted_refresh_fallback_to_full_count),
+        subscriber_monitor_count: status
+            .runtime_telemetry
+            .as_ref()
+            .and_then(|telemetry| telemetry.subscriber_monitor_count),
+        subscriber_start_count: status
+            .runtime_telemetry
+            .as_ref()
+            .and_then(|telemetry| telemetry.subscriber_start_count),
+        subscriber_reattach_count: status
+            .runtime_telemetry
+            .as_ref()
+            .and_then(|telemetry| telemetry.subscriber_reattach_count),
+        subscriber_attach_failure_count: status
+            .runtime_telemetry
+            .as_ref()
+            .and_then(|telemetry| telemetry.subscriber_attach_failure_count),
+        subscriber_exit_count: status
+            .runtime_telemetry
+            .as_ref()
+            .and_then(|telemetry| telemetry.subscriber_exit_count),
         broker_fallback_count: status
             .runtime_telemetry
             .as_ref()
@@ -1846,6 +1936,51 @@ fn print_lifecycle_status(paths: &LifecyclePaths, status: &ipc::LifecycleStatusF
         } else {
             println!("control_mode_broker_subscriber_count: unavailable");
         }
+        if let Some(primary_session_id) = &broker.primary_session_id {
+            println!("control_mode_broker_primary_session_id: {primary_session_id}");
+        }
+        if let Some(coverage_complete) = broker.subscriber_coverage_complete {
+            println!("control_mode_broker_subscriber_coverage_complete: {coverage_complete}");
+        }
+        if let Some(desired_count) = broker.desired_subscriber_count {
+            println!("control_mode_broker_desired_subscriber_count: {desired_count}");
+        }
+        if let Some(active_count) = broker.active_subscriber_count {
+            println!("control_mode_broker_active_subscriber_count: {active_count}");
+        }
+        if let Some(missing_session_ids) = &broker.missing_subscriber_session_ids
+            && !missing_session_ids.is_empty()
+        {
+            println!(
+                "control_mode_broker_missing_subscriber_session_ids: {}",
+                missing_session_ids.join(",")
+            );
+        }
+        if let Some(dead_count) = broker.dead_subscriber_count {
+            println!("control_mode_broker_dead_subscriber_count: {dead_count}");
+        }
+        if let Some(last_reconcile_at) = &broker.last_subscriber_reconcile_at {
+            println!("control_mode_broker_last_subscriber_reconcile_at: {last_reconcile_at}");
+        }
+        if let Some(next_monitor_ms) = broker.next_subscriber_monitor_in_ms {
+            println!("control_mode_broker_next_subscriber_monitor_in_ms: {next_monitor_ms}");
+        }
+        if let Some(next_reconcile_ms) = broker.next_reconcile_in_ms {
+            println!("control_mode_broker_next_reconcile_in_ms: {next_reconcile_ms}");
+        }
+        if let Some(subscribers) = &broker.subscribers {
+            for subscriber in subscribers {
+                println!(
+                    "control_mode_broker_subscriber: session_id={} pid={} restart_count={} dead={} last_line_at={} last_event_at={}",
+                    subscriber.session_id,
+                    subscriber.pid,
+                    subscriber.restart_count,
+                    subscriber.dead,
+                    subscriber.last_line_at.as_deref().unwrap_or("never"),
+                    subscriber.last_event_at.as_deref().unwrap_or("never"),
+                );
+            }
+        }
         if let Some(reason) = &broker.disabled_reason {
             println!("control_mode_broker_disabled_reason: {reason}");
         }
@@ -1939,6 +2074,20 @@ fn print_runtime_telemetry(telemetry: Option<&ipc::RuntimeTelemetryFrame>) {
         "targeted_refresh_fallback_to_full_count: {}",
         telemetry.targeted_refresh_fallback_to_full_count
     );
+    print_optional_counter(
+        "subscriber_monitor_count",
+        telemetry.subscriber_monitor_count,
+    );
+    print_optional_counter("subscriber_start_count", telemetry.subscriber_start_count);
+    print_optional_counter(
+        "subscriber_reattach_count",
+        telemetry.subscriber_reattach_count,
+    );
+    print_optional_counter(
+        "subscriber_attach_failure_count",
+        telemetry.subscriber_attach_failure_count,
+    );
+    print_optional_counter("subscriber_exit_count", telemetry.subscriber_exit_count);
     println!("broker_fallback_count: {}", telemetry.broker_fallback_count);
     println!(
         "pane_output_capture_attempt_count: {}",
@@ -1952,6 +2101,13 @@ fn print_runtime_telemetry(telemetry: Option<&ipc::RuntimeTelemetryFrame>) {
         "pane_output_capture_error_count: {}",
         telemetry.pane_output_capture_error_count
     );
+}
+
+fn print_optional_counter(label: &str, value: Option<u64>) {
+    match value {
+        Some(value) => println!("{label}: {value}"),
+        None => println!("{label}: unavailable"),
+    }
 }
 
 fn print_snapshot_observability(observability: Option<&ipc::SnapshotObservabilityFrame>) {

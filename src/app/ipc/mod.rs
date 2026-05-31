@@ -155,16 +155,16 @@ pub(crate) struct LifecycleStatusFrame {
     pub(crate) message: Option<String>,
 }
 
-// Telemetry counters are plain `u64` with `#[serde(default)]`, not `Option`, by
-// design: adding a counter is a backward/forward-compatible schema change that
-// does not bump the protocol version, so an older daemon that predates a given
-// counter simply omits it and a newer CLI deserializes it as `0`. The
-// availability boundary is the whole frame — `daemon status` reports every
-// counter as `null` only when `runtime_telemetry` itself is absent (daemon not
-// running / telemetry not initialized). Within a published frame, a counter of
-// `0` is treated as "zero so far," and the rare new-CLI-vs-older-daemon window
-// (resolved on the next `daemon restart`) is not worth giving every counter an
-// individual present/absent state inconsistent with the rest of the frame.
+// Most telemetry counters are plain `u64` with `#[serde(default)]`, not
+// `Option`, by design: adding a counter is a backward/forward-compatible schema
+// change that does not bump the protocol version, so an older daemon that
+// predates a given counter simply omits it and a newer CLI deserializes it as
+// `0`. The availability boundary is the whole frame — `daemon status` reports
+// those counters as `null` only when `runtime_telemetry` itself is absent
+// (daemon not running / telemetry not initialized). Subscriber health counters
+// are intentionally `Option<u64>` because they are paired with per-subscriber
+// health lists where "unavailable from an older daemon" must remain distinct
+// from real zero/empty coverage diagnostics.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct RuntimeTelemetryFrame {
     pub(crate) control_event_refresh_count: u64,
@@ -200,6 +200,16 @@ pub(crate) struct RuntimeTelemetryFrame {
     #[serde(default)]
     pub(crate) full_snapshot_refresh_count: u64,
     pub(crate) targeted_refresh_fallback_to_full_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) subscriber_monitor_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) subscriber_start_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) subscriber_reattach_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) subscriber_attach_failure_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) subscriber_exit_count: Option<u64>,
     pub(crate) broker_fallback_count: u64,
     #[serde(default)]
     pub(crate) pane_output_capture_attempt_count: u64,
@@ -247,11 +257,24 @@ pub(crate) struct DaemonObservabilityEventFrame {
     pub(crate) source: String,
     pub(crate) detail: Option<String>,
     pub(crate) refresh: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) control_sources: Vec<ControlModeSourceFrame>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) control_lines: Vec<String>,
     pub(crate) changed: bool,
     pub(crate) published: bool,
     pub(crate) duration_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) diff: Option<SnapshotDiffFrame>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct ControlModeSourceFrame {
+    pub(crate) source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) session_id: Option<String>,
+    pub(crate) line_count: u64,
+    pub(crate) event_count: u64,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -287,6 +310,39 @@ pub(crate) struct ControlModeBrokerStatusFrame {
     // per-session-client architecture.
     #[serde(default)]
     pub(crate) subscriber_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) primary_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) subscriber_coverage_complete: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) desired_subscriber_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) active_subscriber_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) missing_subscriber_session_ids: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) dead_subscriber_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) subscribers: Option<Vec<ControlModeSubscriberStatusFrame>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) last_subscriber_reconcile_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) next_subscriber_monitor_in_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) next_reconcile_in_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct ControlModeSubscriberStatusFrame {
+    pub(crate) session_id: String,
+    pub(crate) pid: u32,
+    pub(crate) started_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) last_line_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) last_event_at: Option<String>,
+    pub(crate) restart_count: u64,
+    pub(crate) dead: bool,
 }
 
 impl SocketPathConfig {

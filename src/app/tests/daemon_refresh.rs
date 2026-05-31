@@ -1051,6 +1051,33 @@ fn daemon_observability_skips_snapshot_diff_for_ignored_control_output() {
 }
 
 #[test]
+fn daemon_control_event_source_summary_counts_lines_and_events_per_client() {
+    let sources = daemon::test_control_event_source_summary_for_lines(&[
+        (
+            "primary",
+            Some("$0"),
+            "%subscription-changed agentscan $0 @1 0 %1 : %1:codex:::::",
+        ),
+        ("subscriber", Some("$2"), "%output %7 ordinary bytes"),
+        (
+            "subscriber",
+            Some("$2"),
+            "%subscription-changed agentscan $2 @4 0 %7 : %7:codex:::::",
+        ),
+    ]);
+
+    assert_eq!(sources.len(), 2);
+    assert_eq!(sources[0].source, "primary");
+    assert_eq!(sources[0].session_id.as_deref(), Some("$0"));
+    assert_eq!(sources[0].line_count, 1);
+    assert_eq!(sources[0].event_count, 1);
+    assert_eq!(sources[1].source, "subscriber");
+    assert_eq!(sources[1].session_id.as_deref(), Some("$2"));
+    assert_eq!(sources[1].line_count, 2);
+    assert_eq!(sources[1].event_count, 1);
+}
+
+#[test]
 fn daemon_reconcile_publish_decision_suppresses_timestamp_only_changes() {
     let previous = empty_socket_snapshot("2026-05-23T18:00:00Z");
     let mut current = previous.clone();
@@ -1197,6 +1224,28 @@ fn daemon_reconcile_interval_stays_active_when_subscriber_coverage_is_incomplete
         daemon::test_reconcile_interval_for(false, true, false),
         std::time::Duration::from_secs(1)
     );
+}
+
+#[test]
+fn daemon_control_mode_wait_wakes_for_subscriber_monitor_before_reconcile() {
+    let wait = daemon::test_next_control_mode_wait_for(
+        std::time::Duration::from_secs(300),
+        Some(std::time::Duration::from_millis(250)),
+        None,
+    );
+
+    assert_eq!(wait, std::time::Duration::from_millis(250));
+}
+
+#[test]
+fn daemon_control_mode_wait_does_not_arm_subscriber_monitor_without_subscribers() {
+    let wait = daemon::test_next_control_mode_wait_for(
+        std::time::Duration::from_secs(300),
+        None,
+        None,
+    );
+
+    assert_eq!(wait, std::time::Duration::from_millis(500));
 }
 
 #[test]

@@ -1,6 +1,8 @@
 use super::*;
+use control_mode::ControlModeLineSource;
 use std::collections::BTreeMap;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum ControlEvent {
     PaneChanged(String),
     TitleChanged { pane_id: String, title: String },
@@ -34,6 +36,7 @@ pub(super) struct ControlEventBatch {
     pub(super) windows: BTreeMap<String, u64>,
     pub(super) panes: BTreeMap<String, u64>,
     pub(super) titles: BTreeMap<String, SequencedTitle>,
+    pub(super) control_sources: Vec<ipc::ControlModeSourceFrame>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -46,25 +49,57 @@ impl ControlEventBatch {
     pub(super) fn from_lines(lines: &[String]) -> Self {
         let mut batch = Self::default();
         for line in lines {
-            batch.total_line_count = batch.total_line_count.saturating_add(1);
-            // Count every `%output` line (title-bearing or not) so the firehose is
-            // sized cheaply during the single parse pass; `%output` lines that yield
-            // a terminal title are also counted in `titles`, so the firehose waste is
-            // `output_line_count - title count`.
-            if line.starts_with("%output") {
-                batch.output_line_count = batch.output_line_count.saturating_add(1);
-                // `str::len()` is the UTF-8 *byte* length (not a char count), which is
-                // exactly the metric here: the on-the-wire size of the `%output` line
-                // we read and process. This sizes the firehose volume we pay for, not
-                // the decoded terminal payload (tmux octal-escapes non-printable bytes
-                // in `%output`, so the escaped line is what actually costs us).
-                batch.output_byte_count = batch
-                    .output_byte_count
-                    .saturating_add(u64::try_from(line.len()).unwrap_or(u64::MAX));
-            }
-            batch.push(control_event_from_line(line));
+            batch.push_line(line);
         }
         batch
+    }
+
+    pub(super) fn from_control_lines(lines: &[ControlModeLine]) -> Self {
+        let mut batch = Self::default();
+        let mut source_indexes = Vec::<(ControlModeLineSource, usize)>::new();
+        for frame in lines {
+            let event = batch.push_line(&frame.line);
+            let source_index = if let Some((_, index)) = source_indexes
+                .iter()
+                .find(|(source, _)| source == &frame.source)
+            {
+                *index
+            } else {
+                let index = batch.control_sources.len();
+                source_indexes.push((frame.source.clone(), index));
+                batch.control_sources.push(frame.source_frame_seed());
+                index
+            };
+            if let Some(source) = batch.control_sources.get_mut(source_index) {
+                source.line_count = source.line_count.saturating_add(1);
+                if !matches!(event, ControlEvent::Ignored) {
+                    source.event_count = source.event_count.saturating_add(1);
+                }
+            }
+        }
+        batch
+    }
+
+    fn push_line(&mut self, line: &str) -> ControlEvent {
+        self.total_line_count = self.total_line_count.saturating_add(1);
+        // Count every `%output` line (title-bearing or not) so the firehose is
+        // sized cheaply during the single parse pass; `%output` lines that yield
+        // a terminal title are also counted in `titles`, so the firehose waste is
+        // `output_line_count - title count`.
+        if line.starts_with("%output") {
+            self.output_line_count = self.output_line_count.saturating_add(1);
+            // `str::len()` is the UTF-8 *byte* length (not a char count), which is
+            // exactly the metric here: the on-the-wire size of the `%output` line
+            // we read and process. This sizes the firehose volume we pay for, not
+            // the decoded terminal payload (tmux octal-escapes non-printable bytes
+            // in `%output`, so the escaped line is what actually costs us).
+            self.output_byte_count = self
+                .output_byte_count
+                .saturating_add(u64::try_from(line.len()).unwrap_or(u64::MAX));
+        }
+        let event = control_event_from_line(line);
+        self.push(event.clone());
+        event
     }
 
     pub(super) fn push(&mut self, event: ControlEvent) {
@@ -262,10 +297,10 @@ pub(super) fn control_event_from_line(line: &str) -> ControlEvent {
 // True when a batch contains a notification indicating the set of sessions on
 // the server changed (a session was created or destroyed), which is the trigger
 // to re-derive the per-session subscriber clients.
-pub(super) fn batch_changed_session_set(lines: &[String]) -> bool {
+pub(super) fn batch_changed_session_set(lines: &[ControlModeLine]) -> bool {
     lines
         .iter()
-        .any(|line| notification_name(line) == Some("%sessions-changed"))
+        .any(|line| notification_name(&line.line) == Some("%sessions-changed"))
 }
 
 pub(crate) fn should_resnapshot_from_notification(line: &str) -> bool {
