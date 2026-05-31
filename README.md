@@ -245,14 +245,15 @@ Supported icon modes:
 
 - `emoji`: default provider icons for terminals without Nerd Font coverage
 - `nerd-font`: current Nerd Font provider icons
-- `nerd-font-patched`: reserved for a future custom patched Nerd Font; it
-  currently falls back to the `nerd-font` values
+- `nerd-font-patched`: custom agent glyphs from the `agent-icons-v8` patched
+  font manifest; requires a terminal font patched with those private-use
+  codepoints
 
 Icon mode precedence is CLI, then environment, then config file, then default:
 
 ```sh
 agentscan list --icons nerd-font
-AGENTSCAN_ICONS=nerd-font agentscan tui
+AGENTSCAN_ICONS=nerd-font-patched agentscan tui
 ```
 
 Diagnostic toggles use environment values first, then config file values, then

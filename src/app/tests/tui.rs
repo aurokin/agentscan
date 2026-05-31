@@ -35,97 +35,73 @@ fn tui_render_rows_include_location_status_and_key_labels() {
 }
 
 #[test]
-fn provider_display_marker_uses_emoji_by_default_and_supports_nerd_font_modes() {
-    assert_eq!(
-        super::provider_display_marker(Some(Provider::Codex), IconMode::Emoji),
-        "💭"
-    );
-    assert_eq!(
-        super::provider_display_marker(Some(Provider::Claude), IconMode::Emoji),
-        "👾"
-    );
-    assert_eq!(
-        super::provider_display_marker(Some(Provider::Gemini), IconMode::Emoji),
-        "✨"
-    );
-    assert_eq!(
-        super::provider_display_marker(Some(Provider::Antigravity), IconMode::Emoji),
-        "🛸"
-    );
-    assert_eq!(
-        super::provider_display_marker(Some(Provider::Copilot), IconMode::Emoji),
-        "🛫"
-    );
-    assert_eq!(
-        super::provider_display_marker(Some(Provider::CursorCli), IconMode::Emoji),
-        "🌐"
-    );
-    assert_eq!(
-        super::provider_display_marker(Some(Provider::Pi), IconMode::Emoji),
-        "🥧"
-    );
-    assert_eq!(
-        super::provider_display_marker(Some(Provider::Grok), IconMode::Emoji),
-        "🚀"
-    );
-    assert_eq!(
-        super::provider_display_marker(Some(Provider::Hermes), IconMode::Emoji),
-        "⚕️"
-    );
-    assert_eq!(
-        super::provider_display_marker(Some(Provider::Opencode), IconMode::Emoji),
-        "🔲"
-    );
-    assert_eq!(
-        super::provider_display_marker(Some(Provider::Droid), IconMode::Emoji),
-        "🏭"
-    );
-
-    assert_eq!(
-        super::provider_display_marker(Some(Provider::Codex), IconMode::NerdFont),
-        "\u{f4ac}"
-    );
-    assert_eq!(
-        super::provider_display_marker(Some(Provider::Claude), IconMode::NerdFont),
-        "\u{f0bc9}"
-    );
-    assert_eq!(
-        super::provider_display_marker(Some(Provider::Gemini), IconMode::NerdFont),
-        "\u{e370}"
-    );
-    assert_eq!(
-        super::provider_display_marker(Some(Provider::Antigravity), IconMode::NerdFont),
-        "\u{f02af}"
-    );
-    assert_eq!(
-        super::provider_display_marker(Some(Provider::Copilot), IconMode::NerdFont),
-        "\u{ec1e}"
-    );
-    assert_eq!(
-        super::provider_display_marker(Some(Provider::CursorCli), IconMode::NerdFont),
-        "\u{f01bf}"
-    );
-    assert_eq!(
-        super::provider_display_marker(Some(Provider::Pi), IconMode::NerdFont),
-        "\u{e22c}"
-    );
-    assert_eq!(
-        super::provider_display_marker(Some(Provider::Grok), IconMode::NerdFont),
-        "\u{f14de}"
-    );
-    assert_eq!(
-        super::provider_display_marker(Some(Provider::Hermes), IconMode::NerdFont),
-        "⚕"
-    );
-    assert_eq!(
-        super::provider_display_marker(Some(Provider::Opencode), IconMode::NerdFont),
-        "\u{f0168}"
-    );
-    assert_eq!(
-        super::provider_display_marker(Some(Provider::Droid), IconMode::NerdFont),
-        "\u{f020f}"
+fn provider_display_marker_uses_emoji_by_default() {
+    assert_provider_markers(
+        IconMode::Emoji,
+        &[
+            (Provider::Codex, "💭"),
+            (Provider::Claude, "👾"),
+            (Provider::Gemini, "✨"),
+            (Provider::Antigravity, "🛸"),
+            (Provider::Copilot, "🛫"),
+            (Provider::CursorCli, "🌐"),
+            (Provider::Pi, "🥧"),
+            (Provider::Grok, "🚀"),
+            (Provider::Hermes, "⚕️"),
+            (Provider::Opencode, "🔲"),
+            (Provider::Droid, "🏭"),
+        ],
     );
     assert_eq!(super::provider_display_marker(None, IconMode::Emoji), "?");
+}
+
+#[test]
+fn provider_display_marker_supports_nerd_font_mode() {
+    assert_provider_markers(
+        IconMode::NerdFont,
+        &[
+            (Provider::Codex, "\u{f4ac}"),
+            (Provider::Claude, "\u{f0bc9}"),
+            (Provider::Gemini, "\u{e370}"),
+            (Provider::Antigravity, "\u{f02af}"),
+            (Provider::Copilot, "\u{ec1e}"),
+            (Provider::CursorCli, "\u{f01bf}"),
+            (Provider::Pi, "\u{e22c}"),
+            (Provider::Grok, "\u{f14de}"),
+            (Provider::Hermes, "⚕"),
+            (Provider::Opencode, "\u{f0168}"),
+            (Provider::Droid, "\u{f020f}"),
+        ],
+    );
+}
+
+#[test]
+fn provider_display_marker_supports_nerd_font_patched_mode() {
+    assert_provider_markers(
+        IconMode::NerdFontPatched,
+        &[
+            (Provider::Codex, "\u{100040}"),
+            (Provider::Claude, "\u{100041}"),
+            (Provider::Gemini, "\u{100044}"),
+            (Provider::Antigravity, "\u{10004C}"),
+            (Provider::Copilot, "\u{100049}"),
+            (Provider::CursorCli, "\u{100042}"),
+            (Provider::Pi, "\u{100052}"),
+            (Provider::Grok, "\u{100051}"),
+            (Provider::Hermes, "\u{100045}"),
+            (Provider::Opencode, "\u{100043}"),
+            (Provider::Droid, "\u{100056}"),
+        ],
+    );
+}
+
+fn assert_provider_markers(icon_mode: IconMode, expected: &[(Provider, &str)]) {
+    for (provider, marker) in expected {
+        assert_eq!(
+            super::provider_display_marker(Some(*provider), icon_mode),
+            *marker
+        );
+    }
 }
 
 #[test]
@@ -146,6 +122,30 @@ fn tui_render_rows_can_use_nerd_font_provider_markers() {
     let lines =
         super::tui::render_rows_for_width_with_icons(&[pane], &key_targets, usize::MAX, IconMode::NerdFont);
     assert_eq!(lines, vec!["[1] 🟡 \u{f0bc9} notes:4.1 - Working"]);
+}
+
+#[test]
+fn tui_render_rows_can_use_nerd_font_patched_provider_markers() {
+    let pane = tmux_pane_row(324026)
+        .session_name("notes")
+        .window_index(4)
+        .pane_id("%41")
+        .command("claude")
+        .title("Claude Code | Working")
+        .tty("/dev/pts/44")
+        .current_path("/home/auro/notes")
+        .pane();
+
+    let mut key_targets = std::collections::BTreeMap::new();
+    super::tui::synchronize_key_targets(&mut key_targets, std::slice::from_ref(&pane));
+
+    let lines = super::tui::render_rows_for_width_with_icons(
+        &[pane],
+        &key_targets,
+        usize::MAX,
+        IconMode::NerdFontPatched,
+    );
+    assert_eq!(lines, vec!["[1] 🟡 \u{100041} notes:4.1 - Working"]);
 }
 
 #[test]
