@@ -12,6 +12,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use tauri::Manager;
+
 const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(2);
 const HOTKEYS_TIMEOUT: Duration = Duration::from_secs(5);
 const FOCUS_TIMEOUT: Duration = Duration::from_secs(5);
@@ -320,6 +322,32 @@ fn place_bar_window(window: tauri::Window) -> Result<(), String> {
     Ok(())
 }
 
+/// Center the kept-warm settings window on the dock's current monitor. The window is
+/// created hidden, so without this its first open (or a reopen after the dock moved to a
+/// different display) reuses a stale position that can land off-screen or on the wrong
+/// monitor. Invoked from the dock (the caller) before it shows the settings window, so the
+/// monitor is resolved the same cursor-first way as the dock's own placement.
+#[tauri::command]
+fn place_settings_window(window: tauri::Window) -> Result<(), String> {
+    let Some(monitor) = summon_monitor(&window)? else {
+        return Ok(());
+    };
+    let Some(settings) = window.get_webview_window("settings") else {
+        return Ok(());
+    };
+    let work_area = logical_work_area_for_monitor(&monitor);
+    let size = settings
+        .outer_size()
+        .map_err(|error| format!("Unable to read settings window size: {error}"))?
+        .to_logical::<f64>(monitor.scale_factor().max(1.0));
+    let (x, y) = centered_placement_for_work_area(work_area, size.width, size.height);
+    settings
+        .set_position(tauri::LogicalPosition::new(x, y))
+        .map_err(|error| format!("Unable to position settings window: {error}"))?;
+
+    Ok(())
+}
+
 /// Toggle the macOS "glass" backdrop (NSVisualEffectView) behind the webview.
 /// The frontend owns the on/off preference and the surface tint; this just turns
 /// the OS blur layer on or off so a translucent webview reveals it. No-op off
@@ -442,6 +470,19 @@ fn bar_placement_for_work_area(work_area: LogicalWorkArea) -> PickerWindowPlacem
         width,
         height,
     }
+}
+
+/// Center a window of the given logical size within a work area, clamping to the top-left
+/// so an oversized window (or a very small display) still lands on-screen instead of off
+/// the top/left edge.
+fn centered_placement_for_work_area(
+    work_area: LogicalWorkArea,
+    width: f64,
+    height: f64,
+) -> (f64, f64) {
+    let x = work_area.x + ((work_area.width - width) / 2.0).max(0.0);
+    let y = work_area.y + ((work_area.height - height) / 2.0).max(0.0);
+    (x, y)
 }
 
 fn clamp_f64(value: f64, min: f64, max: f64) -> f64 {
@@ -1682,6 +1723,7 @@ pub fn run() {
             load_picker_rows,
             place_bar_window,
             place_picker_window,
+            place_settings_window,
             preflight_agentscan,
             set_window_glass,
             start_live_picker,
@@ -1835,6 +1877,43 @@ mod tests {
                 height: 120.0,
             }
         );
+    }
+
+    #[test]
+    fn settings_placement_centers_within_work_area() {
+        // Centered: x = 100 + (1000 - 560)/2 = 320, y = 50 + (800 - 640)/2 = 130.
+        let (x, y) = centered_placement_for_work_area(
+            LogicalWorkArea {
+                x: 100.0,
+                y: 50.0,
+                width: 1000.0,
+                height: 800.0,
+            },
+            560.0,
+            640.0,
+        );
+
+        assert_eq!(x, 320.0);
+        assert_eq!(y, 130.0);
+    }
+
+    #[test]
+    fn settings_placement_clamps_oversized_window_to_top_left() {
+        // Window larger than the work area: centering would push it off the top/left, so
+        // it clamps to the work-area origin instead.
+        let (x, y) = centered_placement_for_work_area(
+            LogicalWorkArea {
+                x: 10.0,
+                y: 20.0,
+                width: 400.0,
+                height: 300.0,
+            },
+            560.0,
+            640.0,
+        );
+
+        assert_eq!(x, 10.0);
+        assert_eq!(y, 20.0);
     }
 
     #[test]

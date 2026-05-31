@@ -1186,6 +1186,15 @@ function App({ mode }: { mode: ShellMode }) {
           return;
         }
         await settingsWindow.unminimize();
+        try {
+          // Center the settings window on the dock's current monitor before revealing it.
+          // The kept-warm window otherwise reuses its last position, which on a
+          // multi-monitor setup can be off-screen or on a different display than the dock
+          // (so "Open settings" looks like it did nothing).
+          await invoke("place_settings_window");
+        } catch {
+          // Positioning is best-effort; still show at the OS-restored position.
+        }
         await settingsWindow.show();
         await settingsWindow.setFocus();
       } catch {
@@ -1645,12 +1654,22 @@ function App({ mode }: { mode: ShellMode }) {
   }
 
   function addSshProfile() {
+    // Generate the id ONCE, outside the updater: React StrictMode double-invokes state
+    // updaters in dev, and a fresh id per invocation combined with the in-updater
+    // append+persist would create two profiles from a single click. A stable id plus the
+    // existence guard below make the append idempotent across the doubled invocation.
+    const id = newProfileId("ssh");
     setProfileState(() => {
       // Append onto the LATEST persisted state so a concurrent dock-side change isn't
       // clobbered by this window's possibly-stale snapshot.
       const latest = loadStoredProfiles();
+      if (latest.profiles.some((profile) => profile.id === id)) {
+        // The first (StrictMode-doubled) invocation already appended and persisted this
+        // profile; don't add a duplicate on the second pass.
+        return latest;
+      }
       const profile: SshProfileConfig = {
-        id: newProfileId("ssh"),
+        id,
         name: nextRemoteProfileName(latest.profiles),
         kind: "ssh",
         host: "",
