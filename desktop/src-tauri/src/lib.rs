@@ -32,6 +32,9 @@ const PICKER_WINDOW_MIN_WIDTH: f64 = 220.0;
 const PICKER_WINDOW_MAX_WIDTH: f64 = 520.0;
 const PICKER_WINDOW_MIN_HEIGHT: f64 = 560.0;
 const PICKER_WINDOW_MAX_HEIGHT: f64 = 960.0;
+// Snap height for the horizontal "bar" dock: a short ribbon along the bottom edge,
+// comfortably above the 96px drag floor the CSS bar uses.
+const BAR_WINDOW_HEIGHT: f64 = 120.0;
 
 static LIVE_PICKER: OnceLock<Mutex<Option<LivePickerSupervisor>>> = OnceLock::new();
 // Serializes whole start operations (stop + spawn + install) so overlapping
@@ -297,6 +300,26 @@ fn place_picker_window(window: tauri::Window) -> Result<(), String> {
     Ok(())
 }
 
+/// Snap the window into the horizontal "bar" dock: full work-area width, a short
+/// bar height, pinned to the bottom edge. Mirrors place_picker_window for the
+/// vertical strip; the frontend calls whichever matches the pinned orientation.
+#[tauri::command]
+fn place_bar_window(window: tauri::Window) -> Result<(), String> {
+    let Some(monitor) = summon_monitor(&window)? else {
+        return Ok(());
+    };
+    let placement = bar_placement_for_work_area(logical_work_area_for_monitor(&monitor));
+
+    window
+        .set_size(tauri::LogicalSize::new(placement.width, placement.height))
+        .map_err(|error| format!("Unable to size bar window: {error}"))?;
+    window
+        .set_position(tauri::LogicalPosition::new(placement.x, placement.y))
+        .map_err(|error| format!("Unable to position bar window: {error}"))?;
+
+    Ok(())
+}
+
 /// Toggle the macOS "glass" backdrop (NSVisualEffectView) behind the webview.
 /// The frontend owns the on/off preference and the surface tint; this just turns
 /// the OS blur layer on or off so a translucent webview reveals it. No-op off
@@ -401,6 +424,21 @@ fn sidebar_placement_for_work_area(work_area: LogicalWorkArea) -> PickerWindowPl
     PickerWindowPlacement {
         x: work_area.x + PICKER_WINDOW_MARGIN,
         y: work_area.y + PICKER_WINDOW_MARGIN,
+        width,
+        height,
+    }
+}
+
+fn bar_placement_for_work_area(work_area: LogicalWorkArea) -> PickerWindowPlacement {
+    let width = (work_area.width - PICKER_WINDOW_MARGIN * 2.0).max(PICKER_WINDOW_MIN_WIDTH);
+    let height = BAR_WINDOW_HEIGHT;
+    // Pin to the bottom of the work area, but never let the bar sit above its top
+    // edge on a work area too short to hold the bar plus its margin.
+    let y = (work_area.y + work_area.height - height - PICKER_WINDOW_MARGIN).max(work_area.y);
+
+    PickerWindowPlacement {
+        x: work_area.x + PICKER_WINDOW_MARGIN,
+        y,
         width,
         height,
     }
@@ -1642,6 +1680,7 @@ pub fn run() {
             focus_picker_row,
             local_profiles,
             load_picker_rows,
+            place_bar_window,
             place_picker_window,
             preflight_agentscan,
             set_window_glass,
@@ -1717,6 +1756,83 @@ mod tests {
                 y: 16.0,
                 width: 280.0,
                 height: 960.0,
+            }
+        );
+    }
+
+    #[test]
+    fn bar_placement_spans_width_and_pins_to_bottom() {
+        assert_eq!(
+            bar_placement_for_work_area(LogicalWorkArea {
+                x: 100.0,
+                y: 24.0,
+                width: 1440.0,
+                height: 900.0,
+            }),
+            PickerWindowPlacement {
+                x: 116.0,
+                // work_area bottom (24 + 900) minus the bar height (120) and margin (16).
+                y: 788.0,
+                // full work-area width minus both side margins.
+                width: 1408.0,
+                height: 120.0,
+            }
+        );
+    }
+
+    #[test]
+    fn bar_placement_clamps_narrow_work_area_width() {
+        // Narrow work area: width minus margins falls below MIN_WIDTH (220), so the
+        // bar is clamped up to the floor instead of shrinking with the screen.
+        assert_eq!(
+            bar_placement_for_work_area(LogicalWorkArea {
+                x: 0.0,
+                y: 0.0,
+                width: 230.0,
+                height: 420.0,
+            }),
+            PickerWindowPlacement {
+                x: 16.0,
+                y: 284.0,
+                width: 220.0,
+                height: 120.0,
+            }
+        );
+        // Large work area: the bar stays a fixed-height ribbon pinned to the bottom.
+        assert_eq!(
+            bar_placement_for_work_area(LogicalWorkArea {
+                x: -1920.0,
+                y: 0.0,
+                width: 2560.0,
+                height: 1600.0,
+            }),
+            PickerWindowPlacement {
+                x: -1904.0,
+                y: 1464.0,
+                width: 2528.0,
+                height: 120.0,
+            }
+        );
+    }
+
+    #[test]
+    fn bar_placement_clamps_short_work_area_to_top() {
+        // Work area too short to hold the bar + margin: the bottom-anchored y would
+        // fall above the work-area top, so it clamps to the top edge instead.
+        assert_eq!(
+            bar_placement_for_work_area(LogicalWorkArea {
+                x: 0.0,
+                y: 50.0,
+                width: 1440.0,
+                height: 100.0,
+            }),
+            PickerWindowPlacement {
+                x: 16.0,
+                // 50 + 100 - 120 - 16 = 14, above the work-area top (50), so it clamps
+                // up to y = 50.
+                y: 50.0,
+                width: 1408.0,
+                height: 120.0,
             }
         );
     }

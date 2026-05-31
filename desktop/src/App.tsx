@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { emitTo, listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import { providerLogo, type LogoTheme } from "./providerLogos";
 import logoUrl from "./assets/agentscan-logo.png";
@@ -15,6 +16,9 @@ const THEME_STORAGE_KEY = "agentscan.desktop.theme";
 // macOS "glass": vibrancy backdrop (Rust) + a translucent surface tint (CSS).
 const GLASS_STORAGE_KEY = "agentscan.desktop.glass";
 const SURFACE_ALPHA_STORAGE_KEY = "agentscan.desktop.surfaceAlpha";
+// Dock layout preference: "auto" follows the window's aspect ratio; "vertical"/
+// "horizontal" pin the layout and snap the window to that shape.
+const ORIENTATION_STORAGE_KEY = "agentscan.desktop.orientation";
 // Tint alpha floor of 0.20 caps transparency at 80% (the slider reads 1 - alpha):
 // the surface always keeps a little tint over the native vibrancy frost, so the UI
 // never washes out fully even at the most transparent setting.
@@ -32,6 +36,18 @@ const setGlassClear = (clear: number) => {
 };
 const DEBUG_LOG_LIMIT = 80;
 const LOCAL_PROFILE_ID = "local";
+// Window min-size floors, applied at runtime per orientation. The vertical pair
+// mirrors the startup floor in tauri.{macos.,}conf.json; horizontal drops the
+// height floor so the bar can shrink to dock height instead of a tall slab.
+const WINDOW_MIN_WIDTH = 220;
+const WINDOW_MIN_HEIGHT_VERTICAL = 520;
+const WINDOW_MIN_HEIGHT_HORIZONTAL = 96;
+// Max-size caps per pinned orientation: vertical stays a strip (width capped, height
+// free), horizontal stays a bar (height capped, width free). "auto" clears the cap.
+// The free axis uses a value larger than any display so it reads as unbounded.
+const WINDOW_MAX_WIDTH_VERTICAL = 520;
+const WINDOW_MAX_HEIGHT_HORIZONTAL = 200;
+const WINDOW_MAX_UNBOUNDED = 10000;
 
 // Per-row picker hotkeys are triggered with Control rather than Command: the key
 // set (1-5, Q E R F G T Z X C V B) overlaps macOS ⌘ shortcuts — ⌘Q quits, ⌘C/V/X
@@ -170,9 +186,32 @@ type PickerRow = {
   attached_client_count?: number;
 };
 
-type ShellView = "picker" | "settings";
+// Which window this React tree drives. The dock (window label "main") renders the
+// picker; the settings window (label "settings") renders the settings panel. Both
+// run the same component, gated on this mode plus cross-window pref sync.
+type ShellMode = "dock" | "settings";
+
+// The dock can sit as a tall narrow strip (vertical, the default) or a short wide
+// bar (horizontal). Orientation is derived from the window's own aspect ratio, so
+// dragging it wide-and-short flips the layout axis with no explicit control.
+type Orientation = "vertical" | "horizontal";
+
+// Layout preference. "auto" derives orientation live from the window shape (the
+// responsive default); the other two pin the layout and snap the window to match.
+type OrientationPreference = "auto" | Orientation;
 
 type ThemePreference = "dark" | "light" | "system";
+
+// Separate webview windows don't share React state or the localStorage "storage"
+// event, so prefs the user changes in one window are mirrored to the other over
+// Tauri's event bus. Only user actions emit; the listener applies remote changes
+// without re-emitting, so dock -> settings -> dock can't loop.
+const PREFS_SYNC_EVENT = "agentscan:prefs-sync";
+type PrefsSync =
+  | { kind: "theme"; theme: ThemePreference }
+  | { kind: "orientation"; orientation: OrientationPreference }
+  | { kind: "glass"; enabled: boolean; alpha: number }
+  | { kind: "profiles" };
 
 // Collapse a preference to the concrete theme in effect, resolving "system" from
 // the OS appearance. Used to pick per-theme logo variants.
@@ -185,6 +224,12 @@ function resolveThemeMode(pref: ThemePreference): LogoTheme {
   } catch {
     return "dark";
   }
+}
+
+// Wider than tall reads as a horizontal bar; otherwise the default vertical strip.
+// Base CSS is vertical, so an unset/indeterminate result harmlessly stays vertical.
+function orientationForViewport(): Orientation {
+  return window.innerWidth > window.innerHeight ? "horizontal" : "vertical";
 }
 
 type PickerGroup = {
@@ -247,8 +292,12 @@ type DraftValidation = {
   errors: string[];
 };
 
-function App() {
+function App({ mode }: { mode: ShellMode }) {
   const [state, setState] = useState<LoadState>({ status: "loading" });
+  // Whether the (kept-warm) settings window is currently shown. Used to defer its
+  // preflight probe until it's actually opened, so a hidden settings window never fires
+  // a duplicate `ssh … --version` for remote profiles. Always false in the dock.
+  const [settingsVisible, setSettingsVisible] = useState(false);
   const [profileState, setProfileState] = useState<ProfileState>(() => loadStoredProfiles());
   const activeProfile = useMemo(() => getActiveProfile(profileState), [profileState]);
   const runnerSettings = useMemo(() => runnerSettingsForProfile(activeProfile), [activeProfile]);
@@ -278,7 +327,23 @@ function App() {
   });
   const [pickerFilter, setPickerFilter] = useState("");
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [view, setView] = useState<ShellView>("picker");
+  // Layout axis, seeded from the current window shape and kept in sync on resize.
+  const [orientation, setOrientation] = useState<Orientation>(orientationForViewport);
+  // Layout preference: "auto" follows `orientation`; a pinned value overrides it.
+  const [orientationPref, setOrientationPref] =
+    useState<OrientationPreference>(loadStoredOrientation);
+  const effectiveOrientation: Orientation =
+    orientationPref === "auto" ? orientation : orientationPref;
+  // The summon hotkey is registered once but must place by the LIVE orientation, so a
+  // pinned/auto horizontal bar is re-summoned as a bar, not snapped to the vertical
+  // strip. A render-synced ref keeps the registered handler current.
+  const summonPlacementRef = useRef<() => Promise<void>>(placePickerWindow);
+  summonPlacementRef.current =
+    effectiveOrientation === "horizontal" ? placeBarWindow : placePickerWindow;
+  // Set once the orientation-sizing effect has scheduled the initial dock placement, so
+  // it places on first mount (and every pinned reshape) but never re-snaps an "auto"
+  // window on a later drag.
+  const didInitialPlaceRef = useRef(false);
   // Footer source switcher: which agentscan we're listening to (local vs a
   // remote over SSH). Open state for the inline dropdown.
   const [isSourceMenuOpen, setIsSourceMenuOpen] = useState(false);
@@ -352,12 +417,21 @@ function App() {
       !runnerSettingsEqual(settingsDraft, activeProfile.runner),
     [activeProfile, profileNameDraft, settingsDraft, sshHostDraft, sshClientTtyDraft],
   );
+  // Render-synced mirror so the settings focus-reconcile listener can read the latest
+  // dirty state without re-subscribing on every keystroke.
+  const isSettingsDirtyRef = useRef(isSettingsDirty);
+  isSettingsDirtyRef.current = isSettingsDirty;
 
   useEffect(() => {
-    void placePickerWindow();
-  }, []);
-
-  useEffect(() => {
+    // The dock always probes (it gates the live picker). The settings window also needs
+    // preflight for its Configuration status card, but only while it's actually shown —
+    // otherwise a hidden, kept-warm settings window would fire a second preflight (an
+    // extra `ssh … --version` for remote profiles, with possible duplicate passphrase
+    // prompts) on every start/source switch/apply even when the user never opens it. The
+    // card refreshes when the window is shown (settingsVisible flips this effect on).
+    if (mode === "settings" && !settingsVisible) {
+      return;
+    }
     let cancelled = false;
 
     async function loadShellState() {
@@ -454,7 +528,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [profileState, runnerSettings]);
+  }, [profileState, runnerSettings, mode, settingsVisible]);
 
   // Derived directly from the active profile (not from async preflight state) so
   // a switch to a synchronously-invalid profile immediately gates the live
@@ -478,7 +552,9 @@ function App() {
     activeProfileValid;
 
   useEffect(() => {
-    if (!liveReady) {
+    // The settings window never runs a live client — only the dock subscribes, so
+    // there's a single tmux control-mode worker per source, not one per window.
+    if (mode !== "dock" || !liveReady) {
       return;
     }
 
@@ -589,9 +665,15 @@ function App() {
         );
       });
     };
-  }, [activeProfile, runnerSettings, liveReady, liveRetryToken]);
+  }, [activeProfile, runnerSettings, liveReady, liveRetryToken, mode]);
 
   useEffect(() => {
+    // The global summon hotkey belongs to the dock; registering it in both windows
+    // would double-bind the shortcut.
+    if (mode !== "dock") {
+      return;
+    }
+
     let disposed = false;
     let registered = false;
 
@@ -609,7 +691,7 @@ function App() {
         try {
           await register(PICKER_HOTKEY, (event) => {
             if (event.state === "Pressed") {
-              void raisePickerWindow();
+              void raisePickerWindow(summonPlacementRef.current);
             }
           });
           registered = true;
@@ -642,7 +724,7 @@ function App() {
         }
       });
     };
-  }, []);
+  }, [mode]);
 
   const statusText = useMemo(() => {
     // Preflight from a not-yet-refreshed previous profile is untrustworthy, so
@@ -841,29 +923,56 @@ function App() {
     }
   }, [allPickerRows.length, pickerRows, pickerStatus, selectedPaneId, focusedPaneId]);
 
+  // The pane selection is TARGET-scoped (tmux pane ids collide across hosts/sessions), so
+  // it's reset by runnerKey; the search filter / source menu are IDENTITY-scoped UI, reset
+  // by the active profile id. Both seeded to the initial values so mount doesn't clobber
+  // the selection the selection-keeper effect just established or wipe an opening search.
+  const lastSelectionResetRunnerKeyRef = useRef(runnerKey);
+  const lastPickerResetProfileIdRef = useRef(profileState.activeProfileId);
+
   useEffect(() => {
-    // activeRunnerKeyRef is updated synchronously during render; here we reset
-    // per-profile UI so nothing leaks across a switch: editable drafts, the
-    // search filter, stale activation error, and the pane selection (tmux pane
-    // ids like %1 collide across hosts/sessions, so a carried-over selectedPaneId
-    // would silently highlight/activate a different agent on the new profile).
+    // Drafts and the transient activation/retry guards reset on any active-profile
+    // change (switch OR in-place edit): activeRunnerKeyRef is updated synchronously
+    // during render, so resolved data from the previous target is already discarded.
+    // Freeing activationInFlightRef lets the new target activate immediately rather than
+    // waiting on a stale focus_picker_row's finally, and clearing the retry counter lets
+    // a just-fixed config retry the live client instead of staying wedged at fatal.
     setProfileNameDraft(activeProfile.name);
     setSettingsDraft(activeProfile.runner);
     setSshHostDraft(activeProfile.kind === "ssh" ? activeProfile.host : "");
     setSshClientTtyDraft(activeProfile.kind === "ssh" ? activeProfile.clientTty : "");
-    setPickerFilter("");
     setActivation({ status: "idle" });
-    // Free the in-flight activation guard too: an old focus_picker_row from the
-    // previous target may still be running, but activeRunnerKeyRef already
-    // discards its completion, so the new profile must be able to activate
-    // immediately rather than waiting on the stale call's finally.
     activationInFlightRef.current = false;
-    setSelectedPaneId(null);
-    // Re-arm focus-follow so the new profile snaps to its own focused pane.
-    prevFocusedPaneIdRef.current = null;
-    setIsSourceMenuOpen(false);
     liveRetryAttemptRef.current = 0;
+
+    // The pane selection clears whenever the underlying TARGET changes — a profile switch
+    // OR an in-place runner/host/binary edit (both move runnerKey). tmux pane ids like %1
+    // collide across hosts/sessions, so a carried-over selectedPaneId would otherwise
+    // silently highlight/activate a different agent on the new target.
+    if (lastSelectionResetRunnerKeyRef.current !== runnerKey) {
+      lastSelectionResetRunnerKeyRef.current = runnerKey;
+      setSelectedPaneId(null);
+      // Re-arm focus-follow so the new target snaps to its own focused pane.
+      prevFocusedPaneIdRef.current = null;
+    }
+
+    // The search filter and open source menu are identity-scoped UI: clear them only on an
+    // actual source switch, not on an in-place edit — otherwise a settings apply (which
+    // reloads profileState in this dock window) would wipe a concurrent dock search.
+    if (lastPickerResetProfileIdRef.current !== profileState.activeProfileId) {
+      lastPickerResetProfileIdRef.current = profileState.activeProfileId;
+      setPickerFilter("");
+      setIsSourceMenuOpen(false);
+    }
   }, [activeProfile]);
+
+  // A wide drag or pinning to horizontal can strand an already-open source menu in
+  // the thin bar (where it clips). Close it whenever the layout goes horizontal.
+  useEffect(() => {
+    if (effectiveOrientation === "horizontal") {
+      setIsSourceMenuOpen(false);
+    }
+  }, [effectiveOrientation]);
 
   // Dismiss the source dropdown on an outside click or Escape. The keydown is
   // captured so it closes the menu before the picker's global Escape handler
@@ -895,16 +1004,6 @@ function App() {
     };
   }, [isSourceMenuOpen]);
 
-  // Close the source menu whenever the picker isn't the active view. The
-  // outside-click/Escape handlers above miss keyboard-driven navigation (e.g.
-  // activating the gear or the boot screen's "Open settings" with Enter), which
-  // would otherwise leave the dropdown rendered already-open on return.
-  useEffect(() => {
-    if (view !== "picker") {
-      setIsSourceMenuOpen(false);
-    }
-  }, [view]);
-
   // Apply the theme to <html data-theme> and persist it. "system" resolves from
   // prefers-color-scheme and re-resolves live when the OS appearance changes.
   useEffect(() => {
@@ -930,6 +1029,257 @@ function App() {
     return () => media.removeEventListener("change", apply);
   }, [themePref]);
 
+  // Track the window's aspect ratio; the sidebar renders data-orientation from this
+  // state and the horizontal axis overrides in styles.css key off it. Re-deriving on
+  // every resize is cheap, and setOrientation no-ops when the axis is unchanged, so a
+  // drag that stays vertical never re-renders.
+  useEffect(() => {
+    const apply = () => setOrientation(orientationForViewport());
+    apply();
+    window.addEventListener("resize", apply);
+    return () => window.removeEventListener("resize", apply);
+  }, []);
+
+  // Persist the layout preference. Window shaping is handled by the effect below.
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(ORIENTATION_STORAGE_KEY, orientationPref);
+    } catch {
+      // Persistence is best-effort; the in-memory preference still applies.
+    }
+  }, [orientationPref]);
+
+  // Shape and constrain the dock window for the current orientation preference in one
+  // race-free sequence ("auto" = free: no cap, no snap). Caps are lifted before min is
+  // raised so a larger min can never transiently exceed a stale max; then the real cap
+  // is applied and we snap to the canonical strip/bar. A pinned change reshapes; "auto"
+  // just follows the user's drag. The settings window is separate, so opening it no
+  // longer reshapes anything here.
+  useEffect(() => {
+    if (mode !== "dock") {
+      return;
+    }
+    const sizingOrientation: Orientation =
+      orientationPref === "auto" ? effectiveOrientation : orientationPref;
+    const minHeight =
+      sizingOrientation === "horizontal"
+        ? WINDOW_MIN_HEIGHT_HORIZONTAL
+        : WINDOW_MIN_HEIGHT_VERTICAL;
+    const maxSize =
+      orientationPref === "vertical"
+        ? new LogicalSize(WINDOW_MAX_WIDTH_VERTICAL, WINDOW_MAX_UNBOUNDED)
+        : orientationPref === "horizontal"
+          ? new LogicalSize(WINDOW_MAX_UNBOUNDED, WINDOW_MAX_HEIGHT_HORIZONTAL)
+          : null;
+    // Place on the first dock mount (so a saved layout opens correctly) and on every
+    // pinned reshape, but not on a later "auto" drag — which must not be fought. The
+    // placement runs in THIS operation, after the matching min-size is applied, so a bar
+    // can actually shrink to its short height instead of fighting the tall startup min
+    // (a separate, earlier-queued placement would race and leave a horizontal layout in a
+    // tall window). placePickerWindow/placeBarWindow follow the live orientation.
+    const shouldPlace = orientationPref !== "auto" || !didInitialPlaceRef.current;
+    didInitialPlaceRef.current = true;
+    void enqueueWindowOperation(async () => {
+      try {
+        const win = getCurrentWindow();
+        // Fully unbind first (null is Tauri's unset) so a larger min can't clash
+        // with a stale max, then re-apply the real cap below.
+        await win.setMaxSize(null);
+        await win.setMinSize(new LogicalSize(WINDOW_MIN_WIDTH, minHeight));
+        await win.setMaxSize(maxSize);
+        if (shouldPlace) {
+          await summonPlacementRef.current();
+        }
+      } catch {
+        // Best-effort: a failed update leaves the prior constraints/shape in place.
+      }
+    });
+  }, [mode, orientationPref, effectiveOrientation]);
+
+  // The dock and settings windows mirror shared prefs to each other (separate
+  // webviews don't share React state). The label of the *other* window is the emit
+  // target.
+  const otherWindowLabel = mode === "settings" ? "main" : "settings";
+  const broadcastPrefs = (payload: PrefsSync) => {
+    void emitTo(otherWindowLabel, PREFS_SYNC_EVENT, payload).catch(() => {
+      // Best-effort: the other window still converges on its next reload.
+    });
+  };
+
+  // Open the settings window (created hidden at launch, kept warm). The dock no
+  // longer renders settings itself.
+  const openSettings = () => {
+    setIsSourceMenuOpen(false);
+    void (async () => {
+      try {
+        const settingsWindow = await WebviewWindow.getByLabel("settings");
+        if (!settingsWindow) {
+          return;
+        }
+        await settingsWindow.unminimize();
+        await settingsWindow.show();
+        await settingsWindow.setFocus();
+      } catch {
+        // Best-effort; nothing to fall back to if the handle is missing.
+      }
+    })();
+  };
+  // The settings window closes by hiding (kept warm), so a back/Done press just
+  // hides this window. Clear the visibility flag too (same as the red/Cmd-W close path)
+  // so the hidden window stops running its preflight probe.
+  const closeSettings = () => {
+    setSettingsVisible(false);
+    void getCurrentWindow().hide();
+  };
+
+  // Apply prefs changed in the other window. The listener only sets state — the
+  // existing theme/glass/orientation/profile effects then apply it — and never
+  // re-broadcasts, so window A -> B -> A can't loop.
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: UnlistenFn | null = null;
+    void listen<PrefsSync>(PREFS_SYNC_EVENT, (event) => {
+      const payload = event.payload;
+      if (payload.kind === "theme") {
+        setThemePref(payload.theme);
+      } else if (payload.kind === "orientation") {
+        setOrientationPref(payload.orientation);
+      } else if (payload.kind === "glass") {
+        setGlassEnabled(payload.enabled);
+        setSurfaceAlpha(payload.alpha);
+      } else if (payload.kind === "profiles") {
+        // Keep a warm settings window's unsaved drafts: a dock-side source switch must
+        // not silently overwrite an in-progress edit (the window is hidden, not closed,
+        // precisely to preserve it). Active id and drafts both stay on the edited
+        // profile, so they never mismatch; the change is adopted later via the
+        // focus-reconcile path once the edit is applied or reset. The dock always adopts
+        // so its live picker tracks the current profile config.
+        if (mode === "settings" && isSettingsDirtyRef.current) {
+          return;
+        }
+        setProfileState(loadStoredProfiles());
+      }
+    }).then((fn) => {
+      if (disposed) {
+        fn();
+      } else {
+        unlisten = fn;
+      }
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  // The live listener above can miss a change broadcast before it registered, and
+  // emitTo has no replay — so a warm (hidden) settings window could linger on stale
+  // state with no way to recover short of a restart. Re-read localStorage whenever this
+  // window gains focus (i.e. is shown/reopened) to reconcile. Appearance prefs are
+  // always safe to refresh (primitive setters no-op when unchanged); the profile is
+  // re-seeded only when there are no unsaved edits AND the snapshot actually changed, so
+  // a kept-warm in-progress edit is never clobbered and idle focuses don't churn state.
+  useEffect(() => {
+    if (mode !== "settings") {
+      return;
+    }
+    const win = getCurrentWindow();
+    let disposed = false;
+    let unlisten: UnlistenFn | null = null;
+    void win
+      .onFocusChanged(({ payload: focused }) => {
+        // Drive the preflight gate off focus: a minimized, hidden, or background settings
+        // window is unfocused and must not run a duplicate (possibly SSH) preflight. This
+        // covers every not-visible path (minimize/hide/click-away) with one signal; the
+        // explicit hide handlers also clear it in case a platform skips blur on hide.
+        setSettingsVisible(focused);
+        if (!focused) {
+          return;
+        }
+        setThemePref(loadStoredTheme());
+        setOrientationPref(loadStoredOrientation());
+        setGlassEnabled(loadStoredGlass());
+        setSurfaceAlpha(loadStoredSurfaceAlpha());
+        if (!isSettingsDirtyRef.current) {
+          setProfileState((current) => {
+            const reloaded = loadStoredProfiles();
+            return JSON.stringify(current) === JSON.stringify(reloaded) ? current : reloaded;
+          });
+        }
+      })
+      .then((fn) => {
+        if (disposed) {
+          fn();
+        } else {
+          unlisten = fn;
+        }
+      });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [mode]);
+
+  // The profiles listener drops dock-side syncs while this window is dirty, and the
+  // focus-reconcile only runs on a later focus — so a change skipped mid-edit would
+  // linger after Reset/Apply clears the drafts (still focused, no new focus event).
+  // Adopt the latest stored profiles whenever the window is clean. Value-guarded so an
+  // unchanged reload doesn't churn state or reset the picker selection.
+  useEffect(() => {
+    if (mode !== "settings" || isSettingsDirty) {
+      return;
+    }
+    setProfileState((current) => {
+      const reloaded = loadStoredProfiles();
+      return JSON.stringify(current) === JSON.stringify(reloaded) ? current : reloaded;
+    });
+  }, [mode, isSettingsDirty]);
+
+  // Keep the settings window warm: intercept its close so the red button / Cmd-W
+  // hides it (instant reopen, drafts preserved) rather than destroying it.
+  useEffect(() => {
+    if (mode !== "settings") {
+      return;
+    }
+    const win = getCurrentWindow();
+    const unlistenPromise = win.onCloseRequested((event) => {
+      event.preventDefault();
+      // Hidden again — stop its preflight probe until it's shown next.
+      setSettingsVisible(false);
+      void win.hide();
+    });
+    return () => {
+      void unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, [mode]);
+
+  // Closing the dock means quitting. The settings window is kept warm (hidden, never
+  // self-destroys), so it must be torn down before the dock goes — otherwise that
+  // hidden window keeps the process alive with no visible UI. preventDefault() holds
+  // the dock open until the (awaited) settings teardown finishes, then we force the
+  // dock closed; without it the dock webview can be destroyed mid-IPC and strand the
+  // hidden window. destroy() forces teardown without firing either hide-handler, and
+  // the dock is destroyed even if the settings lookup throws, so the app always exits.
+  useEffect(() => {
+    if (mode !== "dock") {
+      return;
+    }
+    const win = getCurrentWindow();
+    const unlistenPromise = win.onCloseRequested(async (event) => {
+      event.preventDefault();
+      try {
+        const settings = await WebviewWindow.getByLabel("settings");
+        await settings?.destroy();
+      } catch {
+        // Best-effort; fall through to tear the dock down regardless.
+      }
+      await win.destroy();
+    });
+    return () => {
+      void unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, [mode]);
+
   // Toggle the macOS glass backdrop. Order matters so we never flash the bare
   // desktop through the transparent window: when enabling, raise the blur layer
   // first, then mark the surface translucent; when disabling, go opaque first,
@@ -942,6 +1292,12 @@ function App() {
       window.localStorage.setItem(GLASS_STORAGE_KEY, glassEnabled ? "on" : "off");
     } catch {
       // Best-effort; the in-memory preference still applies this session.
+    }
+
+    // Vibrancy lives on the dock. The settings window is a solid, normally-chromed
+    // window, so it persists + mirrors the pref but never frosts itself.
+    if (mode !== "dock") {
+      return;
     }
 
     let cancelled = false;
@@ -980,7 +1336,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [glassEnabled]);
+  }, [glassEnabled, mode]);
 
   // Drive the tint opacity via a CSS variable; the data-glass rules in styles.css
   // only consume it while glass is on, so this is harmless when glass is off.
@@ -1054,10 +1410,6 @@ function App() {
   }
 
   function handlePickerKeyDown(event: KeyboardEvent) {
-    if (view !== "picker") {
-      return;
-    }
-
     // Control + a row's displayed hotkey jumps straight to that pane. Require
     // Control alone so we never shadow ⌘ shortcuts or Ctrl+⌘ combos. On macOS,
     // editing uses ⌘, so Ctrl is free even inside the search box — bypass the
@@ -1132,14 +1484,23 @@ function App() {
     const normalized = normalizeRunnerSettings(settingsDraft);
     setSettingsDraft(normalized);
     setProfileState((current) => {
-      const next = updateActiveProfileSettings(
-        current,
+      // Merge onto the LATEST persisted state, not this window's in-memory snapshot: a
+      // warm settings window can hold a stale snapshot (it skips profile syncs while
+      // dirty), so writing that whole snapshot back would clobber dock-side add/delete/
+      // source-switch changes already in localStorage. Apply the edit to the profile this
+      // form is editing (by id) and keep the dock's latest profile list + active source.
+      const editedId = current.activeProfileId;
+      const latest = loadStoredProfiles();
+      const next = updateProfileSettingsById(
+        latest,
+        editedId,
         profileNameDraft.trim(),
         normalized,
         sshHostDraft,
         sshClientTtyDraft,
       );
       storeProfiles(next);
+      void broadcastPrefs({ kind: "profiles" });
       return next;
     });
     appendDebugEntry({
@@ -1157,30 +1518,55 @@ function App() {
   }
 
   function selectProfile(id: string) {
+    // A dirty settings window may show a stale active highlight: it skips dock-side profile
+    // syncs mid-edit, and the focus/clean-adopt reconcilers also skip while dirty, so the
+    // card the rail highlights (activeProfile.id) can lag the persisted active source. Clicking
+    // that already-highlighted card must stay a no-op here — otherwise the id !== latest path
+    // below would rewrite localStorage to our stale id and broadcast, flipping the dock off the
+    // source it was deliberately switched to elsewhere (its drafts-preserving switch must win
+    // until Apply/Reset). This divergence only exists while dirty in settings, so clean windows
+    // and the dock are untouched: clicking a different source still writes + broadcasts, and
+    // re-selecting the live active still hits the same-reference no-op below. Keyed on
+    // activeProfile.id (the highlighted card) rather than current.activeProfileId, since
+    // getActiveProfile falls back to the first runnable profile when the active id is unset.
+    if (mode === "settings" && isSettingsDirty && id === activeProfile.id) {
+      return;
+    }
+
     setProfileState((current) => {
-      // No-op if already active: re-selecting would still bump loadShellState
-      // (resetting liveState to "connecting") without re-running the live effect
-      // (activeProfile identity is unchanged), wedging the live strip.
-      if (id === current.activeProfileId) {
-        return current;
+      // Switch active on the LATEST persisted state so a concurrent dock-side
+      // add/delete isn't clobbered by this window's possibly-stale snapshot.
+      const latest = loadStoredProfiles();
+      // Clicking the already-persisted (live) active source must not bump loadShellState
+      // (that resets liveState to "connecting" without re-running the live effect, wedging
+      // the dock's live strip) — so when our snapshot already matches, keep the SAME
+      // reference and do nothing. But a dirty settings window may hold a stale snapshot
+      // (it skips syncs mid-edit); there, adopt the latest so clicking the dock's current
+      // source navigates to it instead of staying stuck on the stale selection.
+      if (id === latest.activeProfileId) {
+        return JSON.stringify(current) === JSON.stringify(latest) ? current : latest;
       }
 
-      const profile = current.profiles.find((candidate) => candidate.id === id);
+      const profile = latest.profiles.find((candidate) => candidate.id === id);
       if (!profile || !isRunnableProfile(profile)) {
         return current;
       }
 
-      const next = { ...current, activeProfileId: id };
+      const next = { ...latest, activeProfileId: id };
       storeProfiles(next);
+      void broadcastPrefs({ kind: "profiles" });
       return next;
     });
   }
 
   function addSshProfile() {
-    setProfileState((current) => {
+    setProfileState(() => {
+      // Append onto the LATEST persisted state so a concurrent dock-side change isn't
+      // clobbered by this window's possibly-stale snapshot.
+      const latest = loadStoredProfiles();
       const profile: SshProfileConfig = {
         id: newProfileId("ssh"),
-        name: nextRemoteProfileName(current.profiles),
+        name: nextRemoteProfileName(latest.profiles),
         kind: "ssh",
         host: "",
         clientTty: "",
@@ -1189,9 +1575,10 @@ function App() {
       };
       const next = {
         activeProfileId: profile.id,
-        profiles: [...current.profiles, profile],
+        profiles: [...latest.profiles, profile],
       };
       storeProfiles(next);
+      void broadcastPrefs({ kind: "profiles" });
       return next;
     });
   }
@@ -1201,14 +1588,21 @@ function App() {
       return;
     }
 
-    setProfileState((current) => {
-      const profiles = current.profiles.filter((profile) => profile.id !== activeProfile.id);
+    const targetId = activeProfile.id;
+    setProfileState(() => {
+      // Remove from the LATEST persisted state so a concurrent dock-side change isn't
+      // clobbered. Keep the latest active source unless it's the profile being deleted.
+      const latest = loadStoredProfiles();
+      const profiles = latest.profiles.filter((profile) => profile.id !== targetId);
       const fallback = profiles.find((profile) => profile.kind === "local") ?? profiles[0];
       const next = normalizeProfileState({
-        activeProfileId: fallback?.id,
+        activeProfileId: profiles.some((profile) => profile.id === latest.activeProfileId)
+          ? latest.activeProfileId
+          : fallback?.id,
         profiles,
       });
       storeProfiles(next);
+      void broadcastPrefs({ kind: "profiles" });
       return next;
     });
     appendDebugEntry({
@@ -1259,17 +1653,20 @@ function App() {
   const pickerKeyDownRef = useRef(handlePickerKeyDown);
   pickerKeyDownRef.current = handlePickerKeyDown;
   useEffect(() => {
+    if (mode !== "dock") {
+      return;
+    }
     const handler = (event: KeyboardEvent) => pickerKeyDownRef.current(event);
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, []);
+  }, [mode]);
 
-  // Settings must be reachable even when the daemon/IPC is unreachable: that is
-  // exactly when the user needs to fix the binary path or SSH host. So the
-  // settings view wins before the unready boot screen returns.
-  if (view !== "settings" && state.status !== "ready") {
+  // The dock shows its boot screen until the daemon is ready. The settings window is
+  // separate and always renders settings below, so config stays reachable even when
+  // the daemon/IPC is down — exactly when the binary path or SSH host needs fixing.
+  if (mode === "dock" && state.status !== "ready") {
     return (
-      <main className="sidebar">
+      <main className="sidebar" data-orientation={effectiveOrientation}>
         <div className="boot-state" aria-live="polite">
           <span className="boot-spinner" aria-hidden="true" />
           <h1>{state.status === "loading" ? "Connecting" : "Can’t reach agentscan"}</h1>
@@ -1277,7 +1674,7 @@ function App() {
           {/* Always offer a path into settings: a hung "loading" (e.g. a stalled
               profile/SSH preflight) otherwise traps the user with no way to fix
               the binary path or host. */}
-          <button type="button" onClick={() => setView("settings")}>
+          <button type="button" onClick={openSettings}>
             Open settings
           </button>
         </div>
@@ -1285,7 +1682,7 @@ function App() {
     );
   }
 
-  if (view === "settings") {
+  if (mode === "settings") {
     // The profile list comes from profileState (the live source of truth) so
     // add/delete/switch are reflected immediately, even while a kept-ready
     // `state` still describes the previous profile during a reload. Preflight is
@@ -1352,7 +1749,7 @@ function App() {
             className="icon-button back"
             type="button"
             aria-label="Back to picker"
-            onClick={() => setView("picker")}
+            onClick={closeSettings}
           >
             {"←"}
           </button>
@@ -1560,11 +1957,47 @@ function App() {
                   key={option}
                   type="button"
                   aria-pressed={themePref === option}
-                  onClick={() => setThemePref(option)}
+                  onClick={() => {
+                    setThemePref(option);
+                    broadcastPrefs({ kind: "theme", theme: option });
+                  }}
                 >
                   {option === "system" ? "System" : option === "light" ? "Light" : "Dark"}
                 </button>
               ))}
+            </div>
+
+            <div className="setting-label dock-layout-label">
+              <span>Dock layout</span>
+              <span className="setting-hint">
+                Auto follows the window shape; pin a strip or bar
+              </span>
+            </div>
+            <div
+              className="theme-toggle layout-toggle"
+              role="group"
+              aria-label="Dock layout"
+            >
+              {(["auto", "vertical", "horizontal"] as OrientationPreference[]).map(
+                (option) => (
+                  <button
+                    className={`theme-option${orientationPref === option ? " active" : ""}`}
+                    key={option}
+                    type="button"
+                    aria-pressed={orientationPref === option}
+                    onClick={() => {
+                      setOrientationPref(option);
+                      broadcastPrefs({ kind: "orientation", orientation: option });
+                    }}
+                  >
+                    {option === "auto"
+                      ? "Auto"
+                      : option === "vertical"
+                        ? "Vertical"
+                        : "Horizontal"}
+                  </button>
+                ),
+              )}
             </div>
 
             {IS_MAC ? (
@@ -1580,7 +2013,11 @@ function App() {
                     role="switch"
                     aria-checked={glassEnabled}
                     aria-label="Glass effect"
-                    onClick={() => setGlassEnabled((on) => !on)}
+                    onClick={() => {
+                      const next = !glassEnabled;
+                      setGlassEnabled(next);
+                      broadcastPrefs({ kind: "glass", enabled: next, alpha: surfaceAlpha });
+                    }}
                   >
                     <span className="switch-thumb" />
                   </button>
@@ -1603,9 +2040,11 @@ function App() {
                       max={SURFACE_ALPHA_MAX - SURFACE_ALPHA_MIN}
                       step={0.02}
                       value={SURFACE_ALPHA_MAX - surfaceAlpha}
-                      onChange={(event) =>
-                        setSurfaceAlpha(SURFACE_ALPHA_MAX - Number(event.target.value))
-                      }
+                      onChange={(event) => {
+                        const next = SURFACE_ALPHA_MAX - Number(event.target.value);
+                        setSurfaceAlpha(next);
+                        broadcastPrefs({ kind: "glass", enabled: glassEnabled, alpha: next });
+                      }}
                       aria-label="Glass transparency"
                     />
                   </label>
@@ -1648,7 +2087,7 @@ function App() {
   }
 
   return (
-    <main className="sidebar">
+    <main className="sidebar" data-orientation={effectiveOrientation}>
       <header className="topbar">
         <div className="search-field">
           <span className="search-icon" aria-hidden="true">
@@ -1726,7 +2165,16 @@ function App() {
             type="button"
             aria-haspopup="menu"
             aria-expanded={isSourceMenuOpen}
-            onClick={() => setIsSourceMenuOpen((open) => !open)}
+            onClick={() => {
+              // The inline menu opens upward and would clip inside the thin
+              // horizontal bar, so there the trigger re-docks into settings (which
+              // owns the full Sources list) instead of popping a cramped menu.
+              if (effectiveOrientation === "horizontal") {
+                openSettings();
+              } else {
+                setIsSourceMenuOpen((open) => !open);
+              }
+            }}
             title={statusText}
           >
             <span
@@ -1775,7 +2223,7 @@ function App() {
                 type="button"
                 onClick={() => {
                   setIsSourceMenuOpen(false);
-                  setView("settings");
+                  openSettings();
                 }}
               >
                 <span className="source-check" aria-hidden="true">
@@ -1791,7 +2239,7 @@ function App() {
           type="button"
           aria-label="Settings"
           title="Settings"
-          onClick={() => setView("settings")}
+          onClick={openSettings}
         >
           {"⚙"}
         </button>
@@ -1998,6 +2446,18 @@ function loadStoredTheme(): ThemePreference {
   return "system";
 }
 
+function loadStoredOrientation(): OrientationPreference {
+  try {
+    const value = window.localStorage.getItem(ORIENTATION_STORAGE_KEY);
+    if (value === "auto" || value === "vertical" || value === "horizontal") {
+      return value;
+    }
+  } catch {
+    // localStorage unavailable; fall back to the responsive default.
+  }
+  return "auto";
+}
+
 function loadStoredGlass(): boolean {
   // Glass is macOS-only (native vibrancy); other platforms never enable it.
   if (!IS_MAC) {
@@ -2145,17 +2605,20 @@ function isRunnableProfile(profile: DesktopProfileConfig): boolean {
   return profile.kind === "local" || profile.enabled;
 }
 
-function updateActiveProfileSettings(
+function updateProfileSettingsById(
   state: ProfileState,
+  id: string,
   name: string,
   runner: RunnerSettings,
   sshHost: string,
   sshClientTty: string,
 ): ProfileState {
+  // A missing id maps to a no-op, which cleanly handles applying an edit whose target
+  // profile was deleted elsewhere (the edit is simply dropped onto the latest state).
   return {
     ...state,
     profiles: state.profiles.map((profile) =>
-      profile.id === state.activeProfileId
+      profile.id === id
         ? updateProfileSettings(profile, name, runner, sshHost, sshClientTty)
         : profile,
     ),
@@ -2466,11 +2929,12 @@ function liveStateLabel(state: LiveConnectionState) {
 }
 
 // Persistent-window model: the global hotkey raises/focuses the window; it
-// never toggles it away.
-async function raisePickerWindow() {
+// never toggles it away. The caller passes the placement for the live orientation
+// so summoning a pinned/auto horizontal bar re-docks it as a bar, not a strip.
+async function raisePickerWindow(place: () => Promise<void> = placePickerWindow) {
   await enqueueWindowOperation(async () => {
     const appWindow = getCurrentWindow();
-    await placePickerWindow();
+    await place();
     await appWindow.show();
     await appWindow.setFocus();
   });
@@ -2486,6 +2950,14 @@ async function placePickerWindow() {
     await invoke("place_picker_window");
   } catch {
     // Placement is best-effort; showing and focusing the picker is more important.
+  }
+}
+
+async function placeBarWindow() {
+  try {
+    await invoke("place_bar_window");
+  } catch {
+    // Placement is best-effort; the layout still follows the pinned orientation.
   }
 }
 
