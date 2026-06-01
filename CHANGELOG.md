@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.5.0 - 2026-06-01
+
 ### Changed
 
 - Routed `nerd-font-patched` provider rendering to the custom
