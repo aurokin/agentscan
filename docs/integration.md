@@ -59,8 +59,9 @@ Provider icon rendering is presentation-only. It does not change provider
 classification, daemon socket snapshots, or machine-readable pane records.
 
 Supported modes are `emoji`, `nerd-font`, and `nerd-font-patched`. The default is
-`emoji`. The patched Nerd Font mode is reserved for a future custom font and
-currently falls back to the Nerd Font values.
+`emoji`. The patched Nerd Font mode emits provider glyphs from the
+`agent-icons-v8` manifest and requires a terminal font patched with those
+private-use codepoints.
 
 Resolution precedence is:
 

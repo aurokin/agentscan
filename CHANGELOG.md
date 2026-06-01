@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Changed
+
+- Routed `nerd-font-patched` provider rendering to the custom
+  `agent-icons-v8` private-use codepoints instead of falling back to the
+  standard Nerd Font markers.
+
 ## 0.4.5 - 2026-05-31
 
 ### Added

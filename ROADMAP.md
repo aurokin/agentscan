@@ -347,7 +347,8 @@ Delivered baseline:
 - inspect provenance for provider, status, classification, and fallback
   decisions
 - provider icon modes through CLI/env/config, with `emoji` as default and
-  `agentscan providers --format json` exposing all marker data
+  `agentscan providers --format json` exposing all marker data, including the
+  custom patched Nerd Font `agent-icons-v8` codepoints
 
 Delivered daemon architecture:
 
