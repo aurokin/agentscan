@@ -130,7 +130,7 @@ pub(crate) struct HotkeysArgs {
     pub(crate) format: OutputFormat,
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Clone, Debug)]
 pub(crate) struct HotkeyArgs {
     /// The picker hotkey to activate, for example `q`.
     pub(crate) key: String,
@@ -235,6 +235,8 @@ pub(crate) struct DaemonStatusArgs {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum TmuxCommands {
+    /// Focus a picker hotkey from a tmux bind and report failures with display-message.
+    Hotkey(HotkeyArgs),
     /// Publish explicit pane metadata for wrappers.
     SetMetadata(TmuxSetMetadataArgs),
     /// Clear explicit pane metadata.

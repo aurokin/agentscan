@@ -149,9 +149,10 @@ The command surface is organized by concern:
 - `agentscan hotkeys`: stable picker-row model for tmux binds, terminal
   surfaces, and desktop picker surfaces
 - `agentscan hotkey <key>`: activate a stable picker-row key through the shared
-  focus path
+  focus path with strict non-zero failures for automation callers
 - `agentscan tui`: interactive-only pane picker, not a stdout automation API
-- `agentscan tmux`: tmux-facing metadata helpers
+- `agentscan tmux`: tmux-facing helpers, including metadata commands and
+  `tmux hotkey` for display-message failure reporting from tmux binds
 
 The default bare `agentscan` flow is daemon-backed `list`.
 

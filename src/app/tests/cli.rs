@@ -115,6 +115,33 @@ fn root_list_args_merge_into_other_refresh_capable_commands() {
 }
 
 #[test]
+fn root_list_args_merge_into_tmux_hotkey_command() {
+    let cli = <Cli as clap::Parser>::parse_from([
+        "agentscan",
+        "-f",
+        "--all",
+        "tmux",
+        "hotkey",
+        "q",
+        "--client-tty",
+        "/dev/pts/1",
+    ]);
+    match cli.command {
+        Some(super::Commands::Tmux(super::TmuxArgs {
+            command: super::TmuxCommands::Hotkey(mut args),
+        })) => {
+            super::commands::merge_hotkey_args(&mut args, &cli.list_args).unwrap();
+            assert!(args.refresh.refresh);
+            assert!(!args.auto_start.no_auto_start);
+            assert!(args.all);
+            assert_eq!(args.key, "q");
+            assert_eq!(args.client_tty.as_deref(), Some("/dev/pts/1"));
+        }
+        other => panic!("expected tmux hotkey command, got {other:?}"),
+    }
+}
+
+#[test]
 fn subscribe_args_parse_and_merge_root_options() {
     let cli = <Cli as clap::Parser>::parse_from(["agentscan", "subscribe", "--format", "json"]);
     match cli.command {
