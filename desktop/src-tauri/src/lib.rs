@@ -12,6 +12,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use tauri::Manager;
+
 const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(2);
 const HOTKEYS_TIMEOUT: Duration = Duration::from_secs(5);
 const FOCUS_TIMEOUT: Duration = Duration::from_secs(5);
@@ -32,6 +34,9 @@ const PICKER_WINDOW_MIN_WIDTH: f64 = 220.0;
 const PICKER_WINDOW_MAX_WIDTH: f64 = 520.0;
 const PICKER_WINDOW_MIN_HEIGHT: f64 = 560.0;
 const PICKER_WINDOW_MAX_HEIGHT: f64 = 960.0;
+// Snap height for the horizontal "bar" dock: a short ribbon along the bottom edge,
+// comfortably above the 96px drag floor the CSS bar uses.
+const BAR_WINDOW_HEIGHT: f64 = 120.0;
 
 static LIVE_PICKER: OnceLock<Mutex<Option<LivePickerSupervisor>>> = OnceLock::new();
 // Serializes whole start operations (stop + spawn + install) so overlapping
@@ -297,6 +302,62 @@ fn place_picker_window(window: tauri::Window) -> Result<(), String> {
     Ok(())
 }
 
+/// Snap the window into the horizontal "bar" dock: full work-area width, a short
+/// bar height, pinned to the bottom edge. Mirrors place_picker_window for the
+/// vertical strip; the frontend calls whichever matches the pinned orientation.
+#[tauri::command]
+fn place_bar_window(window: tauri::Window) -> Result<(), String> {
+    let Some(monitor) = summon_monitor(&window)? else {
+        return Ok(());
+    };
+    let placement = bar_placement_for_work_area(logical_work_area_for_monitor(&monitor));
+
+    window
+        .set_size(tauri::LogicalSize::new(placement.width, placement.height))
+        .map_err(|error| format!("Unable to size bar window: {error}"))?;
+    window
+        .set_position(tauri::LogicalPosition::new(placement.x, placement.y))
+        .map_err(|error| format!("Unable to position bar window: {error}"))?;
+
+    Ok(())
+}
+
+/// Center the kept-warm settings window on the dock's current monitor. The window is
+/// created hidden, so without this its first open (or a reopen after the dock moved to a
+/// different display) reuses a stale position that can land off-screen or on the wrong
+/// monitor. Invoked from the dock (the caller) before it shows the settings window, so the
+/// monitor is resolved the same cursor-first way as the dock's own placement.
+#[tauri::command]
+fn place_settings_window(window: tauri::Window) -> Result<(), String> {
+    let Some(monitor) = summon_monitor(&window)? else {
+        return Ok(());
+    };
+    let Some(settings) = window.get_webview_window("settings") else {
+        return Ok(());
+    };
+    let work_area = logical_work_area_for_monitor(&monitor);
+    // Convert the settings window's physical size with ITS OWN monitor's scale, not the
+    // dock/cursor monitor's: on a mixed-DPI setup (e.g. a 2x laptop plus a 1x external)
+    // the two windows can sit on displays with different scale factors, and using the
+    // wrong one yields a wrong logical size and a mis-centered (or partly off-screen)
+    // window. Logical points are a shared space, so the result still centers correctly
+    // against the dock monitor's logical work area.
+    let settings_scale = settings
+        .scale_factor()
+        .map_err(|error| format!("Unable to read settings window scale: {error}"))?
+        .max(1.0);
+    let size = settings
+        .outer_size()
+        .map_err(|error| format!("Unable to read settings window size: {error}"))?
+        .to_logical::<f64>(settings_scale);
+    let (x, y) = centered_placement_for_work_area(work_area, size.width, size.height);
+    settings
+        .set_position(tauri::LogicalPosition::new(x, y))
+        .map_err(|error| format!("Unable to position settings window: {error}"))?;
+
+    Ok(())
+}
+
 /// Toggle the macOS "glass" backdrop (NSVisualEffectView) behind the webview.
 /// The frontend owns the on/off preference and the surface tint; this just turns
 /// the OS blur layer on or off so a translucent webview reveals it. No-op off
@@ -404,6 +465,34 @@ fn sidebar_placement_for_work_area(work_area: LogicalWorkArea) -> PickerWindowPl
         width,
         height,
     }
+}
+
+fn bar_placement_for_work_area(work_area: LogicalWorkArea) -> PickerWindowPlacement {
+    let width = (work_area.width - PICKER_WINDOW_MARGIN * 2.0).max(PICKER_WINDOW_MIN_WIDTH);
+    let height = BAR_WINDOW_HEIGHT;
+    // Pin to the bottom of the work area, but never let the bar sit above its top
+    // edge on a work area too short to hold the bar plus its margin.
+    let y = (work_area.y + work_area.height - height - PICKER_WINDOW_MARGIN).max(work_area.y);
+
+    PickerWindowPlacement {
+        x: work_area.x + PICKER_WINDOW_MARGIN,
+        y,
+        width,
+        height,
+    }
+}
+
+/// Center a window of the given logical size within a work area, clamping to the top-left
+/// so an oversized window (or a very small display) still lands on-screen instead of off
+/// the top/left edge.
+fn centered_placement_for_work_area(
+    work_area: LogicalWorkArea,
+    width: f64,
+    height: f64,
+) -> (f64, f64) {
+    let x = work_area.x + ((work_area.width - width) / 2.0).max(0.0);
+    let y = work_area.y + ((work_area.height - height) / 2.0).max(0.0);
+    (x, y)
 }
 
 fn clamp_f64(value: f64, min: f64, max: f64) -> f64 {
@@ -1642,7 +1731,9 @@ pub fn run() {
             focus_picker_row,
             local_profiles,
             load_picker_rows,
+            place_bar_window,
             place_picker_window,
+            place_settings_window,
             preflight_agentscan,
             set_window_glass,
             start_live_picker,
@@ -1719,6 +1810,120 @@ mod tests {
                 height: 960.0,
             }
         );
+    }
+
+    #[test]
+    fn bar_placement_spans_width_and_pins_to_bottom() {
+        assert_eq!(
+            bar_placement_for_work_area(LogicalWorkArea {
+                x: 100.0,
+                y: 24.0,
+                width: 1440.0,
+                height: 900.0,
+            }),
+            PickerWindowPlacement {
+                x: 116.0,
+                // work_area bottom (24 + 900) minus the bar height (120) and margin (16).
+                y: 788.0,
+                // full work-area width minus both side margins.
+                width: 1408.0,
+                height: 120.0,
+            }
+        );
+    }
+
+    #[test]
+    fn bar_placement_clamps_narrow_work_area_width() {
+        // Narrow work area: width minus margins falls below MIN_WIDTH (220), so the
+        // bar is clamped up to the floor instead of shrinking with the screen.
+        assert_eq!(
+            bar_placement_for_work_area(LogicalWorkArea {
+                x: 0.0,
+                y: 0.0,
+                width: 230.0,
+                height: 420.0,
+            }),
+            PickerWindowPlacement {
+                x: 16.0,
+                y: 284.0,
+                width: 220.0,
+                height: 120.0,
+            }
+        );
+        // Large work area: the bar stays a fixed-height ribbon pinned to the bottom.
+        assert_eq!(
+            bar_placement_for_work_area(LogicalWorkArea {
+                x: -1920.0,
+                y: 0.0,
+                width: 2560.0,
+                height: 1600.0,
+            }),
+            PickerWindowPlacement {
+                x: -1904.0,
+                y: 1464.0,
+                width: 2528.0,
+                height: 120.0,
+            }
+        );
+    }
+
+    #[test]
+    fn bar_placement_clamps_short_work_area_to_top() {
+        // Work area too short to hold the bar + margin: the bottom-anchored y would
+        // fall above the work-area top, so it clamps to the top edge instead.
+        assert_eq!(
+            bar_placement_for_work_area(LogicalWorkArea {
+                x: 0.0,
+                y: 50.0,
+                width: 1440.0,
+                height: 100.0,
+            }),
+            PickerWindowPlacement {
+                x: 16.0,
+                // 50 + 100 - 120 - 16 = 14, above the work-area top (50), so it clamps
+                // up to y = 50.
+                y: 50.0,
+                width: 1408.0,
+                height: 120.0,
+            }
+        );
+    }
+
+    #[test]
+    fn settings_placement_centers_within_work_area() {
+        // Centered: x = 100 + (1000 - 560)/2 = 320, y = 50 + (800 - 640)/2 = 130.
+        let (x, y) = centered_placement_for_work_area(
+            LogicalWorkArea {
+                x: 100.0,
+                y: 50.0,
+                width: 1000.0,
+                height: 800.0,
+            },
+            560.0,
+            640.0,
+        );
+
+        assert_eq!(x, 320.0);
+        assert_eq!(y, 130.0);
+    }
+
+    #[test]
+    fn settings_placement_clamps_oversized_window_to_top_left() {
+        // Window larger than the work area: centering would push it off the top/left, so
+        // it clamps to the work-area origin instead.
+        let (x, y) = centered_placement_for_work_area(
+            LogicalWorkArea {
+                x: 10.0,
+                y: 20.0,
+                width: 400.0,
+                height: 300.0,
+            },
+            560.0,
+            640.0,
+        );
+
+        assert_eq!(x, 10.0);
+        assert_eq!(y, 20.0);
     }
 
     #[test]
