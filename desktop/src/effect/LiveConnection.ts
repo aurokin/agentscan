@@ -1,0 +1,394 @@
+import { Duration, Effect, Queue, Ref, Stream, SubscriptionRef } from "effect";
+import { TauriIpc, type IpcError } from "./TauriIpc";
+import type {
+  ConnectionStatus,
+  DesktopRunnerSettings,
+  LivePickerEnvelope,
+  LivePickerEvent,
+  LiveState,
+} from "./types";
+
+// Keep in sync with the seed key the old App.tsx used so epochs stay monotonic
+// across a reload that restarts the JS while a Rust worker lingers.
+const LIVE_EPOCH_STORAGE_KEY = "agentscan.liveEpochSeq";
+
+// Backoff between re-arm attempts, injected as a service so tests can zero it out
+// (keeping them event-driven, no wall-clock). A recoverable close (daemon
+// restarted / socket superseded) retries quickly to re-latch; a "no daemon" poll
+// is slow — we are not starting one, just waiting to attach if the user brings one up.
+export type LiveBackoff = {
+  readonly recoverable: Duration.Duration;
+  readonly noDaemon: Duration.Duration;
+};
+
+export class LiveConnectionConfig extends Effect.Service<LiveConnectionConfig>()(
+  "desktop/LiveConnectionConfig",
+  {
+    succeed: {
+      backoff: {
+        recoverable: Duration.seconds(1),
+        noDaemon: Duration.seconds(10),
+      } as LiveBackoff,
+    },
+  },
+) {}
+
+// A terminal frame ends the subscribe child. The desktop owns reconnect policy, so
+// we classify what to do next rather than wedging:
+//   Recoverable — re-arm (latch) after a short backoff
+//   NoDaemon    — no daemon reachable in latch-only mode; offer "Start agentscan",
+//                 keep slow-polling to auto-latch if one appears
+//   Fatal       — unrecoverable (bad binary/config); stop and wait for a manual retry
+type Terminal =
+  | { _tag: "Recoverable"; message: string }
+  | { _tag: "NoDaemon"; message: string }
+  | { _tag: "Fatal"; message: string };
+
+// A terminal frame plus whether the subscription ever reached "online" (a rows
+// frame) before it ended. `online` separates a daemon that came up and was later
+// lost from one that never connected — the discriminator runTarget uses to keep a
+// post-connection latch-miss as NoDaemon instead of a Start refusal.
+type ConsumeResult = { readonly terminal: Terminal; readonly online: boolean };
+
+// The Rust side stamps "daemon auto-start is disabled: …" when a `--no-auto-start`
+// subscribe finds no daemon. That is precisely the latch-miss we surface as a
+// "Start agentscan" prompt rather than an error.
+const NO_DAEMON_RE = /auto-start is disabled/i;
+
+type Target = {
+  readonly gen: number;
+  readonly enabled: boolean;
+  readonly settings: DesktopRunnerSettings | null;
+  readonly runnerKey: string;
+  // Only the first attempt of an explicit "Start agentscan" carries autoStart; every
+  // re-arm latches (autoStart false) so recovery never spawns a daemon on its own.
+  readonly autoStart: boolean;
+};
+
+export type ConfigureInput = {
+  readonly settings: DesktopRunnerSettings | null;
+  readonly runnerKey: string;
+  readonly enabled: boolean;
+};
+
+const INITIAL_TARGET: Target = {
+  gen: 0,
+  enabled: false,
+  settings: null,
+  runnerKey: "",
+  autoStart: false,
+};
+
+const INITIAL_STATE: LiveState = {
+  connection: { status: "connecting", message: "Starting live client" },
+  rows: [],
+};
+
+const setConnection =
+  (connection: ConnectionStatus) =>
+  (state: LiveState): LiveState => ({ ...state, connection });
+
+const rowsMessage = (count: number) => `${count} picker ${count === 1 ? "row" : "rows"}`;
+
+const defectMessage = (defect: unknown): string =>
+  defect instanceof Error ? defect.message : String(defect);
+
+// Fold one live frame into a state update, and flag terminal frames. Terminal
+// frames leave the connection untouched here; runTarget sets the terminal-specific
+// status after classification so the policy lives in one place.
+function foldEvent(event: LivePickerEvent): {
+  readonly update?: (state: LiveState) => LiveState;
+  readonly terminal?: Terminal;
+} {
+  switch (event.kind) {
+    case "connecting":
+      return { update: setConnection({ status: "connecting", message: event.message }) };
+    case "reconnecting":
+      return { update: setConnection({ status: "reconnecting", message: event.message }) };
+    case "rows":
+      return {
+        update: () => ({
+          connection: {
+            status: "online",
+            message: rowsMessage(event.rows.length),
+            snapshot: event.snapshot,
+          },
+          rows: event.rows,
+        }),
+      };
+    case "offline":
+      return event.retrying
+        ? { update: setConnection({ status: "reconnecting", message: event.message }) }
+        : {
+            terminal: NO_DAEMON_RE.test(event.message)
+              ? { _tag: "NoDaemon", message: event.message }
+              : { _tag: "Recoverable", message: event.message },
+          };
+    case "shutdown":
+      // "daemon socket server is closing" — the daemon went away but a fresh latch
+      // attempt may reattach (e.g. a newer daemon took the socket).
+      return { terminal: { _tag: "Recoverable", message: event.message } };
+    case "fatal":
+      return {
+        terminal: NO_DAEMON_RE.test(event.message)
+          ? { _tag: "NoDaemon", message: event.message }
+          : { _tag: "Fatal", message: event.message },
+      };
+  }
+}
+
+// The live-connection lifecycle. It owns a SubscriptionRef of the connection state
+// (the single source the UI observes) and a supervised fiber that subscribes,
+// folds frames, and re-arms per the latch policy. UI/profile changes drive it
+// through configure/reconnect/start — there is no other coupling to App state.
+export class LiveConnection extends Effect.Service<LiveConnection>()(
+  "desktop/LiveConnection",
+  {
+    dependencies: [TauriIpc.Default, LiveConnectionConfig.Default],
+    scoped: Effect.gen(function* () {
+      const tauri = yield* TauriIpc;
+      const { backoff } = yield* LiveConnectionConfig;
+      const stateRef = yield* SubscriptionRef.make<LiveState>(INITIAL_STATE);
+      const targetRef = yield* SubscriptionRef.make<Target>(INITIAL_TARGET);
+      const epochRef = yield* Ref.make<number>(seedEpoch());
+
+      const nextEpoch = Effect.gen(function* () {
+        const epoch = yield* Ref.updateAndGet(epochRef, (n) => n + 1);
+        yield* Effect.sync(() => {
+          try {
+            window.localStorage.setItem(LIVE_EPOCH_STORAGE_KEY, String(epoch));
+          } catch {
+            // Persistence is best-effort; monotonicity within this page still holds.
+          }
+        });
+        return epoch;
+      });
+
+      // Drain the live queue for one subscription (epoch), reflecting each frame into
+      // the state ref, until a terminal frame is seen. Frames from a superseded epoch
+      // (a late worker after a re-arm/switch) are dropped.
+      const consumeUntilTerminal = (
+        queue: Queue.Dequeue<LivePickerEnvelope>,
+        epoch: number,
+      ): Effect.Effect<ConsumeResult> =>
+        Effect.gen(function* () {
+          let online = false;
+          while (true) {
+            const envelope = yield* Queue.take(queue);
+            if (envelope.epoch !== epoch) {
+              continue;
+            }
+            // A rows frame means a daemon answered: latch any later terminal as a
+            // post-connection loss, not a never-connected Start refusal.
+            if (envelope.kind === "rows") {
+              online = true;
+            }
+            const outcome = foldEvent(envelope);
+            if (outcome.update) {
+              yield* SubscriptionRef.update(stateRef, outcome.update);
+            }
+            if (outcome.terminal) {
+              return { terminal: outcome.terminal, online };
+            }
+          }
+        });
+
+      // Run one target to completion (it loops forever, re-arming) until the
+      // supervisor's `switch` interrupts it for a newer target. Can fail with an
+      // IpcError if the event listener (tauri.liveEvents) cannot be installed;
+      // superviseTarget turns that into a fatal state rather than letting it
+      // propagate and kill the supervisor.
+      const runTarget = (target: Target): Effect.Effect<never, IpcError> =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            if (!target.enabled || target.settings === null) {
+              yield* SubscriptionRef.set(stateRef, {
+                connection: { status: "connecting", message: "Waiting for a source" },
+                rows: [],
+              });
+              return yield* Effect.never;
+            }
+            const settings = target.settings;
+            // One listener for the whole target; awaited so it is live before we
+            // start the first subscription (no early frame missed).
+            const queue = yield* tauri.liveEvents;
+
+            let first = true;
+            while (true) {
+              const epoch = yield* nextEpoch;
+              const autoStart = first && target.autoStart;
+              yield* SubscriptionRef.update(
+                stateRef,
+                setConnection(
+                  first
+                    ? { status: "connecting", message: "Connecting to agentscan" }
+                    : { status: "reconnecting", message: "Reconnecting to agentscan" },
+                ),
+              );
+
+              // acquireUseRelease pairs the worker start with its stop so the epoch is
+              // ALWAYS torn down — on a terminal frame, an error, OR interruption.
+              // Crucially, acquire is uninterruptible: if a target switch interrupts us
+              // while startLivePicker is still in flight, the start completes (the Rust
+              // invoke can't be cancelled mid-IPC anyway) and THEN release stops that
+              // epoch, instead of leaking a worker the switch left with no cleanup.
+              const { terminal: rawTerminal, online }: ConsumeResult =
+                yield* Effect.acquireUseRelease(
+                  // acquire: install the worker. Capture (don't discard) the start error —
+                  // a rejection means the worker couldn't be installed at all (an IPC/
+                  // command-layer failure, distinct from the daemon-state frames it streams).
+                  tauri.startLivePicker({ settings, epoch, autoStart }).pipe(
+                    Effect.as<string | null>(null),
+                    Effect.catchAll((error) => Effect.succeed<string | null>(error.message)),
+                  ),
+                  // use: drain frames until terminal, unless the worker never installed.
+                  (startError) =>
+                    startError === null
+                      ? consumeUntilTerminal(queue, epoch)
+                      : // Failing to even install the worker is an actionable transport
+                        // error, not a transient daemon blip — surface the real message
+                        // (with a Reconnect action) rather than fast-looping forever on a
+                        // generic "Unable to start" with the cause swallowed. It never
+                        // reached online, so online:false.
+                        Effect.succeed<ConsumeResult>({
+                          terminal: { _tag: "Fatal", message: startError },
+                          online: false,
+                        }),
+                  // release: stop this epoch's worker (idempotent/ignored if it never
+                  // installed). Runs after acquire completed, so the interrupted-start race
+                  // can't orphan a subscription.
+                  () => tauri.stopLivePicker(epoch).pipe(Effect.ignore),
+                );
+
+              // NoDaemon means "we latched and found no daemon — offer Start". Promote it
+              // to Fatal ONLY for a refusal of our OWN explicit start: autoStart set AND we
+              // never reached online, i.e. the daemon refused to come up at all (macOS
+              // codesign/trust; lifecycle.rs emits the same "auto-start is disabled" text).
+              // Surfacing the real reason beats re-offering the Start the user already
+              // pressed. But once the worker HAS connected (online), a later "auto-start is
+              // disabled" is the Rust worker's own latch-only retry (auto_start_for_attempt
+              // only honors the first attempt) missing the daemon — a genuine no-daemon.
+              // Keep it NoDaemon so the slow auto-latch poll continues instead of wedging on
+              // fatal. A latch re-arm (autoStart=false) is always a genuine no-daemon too.
+              const terminal: Terminal =
+                rawTerminal._tag === "NoDaemon" && autoStart && !online
+                  ? { _tag: "Fatal", message: rawTerminal.message }
+                  : rawTerminal;
+
+              if (terminal._tag === "Fatal") {
+                yield* SubscriptionRef.set(stateRef, {
+                  connection: { status: "fatal", message: terminal.message },
+                  rows: [],
+                });
+                // Stop re-arming; a manual reconnect/configure makes a new target.
+                return yield* Effect.never;
+              }
+
+              if (terminal._tag === "NoDaemon") {
+                yield* SubscriptionRef.set(stateRef, {
+                  connection: { status: "noDaemon", message: terminal.message },
+                  rows: [],
+                });
+                yield* Effect.sleep(backoff.noDaemon);
+              } else {
+                yield* SubscriptionRef.update(
+                  stateRef,
+                  setConnection({ status: "reconnecting", message: terminal.message }),
+                );
+                yield* Effect.sleep(backoff.recoverable);
+              }
+              first = false;
+            }
+          }),
+        );
+
+      // Surface a fatal state and PARK, so an unexpected failure/defect never tears
+      // the supervisor down (a dead supervisor would strand every later configure/
+      // reconnect/start with no consumer, wedging the dock with no recovery). Parking
+      // on Effect.never keeps the fiber alive so the next target switch re-arms us.
+      const parkFatal = (message: string): Effect.Effect<never> =>
+        Effect.zipRight(
+          SubscriptionRef.set(stateRef, {
+            connection: { status: "fatal", message },
+            rows: [],
+          }),
+          Effect.never,
+        );
+
+      // Wrap each target run so a failure (the event listener failing to install) or
+      // an unexpected defect inside runTarget is parked as fatal. catchAll +
+      // catchAllDefect deliberately do NOT catch interruption, so the supervisor's
+      // `switch` on a new target still cancels this run cleanly rather than being
+      // swallowed and flashed as a spurious fatal.
+      const superviseTarget = (target: Target): Effect.Effect<never> =>
+        runTarget(target).pipe(
+          Effect.catchAll((error) => parkFatal(error.message)),
+          Effect.catchAllDefect((defect) => parkFatal(defectMessage(defect))),
+        );
+
+      // Supervisor: each distinct target interrupts and replaces the running one.
+      // Stream.changes dedupes the same-reference target an idempotent configure
+      // returns, so only real changes (configure to a new runner, reconnect, start)
+      // re-arm.
+      yield* targetRef.changes.pipe(
+        Stream.changes,
+        Stream.flatMap((target) => Stream.fromEffect(superviseTarget(target)), {
+          switch: true,
+        }),
+        Stream.runDrain,
+        Effect.forkScoped,
+      );
+
+      return {
+        state: stateRef,
+        // Re-target on a profile/preflight change. Keying on runnerKey + enabled
+        // means an idempotent call returns the same reference and is deduped.
+        configure: (input: ConfigureInput) =>
+          SubscriptionRef.update(targetRef, (current) =>
+            current.runnerKey === input.runnerKey && current.enabled === input.enabled
+              ? current
+              : {
+                  gen: current.gen + 1,
+                  enabled: input.enabled,
+                  settings: input.settings,
+                  runnerKey: input.runnerKey,
+                  autoStart: false,
+                },
+          ),
+        // Re-arm now (latch only) — used by the Refresh button and the fatal-state
+        // Reconnect action.
+        reconnect: SubscriptionRef.update(targetRef, (current) => ({
+          ...current,
+          gen: current.gen + 1,
+          autoStart: false,
+        })),
+        // The only path that may spawn a daemon — the "Start agentscan" action.
+        start: SubscriptionRef.update(targetRef, (current) => ({
+          ...current,
+          gen: current.gen + 1,
+          autoStart: true,
+        })),
+      };
+    }),
+  },
+) {}
+
+function seedEpoch(): number {
+  let base = Date.now();
+  try {
+    // `window` is dereferenced INSIDE this try on purpose. Under Vitest's node
+    // environment (and any non-DOM host) the bare `window` throws a ReferenceError;
+    // the catch below swallows it so service construction still succeeds and seeds
+    // from Date.now(). Do not hoist this access out of the try.
+    const stored = Number.parseInt(
+      window.localStorage.getItem(LIVE_EPOCH_STORAGE_KEY) ?? "",
+      10,
+    );
+    if (Number.isFinite(stored) && stored >= base) {
+      base = stored;
+    }
+  } catch {
+    // localStorage unavailable (or running under tests); Date.now() still seeds it.
+  }
+  return base;
+}

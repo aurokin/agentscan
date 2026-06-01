@@ -276,6 +276,15 @@ Implications:
 
 - desktop code owns host/profile selection, process supervision, stdout/stderr
   handling, reconnect policy, rendering, global hotkeys, and error presentation
+- the desktop reconnect policy is **latch-only**: the dock attaches to an
+  existing daemon (`subscribe --no-auto-start`) and auto-reconnects with backoff
+  when a recoverable close (daemon restart / socket superseded) ends the stream,
+  but never starts a daemon on its own. A missing daemon surfaces a `noDaemon`
+  state with an explicit "Start agentscan" action — the only path that passes
+  `auto_start: true`. This also makes app launch latch-only (no auto-start at
+  startup). The policy and its connection state machine live in the Effect
+  `LiveConnection` service (`desktop/src/effect/`), which is the single owner of
+  the live connection lifecycle the dock observes.
 - the machine that owns tmux also owns `agentscan` daemon lifecycle,
   classification, picker rows, hotkey actions, and focus actions
 - remote desktop support is SSH command execution around documented JSON/JSONL

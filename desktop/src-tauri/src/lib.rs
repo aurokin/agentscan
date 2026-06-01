@@ -272,9 +272,13 @@ fn start_live_picker(
     app: tauri::AppHandle,
     settings: Option<DesktopRunnerSettings>,
     epoch: u64,
+    // Latch policy: the desktop owns daemon lifecycle, so reconnect/latch attempts
+    // pass `false` (subscribe with `--no-auto-start`, connecting only if a daemon is
+    // already running). Only an explicit user "Start agentscan" passes `true`.
+    auto_start: bool,
 ) -> Result<(), String> {
     let runner = AgentscanRunner::from_settings(settings);
-    start_live_picker_with_runner(app, runner, epoch)
+    start_live_picker_with_runner(app, runner, epoch, auto_start)
 }
 
 #[tauri::command]
@@ -742,6 +746,7 @@ fn start_live_picker_with_runner(
     app: tauri::AppHandle,
     runner: AgentscanRunner,
     epoch: u64,
+    auto_start: bool,
 ) -> Result<(), String> {
     // Hold the start lock across the whole stop+spawn+install so overlapping
     // starts can't interleave; the loser would otherwise see a supervisor
@@ -777,7 +782,9 @@ fn start_live_picker_with_runner(
     let worker_child = Arc::clone(&child);
     let worker = thread::Builder::new()
         .name("agentscan-live-picker".to_owned())
-        .spawn(move || run_live_picker_worker(app, runner, worker_stop, worker_child, epoch))
+        .spawn(move || {
+            run_live_picker_worker(app, runner, worker_stop, worker_child, epoch, auto_start)
+        })
         .map_err(|error| format!("Unable to start live picker worker: {error}"))?;
 
     *supervisor = Some(LivePickerSupervisor {
@@ -839,8 +846,15 @@ fn run_live_picker_worker(
     stop: Arc<AtomicBool>,
     child_slot: Arc<Mutex<Option<Child>>>,
     epoch: u64,
+    auto_start: bool,
 ) {
     let mut has_connected = false;
+    // Only the first subscribe attempt of this worker may honor an explicit
+    // "Start agentscan" (auto_start=true). Every internal retry latches
+    // (--no-auto-start) so the desktop's latch-only recovery policy holds even
+    // across this loop, which the TS LiveConnection service can't see — a retry
+    // must never silently spawn a daemon the user didn't ask for.
+    let mut attempted = false;
 
     while !stop.load(Ordering::SeqCst) {
         if has_connected {
@@ -862,7 +876,16 @@ fn run_live_picker_worker(
             );
         }
 
-        match run_live_picker_subscription(&app, &runner, &stop, &child_slot, epoch) {
+        let attempt_auto_start = auto_start_for_attempt(auto_start, attempted);
+        attempted = true;
+        match run_live_picker_subscription(
+            &app,
+            &runner,
+            &stop,
+            &child_slot,
+            epoch,
+            attempt_auto_start,
+        ) {
             LivePickerWorkerExit::Stopped | LivePickerWorkerExit::Shutdown => break,
             LivePickerWorkerExit::Fatal => break,
             LivePickerWorkerExit::Retry => {
@@ -891,14 +914,33 @@ enum LivePickerWorkerExit {
     Stopped,
 }
 
+// Subscribe argv for the live worker. `--no-auto-start` is appended when the
+// desktop wants to *latch* onto an already-running daemon without spawning one;
+// only an explicit user "Start agentscan" requests auto-start (no flag).
+fn subscribe_args(auto_start: bool) -> Vec<&'static str> {
+    let mut args = vec!["subscribe", "--format", "json"];
+    if !auto_start {
+        args.push("--no-auto-start");
+    }
+    args
+}
+
+// Whether a given worker subscribe attempt may auto-start the daemon: only the
+// first attempt, and only when an explicit "Start agentscan" requested it. All
+// internal retries latch, so recovery never spawns a daemon on its own.
+fn auto_start_for_attempt(requested: bool, already_attempted: bool) -> bool {
+    requested && !already_attempted
+}
+
 fn run_live_picker_subscription(
     app: &tauri::AppHandle,
     runner: &AgentscanRunner,
     stop: &AtomicBool,
     child_slot: &Arc<Mutex<Option<Child>>>,
     epoch: u64,
+    auto_start: bool,
 ) -> LivePickerWorkerExit {
-    let mut command = match agentscan_command(runner, &["subscribe", "--format", "json"]) {
+    let mut command = match agentscan_command(runner, &subscribe_args(auto_start)) {
         Ok(command) => command,
         Err(error) => {
             let message = classify_desktop_failure(runner, "subscribe", &error);
@@ -1758,6 +1800,27 @@ mod tests {
                 kind: "local"
             }]
         );
+    }
+
+    #[test]
+    fn subscribe_args_appends_no_auto_start_when_latching() {
+        // Auto-start enabled (explicit "Start agentscan"): no flag, daemon may spawn.
+        assert_eq!(subscribe_args(true), vec!["subscribe", "--format", "json"]);
+        // Latch-only (reconnect/launch): never spawn a daemon, only attach to one.
+        assert_eq!(
+            subscribe_args(false),
+            vec!["subscribe", "--format", "json", "--no-auto-start"]
+        );
+    }
+
+    #[test]
+    fn auto_start_only_honored_on_first_worker_attempt() {
+        // Explicit "Start agentscan": the first attempt auto-starts, every retry latches.
+        assert!(auto_start_for_attempt(true, false));
+        assert!(!auto_start_for_attempt(true, true));
+        // Latch-only target: stays latch-only on the first attempt and all retries.
+        assert!(!auto_start_for_attempt(false, false));
+        assert!(!auto_start_for_attempt(false, true));
     }
 
     #[test]
