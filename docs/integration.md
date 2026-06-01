@@ -115,6 +115,12 @@ normalizes key case, resolves the key against the current picker model, and
 delegates focus through the same pane validation and tmux focus behavior as
 `agentscan focus`.
 
+After a successful focus switch, `agentscan focus`, `agentscan hotkey`, and the
+terminal TUI send a best-effort event to the daemon. This event does not set
+state directly; it asks the daemon to re-read tmux and publish a fresh snapshot
+so `subscribe` consumers can update focused-pane UI without waiting for the next
+tmux control-mode notification or reconcile tick.
+
 Both commands are daemon-backed by default and support `--refresh` for direct
 tmux recovery. `hotkeys` also supports `--all`; `hotkey` accepts `--all` when a
 binding intentionally targets a picker model that includes non-agent panes.
