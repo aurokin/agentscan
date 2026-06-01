@@ -416,6 +416,107 @@ p {
   }
 }
 
+/* Horizontal dock orientation. When the window is wider than tall (data-orientation
+   is set from the window's aspect ratio in App.tsx), the picker keeps the same
+   components but flips its layout axis: groups and their agent rows flow
+   left-to-right and the scroll runs horizontally. Agents become chips, and the
+   topbar/bottombar collapse into a compact band (both below). Settings can't fit a
+   thin bar, so opening it re-docks to the vertical strip (see openSettings). */
+.sidebar[data-orientation="horizontal"] {
+  flex-direction: row;
+}
+.sidebar[data-orientation="horizontal"] .picker-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.sidebar[data-orientation="horizontal"] .picker-groups {
+  flex-direction: row;
+  /* Center each group block in the bar's short height instead of top-biasing it. */
+  align-items: center;
+}
+.sidebar[data-orientation="horizontal"] .agent-list {
+  flex-direction: row;
+  gap: 6px;
+}
+/* .picker-group stays a column on purpose so each group reads as its header above
+   a horizontal strip of that group's agents, not the header floating to its left. */
+
+/* Horizontal agents render as bounded chips: status dot + provider logo + a
+   truncating title in a subtle outlined pill, so each reads as a discrete item in
+   the strip. flex (over the vertical grid) lets the label ellipsize against the
+   chip's max-width; hover/selected/live reuse the shared agent-row states. */
+.sidebar[data-orientation="horizontal"] .agent-row {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 6px;
+  max-width: 200px;
+  border: 1px solid var(--border);
+}
+/* Only the label absorbs the max-width squeeze; the dot, logo, and key badge keep
+   their size so the title is the single thing that ellipsizes. */
+.sidebar[data-orientation="horizontal"] .agent-row .status-dot,
+.sidebar[data-orientation="horizontal"] .agent-row .provider-logo,
+.sidebar[data-orientation="horizontal"] .agent-row kbd {
+  flex: 0 0 auto;
+}
+/* Declutter the chip: drop the model suffix and the leading ⌃ glyph, keeping just
+   the number as a slim jump affordance. The full hotkey still shows in the vertical
+   list and the row tooltip. */
+.sidebar[data-orientation="horizontal"] .agent-suffix {
+  display: none;
+}
+.sidebar[data-orientation="horizontal"] .agent-row .kbd-mod {
+  display: none;
+}
+
+/* Chrome collapses into the band: a compact fixed-width search on the leading edge
+   and the source + settings controls on the trailing edge. The vertical layout's
+   bottombar top-border becomes a left divider between the chip strip and the right
+   controls. Both ends stay content-width (flex 0 0 auto) so the chip strip in the
+   middle takes the slack. */
+.sidebar[data-orientation="horizontal"] .topbar {
+  padding: 8px 10px;
+}
+.sidebar[data-orientation="horizontal"] .search-field {
+  flex: 0 0 auto;
+  width: 170px;
+}
+.sidebar[data-orientation="horizontal"] .bottombar {
+  padding: 8px 10px;
+  border-top: none;
+  border-left: 1px solid var(--border);
+}
+.sidebar[data-orientation="horizontal"] .source-switcher {
+  flex: 0 0 auto;
+  max-width: 160px;
+}
+/* The trigger re-docks into settings here rather than popping the inline menu, so
+   drop the caret that would imply a dropdown. */
+.sidebar[data-orientation="horizontal"] .source-caret {
+  display: none;
+}
+/* The multi-client notice is an informational full-width block authored for the
+   vertical strip; it doesn't fit the bar and isn't an error or staleness signal, so
+   drop it here — it returns verbatim in the vertical strip. */
+.sidebar[data-orientation="horizontal"] .client-warning {
+  display: none;
+}
+/* Live-connection problems (connecting/reconnecting/offline/fatal) and activation
+   failures must stay visible even in the bar — the footer dot only reflects CLI
+   preflight, not the live picker — but as compact, centered, single-line pills rather
+   than stretched full-height columns. The live strip only renders off the "online"
+   state, so this pill appears only when something is actually wrong. */
+.sidebar[data-orientation="horizontal"] .live-strip,
+.sidebar[data-orientation="horizontal"] .inline-error {
+  flex: 0 0 auto;
+  align-self: center;
+  max-width: 240px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Provider brand logo (leading column). The empty variant reserves the column
    so rows without a known provider stay aligned with the rest. */
 .provider-logo {
@@ -771,6 +872,41 @@ kbd {
   border: 2px solid var(--border);
   border-top-color: var(--text-muted);
   animation: spin 0.8s linear infinite;
+}
+
+.boot-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Horizontal bar: lay the recovery out as a compact row so the heading, status, and the
+   only "Open settings" path fit the ~120px bar without clipping. No window resize is
+   involved, so an "auto" dock's orientation (derived from the window shape) is undisturbed. */
+.sidebar[data-orientation="horizontal"] .boot-state {
+  flex: 1 1 auto;
+  flex-direction: row;
+  gap: 16px;
+  padding: 12px 20px;
+}
+.sidebar[data-orientation="horizontal"] .boot-spinner,
+.sidebar[data-orientation="horizontal"] .boot-state button {
+  flex: 0 0 auto;
+}
+.sidebar[data-orientation="horizontal"] .boot-copy {
+  flex: 0 1 auto;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+  text-align: left;
+}
+.sidebar[data-orientation="horizontal"] .boot-state h1,
+.sidebar[data-orientation="horizontal"] .boot-state p {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---------- Settings ---------- */

@@ -3560,6 +3560,134 @@ fn opencode_pane_output_marks_new_build_splash_idle() {
 }
 
 #[test]
+fn opencode_pane_output_marks_wrapped_tip_splash_idle() {
+    let mut opencode = pane_output_status_pane(813, Provider::Opencode, "OpenCode");
+
+    classify::apply_pane_output_status_fallback(
+        &mut opencode,
+        concat!(
+            "┃\n",
+            "┃  Ask anything... \"What is the tech stack of this project?\"\n",
+            "┃\n",
+            "┃  Build · Kimi K2.6 OpenCode Go\n",
+            "╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n",
+            "tab agents  ctrl+p commands\n",
+            "\n",
+            "● Tip Press ctrl+f in the session list to pin a session so it stays at the\n",
+            "      top\n",
+            "\n",
+            "\n",
+            "\n",
+            "~/code/agentscan:main                                  1.15.11\n",
+        ),
+    );
+
+    assert_eq!(opencode.status.kind, StatusKind::Idle);
+    assert_eq!(opencode.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn opencode_pane_output_does_not_treat_tip_followed_by_output_as_chrome() {
+    let mut opencode = pane_output_status_pane(814, Provider::Opencode, "OpenCode");
+
+    classify::apply_pane_output_status_fallback(
+        &mut opencode,
+        concat!(
+            "┃\n",
+            "┃  Ask anything... \"What is the tech stack of this project?\"\n",
+            "┃\n",
+            "┃  Build · Kimi K2.6 OpenCode Go\n",
+            "╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n",
+            "tab agents  ctrl+p commands\n",
+            "\n",
+            "● Tip Press ctrl+f in the session list to pin a session so it stays at the\n",
+            "      cargo test\n",
+            "\n",
+            "~/code/agentscan:main                                  1.15.11\n",
+        ),
+    );
+
+    assert_eq!(opencode.status.kind, StatusKind::Unknown);
+    assert_eq!(opencode.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn opencode_pane_output_does_not_treat_ambiguous_tip_continuation_as_chrome() {
+    let mut opencode = pane_output_status_pane(815, Provider::Opencode, "OpenCode");
+
+    classify::apply_pane_output_status_fallback(
+        &mut opencode,
+        concat!(
+            "┃\n",
+            "┃  Ask anything... \"What is the tech stack of this project?\"\n",
+            "┃\n",
+            "┃  Build · Kimi K2.6 OpenCode Go\n",
+            "╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n",
+            "tab agents  ctrl+p commands\n",
+            "\n",
+            "\n",
+            "\n",
+            "\n",
+            "\n",
+            "\n",
+            "● Tip Press ctrl+f in the session list to pin a session so it stays at the\n",
+            "      cargo test\n",
+        ),
+    );
+
+    assert_eq!(opencode.status.kind, StatusKind::Unknown);
+    assert_eq!(opencode.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn opencode_pane_output_does_not_treat_top_after_other_tip_as_chrome() {
+    let mut opencode = pane_output_status_pane(816, Provider::Opencode, "OpenCode");
+
+    classify::apply_pane_output_status_fallback(
+        &mut opencode,
+        concat!(
+            "┃\n",
+            "┃  Ask anything... \"What is the tech stack of this project?\"\n",
+            "┃\n",
+            "┃  Build · Kimi K2.6 OpenCode Go\n",
+            "╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n",
+            "tab agents  ctrl+p commands\n",
+            "\n",
+            "● Tip Read the project notes before changing behavior\n",
+            "      top\n",
+            "~/code/agentscan:main                                  1.15.11\n",
+        ),
+    );
+
+    assert_eq!(opencode.status.kind, StatusKind::Unknown);
+    assert_eq!(opencode.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn opencode_pane_output_does_not_treat_top_without_spacer_as_chrome() {
+    let mut opencode = pane_output_status_pane(817, Provider::Opencode, "OpenCode");
+
+    classify::apply_pane_output_status_fallback(
+        &mut opencode,
+        concat!(
+            "┃\n",
+            "┃  Ask anything... \"What is the tech stack of this project?\"\n",
+            "┃\n",
+            "┃  Build · Kimi K2.6 OpenCode Go\n",
+            "╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n",
+            "tab agents  ctrl+p commands\n",
+            "\n",
+            "● Tip Press ctrl+f in the session list to pin a session so it stays at the\n",
+            "      top\n",
+            "~/code/agentscan:main                                  1.15.11\n",
+        ),
+    );
+
+    assert_eq!(opencode.status.kind, StatusKind::Unknown);
+    assert_eq!(opencode.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
 fn opencode_pane_output_marks_new_build_active_session_idle() {
     // After a turn completes the placeholder is gone AND the live build drops the `tab agents`
     // hint, folding the command bar into the bottom status bar with token/cost usage stats. The
