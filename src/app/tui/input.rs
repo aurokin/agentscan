@@ -54,7 +54,9 @@ pub(super) fn handle_key_event(
     let focus_target = tmux::resolve_focus_target(target_pane_id, None)?;
     if focus_target.pane_exists {
         match tmux::focus_tmux_pane(target_pane_id, focus_target.client_tty.as_deref())? {
-            tmux::FocusTmuxPaneResult::Focused => {}
+            tmux::FocusTmuxPaneResult::Focused => {
+                daemon::emit_pane_focus_event_best_effort(target_pane_id);
+            }
             tmux::FocusTmuxPaneResult::Missing => {
                 tmux::display_tmux_message(
                     focus_target.client_tty.as_deref(),

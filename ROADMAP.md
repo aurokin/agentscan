@@ -171,6 +171,11 @@ Implications:
   `#{window_active}` so focus changes trigger a re-snapshot. The backend reports
   tmux's raw layered state; collapsing multiple attached sessions to one global
   active pane is a client concern, not a backend one.
+- focus actions from `agentscan focus`, `agentscan hotkey`, and the terminal TUI
+  also emit a best-effort daemon client event after tmux confirms the switch. The
+  daemon still re-reads tmux as the source of truth, but the client event forces
+  a fresh snapshot publication even when pane metadata is materially unchanged,
+  so live consumers can recompute the focused pane immediately.
 
 ### Detection Policy
 

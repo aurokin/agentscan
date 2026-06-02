@@ -32,6 +32,14 @@ fn socket_hello(mode: ipc::ClientMode) -> ipc::ClientFrame {
     }
 }
 
+fn socket_client_event(event: ipc::ClientEventFrame) -> ipc::ClientFrame {
+    ipc::ClientFrame::ClientEvent {
+        protocol_version: ipc::WIRE_PROTOCOL_VERSION,
+        snapshot_schema_version: CACHE_SCHEMA_VERSION,
+        event,
+    }
+}
+
 fn exchange_daemon_frames(
     state: daemon::DaemonSocketState,
     hello: ipc::ClientFrame,
@@ -551,6 +559,46 @@ fn daemon_socket_observability_event_ring_is_bounded() {
     }
 
     assert_eq!(state.test_recent_event_count(), 256);
+}
+
+#[test]
+fn daemon_socket_client_event_is_enqueued() {
+    let state = daemon::DaemonSocketState::new();
+    state
+        .publish_initial_snapshot(empty_socket_snapshot("2026-05-03T00:00:00Z"))
+        .expect("snapshot should publish");
+    let receiver = state.test_install_client_event_sender();
+    let event = ipc::ClientEventFrame::PaneFocus {
+        pane_id: "%42".to_string(),
+    };
+
+    let frames = exchange_daemon_frames(state.clone(), socket_client_event(event.clone()));
+
+    assert_eq!(frames, vec![hello_ack_frame()]);
+    assert_eq!(daemon::test_recv_client_event(&receiver), Some(event));
+}
+
+#[test]
+fn daemon_socket_client_event_reports_not_ready_without_runtime_queue() {
+    let state = daemon::DaemonSocketState::new();
+
+    let frames = exchange_daemon_frames(
+        state,
+        socket_client_event(ipc::ClientEventFrame::PaneFocus {
+            pane_id: "%42".to_string(),
+        }),
+    );
+
+    assert!(matches!(
+        frames.as_slice(),
+        [
+            ipc::DaemonFrame::HelloAck { .. },
+            ipc::DaemonFrame::Unavailable {
+                reason: ipc::UnavailableReason::DaemonNotReady,
+                ..
+            },
+        ]
+    ));
 }
 
 #[test]

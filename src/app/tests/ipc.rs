@@ -231,6 +231,31 @@ fn ipc_frame_accepts_lifecycle_status_mode() {
 }
 
 #[test]
+fn ipc_frame_accepts_client_event() {
+    let bytes = br#"{"type":"client_event","protocol_version":1,"snapshot_schema_version":5,"event":{"kind":"pane_focus","pane_id":"%42"}}"#;
+
+    let decoded = ipc::decode_client_frame(bytes).expect("client event should decode");
+
+    assert_eq!(
+        decoded,
+        ipc::ClientFrame::ClientEvent {
+            protocol_version: ipc::WIRE_PROTOCOL_VERSION,
+            snapshot_schema_version: CACHE_SCHEMA_VERSION,
+            event: ipc::ClientEventFrame::PaneFocus {
+                pane_id: "%42".to_string()
+            },
+        }
+    );
+    assert_eq!(
+        ipc::validate_client_hello(&decoded),
+        ipc::DaemonFrame::HelloAck {
+            protocol_version: ipc::WIRE_PROTOCOL_VERSION,
+            snapshot_schema_version: CACHE_SCHEMA_VERSION,
+        }
+    );
+}
+
+#[test]
 fn ipc_lifecycle_status_frame_roundtrips() {
     let frame = ipc::DaemonFrame::LifecycleStatus {
         status: Box::new(ipc::LifecycleStatusFrame {

@@ -53,8 +53,9 @@ pub(crate) use events::{
 };
 pub(crate) use lifecycle::{
     AutoStartPolicy, DaemonSnapshotError, daemon_restart, daemon_run, daemon_start, daemon_status,
-    daemon_stop, snapshot_via_socket, snapshot_via_socket_path_with_start_command,
-    spawn_subscription_worker, stream_subscription_events_json,
+    daemon_stop, emit_pane_focus_event_best_effort, snapshot_via_socket,
+    snapshot_via_socket_path_with_start_command, spawn_subscription_worker,
+    stream_subscription_events_json,
 };
 use lifecycle::{DaemonLifecycleGuard, LifecyclePaths, remove_stale_socket_if_present};
 #[cfg(test)]
@@ -85,7 +86,7 @@ use socket_server::{
 };
 #[cfg(test)]
 pub(crate) use socket_server::{
-    SubscriberMailbox, handle_daemon_socket_client, refuse_server_busy,
+    SubscriberMailbox, handle_daemon_socket_client, refuse_server_busy, test_recv_client_event,
 };
 
 const CONTROL_MODE_ACTIVE_RECONCILE_INTERVAL: Duration = Duration::from_secs(30);
@@ -501,6 +502,7 @@ enum RefreshRequest<'a> {
     IntervalReconcile,
     TimeoutReconcile,
     ControlModeLines(&'a [ControlModeLine]),
+    ClientEvent(&'a ipc::ClientEventFrame),
     SettleRecapture,
 }
 
@@ -540,6 +542,12 @@ impl ObservabilityDetail {
     }
 }
 
+fn client_event_detail(event: &ipc::ClientEventFrame) -> String {
+    match event {
+        ipc::ClientEventFrame::PaneFocus { pane_id } => format!("pane_focus:{pane_id}"),
+    }
+}
+
 impl RefreshObservability {
     fn from_request(request: &RefreshRequest<'_>) -> Self {
         match request {
@@ -575,6 +583,14 @@ impl RefreshObservability {
                     control_lines,
                 }
             }
+            RefreshRequest::ClientEvent(event) => Self {
+                source: "client_event",
+                detail: ObservabilityDetail::Owned(client_event_detail(event)),
+                refresh: "full_snapshot",
+                should_record: true,
+                control_sources: Vec::new(),
+                control_lines: Vec::new(),
+            },
             RefreshRequest::SettleRecapture => Self {
                 source: "pane_output_settle",
                 detail: ObservabilityDetail::Static("busy_recheck"),
@@ -784,6 +800,7 @@ impl<S: StartupActions> DaemonRuntime<S> {
             tmux_client,
             startup.primary_session_id_for_status(),
         )?;
+        socket_state.set_client_event_sender(control_mode.event_sender());
         let mut telemetry = RuntimeTelemetry::default();
         let subscriber_reconcile = reconcile_subscribers(&startup, &mut control_mode);
         telemetry.record_subscriber_reconcile(subscriber_reconcile);
@@ -869,6 +886,12 @@ impl<S: StartupActions> DaemonRuntime<S> {
             match self.control_mode.recv_timeout(timeout) {
                 Ok(line) => {
                     let line = line?;
+                    if let Some(event) = line.emitted_client_event() {
+                        if self.apply_refresh_request(RefreshRequest::ClientEvent(&event))? {
+                            break;
+                        }
+                        continue;
+                    }
                     let lines = self.collect_control_mode_batch(line)?;
                     let session_set_changed = batch_changed_session_set(&lines);
                     if self.apply_refresh_request(RefreshRequest::ControlModeLines(&lines))? {
@@ -972,7 +995,14 @@ impl<S: StartupActions> DaemonRuntime<S> {
                 .control_mode
                 .recv_timeout(deadline.saturating_duration_since(now))
             {
-                Ok(line) => lines.push(line?),
+                Ok(line) => {
+                    let line = line?;
+                    if line.is_client_event() {
+                        self.control_mode.defer_line(line);
+                        break;
+                    }
+                    lines.push(line);
+                }
                 Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {
                     break;
                 }
@@ -995,6 +1025,7 @@ impl<S: StartupActions> DaemonRuntime<S> {
                 SnapshotPublishContext::new("reconcile").with_detail("timeout"),
             )?,
             RefreshRequest::ControlModeLines(lines) => self.apply_control_mode_refresh(lines)?,
+            RefreshRequest::ClientEvent(event) => self.apply_client_event_refresh(event)?,
             RefreshRequest::SettleRecapture => self.apply_settle_recapture_refresh()?,
         };
         let publish_context = outcome.publish_context.take();
@@ -1243,6 +1274,32 @@ impl<S: StartupActions> DaemonRuntime<S> {
             self.update_runtime_telemetry();
         }
         Ok(outcome)
+    }
+
+    fn apply_client_event_refresh(
+        &mut self,
+        event: &ipc::ClientEventFrame,
+    ) -> Result<RefreshOutcome> {
+        match event {
+            ipc::ClientEventFrame::PaneFocus { .. } => {
+                let previous_snapshot = self.snapshot.clone();
+                let mut event_tmux_reads = self.control_mode.read_provider();
+                reconcile_full_snapshot(
+                    &mut self.snapshot,
+                    &mut event_tmux_reads,
+                    self.tmux_version.as_deref(),
+                    &mut self.pane_output_cache,
+                    self.disable_proc_fallback,
+                )?;
+                self.telemetry
+                    .record_reconcile_result(&previous_snapshot, &self.snapshot);
+                self.recover_broker_and_reconcile_if_needed()?;
+                Ok(RefreshOutcome::publish(
+                    SnapshotPublishContext::new("client_event")
+                        .with_detail(client_event_detail(event)),
+                ))
+            }
+        }
     }
 
     fn recover_broker_and_reconcile_if_needed(&mut self) -> Result<bool> {

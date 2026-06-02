@@ -67,6 +67,17 @@ pub(crate) enum ClientFrame {
         snapshot_schema_version: u32,
         mode: ClientMode,
     },
+    ClientEvent {
+        protocol_version: u32,
+        snapshot_schema_version: u32,
+        event: ClientEventFrame,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum ClientEventFrame {
+    PaneFocus { pane_id: String },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -389,35 +400,40 @@ pub(crate) fn resolve_socket_path_with_config(config: &SocketPathConfig) -> Resu
 }
 
 pub(crate) fn validate_client_hello(frame: &ClientFrame) -> DaemonFrame {
-    match frame {
+    let (protocol_version, snapshot_schema_version) = match frame {
         ClientFrame::Hello {
             protocol_version,
             snapshot_schema_version,
             mode: _,
-        } => {
-            if *protocol_version != WIRE_PROTOCOL_VERSION {
-                return DaemonFrame::Shutdown {
-                    reason: ShutdownReason::ProtocolMismatch,
-                    message: format!(
-                        "unsupported IPC protocol version {protocol_version} (expected {WIRE_PROTOCOL_VERSION})"
-                    ),
-                };
-            }
-
-            if *snapshot_schema_version != CACHE_SCHEMA_VERSION {
-                return DaemonFrame::Shutdown {
-                    reason: ShutdownReason::SchemaMismatch,
-                    message: format!(
-                        "unsupported snapshot schema version {snapshot_schema_version} (expected {CACHE_SCHEMA_VERSION})"
-                    ),
-                };
-            }
-
-            DaemonFrame::HelloAck {
-                protocol_version: WIRE_PROTOCOL_VERSION,
-                snapshot_schema_version: CACHE_SCHEMA_VERSION,
-            }
         }
+        | ClientFrame::ClientEvent {
+            protocol_version,
+            snapshot_schema_version,
+            event: _,
+        } => (*protocol_version, *snapshot_schema_version),
+    };
+
+    if protocol_version != WIRE_PROTOCOL_VERSION {
+        return DaemonFrame::Shutdown {
+            reason: ShutdownReason::ProtocolMismatch,
+            message: format!(
+                "unsupported IPC protocol version {protocol_version} (expected {WIRE_PROTOCOL_VERSION})"
+            ),
+        };
+    }
+
+    if snapshot_schema_version != CACHE_SCHEMA_VERSION {
+        return DaemonFrame::Shutdown {
+            reason: ShutdownReason::SchemaMismatch,
+            message: format!(
+                "unsupported snapshot schema version {snapshot_schema_version} (expected {CACHE_SCHEMA_VERSION})"
+            ),
+        };
+    }
+
+    DaemonFrame::HelloAck {
+        protocol_version: WIRE_PROTOCOL_VERSION,
+        snapshot_schema_version: CACHE_SCHEMA_VERSION,
     }
 }
 

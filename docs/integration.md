@@ -117,6 +117,12 @@ picker model, delegates focus through the same pane validation and tmux focus
 behavior as `agentscan focus`, and exits non-zero when the key is invalid,
 unassigned, stale, or cannot be focused.
 
+After a successful focus switch, `agentscan focus`, `agentscan hotkey`, and the
+terminal TUI send a best-effort event to the daemon. This event does not set
+state directly; it asks the daemon to re-read tmux and publish a fresh snapshot
+so `subscribe` consumers can update focused-pane UI without waiting for the next
+tmux control-mode notification or reconcile tick.
+
 Use `agentscan tmux hotkey <key>` from tmux key bindings. It uses the same
 picker and focus path, but reports action failures through `tmux
 display-message` and exits successfully so tmux does not open command output

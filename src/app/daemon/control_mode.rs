@@ -457,10 +457,11 @@ pub(crate) fn test_recent_dead_subscriber_tombstone_persists_without_new_dead() 
 pub(super) enum ControlModeLineSource {
     Primary { session_id: Option<Arc<str>> },
     Subscriber { session_id: Arc<str> },
+    ClientEvent { event: ipc::ClientEventFrame },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct ControlModeLine {
+pub(crate) struct ControlModeLine {
     pub(super) source: ControlModeLineSource,
     pub(super) line: String,
 }
@@ -470,8 +471,33 @@ impl ControlModeLine {
         Self { source, line }
     }
 
+    pub(super) fn client_event(event: ipc::ClientEventFrame) -> Self {
+        let line = match &event {
+            ipc::ClientEventFrame::PaneFocus { pane_id } => {
+                format!("%agentscan-client-event pane_focus {pane_id}")
+            }
+        };
+        Self {
+            source: ControlModeLineSource::ClientEvent { event },
+            line,
+        }
+    }
+
+    pub(super) fn emitted_client_event(&self) -> Option<ipc::ClientEventFrame> {
+        match &self.source {
+            ControlModeLineSource::ClientEvent { event } => Some(event.clone()),
+            ControlModeLineSource::Primary { .. } | ControlModeLineSource::Subscriber { .. } => {
+                None
+            }
+        }
+    }
+
     pub(super) fn is_subscriber(&self) -> bool {
         matches!(self.source, ControlModeLineSource::Subscriber { .. })
+    }
+
+    pub(super) fn is_client_event(&self) -> bool {
+        matches!(self.source, ControlModeLineSource::ClientEvent { .. })
     }
 
     pub(super) fn is_primary(&self) -> bool {
@@ -489,6 +515,12 @@ impl ControlModeLine {
             ControlModeLineSource::Subscriber { session_id } => ipc::ControlModeSourceFrame {
                 source: "subscriber".to_string(),
                 session_id: Some(session_id.to_string()),
+                line_count: 0,
+                event_count: 0,
+            },
+            ControlModeLineSource::ClientEvent { .. } => ipc::ControlModeSourceFrame {
+                source: "client_event".to_string(),
+                session_id: None,
                 line_count: 0,
                 event_count: 0,
             },
@@ -715,6 +747,14 @@ impl RunningTmuxControlModeClient {
         result
     }
 
+    pub(super) fn event_sender(&self) -> mpsc::Sender<Result<ControlModeLine>> {
+        self.line_tx.clone()
+    }
+
+    pub(super) fn defer_line(&mut self, line: ControlModeLine) {
+        self.deferred_lines.push_front(line);
+    }
+
     fn mark_line_seen(&mut self, line: &ControlModeLine) {
         let ControlModeLineSource::Subscriber { session_id } = &line.source else {
             return;
@@ -899,7 +939,7 @@ fn drain_control_mode_channel(
 ) {
     while let Ok(frame) = line_rx.try_recv() {
         if let Ok(line) = frame
-            && line.is_subscriber()
+            && (line.is_subscriber() || line.is_client_event())
         {
             deferred_lines.push_back(line);
         }
