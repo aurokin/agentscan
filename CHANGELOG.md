@@ -2,12 +2,31 @@
 
 ## Unreleased
 
+## 0.5.1 - 2026-06-02
+
 ### Added
 
+- Added configurable picker keys through the core `picker_keys` config setting.
+  The default 16-key order is preserved, while `hotkeys`, `hotkey`, the TUI,
+  and desktop picker surfaces now share the configured row keys.
 - Added `agentscan tmux hotkey <key>` for tmux key bindings. It uses the shared
   picker hotkey path but reports invalid, unassigned, stale, or unfocusable
   selections through `tmux display-message` and exits successfully so expected
   picker misses do not open tmux command output view.
+- Added best-effort daemon client focus events after successful focus actions so
+  live `subscribe` consumers can refresh focused-pane UI immediately.
+
+### Changed
+
+- Moved the desktop live picker lifecycle into the Effect `LiveConnection`
+  service. The dock now latches onto an existing daemon on launch/reconnect and
+  only auto-starts the daemon from the explicit "Start agentscan" action.
+
+### Fixed
+
+- Fixed desktop dock recovery after daemon shutdown or restart by separating
+  latch-only no-daemon states from recoverable reconnects and fatal start
+  failures.
 
 ## 0.5.0 - 2026-06-01
 
