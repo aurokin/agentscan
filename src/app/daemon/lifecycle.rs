@@ -41,6 +41,17 @@ enum SnapshotQuery {
     Unexpected(String),
 }
 
+enum ClientEventEmit {
+    Accepted,
+    NotRunning,
+    NotReady,
+    StartupFailed,
+    ServerClosing,
+    Incompatible,
+    Busy,
+    Unexpected,
+}
+
 // Quiet mode is consumed by the AUR-175 auto-start helper before command consumers are migrated.
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -700,6 +711,20 @@ fn open_daemon_client(
     operation: &str,
     close_write: bool,
 ) -> Result<DaemonClientOpen> {
+    let frame = ipc::ClientFrame::Hello {
+        protocol_version: ipc::WIRE_PROTOCOL_VERSION,
+        snapshot_schema_version: CACHE_SCHEMA_VERSION,
+        mode,
+    };
+    open_daemon_client_with_frame(socket_path, frame, operation, close_write)
+}
+
+fn open_daemon_client_with_frame(
+    socket_path: &Path,
+    frame: ipc::ClientFrame,
+    operation: &str,
+    close_write: bool,
+) -> Result<DaemonClientOpen> {
     let mut stream = match std::os::unix::net::UnixStream::connect(socket_path) {
         Ok(stream) => stream,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -727,12 +752,7 @@ fn open_daemon_client(
     stream
         .set_write_timeout(Some(CLIENT_WRITE_TIMEOUT))
         .with_context(|| format!("failed to set daemon {operation} write timeout"))?;
-    let hello = ipc::ClientFrame::Hello {
-        protocol_version: ipc::WIRE_PROTOCOL_VERSION,
-        snapshot_schema_version: CACHE_SCHEMA_VERSION,
-        mode,
-    };
-    if let Err(error) = stream.write_all(&ipc::encode_frame(&hello)?) {
+    if let Err(error) = stream.write_all(&ipc::encode_frame(&frame)?) {
         if let Some(reason) = daemon_hello_write_not_running_reason(&error, operation) {
             return Ok(DaemonClientOpen::NotRunning(reason));
         }
@@ -876,6 +896,60 @@ fn snapshot_once_from_socket(socket_path: &Path) -> Result<SnapshotQuery> {
             "daemon returned unexpected snapshot frame {other:?}"
         ))),
     }
+}
+
+fn emit_client_event_once(
+    socket_path: &Path,
+    event: ipc::ClientEventFrame,
+) -> Result<ClientEventEmit> {
+    let frame = ipc::ClientFrame::ClientEvent {
+        protocol_version: ipc::WIRE_PROTOCOL_VERSION,
+        snapshot_schema_version: CACHE_SCHEMA_VERSION,
+        event,
+    };
+    let mut reader = match open_daemon_client_with_frame(socket_path, frame, "client event", true)?
+    {
+        DaemonClientOpen::NotRunning(_) => {
+            return Ok(ClientEventEmit::NotRunning);
+        }
+        DaemonClientOpen::Connected(reader) => reader,
+    };
+    let Some(first_frame) = ipc::read_daemon_frame(&mut reader)? else {
+        return Ok(ClientEventEmit::Unexpected);
+    };
+    match classify_daemon_hello_frame(first_frame, "client event") {
+        DaemonHello::Busy(_) => Ok(ClientEventEmit::Busy),
+        DaemonHello::Rejected(_) | DaemonHello::Incompatible(_) => {
+            Ok(ClientEventEmit::Incompatible)
+        }
+        DaemonHello::Acked => match ipc::read_daemon_frame(&mut reader)? {
+            None => Ok(ClientEventEmit::Accepted),
+            Some(ipc::DaemonFrame::Unavailable {
+                reason: ipc::UnavailableReason::DaemonNotReady,
+                ..
+            }) => Ok(ClientEventEmit::NotReady),
+            Some(ipc::DaemonFrame::Unavailable {
+                reason: ipc::UnavailableReason::StartupFailed,
+                ..
+            }) => Ok(ClientEventEmit::StartupFailed),
+            Some(ipc::DaemonFrame::Unavailable {
+                reason: ipc::UnavailableReason::ServerClosing,
+                ..
+            }) => Ok(ClientEventEmit::ServerClosing),
+            Some(_) => Ok(ClientEventEmit::Unexpected),
+        },
+        DaemonHello::Unexpected(_) => Ok(ClientEventEmit::Unexpected),
+    }
+}
+
+pub(crate) fn emit_pane_focus_event_best_effort(pane_id: &str) {
+    let Ok(socket_path) = ipc::resolve_socket_path() else {
+        return;
+    };
+    let event = ipc::ClientEventFrame::PaneFocus {
+        pane_id: pane_id.to_string(),
+    };
+    let _ = emit_client_event_once(&socket_path, event);
 }
 
 pub(crate) fn spawn_subscription_worker(

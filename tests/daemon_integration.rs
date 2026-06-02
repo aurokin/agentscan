@@ -235,6 +235,63 @@ fn daemon_fans_out_live_updates_to_subscriber_socket() -> Result<()> {
 }
 
 #[test]
+fn focus_event_fans_out_snapshot_without_material_pane_change() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let pane_id = harness.start_session("focus-event-publish", "sleep 300")?;
+    let client = harness.attach_client("focus-event-publish")?;
+    let mut daemon = harness.start_daemon()?;
+    harness.wait_for_daemon_snapshot(&mut daemon, |snapshot| {
+        pane_from_snapshot(snapshot, &pane_id).is_some()
+    })?;
+
+    let mut stream = connect_agentscan_socket(&harness.agentscan_socket_path)?;
+    stream
+        .set_read_timeout(Some(DAEMON_TIMEOUT))
+        .context("failed to set subscriber socket read timeout")?;
+    writeln!(
+        stream,
+        "{}",
+        serde_json::json!({
+            "type": "hello",
+            "protocol_version": daemon_protocol_version(),
+            "snapshot_schema_version": snapshot_schema_version(),
+            "mode": "subscribe",
+        })
+    )
+    .context("failed to write daemon socket subscribe hello")?;
+
+    let mut reader = BufReader::new(
+        stream
+            .try_clone()
+            .context("failed to clone subscriber socket")?,
+    );
+    let ack = read_daemon_socket_json_line(&mut reader)?;
+    assert_eq!(ack["type"], "hello_ack");
+    let bootstrap = read_daemon_socket_json_line(&mut reader)?;
+    assert_eq!(bootstrap["type"], "snapshot");
+    validate_snapshot_json(&bootstrap["snapshot"])?;
+
+    harness.agentscan(["focus", "--client-tty", &client.tty, &pane_id])?;
+    let update = read_daemon_socket_json_line(&mut reader)?;
+    assert_eq!(update["type"], "snapshot");
+    validate_snapshot_json(&update["snapshot"])?;
+    assert!(
+        update["snapshot"]["panes"]
+            .as_array()
+            .context("focus event update panes were not an array")?
+            .iter()
+            .any(|pane| pane["pane_id"] == pane_id),
+        "focus event subscriber update did not include pane {pane_id}: {update}"
+    );
+
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .context("failed to close subscriber write side")?;
+    daemon.shutdown()?;
+    Ok(())
+}
+
+#[test]
 fn daemon_does_not_fan_out_noop_reconcile_to_subscriber_socket() -> Result<()> {
     let harness = TestHarness::new()?;
     let pane_id = harness.start_session("socket-noop-reconcile", "sleep 300")?;
@@ -2288,7 +2345,12 @@ fn serve_fake_snapshot(socket_path: &Path, snapshot: Value) -> FakeSnapshotServe
         writeln!(stream, "{ack}").expect("fake snapshot ack should write");
         writeln!(stream, "{frame}").expect("fake snapshot frame should write");
         stream.flush().expect("fake snapshot frame should flush");
-        assert_no_extra_fake_snapshot_connections(&listener, &thread_stop);
+        assert_no_unexpected_fake_snapshot_connections(
+            &listener,
+            &thread_stop,
+            protocol_version,
+            schema_version,
+        );
     });
     FakeSnapshotServer {
         stop,
@@ -2381,11 +2443,43 @@ fn accept_fake_snapshot_connection(listener: &UnixListener, stop: &AtomicBool) -
     }
 }
 
-fn assert_no_extra_fake_snapshot_connections(listener: &UnixListener, stop: &AtomicBool) {
+fn assert_no_unexpected_fake_snapshot_connections(
+    listener: &UnixListener,
+    stop: &AtomicBool,
+    protocol_version: u32,
+    schema_version: u32,
+) {
     while !stop.load(Ordering::SeqCst) {
         match listener.accept() {
-            Ok((_stream, _)) => {
-                panic!("fake snapshot daemon received an unexpected extra connection")
+            Ok((mut stream, _)) => {
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(8)))
+                    .expect("fake snapshot daemon event read timeout should set");
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(8)))
+                    .expect("fake snapshot daemon event write timeout should set");
+                let mut line = String::new();
+                BufReader::new(
+                    stream
+                        .try_clone()
+                        .expect("fake snapshot event stream should clone"),
+                )
+                .read_line(&mut line)
+                .expect("client event frame should read");
+                let frame: Value =
+                    serde_json::from_str(&line).expect("client event frame should be JSON");
+                assert_eq!(frame["type"], "client_event");
+                assert_eq!(frame["protocol_version"], protocol_version);
+                assert_eq!(frame["snapshot_schema_version"], schema_version);
+                assert_eq!(frame["event"]["kind"], "pane_focus");
+
+                let ack = serde_json::json!({
+                    "type": "hello_ack",
+                    "protocol_version": protocol_version,
+                    "snapshot_schema_version": schema_version
+                });
+                writeln!(stream, "{ack}").expect("fake client event ack should write");
+                stream.flush().expect("fake client event ack should flush");
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => sleep(POLL_INTERVAL),
             Err(error) => panic!("fake daemon snapshot accept failed: {error}"),

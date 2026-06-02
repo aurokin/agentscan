@@ -105,7 +105,10 @@ Multiple-client semantics (we optimize for one attached client):
 
 `is_focused` resolution is best-effort: any tmux error degrades to "no focused
 pane" and never fails the picker. It re-resolves on every `hotkeys` call, so it
-follows focus live as snapshot frames trigger picker-row refreshes.
+follows focus live as snapshot frames trigger picker-row refreshes. Successful
+focus actions emit a best-effort daemon client event after tmux confirms the
+switch; the daemon re-reads tmux and republishes a snapshot so this refresh does
+not have to wait for the next tmux notification.
 
 Each row also carries `attached_client_count`: the count of *interactive* clients
 attached to the tmux server, echoed on every row because the picker output is a

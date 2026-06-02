@@ -158,6 +158,7 @@ struct DaemonSocketStateInner {
     control_mode_broker: Option<ipc::ControlModeBrokerStatusFrame>,
     runtime_telemetry: Option<ipc::RuntimeTelemetryFrame>,
     recent_events: VecDeque<ipc::DaemonObservabilityEventFrame>,
+    client_event_tx: Option<mpsc::Sender<Result<ControlModeLine>>>,
     pending_handshakes: usize,
     subscribers: HashMap<SubscriberId, SubscriberMailbox>,
     next_subscriber_id: SubscriberId,
@@ -246,6 +247,7 @@ impl DaemonSocketState {
                 control_mode_broker: None,
                 runtime_telemetry: None,
                 recent_events: VecDeque::with_capacity(OBSERVABILITY_EVENT_RING_CAPACITY),
+                client_event_tx: None,
                 pending_handshakes: 0,
                 subscribers: HashMap::new(),
                 next_subscriber_id: 1,
@@ -469,12 +471,64 @@ impl DaemonSocketState {
         inner.runtime_telemetry = Some(telemetry);
     }
 
+    pub(super) fn set_client_event_sender(&self, sender: mpsc::Sender<Result<ControlModeLine>>) {
+        let mut inner = self.lock();
+        inner.client_event_tx = Some(sender);
+    }
+
     pub(super) fn record_observability_event(&self, event: ipc::DaemonObservabilityEventFrame) {
         let mut inner = self.lock();
         if inner.recent_events.len() >= OBSERVABILITY_EVENT_RING_CAPACITY {
             inner.recent_events.pop_front();
         }
         inner.recent_events.push_back(event);
+    }
+
+    fn client_event_response(&self, event: ipc::ClientEventFrame) -> ClientEventResponse {
+        let sender = {
+            let inner = self.lock();
+            match &inner.startup_state {
+                DaemonStartupState::Closing => {
+                    return ClientEventResponse::Unavailable {
+                        reason: ipc::UnavailableReason::ServerClosing,
+                        message: "daemon socket server is closing".to_string(),
+                    };
+                }
+                DaemonStartupState::StartupFailed(message) => {
+                    return ClientEventResponse::Unavailable {
+                        reason: ipc::UnavailableReason::StartupFailed,
+                        message: message.clone(),
+                    };
+                }
+                DaemonStartupState::Initializing => {
+                    return ClientEventResponse::Unavailable {
+                        reason: ipc::UnavailableReason::DaemonNotReady,
+                        message: "daemon has not published its initial snapshot yet".to_string(),
+                    };
+                }
+                DaemonStartupState::Ready => {}
+            }
+            inner.client_event_tx.clone()
+        };
+
+        let Some(sender) = sender else {
+            return ClientEventResponse::Unavailable {
+                reason: ipc::UnavailableReason::DaemonNotReady,
+                message: "daemon client event queue is not initialized".to_string(),
+            };
+        };
+
+        if sender
+            .send(Ok(ControlModeLine::client_event(event)))
+            .is_err()
+        {
+            return ClientEventResponse::Unavailable {
+                reason: ipc::UnavailableReason::ServerClosing,
+                message: "daemon client event queue is closed".to_string(),
+            };
+        }
+
+        ClientEventResponse::Accepted
     }
 
     pub(crate) fn try_acquire_pending_handshake(&self) -> Option<PendingHandshake> {
@@ -547,6 +601,15 @@ impl DaemonSocketState {
         self.lock().recent_events.len()
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_install_client_event_sender(
+        &self,
+    ) -> mpsc::Receiver<Result<ControlModeLine>> {
+        let (sender, receiver) = mpsc::channel();
+        self.set_client_event_sender(sender);
+        receiver
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, DaemonSocketStateInner> {
         self.inner
             .lock()
@@ -554,8 +617,27 @@ impl DaemonSocketState {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn test_recv_client_event(
+    receiver: &mpsc::Receiver<Result<ControlModeLine>>,
+) -> Option<ipc::ClientEventFrame> {
+    receiver
+        .recv_timeout(Duration::from_secs(2))
+        .ok()
+        .and_then(Result::ok)
+        .and_then(|line| line.emitted_client_event())
+}
+
 enum DaemonSocketResponse {
     Snapshot(EncodedDaemonFrame),
+    Unavailable {
+        reason: ipc::UnavailableReason,
+        message: String,
+    },
+}
+
+enum ClientEventResponse {
+    Accepted,
     Unavailable {
         reason: ipc::UnavailableReason,
         message: String,
@@ -837,6 +919,21 @@ fn handle_daemon_socket_client_with_pending(
                     status: Box::new(state.lifecycle_status()),
                 },
             )?;
+            writer
+                .flush()
+                .context("failed to flush daemon socket frame")
+        }
+        ipc::ClientFrame::ClientEvent { event, .. } => {
+            write_daemon_frame(&mut writer, &ack)?;
+            match state.client_event_response(event) {
+                ClientEventResponse::Accepted => {}
+                ClientEventResponse::Unavailable { reason, message } => {
+                    write_daemon_frame(
+                        &mut writer,
+                        &ipc::DaemonFrame::Unavailable { reason, message },
+                    )?;
+                }
+            }
             writer
                 .flush()
                 .context("failed to flush daemon socket frame")

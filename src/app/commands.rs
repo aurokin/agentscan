@@ -399,7 +399,10 @@ fn focus_pane_from_snapshot(
         bail!("pane {pane_id} not found in {snapshot_name}");
     }
     match tmux::focus_tmux_pane(pane_id, client_tty)? {
-        tmux::FocusTmuxPaneResult::Focused => Ok(()),
+        tmux::FocusTmuxPaneResult::Focused => {
+            daemon::emit_pane_focus_event_best_effort(pane_id);
+            Ok(())
+        }
         tmux::FocusTmuxPaneResult::Missing => {
             bail!("pane {pane_id} is no longer available")
         }
