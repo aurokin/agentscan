@@ -1,14 +1,16 @@
-import { useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emitTo, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
+import { Result, useAtomSet, useAtomValue } from "@effect-atom/atom-react";
 import { providerLogo, type LogoTheme } from "./providerLogos";
+import { configureAtom, liveStateAtom, reconnectAtom, startAtom } from "./effect/atoms";
+import type { ConnectionStatus, LiveState, PickerRow } from "./effect/types";
 import logoUrl from "./assets/agentscan-logo.png";
 
 const PICKER_HOTKEY = "CommandOrControl+Shift+A";
-const LIVE_PICKER_EVENT = "agentscan-live-picker";
 const SETTINGS_STORAGE_KEY = "agentscan.desktop.localRunnerSettings";
 const PROFILES_STORAGE_KEY = "agentscan.desktop.profiles";
 // Keep in sync with the pre-paint theme script in index.html.
@@ -58,52 +60,19 @@ const IS_MAC =
 const HOTKEY_MODIFIER_LABEL = IS_MAC ? "⌃" : "Ctrl ";
 
 let hotkeyOperationQueue = Promise.resolve();
-let liveOperationQueue = Promise.resolve();
 let windowOperationQueue = Promise.resolve();
 // Serializes set_window_glass invokes so a fast off→on toggle can't land its
 // native calls out of order and leave the blur layer out of sync with the UI.
 let glassOperationQueue = Promise.resolve();
 
-// Monotonic id assigned to each live-picker subscription. The backend stamps
-// every emitted event with the epoch of the worker that produced it so the
-// frontend can drop late frames from a superseded subscription after a switch.
-//
-// Epochs must be *strictly increasing across reloads/HMR*, not merely unique:
-// after a window reload (which restarts the JS but leaves the Rust worker
-// running) a late start() invoke from the torn-down page could otherwise
-// replace the freshly reloaded page's worker, which filters events by its own
-// epoch and would then drop every frame. The backend rejects a start whose
-// epoch is not greater than the last one it honored, so the counter is
-// persisted and seeded from wall-clock time — guaranteeing each page load
-// produces higher epochs than any prior load even if the stored value is lost.
-const LIVE_EPOCH_STORAGE_KEY = "agentscan.liveEpochSeq";
-// Bounded self-heal for a failed live-picker start (transient IPC/spawn errors):
-// retry a few times with a short delay, then stay fatal until the profile or
-// settings change. Prevents a persistently bad config from retrying forever.
-const LIVE_START_MAX_RETRIES = 4;
-const LIVE_START_RETRY_DELAY_MS = 1500;
-let liveEpochSeq = Date.now();
-function nextLiveEpoch() {
-  let base = liveEpochSeq;
-  try {
-    const stored = Number.parseInt(
-      window.localStorage.getItem(LIVE_EPOCH_STORAGE_KEY) ?? "",
-      10,
-    );
-    if (Number.isFinite(stored) && stored >= base) {
-      base = stored;
-    }
-  } catch {
-    // localStorage unavailable; the in-memory counter still increases per page.
-  }
-  liveEpochSeq = base + 1;
-  try {
-    window.localStorage.setItem(LIVE_EPOCH_STORAGE_KEY, String(liveEpochSeq));
-  } catch {
-    // Persistence is best-effort; monotonicity within this page still holds.
-  }
-  return liveEpochSeq;
-}
+// Live-picker subscription state (connection status + rows + epoch fencing + the
+// reconnect/latch policy) is owned by the Effect LiveConnection service. This
+// component drives it via configure/reconnect/start and observes liveStateAtom.
+const DEFAULT_LIVE_STATE: LiveState = {
+  connection: { status: "connecting", message: "Starting live client" },
+  rows: [],
+  rowsRunnerKey: null,
+};
 
 type DesktopProfile = {
   id: string;
@@ -164,26 +133,6 @@ type DebugEntry = {
   kind: "command" | "stream" | "settings";
   label: string;
   detail: string;
-};
-
-type PickerRow = {
-  key: string;
-  pane_id: string;
-  provider: string | null;
-  status: { kind: string };
-  display_label: string;
-  location_tag: string;
-  // Active pane of its window — true for one pane per session, so not unique.
-  is_active: boolean;
-  // The single pane the user is actually focused on (active pane of the session
-  // the most-recently-active tmux client is viewing). At most one row is true.
-  // The selection cursor defaults to and follows this pane. Optional: an older
-  // or remote `agentscan` (schema < 5) omits it; we fall back to `is_active`.
-  is_focused?: boolean;
-  // Clients attached to the tmux server (server-level, echoed on every row).
-  // >1 means focus-following is best-effort; we surface a banner. Optional for
-  // the same backward-compatibility reason; absent reads as 0 (no banner).
-  attached_client_count?: number;
 };
 
 // Which window this React tree drives. The dock (window label "main") renders the
@@ -261,32 +210,9 @@ type PickerGroup = {
   rows: PickerRow[];
 };
 
-type LiveSnapshotSummary = {
-  paneCount: number;
-  generatedAt: string | null;
-  sourceKind: string | null;
-};
-
-type LivePickerEvent =
-  | { kind: "connecting"; message: string }
-  | { kind: "reconnecting"; message: string; diagnostics: unknown | null }
-  | { kind: "rows"; rows: PickerRow[]; snapshot: LiveSnapshotSummary }
-  | { kind: "offline"; message: string; retrying: boolean; diagnostics: unknown | null }
-  | { kind: "shutdown"; message: string }
-  | { kind: "fatal"; message: string; diagnostics: unknown | null };
-
-// Wire payload: a LivePickerEvent plus the epoch of the subscription that
-// produced it (see backend LivePickerEnvelope).
-type LivePickerEnvelope = LivePickerEvent & { epoch: number };
-
-type LiveConnectionState =
-  | { status: "connecting"; message: string }
-  | { status: "online"; message: string; snapshot: LiveSnapshotSummary }
-  | { status: "reconnecting"; message: string; diagnostics: unknown | null }
-  | { status: "offline"; message: string; retrying: boolean; diagnostics: unknown | null }
-  | { status: "shutdown"; message: string }
-  | { status: "fatal"; message: string; diagnostics: unknown | null };
-
+// Preflight-only resolved state. Picker rows + live connection status now live in
+// the LiveConnection service (liveStateAtom); this `state` only tracks the CLI
+// probe + profile list for the dock and the settings card.
 type LoadState =
   | { status: "loading" }
   | {
@@ -294,11 +220,10 @@ type LoadState =
       // The runner config this resolved state describes (see runnerKeyForProfile).
       // `state` lags the active runner by one async cycle on a switch or settings
       // apply, so consumers compare this to the active runnerKey before trusting
-      // preflight/picker for live decisions.
+      // preflight for live decisions.
       runnerKey: string;
       profiles: DesktopProfile[];
       preflight: AgentscanPreflight;
-      picker: PickerState;
     }
   | { status: "failed"; message: string };
 
@@ -347,12 +272,16 @@ function App({ mode }: { mode: ShellMode }) {
     return profile.kind === "ssh" ? profile.clientTty : "";
   });
   const [debugEntries, setDebugEntries] = useState<DebugEntry[]>([]);
-  const [liveState, setLiveState] = useState<LiveConnectionState>({
-    status: "connecting",
-    message: "Starting live client",
-  });
+  // Live connection (status + rows) is owned by the LiveConnection service. The dock
+  // observes liveStateAtom and drives the service via configure/reconnect/start. The
+  // settings window mounts these too (separate webview/runtime) but never enables a
+  // target, so its supervisor stays idle.
+  const liveResult = useAtomValue(liveStateAtom);
+  const live: LiveState = Result.getOrElse(liveResult, () => DEFAULT_LIVE_STATE);
+  const configureLive = useAtomSet(configureAtom);
+  const startLive = useAtomSet(startAtom);
+  const reconnectLive = useAtomSet(reconnectAtom);
   const [pickerFilter, setPickerFilter] = useState("");
-  const [isRefreshing, setIsRefreshing] = useState(false);
   // Layout axis, seeded from the current window shape and kept in sync on resize.
   const [orientation, setOrientation] = useState<Orientation>(orientationForViewport);
   // Layout preference: "auto" follows `orientation`; a pinned value overrides it.
@@ -398,16 +327,6 @@ function App({ mode }: { mode: ShellMode }) {
   // never observe a stale key through a late-running effect.
   const activeRunnerKeyRef = useRef(runnerKey);
   activeRunnerKeyRef.current = runnerKey;
-  // Identifies the latest refresh request so a superseded refresh neither
-  // applies its rows nor clears the spinner out from under a newer one.
-  const refreshTokenRef = useRef(0);
-  // Bumped each time a live snapshot applies rows, so a slower manual refresh
-  // can detect that fresher live rows landed mid-flight and skip overwriting.
-  const liveRowsSeqRef = useRef(0);
-  // Bumped to re-run the live effect and re-attempt a failed start; the attempt
-  // counter bounds retries so a persistently failing config settles into fatal.
-  const [liveRetryToken, setLiveRetryToken] = useState(0);
-  const liveRetryAttemptRef = useRef(0);
   const [selectedPaneId, setSelectedPaneId] = useState<string | null>(null);
   // The focused pane id we last *observed as visible*. We follow focus only when
   // this value changes (a genuine focus move), not when it merely reappears, so a
@@ -464,10 +383,6 @@ function App({ mode }: { mode: ShellMode }) {
       // instead of dropping to the boot screen. Only the very first load, with
       // no ready state yet, shows the boot "Connecting" screen.
       setState((current) => (current.status === "ready" ? current : { status: "loading" }));
-      setLiveState({
-        status: "connecting",
-        message: "Starting live client",
-      });
 
       try {
         const profileValidation = validateProfileDraft(
@@ -489,9 +404,7 @@ function App({ mode }: { mode: ShellMode }) {
               version: null,
               error: message,
             },
-            picker: { status: "failed", message },
           });
-          setLiveState({ status: "fatal", message, diagnostics: null });
           return;
         }
 
@@ -508,35 +421,8 @@ function App({ mode }: { mode: ShellMode }) {
         ]);
 
         if (!cancelled) {
-          const failureMessage = preflight.error ?? "agentscan is unavailable";
-          setState((current) => {
-            // If the restarted live subscription already delivered rows for this
-            // profile, keep them rather than clobbering back to "loading" (which
-            // would wedge until the next daemon snapshot).
-            const keepLiveRows =
-              preflight.ok &&
-              current.status === "ready" &&
-              current.runnerKey === runnerKey &&
-              current.picker.status === "ready";
-            return {
-              status: "ready",
-              runnerKey,
-              profiles,
-              preflight,
-              picker: !preflight.ok
-                ? { status: "failed", message: failureMessage }
-                : keepLiveRows
-                  ? current.picker
-                  : { status: "loading" },
-            };
-          });
-          if (!preflight.ok) {
-            // The live effect won't run (liveReady is false), so settle the live
-            // state instead of leaving it stuck on "Starting live client".
-            setLiveState({ status: "fatal", message: failureMessage, diagnostics: null });
-          }
+          setState({ status: "ready", runnerKey, profiles, preflight });
         }
-
       } catch (error) {
         if (!cancelled) {
           setState({
@@ -582,127 +468,17 @@ function App({ mode }: { mode: ShellMode }) {
     state.preflight.ok &&
     activeProfileValid;
 
+  // Drive the LiveConnection service to the active target. The service owns the
+  // subscription, epoch fencing, reconnect/latch backoff, and recovery; this just
+  // tells it WHICH runner to track and WHETHER it's ready (preflight ok + valid
+  // profile + dock). configure dedupes on runnerKey + enabled, so an inactive-profile
+  // edit that leaves the active runner unchanged doesn't re-arm the worker.
   useEffect(() => {
-    // The settings window never runs a live client — only the dock subscribes, so
-    // there's a single tmux control-mode worker per source, not one per window.
-    if (mode !== "dock" || !liveReady) {
+    if (mode !== "dock") {
       return;
     }
-
-    let disposed = false;
-    // The live event channel is global and shared across profiles. On a profile
-    // switch a late frame from the previous worker can still arrive on the
-    // channel, so the backend stamps every event with the epoch of the worker
-    // that produced it and we accept only events matching this subscription's
-    // epoch. This rejects superseded frames while still applying our own first
-    // snapshot immediately.
-    const epoch = nextLiveEpoch();
-    const subscriptionRunnerKey = runnerKey;
-    let unlisten: UnlistenFn | null = null;
-    let retryTimer: ReturnType<typeof setTimeout> | undefined;
-
-    function enqueueLiveOperation(operation: () => Promise<void>) {
-      liveOperationQueue = liveOperationQueue.then(operation, operation);
-      return liveOperationQueue;
-    }
-
-    // Re-arm the live effect after a failed start so transient IPC/spawn errors
-    // self-heal without a manual profile switch. Bounded by the attempt counter.
-    function scheduleLiveRetry() {
-      if (disposed || liveRetryAttemptRef.current >= LIVE_START_MAX_RETRIES) {
-        return;
-      }
-      liveRetryAttemptRef.current += 1;
-      retryTimer = setTimeout(() => {
-        if (!disposed) {
-          setLiveRetryToken((token) => token + 1);
-        }
-      }, LIVE_START_RETRY_DELAY_MS);
-    }
-
-    async function startLivePicker() {
-      try {
-        unlisten = await listen<LivePickerEnvelope>(LIVE_PICKER_EVENT, (event) => {
-          if (!disposed && event.payload.epoch === epoch) {
-            if (liveEventChangesPickerRows(event.payload)) {
-              // Mark that the picker rows changed (new live snapshot, or a
-              // terminal event that cleared them) so an in-flight manual refresh
-              // detects the supersession and won't overwrite/resurrect rows.
-              liveRowsSeqRef.current += 1;
-            }
-            applyLivePickerEvent(event.payload, subscriptionRunnerKey, setLiveState, setState);
-            appendDebugEntry({
-              kind: "stream",
-              label: liveStateLabelFromEvent(event.payload),
-              detail: liveEventDetail(event.payload),
-            });
-          }
-        });
-      } catch (error) {
-        if (!disposed) {
-          const message = errorMessage(error);
-          setLiveState({ status: "fatal", message, diagnostics: null });
-          markPickerFailedIfEmpty(setState, subscriptionRunnerKey, message);
-          scheduleLiveRetry();
-        }
-        return;
-      }
-
-      if (disposed) {
-        unlisten();
-        unlisten = null;
-        return;
-      }
-
-      try {
-        await enqueueLiveOperation(async () => {
-          if (!disposed) {
-            await runCommand(
-              `${commandPrefix(activeProfile)} subscribe --format json`,
-              () => invoke("start_live_picker", { settings: runnerSettings, epoch }),
-              appendDebugEntry,
-            );
-          }
-        });
-        // The worker is installed; clear the retry budget for this runner.
-        if (!disposed) {
-          liveRetryAttemptRef.current = 0;
-        }
-      } catch (error) {
-        if (!disposed) {
-          const message = errorMessage(error);
-          setLiveState({ status: "fatal", message, diagnostics: null });
-          markPickerFailedIfEmpty(setState, subscriptionRunnerKey, message);
-          scheduleLiveRetry();
-        }
-      }
-    }
-
-    void startLivePicker();
-
-    return () => {
-      disposed = true;
-      if (retryTimer !== undefined) {
-        clearTimeout(retryTimer);
-      }
-      unlisten?.();
-      void enqueueLiveOperation(async () => {
-        // Pass this subscription's epoch so a stale cleanup (after reload/HMR)
-        // can't stop a newer worker; the backend only stops if the epoch matches.
-        await runCommand(
-          "stop live picker",
-          () => invoke("stop_live_picker", { epoch }),
-          appendDebugEntry,
-        );
-      });
-    };
-    // Keyed on runnerKey (the active runner's identity) so an inactive-profile edit that
-    // leaves the active runner unchanged doesn't tear down and restart the live worker
-    // (a reconnect flicker + an extra ssh round-trip). commandPrefix(activeProfile) and
-    // runnerSettings are fully determined by runnerKey, so the closure stays correct
-    // across the re-renders this skips.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runnerKey, liveReady, liveRetryToken, mode]);
+    configureLive({ settings: runnerSettings, runnerKey, enabled: liveReady });
+  }, [mode, runnerKey, liveReady, runnerSettings, configureLive]);
 
   useEffect(() => {
     // The global summon hotkey belongs to the dock; registering it in both windows
@@ -779,63 +555,6 @@ function App({ mode }: { mode: ShellMode }) {
       : `${profileKindLabel(activeProfile)} CLI unavailable`;
   }, [activeProfile, state]);
 
-  async function refreshPickerRows() {
-    if (state.status !== "ready") {
-      return;
-    }
-
-    const requestRunnerKey = runnerKey;
-    const token = (refreshTokenRef.current += 1);
-    const liveSeqAtStart = liveRowsSeqRef.current;
-    const isCurrent = () =>
-      refreshTokenRef.current === token && activeRunnerKeyRef.current === requestRunnerKey;
-    setIsRefreshing(true);
-    // Functional + runner-guarded so a stale closure can never resurrect the
-    // previous target's resolved state into the active one.
-    setState((current) =>
-      current.status === "ready" && current.runnerKey === requestRunnerKey
-        ? { ...current, picker: { status: "loading" } }
-        : current,
-    );
-
-    try {
-      const rows = await runCommand<PickerRow[]>(
-        `${commandPrefix(activeProfile)} hotkeys --format json`,
-        () => invoke<PickerRow[]>("load_picker_rows", { settings: runnerSettings }),
-        appendDebugEntry,
-      );
-      if (!isCurrent()) {
-        return; // Superseded by a profile switch, settings apply, or newer refresh.
-      }
-      if (liveRowsSeqRef.current !== liveSeqAtStart) {
-        return; // A fresher live snapshot landed mid-flight; don't overwrite it.
-      }
-      setState((current) =>
-        current.status === "ready" && current.runnerKey === requestRunnerKey
-          ? { ...current, picker: { status: "ready", rows } }
-          : current,
-      );
-    } catch (error) {
-      if (!isCurrent()) {
-        return;
-      }
-      if (liveRowsSeqRef.current !== liveSeqAtStart) {
-        return; // Fresher live rows already displayed; don't replace them with an error.
-      }
-      setState((current) =>
-        current.status === "ready" && current.runnerKey === requestRunnerKey
-          ? { ...current, picker: { status: "failed", message: errorMessage(error) } }
-          : current,
-      );
-    } finally {
-      // Only the latest refresh clears the spinner, so a superseded request
-      // can't re-enable the button while a newer one is still running.
-      if (refreshTokenRef.current === token) {
-        setIsRefreshing(false);
-      }
-    }
-  }
-
   // `state` lags the active runner by one async cycle after a switch or settings
   // apply (loadShellState resets it in an effect, after paint). Until the resolved
   // state's runnerKey matches the active runner, its preflight/picker rows belong
@@ -866,14 +585,29 @@ function App({ mode }: { mode: ShellMode }) {
     : activeReadyState.preflight.ok
       ? "idle"
       : "error";
-  const pickerDataState: PickerState = activeReadyState
-    ? activeReadyState.picker
-    : { status: "loading" };
-  // liveState lags the active profile the same way; show a neutral switching
-  // banner rather than the previous profile's stale offline/fatal state.
-  const displayLiveState: LiveConnectionState = activeReadyState
-    ? liveState
+  // The picker rows + connection status now come from the LiveConnection service
+  // (live), not from `state`. Both lag the active profile the same way preflight
+  // does, so while the resolved state's runnerKey doesn't match the active runner
+  // (a switch in flight) we show a neutral "loading"/"Switching…" view rather than
+  // the previous profile's stale rows/offline banner.
+  const displayConnection: ConnectionStatus = activeReadyState
+    ? live.connection
     : { status: "connecting", message: "Switching profile…" };
+  // Spin the reconnect affordance while the live client is (re)connecting.
+  const isReconnecting =
+    displayConnection.status === "connecting" || displayConnection.status === "reconnecting";
+  // A failed focus re-arms the live client (activateSelectedRow's catch) to drop the
+  // now-dead pane. Until the fresh snapshot lands, `live.rows` still carries that stale
+  // row — reconnecting preserves rows to avoid a flicker on a healthy manual reconnect —
+  // so gate the list to "loading" during THIS recovery, matching the old refresh which
+  // set picker→loading, instead of leaving the known-dead row clickable and instantly
+  // re-triggerable. Keyed on activation.status==="failed" so a manual reconnect (idle)
+  // keeps its rows; it self-clears once rows refresh and isReconnecting goes false.
+  const recoveringFromFailedActivation = activation.status === "failed" && isReconnecting;
+  const pickerDataState: PickerState =
+    activeReadyState && !recoveringFromFailedActivation
+      ? pickerStateFromLive(live, runnerKey)
+      : { status: "loading" };
   const allPickerRows =
     pickerDataState.status === "ready" ? pickerDataState.rows : [];
   // Server-level count echoed on every row; >1 means focus-following is
@@ -968,19 +702,18 @@ function App({ mode }: { mode: ShellMode }) {
   const lastPickerResetProfileIdRef = useRef(profileState.activeProfileId);
 
   useEffect(() => {
-    // Drafts and the transient activation/retry guards reset on any active-profile
-    // change (switch OR in-place edit): activeRunnerKeyRef is updated synchronously
-    // during render, so resolved data from the previous target is already discarded.
-    // Freeing activationInFlightRef lets the new target activate immediately rather than
-    // waiting on a stale focus_picker_row's finally, and clearing the retry counter lets
-    // a just-fixed config retry the live client instead of staying wedged at fatal.
+    // Drafts and the transient activation guard reset on any active-profile change
+    // (switch OR in-place edit): activeRunnerKeyRef is updated synchronously during
+    // render, so resolved data from the previous target is already discarded. Freeing
+    // activationInFlightRef lets the new target activate immediately rather than waiting
+    // on a stale focus_picker_row's finally. The live client's reconnect/retry policy is
+    // owned by the LiveConnection service, which re-targets on the runnerKey change.
     setProfileNameDraft(activeProfile.name);
     setSettingsDraft(activeProfile.runner);
     setSshHostDraft(activeProfile.kind === "ssh" ? activeProfile.host : "");
     setSshClientTtyDraft(activeProfile.kind === "ssh" ? activeProfile.clientTty : "");
     setActivation({ status: "idle" });
     activationInFlightRef.current = false;
-    liveRetryAttemptRef.current = 0;
 
     // The pane selection clears whenever the underlying TARGET changes — a profile switch
     // OR an in-place runner/host/binary edit (both move runnerKey). tmux pane ids like %1
@@ -1481,7 +1214,14 @@ function App({ mode }: { mode: ShellMode }) {
         return;
       }
       setActivation({ status: "failed", message: errorMessage(error) });
-      await refreshPickerRows();
+      // A failed focus is strong evidence the row is stale (the pane is gone). The
+      // daemon is event-driven with periodic reconcile OFF by default, so a missed
+      // tmux close notification won't self-correct — agentscan's own design names the
+      // connect/reconnect bootstrap as the ground-truth recovery (config.rs). Re-arm
+      // the live client: re-subscribing makes the daemon publish a fresh initial
+      // snapshot, which the worker re-derives via load_picker_rows, dropping the dead
+      // row. This is the push-model equivalent of the old one-shot refetch.
+      reconnectLive();
     } finally {
       // Only release the guard if this is still the active target. After a
       // profile/settings switch the effect already cleared the ref (and a newer
@@ -1628,9 +1368,10 @@ function App({ mode }: { mode: ShellMode }) {
       // add/delete isn't clobbered by this window's possibly-stale snapshot.
       const latest = loadStoredProfiles();
       // Clicking the already-persisted (live) active source must not bump loadShellState
-      // (that resets liveState to "connecting" without re-running the live effect, wedging
-      // the dock's live strip) — so when our snapshot already matches, keep the SAME
-      // reference and do nothing. But a dirty settings window may hold a stale snapshot
+      // (a needless re-probe momentarily unmatches state.runnerKey, which gates liveReady
+      // off and flickers the connection through "Switching profile…") — so when our
+      // snapshot already matches, keep the SAME reference and do nothing. But a dirty
+      // settings window may hold a stale snapshot
       // (it skips syncs mid-edit); there, adopt the latest so clicking the dock's current
       // source navigates to it instead of staying stuck on the stale selection.
       if (id === latest.activeProfileId) {
@@ -1761,10 +1502,24 @@ function App({ mode }: { mode: ShellMode }) {
     return () => window.removeEventListener("keydown", handler);
   }, [mode]);
 
-  // The dock shows its boot screen until the daemon is ready. The settings window is
-  // separate and always renders settings below, so config stays reachable even when
-  // the daemon/IPC is down — exactly when the binary path or SSH host needs fixing.
-  if (mode === "dock" && state.status !== "ready") {
+  // The dock shows its boot/error screen until the active runner has a usable
+  // preflight. That covers three not-ready cases: still probing; the probe failed
+  // (IPC error); or the probe resolved but reports the CLI unavailable (bad binary
+  // path / SSH target) for the CURRENT runner. The last case used to fall through to
+  // a perpetual "Waiting for a source" live banner that never explained what broke —
+  // routing it here surfaces the real preflight error and the Open settings recovery
+  // path. A stale ready state from a profile still switching (runnerKey mismatch) is
+  // left to the picker's "Switching…" view, not treated as an error.
+  const dockPreflightUnusable =
+    state.status === "ready" && state.runnerKey === runnerKey && !state.preflight.ok;
+  if (mode === "dock" && (state.status !== "ready" || dockPreflightUnusable)) {
+    const probing = state.status === "loading";
+    const detail =
+      state.status === "failed"
+        ? state.message
+        : state.status === "ready"
+          ? (state.preflight.error ?? `${profileKindLabel(activeProfile)} CLI unavailable`)
+          : "Waiting for the daemon…";
     return (
       // Recovery UI renders in the live orientation: a centered column in the vertical
       // strip, and a compact row in the horizontal bar (styles.css) so the heading and
@@ -1773,12 +1528,12 @@ function App({ mode }: { mode: ShellMode }) {
         <div className="boot-state" aria-live="polite">
           <span className="boot-spinner" aria-hidden="true" />
           <div className="boot-copy">
-            <h1>{state.status === "loading" ? "Connecting" : "Can’t reach agentscan"}</h1>
-            <p>{state.status === "failed" ? state.message : "Waiting for the daemon…"}</p>
+            <h1>{probing ? "Connecting" : "Can’t reach agentscan"}</h1>
+            <p>{detail}</p>
           </div>
           {/* Always offer a path into settings: a hung "loading" (e.g. a stalled
-              profile/SSH preflight) otherwise traps the user with no way to fix
-              the binary path or host. */}
+              profile/SSH preflight) or a CLI-unavailable runner otherwise traps the
+              user with no way to fix the binary path or host. */}
           <button type="button" onClick={openSettings}>
             Open settings
           </button>
@@ -2190,7 +1945,7 @@ function App({ mode }: { mode: ShellMode }) {
   }
 
   // Unreachable: the guards above return for every not-ready picker case. This
-  // narrows `state` to "ready" so the picker can read state.picker/preflight.
+  // narrows `state` to "ready" so the picker can read state.preflight/profiles.
   if (state.status !== "ready") {
     return null;
   }
@@ -2219,19 +1974,32 @@ function App({ mode }: { mode: ShellMode }) {
             </button>
           ) : null}
         </div>
+        {/* Never disabled: this is the only in-dock manual recovery path, and a
+            subscribe can hang in "connecting" without ever emitting a frame (e.g. an
+            SSH target stuck in auth before stdout). Disabling it there would wedge the
+            user out of forcing a fresh reconnect. The spin is feedback only.
+            reconnect is NOT a cached-snapshot replay: re-subscribing makes the daemon
+            publish a fresh initial snapshot, which the worker re-derives through
+            load_picker_rows — the same fresh pane-output status the old hotkeys-fetch
+            button produced, plus it re-arms the connection. */}
         <button
           className="icon-button"
           type="button"
-          aria-label="Refresh"
-          title="Refresh"
-          onClick={refreshPickerRows}
-          disabled={isRefreshing}
+          aria-label="Reconnect"
+          title="Reconnect"
+          onClick={() => reconnectLive()}
         >
-          <span className={isRefreshing ? "spin" : undefined}>{"↻"}</span>
+          <span className={isReconnecting ? "spin" : undefined}>{"↻"}</span>
         </button>
       </header>
 
-      {displayLiveState.status !== "online" ? <LiveStrip state={displayLiveState} /> : null}
+      {displayConnection.status !== "online" ? (
+        <LiveStrip
+          status={displayConnection}
+          onStart={() => startLive()}
+          onReconnect={() => reconnectLive()}
+        />
+      ) : null}
 
       {activation.status === "failed" ? (
         <div className="inline-error" role="alert">
@@ -2357,125 +2125,32 @@ function App({ mode }: { mode: ShellMode }) {
   );
 }
 
-function applyLivePickerEvent(
-  event: LivePickerEvent,
-  runnerKey: string,
-  setLiveState: (value: SetStateAction<LiveConnectionState>) => void,
-  setState: (value: SetStateAction<LoadState>) => void,
-) {
-  if (event.kind === "rows") {
-    setLiveState({
-      status: "online",
-      message: `${event.rows.length} picker ${event.rows.length === 1 ? "row" : "rows"}`,
-      snapshot: event.snapshot,
-    });
-    setState((current) =>
-      // Only persist rows into the state blob that still belongs to this
-      // subscription's runner, matching the activeReadyState/refresh guards.
-      current.status === "ready" && current.runnerKey === runnerKey
-        ? { ...current, picker: { status: "ready", rows: event.rows } }
-        : current,
-    );
-    return;
+// Project the LiveConnection service's state onto the PickerState the GroupedPicker
+// renders. The service is the single owner of rows + connection status; this just
+// picks the view: keep showing the last rows while (re)connecting so the list
+// doesn't flash a skeleton on a brief blip, show the failure only when a fatal
+// state has actually cleared the rows, and otherwise a loading skeleton.
+//
+// Rows are trusted only when their producing runner (rowsRunnerKey) matches the
+// active one. After a source switch the service preserves the previous runner's rows
+// through the new subscription's connecting window (so a same-runner reconnect won't
+// flicker), and `state`-derived readiness (preflight) can resolve for the new runner
+// before that subscription's first snapshot — without this gate the dock would briefly
+// render the prior source's panes and activate one against the new runner's settings.
+function pickerStateFromLive(live: LiveState, activeRunnerKey: string): PickerState {
+  const { connection } = live;
+  const rows = live.rowsRunnerKey === activeRunnerKey ? live.rows : [];
+  if (rows.length > 0) {
+    return { status: "ready", rows };
   }
-
-  if (event.kind === "connecting") {
-    setLiveState({ status: "connecting", message: event.message });
-    return;
+  if (connection.status === "fatal") {
+    return { status: "failed", message: connection.message };
   }
-
-  if (event.kind === "reconnecting") {
-    setLiveState({
-      status: "reconnecting",
-      message: event.message,
-      diagnostics: event.diagnostics,
-    });
-    return;
+  if (connection.status === "connecting" || connection.status === "reconnecting") {
+    return { status: "loading" };
   }
-
-  if (event.kind === "offline") {
-    setLiveState({
-      status: "offline",
-      message: event.message,
-      retrying: event.retrying,
-      diagnostics: event.diagnostics,
-    });
-    // A retrying offline is transient (daemon will reconnect), so keep any rows
-    // we already have; a terminal offline means the current rows belong to a
-    // dead subscription and must not stay selectable.
-    if (event.retrying) {
-      markPickerFailedIfEmpty(setState, runnerKey, event.message);
-    } else {
-      markPickerFailed(setState, runnerKey, event.message);
-    }
-    return;
-  }
-
-  if (event.kind === "shutdown") {
-    setLiveState({ status: "shutdown", message: event.message });
-    markPickerFailed(setState, runnerKey, event.message);
-    return;
-  }
-
-  setLiveState({
-    status: "fatal",
-    message: event.message,
-    diagnostics: event.diagnostics,
-  });
-  markPickerFailed(setState, runnerKey, event.message);
-}
-
-function markPickerFailedIfEmpty(
-  setState: (value: SetStateAction<LoadState>) => void,
-  runnerKey: string,
-  message: string,
-) {
-  setState((current) => {
-    if (
-      current.status !== "ready" ||
-      current.runnerKey !== runnerKey ||
-      current.picker.status === "ready"
-    ) {
-      return current;
-    }
-
-    return { ...current, picker: { status: "failed", message } };
-  });
-}
-
-// Whether a live event mutates the picker rows: a fresh snapshot ("rows") or a
-// terminal event that clears them (fatal/shutdown/terminal-offline). Used to
-// bump the live sequence so an in-flight manual refresh detects the change and
-// neither overwrites fresh rows nor resurrects rows a terminal event cleared.
-function liveEventChangesPickerRows(event: LivePickerEvent): boolean {
-  switch (event.kind) {
-    case "rows":
-    case "shutdown":
-    case "fatal":
-      return true;
-    case "offline":
-      return !event.retrying;
-    default:
-      return false;
-  }
-}
-
-// Terminal live events (fatal/shutdown/terminal-offline) mean any rows we are
-// showing belong to a dead subscription. Replace them with the failure even if
-// the picker is currently "ready", so stale rows can't be selected and focused
-// against panes that may no longer exist.
-function markPickerFailed(
-  setState: (value: SetStateAction<LoadState>) => void,
-  runnerKey: string,
-  message: string,
-) {
-  setState((current) => {
-    if (current.status !== "ready" || current.runnerKey !== runnerKey) {
-      return current;
-    }
-
-    return { ...current, picker: { status: "failed", message } };
-  });
+  // online or noDaemon with no (matching) rows → an empty (but resolved) list.
+  return { status: "ready", rows };
 }
 
 async function runCommand<T>(
@@ -2499,14 +2174,47 @@ async function runCommand<T>(
   }
 }
 
-function LiveStrip({ state }: { state: LiveConnectionState }) {
-  const tone = state.status === "fatal" || state.status === "offline" ? "error" : "warn";
+// The banner shown for any non-online connection. `noDaemon` (the dock latched but
+// found no daemon to attach to) offers Start agentscan; `fatal` offers both Start
+// agentscan and a latch-only Reconnect (a Start refusal lands here, and Start is the
+// action that actually retries it) — so the dock never wedges with a dead stream and
+// no way out. connecting/reconnecting are transient and self-heal, so they show
+// progress only.
+function LiveStrip({
+  status,
+  onStart,
+  onReconnect,
+}: {
+  status: ConnectionStatus;
+  onStart: () => void;
+  onReconnect: () => void;
+}) {
+  const tone = status.status === "fatal" ? "error" : "warn";
 
   return (
     <div className={`live-strip ${tone}`} aria-live="polite">
       <span className="status-dot" data-tone={tone === "error" ? "error" : "busy"} />
-      <span className="live-label">{liveStateLabel(state)}</span>
-      <span className="live-message">{state.message}</span>
+      <span className="live-label">{liveStateLabel(status)}</span>
+      <span className="live-message">{status.message}</span>
+      {status.status === "noDaemon" ? (
+        <button className="live-action" type="button" onClick={onStart}>
+          Start agentscan
+        </button>
+      ) : status.status === "fatal" ? (
+        // A fatal includes an explicit-Start refusal (e.g. macOS codesign/trust), whose
+        // actual fix is to retry the start once resolved. Reconnect is latch-only and
+        // can't spawn, so it would force a no-daemon round-trip before Start reappears.
+        // Offer Start agentscan (start-or-latch — strictly more capable, recovers every
+        // fatal cause the user fixes) alongside the latch-only Reconnect.
+        <div className="live-actions">
+          <button className="live-action" type="button" onClick={onStart}>
+            Start agentscan
+          </button>
+          <button className="live-action" type="button" onClick={onReconnect}>
+            Reconnect
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -2993,6 +2701,21 @@ function filterPickerRows(rows: PickerRow[], query: string) {
   });
 }
 
+function liveStateLabel(status: ConnectionStatus) {
+  switch (status.status) {
+    case "online":
+      return "Live";
+    case "reconnecting":
+      return "Reconnecting";
+    case "noDaemon":
+      return "No daemon";
+    case "fatal":
+      return "Live client failed";
+    case "connecting":
+      return "Connecting";
+  }
+}
+
 function pickerRowForKeyboardKey(rows: PickerRow[], key: string) {
   const normalizedKey = normalizePickerKeyboardKey(key);
   if (normalizedKey === null) {
@@ -3012,50 +2735,6 @@ function normalizePickerKeyboardKey(key: string) {
 
   const normalizedKey = key.toUpperCase();
   return /^[A-Z0-9]$/.test(normalizedKey) ? normalizedKey : null;
-}
-
-function liveStateLabelFromEvent(event: LivePickerEvent) {
-  if (event.kind === "rows") {
-    return "snapshot";
-  }
-
-  return event.kind;
-}
-
-function liveEventDetail(event: LivePickerEvent) {
-  if (event.kind === "rows") {
-    return `${event.rows.length} rows · ${event.snapshot.paneCount} panes`;
-  }
-
-  if (event.kind === "offline") {
-    return `${event.message}${event.retrying ? " · retrying" : ""}`;
-  }
-
-  return event.message;
-}
-
-function liveStateLabel(state: LiveConnectionState) {
-  if (state.status === "online") {
-    return "Live";
-  }
-
-  if (state.status === "reconnecting") {
-    return "Reconnecting";
-  }
-
-  if (state.status === "offline") {
-    return state.retrying ? "Offline, retrying" : "Offline";
-  }
-
-  if (state.status === "fatal") {
-    return "Live client failed";
-  }
-
-  if (state.status === "shutdown") {
-    return "Daemon shutdown";
-  }
-
-  return "Connecting";
 }
 
 // Persistent-window model: the global hotkey raises/focuses the window; it

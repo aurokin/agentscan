@@ -310,6 +310,47 @@ p {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* Shrink (truncating via ellipsis) so the recovery action stays visible. */
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+/* Recovery affordance in the live strip: "Start agentscan" (noDaemon) / "Start
+   agentscan" + "Reconnect" (fatal). Pinned to the strip's trailing edge. */
+.live-action {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 4px 10px;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.live-action:hover {
+  filter: brightness(1.05);
+}
+
+/* The fatal state shows two actions. Group them at the trailing edge (so the pair
+   moves as one) instead of letting each button's own margin-left:auto split the free
+   space and spread them apart. The Reconnect button is given the secondary tone. */
+.live-actions {
+  flex: 0 0 auto;
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+}
+
+.live-actions .live-action {
+  margin-left: 0;
+}
+
+.live-actions .live-action:last-child {
+  background: var(--bg-elevated);
+  color: var(--text);
 }
 
 .inline-error {
@@ -502,7 +543,7 @@ p {
 .sidebar[data-orientation="horizontal"] .client-warning {
   display: none;
 }
-/* Live-connection problems (connecting/reconnecting/offline/fatal) and activation
+/* Live-connection problems (connecting/reconnecting/noDaemon/fatal) and activation
    failures must stay visible even in the bar — the footer dot only reflects CLI
    preflight, not the live picker — but as compact, centered, single-line pills rather
    than stretched full-height columns. The live strip only renders off the "online"
