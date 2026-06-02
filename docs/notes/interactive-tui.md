@@ -51,6 +51,31 @@ The current implementation remains the baseline:
 - no interactive `--refresh`, cache bootstrap, or direct tmux discovery fallback
 - in-TUI daemon unavailable rendering instead of a raw CLI failure
 
+## Picker Key Configuration
+
+The TUI uses the core `picker_keys` config value from
+`${XDG_CONFIG_HOME:-~/.config}/agentscan/config.toml`. When the value is absent,
+the default order is:
+
+```text
+1 2 3 4 5 Q E R F G T Z X C V B
+```
+
+Configured keys remap the 16 selection slots. They must be unique single ASCII
+letters or digits, normalized case-insensitively. Key combinations are out of
+scope for picker selection.
+
+Reserved behavior:
+
+- `Esc` closes the TUI.
+- `Ctrl-C` closes the TUI.
+- `Ctrl-B` passes through to the tmux prefix table.
+- `Left`, `Right`, `PageUp`, and `PageDown` page the TUI.
+- bare `N` and `P` page the TUI, so they are rejected as configured picker
+  keys.
+- `Enter`, `Tab`, `Backspace`, `Delete`, arrows, function keys, whitespace, and
+  control characters are not picker selection keys.
+
 ## Follow-up Notes
 
 ### Repo-local tmux invocation

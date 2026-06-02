@@ -82,6 +82,7 @@ impl Default for TuiConnectionState {
 
 #[derive(Debug, Default)]
 pub(crate) struct TuiState {
+    pub(super) picker_keys: picker::PickerKeySet,
     pub(super) key_targets: BTreeMap<char, String>,
     pub(super) retired_key_targets: BTreeMap<char, String>,
     pub(super) panes: Vec<PaneRecord>,
@@ -92,6 +93,13 @@ pub(crate) struct TuiState {
 }
 
 impl TuiState {
+    pub(crate) fn with_picker_keys(picker_keys: picker::PickerKeySet) -> Self {
+        Self {
+            picker_keys,
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn set_connecting(&mut self, message: String) {
         self.connection = if self.panes.is_empty() {
             TuiConnectionState::connecting(message)
@@ -147,7 +155,7 @@ impl TuiState {
 
     fn page_size(&self) -> usize {
         self.last_terminal_size
-            .map(page_size_for_terminal)
+            .map(|terminal_size| page_size_for_terminal(terminal_size, &self.picker_keys))
             .unwrap_or_default()
     }
 
@@ -244,11 +252,20 @@ pub(crate) fn synchronize_key_targets(
     key_targets: &mut BTreeMap<char, String>,
     panes: &[PaneRecord],
 ) {
+    synchronize_key_targets_with_keys(key_targets, panes, &picker::PickerKeySet::default());
+}
+
+pub(crate) fn synchronize_key_targets_with_keys(
+    key_targets: &mut BTreeMap<char, String>,
+    panes: &[PaneRecord],
+    picker_keys: &picker::PickerKeySet,
+) {
     let present_pane_ids: HashSet<&str> = panes.iter().map(|pane| pane.pane_id.as_str()).collect();
     key_targets.retain(|_, pane_id| present_pane_ids.contains(pane_id.as_str()));
 
     let mut assigned_pane_ids: HashSet<String> = key_targets.values().cloned().collect();
-    let free_keys: Vec<char> = picker::PICKER_SELECTION_KEYS
+    let free_keys: Vec<char> = picker_keys
+        .keys()
         .iter()
         .copied()
         .filter(|key| !key_targets.contains_key(key))
@@ -267,7 +284,10 @@ pub(crate) fn synchronize_key_targets(
     }
 }
 
-pub(super) fn page_size_for_terminal(terminal_size: TuiTerminalSize) -> usize {
+pub(super) fn page_size_for_terminal(
+    terminal_size: TuiTerminalSize,
+    picker_keys: &picker::PickerKeySet,
+) -> usize {
     let available_height = usize::from(terminal_size.height);
     if available_height < MIN_SELECTABLE_TUI_HEIGHT {
         return 0;
@@ -275,7 +295,7 @@ pub(super) fn page_size_for_terminal(terminal_size: TuiTerminalSize) -> usize {
 
     available_height
         .saturating_sub(FOOTER_LINE_COUNT)
-        .min(picker::PICKER_SELECTION_KEYS.len())
+        .min(picker_keys.len())
 }
 
 pub(super) fn page_count(total_panes: usize, page_size: usize) -> usize {

@@ -243,9 +243,13 @@ fn resolve_command_config(icons: Option<IconMode>) -> Result<ResolvedConfig> {
     config::resolve_config(config::CliConfigOverrides { icons })
 }
 
+fn resolve_icon_config(icons: Option<IconMode>) -> Result<config::ResolvedIconConfig> {
+    config::resolve_icon_config(config::CliConfigOverrides { icons })
+}
+
 fn resolve_text_icon_mode(format: OutputFormat, icons: Option<IconMode>) -> Result<IconMode> {
     match format {
-        OutputFormat::Text => Ok(resolve_command_config(icons)?.icons),
+        OutputFormat::Text => Ok(resolve_icon_config(icons)?.icons),
         OutputFormat::Json => Ok(IconMode::default()),
     }
 }
@@ -293,11 +297,12 @@ fn emit_filtered_snapshot(
 }
 
 fn command_providers(args: &ProvidersArgs) -> Result<()> {
-    let config = resolve_command_config(args.icons)?;
+    let config = resolve_icon_config(args.icons)?;
     output::emit_providers(&provider_summaries(config.icons), args.format, config.icons)
 }
 
 fn command_hotkeys(args: &HotkeysArgs) -> Result<()> {
+    let config = config::resolve_picker_config()?;
     let mut snapshot = snapshot_for_consumer(args.refresh, args.auto_start)?;
     snapshot::filter_snapshot(&mut snapshot, args.all);
     // Best-effort: resolve the focused pane and attached-client count live from
@@ -309,18 +314,20 @@ fn command_hotkeys(args: &HotkeysArgs) -> Result<()> {
             &snapshot.panes,
             focus.focused_session.as_deref(),
             u32::try_from(focus.attached_client_count).unwrap_or(u32::MAX),
+            &config.picker_keys,
         ),
         args.format,
     )
 }
 
 fn command_hotkey(args: &HotkeyArgs) -> Result<()> {
-    let selected_key = picker::normalize_picker_key(&args.key)?;
+    let config = config::resolve_picker_config()?;
+    let selected_key = picker::normalize_picker_key(&args.key, &config.picker_keys)?;
     let mut snapshot = snapshot_for_consumer(args.refresh, args.auto_start)?;
     snapshot::filter_snapshot(&mut snapshot, args.all);
     // Focus highlight and client count are irrelevant when resolving a key to a
     // pane to switch to.
-    let rows = picker::picker_rows(&snapshot.panes, None, 0);
+    let rows = picker::picker_rows(&snapshot.panes, None, 0, &config.picker_keys);
     let row = rows
         .iter()
         .find(|row| row.key == selected_key)
@@ -336,7 +343,7 @@ fn command_hotkey(args: &HotkeyArgs) -> Result<()> {
 
 fn command_tui(args: &TuiArgs) -> Result<()> {
     let config = resolve_command_config(args.icons)?;
-    tui::run(args, config.icons)
+    tui::run(args, config)
 }
 
 fn command_snapshot(args: &SnapshotArgs) -> Result<()> {

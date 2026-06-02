@@ -1,5 +1,6 @@
 #[test]
 fn picker_rows_assign_tui_keys_and_expose_display_contract() {
+    let picker_keys = super::picker::PickerKeySet::default();
     let mut panes = vec![
         proc_fallback_pane(42, "codex", "Codex"),
         proc_fallback_pane(43, "claude", "Claude Code"),
@@ -11,7 +12,7 @@ fn picker_rows_assign_tui_keys_and_expose_display_contract() {
     panes[1].status = PaneStatus::metadata(StatusKind::Busy);
     panes[1].display.label = "Split Task".to_string();
 
-    let rows = super::picker::picker_rows(&panes, None, 0);
+    let rows = super::picker::picker_rows(&panes, None, 0, &picker_keys);
 
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].key, '1');
@@ -26,20 +27,56 @@ fn picker_rows_assign_tui_keys_and_expose_display_contract() {
 
 #[test]
 fn picker_key_normalization_accepts_supported_keys_only() {
-    assert_eq!(super::picker::normalize_picker_key("q").unwrap(), 'Q');
-    assert_eq!(super::picker::normalize_picker_key("Q").unwrap(), 'Q');
-    assert_eq!(super::picker::normalize_picker_key("1").unwrap(), '1');
+    let picker_keys = super::picker::PickerKeySet::default();
 
-    let error = super::picker::normalize_picker_key("a").unwrap_err();
+    assert_eq!(
+        super::picker::normalize_picker_key("q", &picker_keys).unwrap(),
+        'Q'
+    );
+    assert_eq!(
+        super::picker::normalize_picker_key("Q", &picker_keys).unwrap(),
+        'Q'
+    );
+    assert_eq!(
+        super::picker::normalize_picker_key("1", &picker_keys).unwrap(),
+        '1'
+    );
+
+    let error = super::picker::normalize_picker_key("a", &picker_keys).unwrap_err();
     assert!(
         error.to_string().contains("is not supported"),
         "expected unsupported key error, got {error:#}"
     );
 
-    let error = super::picker::normalize_picker_key("qq").unwrap_err();
+    let error = super::picker::normalize_picker_key("qq", &picker_keys).unwrap_err();
     assert!(
         error.to_string().contains("must be a single key"),
         "expected single-key error, got {error:#}"
+    );
+}
+
+#[test]
+fn picker_rows_accept_custom_key_order() {
+    let picker_keys = super::picker::PickerKeySet::from_config_values(&custom_picker_key_values())
+        .expect("custom key set should parse");
+    let panes = vec![
+        proc_fallback_pane(42, "codex", "Codex"),
+        proc_fallback_pane(43, "claude", "Claude Code"),
+    ];
+
+    let rows = super::picker::picker_rows(&panes, None, 0, &picker_keys);
+
+    assert_eq!(rows[0].key, 'A');
+    assert_eq!(rows[1].key, 'S');
+    assert_eq!(
+        super::picker::normalize_picker_key("s", &picker_keys).unwrap(),
+        'S'
+    );
+    assert!(
+        super::picker::normalize_picker_key("1", &picker_keys)
+            .unwrap_err()
+            .to_string()
+            .contains("is not supported")
     );
 }
 
@@ -90,7 +127,8 @@ fn active_flags_propagate_through_pane_record_and_picker() {
 
     // The is_active flag flows into the picker projection clients consume.
     let panes = vec![focused, pane_active_other_window, inactive];
-    let rows = super::picker::picker_rows(&panes, None, 2);
+    let picker_keys = super::picker::PickerKeySet::default();
+    let rows = super::picker::picker_rows(&panes, None, 2, &picker_keys);
     assert!(rows[0].is_active);
     assert!(!rows[1].is_active);
     assert!(!rows[2].is_active);
@@ -101,16 +139,15 @@ fn active_flags_propagate_through_pane_record_and_picker() {
 
     // With the "notes" session focused, only the active pane of that session is
     // the live pane; an active-but-not-window-active pane stays unfocused.
-    let focused_rows = super::picker::picker_rows(&panes, Some("notes"), 1);
+    let focused_rows = super::picker::picker_rows(&panes, Some("notes"), 1, &picker_keys);
     assert!(focused_rows[0].is_focused);
     assert!(!focused_rows[1].is_focused);
     assert!(!focused_rows[2].is_focused);
 
     // A focused session with no matching active pane yields no live pane.
     assert!(
-        super::picker::picker_rows(&panes, Some("other"), 1)
+        super::picker::picker_rows(&panes, Some("other"), 1, &picker_keys)
             .iter()
             .all(|row| !row.is_focused)
     );
 }
-

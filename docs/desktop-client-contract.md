@@ -15,7 +15,7 @@ For a local target, the desktop command runner executes commands directly:
 agentscan daemon status --format json
 agentscan subscribe --format json
 agentscan hotkeys --format json
-agentscan hotkey q
+agentscan hotkey <key>
 agentscan focus %1
 ```
 
@@ -26,7 +26,7 @@ through the user's normal SSH configuration and authentication:
 ssh workbox agentscan daemon status --format json
 ssh workbox agentscan subscribe --format json
 ssh workbox agentscan hotkeys --format json
-ssh workbox agentscan hotkey q
+ssh workbox agentscan hotkey <key>
 ssh workbox agentscan focus %1
 ```
 
@@ -34,6 +34,11 @@ The desktop app treats SSH as transport around stdout, stderr, exit status, and
 process cancellation. It must not tunnel the daemon Unix socket as the primary
 remote design, parse remote tmux directly, or duplicate scanner logic in
 desktop code.
+
+Picker selection keys are part of the CLI picker model. Desktop clients must
+render and activate the returned `row.key` values from
+`agentscan hotkeys --format json` instead of assuming the built-in default order,
+because users can customize `picker_keys` in the host `agentscan` config.
 
 ## macOS Window Lifecycle
 
@@ -164,7 +169,7 @@ A desktop SSH exec often has no current tmux client, so when the desktop owns
 or knows the intended remote tmux view it should pass that client explicitly:
 
 ```sh
-ssh workbox agentscan hotkey q --client-tty /dev/pts/7
+ssh workbox agentscan hotkey <key> --client-tty /dev/pts/7
 ssh workbox agentscan focus %1 --client-tty /dev/pts/7
 ```
 

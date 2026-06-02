@@ -86,6 +86,10 @@ fn config_defaults_to_emoji_when_file_is_missing() {
 
     assert_eq!(resolved.icons, IconMode::Emoji);
     assert_eq!(
+        resolved.picker_keys.keys(),
+        &super::picker::DEFAULT_PICKER_SELECTION_KEYS
+    );
+    assert_eq!(
         resolved.config_path.as_deref(),
         Some(tempdir.path().join("agentscan/config.toml").as_path())
     );
@@ -107,6 +111,101 @@ fn config_reads_icon_mode_from_file() {
         config::resolve_config_from_source(&source).expect("config file should be parsed");
 
     assert_eq!(resolved.icons, IconMode::NerdFont);
+}
+
+#[test]
+fn config_reads_custom_picker_keys_from_file() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let config_dir = tempdir.path().join("agentscan");
+    std::fs::create_dir_all(&config_dir).expect("config dir should be created");
+    std::fs::write(
+        config_dir.join("config.toml"),
+        format!("picker_keys = {}\n", custom_picker_keys_toml()),
+    )
+    .expect("config file should be written");
+    let source = config::ConfigSource {
+        xdg_config_home: Some(tempdir.path().to_path_buf()),
+        ..config::ConfigSource::default()
+    };
+
+    let resolved =
+        config::resolve_config_from_source(&source).expect("config file should be parsed");
+
+    assert_eq!(resolved.picker_keys.keys(), &custom_picker_keys_expected());
+}
+
+#[test]
+fn icon_config_ignores_invalid_picker_keys() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let config_dir = tempdir.path().join("agentscan");
+    std::fs::create_dir_all(&config_dir).expect("config dir should be created");
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "icons = \"nerd-font\"\npicker_keys = []\n",
+    )
+    .expect("config file should be written");
+    let source = config::ConfigSource {
+        xdg_config_home: Some(tempdir.path().to_path_buf()),
+        ..config::ConfigSource::default()
+    };
+
+    let resolved = config::resolve_icon_config_from_source(&source)
+        .expect("icon-only config should ignore picker key validation");
+
+    assert_eq!(resolved.icons, IconMode::NerdFont);
+}
+
+#[test]
+fn picker_config_ignores_invalid_icons() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let config_dir = tempdir.path().join("agentscan");
+    std::fs::create_dir_all(&config_dir).expect("config dir should be created");
+    std::fs::write(
+        config_dir.join("config.toml"),
+        format!("icons = \"symbols\"\npicker_keys = {}\n", custom_picker_keys_toml()),
+    )
+    .expect("config file should be written");
+    let source = config::ConfigSource {
+        xdg_config_home: Some(tempdir.path().to_path_buf()),
+        ..config::ConfigSource::default()
+    };
+
+    let resolved = config::resolve_picker_config_from_source(&source)
+        .expect("picker-only config should ignore icon validation");
+
+    assert_eq!(resolved.picker_keys.keys(), &custom_picker_keys_expected());
+}
+
+#[test]
+fn config_rejects_invalid_picker_keys() {
+    for (config_text, expected) in [
+        ("picker_keys = []\n", "exactly 16"),
+        ("picker_keys = [\"A\"]\n", "exactly 16"),
+        ("picker_keys = [\"A\", \"a\"]\n", "duplicates"),
+        ("picker_keys = [\"AB\"]\n", "single character"),
+        ("picker_keys = [\" \"]\n", "ASCII letter or digit"),
+        ("picker_keys = [\"N\"]\n", "reserved"),
+        ("picker_keys = [\"p\"]\n", "reserved"),
+    ] {
+        let tempdir = tempfile::tempdir().expect("tempdir should be created");
+        let config_dir = tempdir.path().join("agentscan");
+        std::fs::create_dir_all(&config_dir).expect("config dir should be created");
+        std::fs::write(config_dir.join("config.toml"), config_text)
+            .expect("config file should be written");
+        let source = config::ConfigSource {
+            xdg_config_home: Some(tempdir.path().to_path_buf()),
+            ..config::ConfigSource::default()
+        };
+
+        let error = config::resolve_config_from_source(&source)
+            .expect_err("invalid picker key config should be rejected");
+        let message = format!("{error:#}");
+
+        assert!(
+            message.contains(expected),
+            "expected {expected:?} error for {config_text:?}, got {message}"
+        );
+    }
 }
 
 #[test]
@@ -260,6 +359,46 @@ fn env_icon_override_bypasses_invalid_config_file() {
 }
 
 #[test]
+fn icon_cli_override_bypasses_malformed_config_file() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let config_dir = tempdir.path().join("agentscan");
+    std::fs::create_dir_all(&config_dir).expect("config dir should be created");
+    std::fs::write(config_dir.join("config.toml"), "icons = \n")
+        .expect("config file should be written");
+    let source = config::ConfigSource {
+        cli: config::CliConfigOverrides {
+            icons: Some(IconMode::Emoji),
+        },
+        xdg_config_home: Some(tempdir.path().to_path_buf()),
+        ..config::ConfigSource::default()
+    };
+
+    let resolved = config::resolve_icon_config_from_source(&source)
+        .expect("icon-only cli override should bypass config parsing");
+
+    assert_eq!(resolved.icons, IconMode::Emoji);
+}
+
+#[test]
+fn icon_env_override_bypasses_unknown_config_fields() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let config_dir = tempdir.path().join("agentscan");
+    std::fs::create_dir_all(&config_dir).expect("config dir should be created");
+    std::fs::write(config_dir.join("config.toml"), "unknown = true\n")
+        .expect("config file should be written");
+    let source = config::ConfigSource {
+        env_icons: Some("nerd-font".to_string()),
+        xdg_config_home: Some(tempdir.path().to_path_buf()),
+        ..config::ConfigSource::default()
+    };
+
+    let resolved = config::resolve_icon_config_from_source(&source)
+        .expect("icon-only env override should bypass config parsing");
+
+    assert_eq!(resolved.icons, IconMode::NerdFont);
+}
+
+#[test]
 fn empty_icon_env_is_ignored() {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let config_dir = tempdir.path().join("agentscan");
@@ -309,5 +448,5 @@ fn invalid_config_file_reports_path() {
     let message = format!("{error:#}");
 
     assert!(message.contains(config_path.to_str().expect("path should be UTF-8")));
-    assert!(message.contains("unknown variant"));
+    assert!(message.contains("invalid icons value"));
 }

@@ -118,6 +118,25 @@ fn tmux_pane_row(pane_pid: u32) -> TmuxPaneRowBuilder {
     TmuxPaneRowBuilder::new(pane_pid)
 }
 
+fn custom_picker_key_values() -> Vec<String> {
+    [
+        "a", "S", "7", "8", "9", "Q", "E", "R", "F", "G", "T", "Z", "X", "C", "V", "B",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
+}
+
+fn custom_picker_keys_toml() -> &'static str {
+    r#"["a", "S", "7", "8", "9", "Q", "E", "R", "F", "G", "T", "Z", "X", "C", "V", "B"]"#
+}
+
+fn custom_picker_keys_expected() -> [char; 16] {
+    [
+        'A', 'S', '7', '8', '9', 'Q', 'E', 'R', 'F', 'G', 'T', 'Z', 'X', 'C', 'V', 'B',
+    ]
+}
+
 fn proc_fallback_pane(pid: u32, command: &str, title: &str) -> PaneRecord {
     tmux_pane_row(pid).command(command).title(title).pane()
 }

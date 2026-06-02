@@ -54,7 +54,7 @@ Removed surfaces do not have compatibility aliases:
 There is no cache-file IPC replacement. Socket-isolated tests and harnesses
 should use `AGENTSCAN_SOCKET_PATH` when they need a non-default daemon socket.
 
-## Icon Configuration
+## Configuration
 
 Provider icon rendering is presentation-only. It does not change provider
 classification, daemon socket snapshots, or machine-readable pane records.
@@ -75,9 +75,19 @@ The config file shape is:
 
 ```toml
 icons = "emoji"
+picker_keys = [
+  "1", "2", "3", "4", "5",
+  "Q", "E", "R", "F", "G", "T",
+  "Z", "X", "C", "V", "B",
+]
 disable_reconcile = true
 disable_proc_fallback = false
 ```
+
+`picker_keys` customizes the shared picker key order. It is config-file only:
+there is no CLI or environment override. The list remaps the 16 selection slots
+and must contain exactly 16 unique single ASCII letters or digits. Letters are
+normalized case-insensitively. `N` and `P` are reserved for TUI paging.
 
 `disable_reconcile` and `disable_proc_fallback` are diagnostic runtime knobs.
 Their environment variables, `AGENTSCAN_DISABLE_RECONCILE` and
@@ -99,7 +109,7 @@ stdout parsing.
 ## Picker Hotkey Contract
 
 Picker selection keys are assigned by `agentscan`, not by tmux shell glue or
-desktop UI code. The shared key order is:
+desktop UI code. The default shared key order is:
 
 ```text
 1 2 3 4 5 Q E R F G T Z X C V B
@@ -110,6 +120,8 @@ TUI. Each row includes the assigned key, pane id, provider, status, display
   metadata, display label, structured location, and location tag. Desktop
   surfaces should consume these rows directly, or use the returned `pane_id` with
 `agentscan focus <pane-id>` when acting on a row they already rendered.
+Consumers must render the returned `key` field rather than assuming the default
+order because users may configure `picker_keys`.
 
 Use `agentscan hotkey <key>` as the strict action path for automation and
 desktop callers. It normalizes key case, resolves the key against the current

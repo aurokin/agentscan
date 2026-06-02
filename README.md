@@ -239,6 +239,11 @@ building once.
 ```toml
 # ${XDG_CONFIG_HOME:-~/.config}/agentscan/config.toml
 icons = "emoji"
+picker_keys = [
+  "1", "2", "3", "4", "5",
+  "Q", "E", "R", "F", "G", "T",
+  "Z", "X", "C", "V", "B",
+]
 disable_reconcile = false
 disable_proc_fallback = false
 ```
@@ -257,6 +262,12 @@ Icon mode precedence is CLI, then environment, then config file, then default:
 agentscan list --icons nerd-font
 AGENTSCAN_ICONS=nerd-font-patched agentscan tui
 ```
+
+Picker keys use the config file only. If omitted, the default order is
+`1 2 3 4 5 Q E R F G T Z X C V B`. Custom keys remap those 16 selection
+slots, so the list must contain exactly 16 unique single ASCII letters or
+digits; letters are normalized case-insensitively. `N` and `P` are reserved for
+TUI paging.
 
 Diagnostic toggles use environment values first, then config file values, then
 the built-in `false` default:

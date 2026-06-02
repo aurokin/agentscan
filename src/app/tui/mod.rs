@@ -37,8 +37,8 @@ enum TuiEvent {
     InputFatal(String),
 }
 
-pub(crate) fn run(args: &TuiArgs, icon_mode: IconMode) -> Result<()> {
-    let result = run_tui_loop(args, icon_mode);
+pub(crate) fn run(args: &TuiArgs, config: ResolvedConfig) -> Result<()> {
+    let result = run_tui_loop(args, config);
     write_tui_marker_from_env(
         TUI_DONE_PATH_ENV,
         if result.is_ok() { "0\n" } else { "1\n" },
@@ -46,9 +46,10 @@ pub(crate) fn run(args: &TuiArgs, icon_mode: IconMode) -> Result<()> {
     result
 }
 
-fn run_tui_loop(args: &TuiArgs, icon_mode: IconMode) -> Result<()> {
+fn run_tui_loop(args: &TuiArgs, config: ResolvedConfig) -> Result<()> {
+    let icon_mode = config.icons;
     let mut session = TerminalSession::enter()?;
-    let mut state = TuiState::default();
+    let mut state = TuiState::with_picker_keys(config.picker_keys);
     state.set_connecting("connecting to daemon".to_string());
     draw_tui_frame(&mut session.stdout, &mut state, icon_mode)?;
     write_tui_marker_from_env(TUI_READY_PATH_ENV, "")?;
