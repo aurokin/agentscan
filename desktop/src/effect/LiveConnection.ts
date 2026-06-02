@@ -82,6 +82,7 @@ const INITIAL_TARGET: Target = {
 const INITIAL_STATE: LiveState = {
   connection: { status: "connecting", message: "Starting live client" },
   rows: [],
+  rowsRunnerKey: null,
 };
 
 const setConnection =
@@ -95,8 +96,13 @@ const defectMessage = (defect: unknown): string =>
 
 // Fold one live frame into a state update, and flag terminal frames. Terminal
 // frames leave the connection untouched here; runTarget sets the terminal-specific
-// status after classification so the policy lives in one place.
-function foldEvent(event: LivePickerEvent): {
+// status after classification so the policy lives in one place. `runnerKey` stamps
+// rows with the runner that produced them so the dock can reject a prior source's
+// rows after a switch (see LiveState.rowsRunnerKey).
+function foldEvent(
+  event: LivePickerEvent,
+  runnerKey: string,
+): {
   readonly update?: (state: LiveState) => LiveState;
   readonly terminal?: Terminal;
 } {
@@ -114,6 +120,7 @@ function foldEvent(event: LivePickerEvent): {
             snapshot: event.snapshot,
           },
           rows: event.rows,
+          rowsRunnerKey: runnerKey,
         }),
       };
     case "offline":
@@ -170,6 +177,7 @@ export class LiveConnection extends Effect.Service<LiveConnection>()(
       const consumeUntilTerminal = (
         queue: Queue.Dequeue<LivePickerEnvelope>,
         epoch: number,
+        runnerKey: string,
       ): Effect.Effect<ConsumeResult> =>
         Effect.gen(function* () {
           let online = false;
@@ -183,7 +191,7 @@ export class LiveConnection extends Effect.Service<LiveConnection>()(
             if (envelope.kind === "rows") {
               online = true;
             }
-            const outcome = foldEvent(envelope);
+            const outcome = foldEvent(envelope, runnerKey);
             if (outcome.update) {
               yield* SubscriptionRef.update(stateRef, outcome.update);
             }
@@ -205,6 +213,7 @@ export class LiveConnection extends Effect.Service<LiveConnection>()(
               yield* SubscriptionRef.set(stateRef, {
                 connection: { status: "connecting", message: "Waiting for a source" },
                 rows: [],
+                rowsRunnerKey: null,
               });
               return yield* Effect.never;
             }
@@ -244,7 +253,7 @@ export class LiveConnection extends Effect.Service<LiveConnection>()(
                   // use: drain frames until terminal, unless the worker never installed.
                   (startError) =>
                     startError === null
-                      ? consumeUntilTerminal(queue, epoch)
+                      ? consumeUntilTerminal(queue, epoch, target.runnerKey)
                       : // Failing to even install the worker is an actionable transport
                         // error, not a transient daemon blip — surface the real message
                         // (with a Reconnect action) rather than fast-looping forever on a
@@ -279,6 +288,7 @@ export class LiveConnection extends Effect.Service<LiveConnection>()(
                 yield* SubscriptionRef.set(stateRef, {
                   connection: { status: "fatal", message: terminal.message },
                   rows: [],
+                  rowsRunnerKey: null,
                 });
                 // Stop re-arming; a manual reconnect/configure makes a new target.
                 return yield* Effect.never;
@@ -288,6 +298,7 @@ export class LiveConnection extends Effect.Service<LiveConnection>()(
                 yield* SubscriptionRef.set(stateRef, {
                   connection: { status: "noDaemon", message: terminal.message },
                   rows: [],
+                  rowsRunnerKey: null,
                 });
                 yield* Effect.sleep(backoff.noDaemon);
               } else {
@@ -311,6 +322,7 @@ export class LiveConnection extends Effect.Service<LiveConnection>()(
           SubscriptionRef.set(stateRef, {
             connection: { status: "fatal", message },
             rows: [],
+            rowsRunnerKey: null,
           }),
           Effect.never,
         );

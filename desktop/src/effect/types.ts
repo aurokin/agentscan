@@ -65,4 +65,10 @@ export type ConnectionStatus =
 export type LiveState = {
   connection: ConnectionStatus;
   rows: PickerRow[];
+  // The runnerKey of the subscription that produced `rows`. The dock gates rendering
+  // on this matching the active runner: after a source switch the service preserves
+  // the previous runner's rows during the new subscription's connecting window (to
+  // avoid a same-runner reconnect flicker), and those stale rows must not be shown or
+  // activated against the new runner's settings. null when there are no rows.
+  rowsRunnerKey: string | null;
 };

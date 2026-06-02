@@ -71,6 +71,7 @@ let glassOperationQueue = Promise.resolve();
 const DEFAULT_LIVE_STATE: LiveState = {
   connection: { status: "connecting", message: "Starting live client" },
   rows: [],
+  rowsRunnerKey: null,
 };
 
 type DesktopProfile = {
@@ -605,7 +606,7 @@ function App({ mode }: { mode: ShellMode }) {
   const recoveringFromFailedActivation = activation.status === "failed" && isReconnecting;
   const pickerDataState: PickerState =
     activeReadyState && !recoveringFromFailedActivation
-      ? pickerStateFromLive(live)
+      ? pickerStateFromLive(live, runnerKey)
       : { status: "loading" };
   const allPickerRows =
     pickerDataState.status === "ready" ? pickerDataState.rows : [];
@@ -2129,8 +2130,16 @@ function App({ mode }: { mode: ShellMode }) {
 // picks the view: keep showing the last rows while (re)connecting so the list
 // doesn't flash a skeleton on a brief blip, show the failure only when a fatal
 // state has actually cleared the rows, and otherwise a loading skeleton.
-function pickerStateFromLive(live: LiveState): PickerState {
-  const { connection, rows } = live;
+//
+// Rows are trusted only when their producing runner (rowsRunnerKey) matches the
+// active one. After a source switch the service preserves the previous runner's rows
+// through the new subscription's connecting window (so a same-runner reconnect won't
+// flicker), and `state`-derived readiness (preflight) can resolve for the new runner
+// before that subscription's first snapshot — without this gate the dock would briefly
+// render the prior source's panes and activate one against the new runner's settings.
+function pickerStateFromLive(live: LiveState, activeRunnerKey: string): PickerState {
+  const { connection } = live;
+  const rows = live.rowsRunnerKey === activeRunnerKey ? live.rows : [];
   if (rows.length > 0) {
     return { status: "ready", rows };
   }
@@ -2140,7 +2149,7 @@ function pickerStateFromLive(live: LiveState): PickerState {
   if (connection.status === "connecting" || connection.status === "reconnecting") {
     return { status: "loading" };
   }
-  // online or noDaemon with no rows → an empty (but resolved) list.
+  // online or noDaemon with no (matching) rows → an empty (but resolved) list.
   return { status: "ready", rows };
 }
 

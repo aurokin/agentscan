@@ -396,4 +396,71 @@ describe("LiveConnection", () => {
         ),
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
+
+  it("stamps rows with their runner and keeps the prior runner's key during a switch", () =>
+    Effect.gen(function* () {
+      const startCalls = yield* Queue.unbounded<{ epoch: number }>();
+      const events = yield* Queue.unbounded<LivePickerEnvelope>();
+      const MockTauri = Layer.succeed(TauriIpc, {
+        startLivePicker: ({ epoch }) => Queue.offer(startCalls, { epoch }).pipe(Effect.asVoid),
+        stopLivePicker: () => Effect.void,
+        loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
+        liveEvents: Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+      });
+
+      const program = Effect.gen(function* () {
+        const lc = yield* LiveConnection;
+        const awaitStatus = (status: ConnectionStatus["status"]) =>
+          lc.state.changes.pipe(
+            Stream.filter((state) => state.connection.status === status),
+            Stream.runHead,
+            Effect.flatMap(
+              Option.match({
+                onNone: () => Effect.die("state stream ended early"),
+                onSome: Effect.succeed,
+              }),
+            ),
+          );
+
+        // Source A (k1) latches and streams rows → the rows carry runner k1.
+        yield* lc.configure({ settings: SETTINGS, runnerKey: "k1", enabled: true });
+        const a = yield* Queue.take(startCalls);
+        yield* Queue.offer(events, {
+          epoch: a.epoch,
+          kind: "rows",
+          rows: [ROW],
+          snapshot: SNAPSHOT,
+        } as LivePickerEnvelope);
+        const onlineA = yield* awaitStatus("online");
+        expect(onlineA.rowsRunnerKey).toBe("k1");
+
+        // Switch to source B (k2). The new subscription is connecting and the service
+        // preserves A's rows (no same-runner flicker) — but they stay stamped k1, so
+        // the dock's runner gate (rowsRunnerKey === active) rejects them instead of
+        // rendering A's panes (and activating one against B's settings).
+        yield* lc.configure({ settings: SETTINGS, runnerKey: "k2", enabled: true });
+        const connectingB = yield* awaitStatus("connecting");
+        expect(connectingB.rowsRunnerKey).toBe("k1");
+        expect(connectingB.rows.map((r) => r.pane_id)).toEqual(["%1"]);
+
+        // B then streams its own rows → now stamped k2 and trusted.
+        const b = yield* Queue.take(startCalls);
+        yield* Queue.offer(events, {
+          epoch: b.epoch,
+          kind: "rows",
+          rows: [ROW],
+          snapshot: SNAPSHOT,
+        } as LivePickerEnvelope);
+        const onlineB = yield* awaitStatus("online");
+        expect(onlineB.rowsRunnerKey).toBe("k2");
+      });
+
+      yield* program.pipe(
+        Effect.provide(
+          LiveConnection.DefaultWithoutDependencies.pipe(
+            Layer.provide(Layer.merge(MockTauri, StableBackoff)),
+          ),
+        ),
+      );
+    }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
 });
