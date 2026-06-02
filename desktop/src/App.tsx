@@ -51,10 +51,10 @@ const WINDOW_MAX_WIDTH_VERTICAL = 520;
 const WINDOW_MAX_HEIGHT_HORIZONTAL = 200;
 const WINDOW_MAX_UNBOUNDED = 10000;
 
-// Per-row picker hotkeys are triggered with Control rather than Command: the key
-// set (1-5, Q E R F G T Z X C V B) overlaps macOS ⌘ shortcuts — ⌘Q quits, ⌘C/V/X
-// are clipboard, ⌘F/Z/R are find/undo/refresh — so ⌘ would be hostile. Control has
-// no such collisions (only emacs text-nav in inputs, which we override on a match).
+// Per-row picker hotkeys are triggered with Control rather than Command. The
+// default key set overlaps macOS ⌘ shortcuts — ⌘Q quits, ⌘C/V/X are clipboard,
+// ⌘F/Z/R are find/undo/refresh — so ⌘ would be hostile. Control has no such
+// collisions (only emacs text-nav in inputs, which we override on a match).
 const IS_MAC =
   typeof navigator !== "undefined" && /Mac|iP(hone|ad|od)/.test(navigator.platform);
 const HOTKEY_MODIFIER_LABEL = IS_MAC ? "⌃" : "Ctrl ";
@@ -1250,16 +1250,12 @@ function App({ mode }: { mode: ShellMode }) {
     // Windows/Linux, Ctrl *is* the editing modifier (Ctrl+C/V/X/Z/F), so only
     // honor the hotkey when no input/button is focused; otherwise native
     // clipboard/find/undo wins. (Key match is character-based to mirror the kbd
-    // label and the CLI's char hotkeys; non-US layouts that shift the digit row
-    // may no-op on 1-5, which is a silent miss rather than a wrong action.)
-    const ctrlActivate =
-      event.ctrlKey &&
-      !event.metaKey &&
-      !event.altKey &&
-      !event.shiftKey &&
-      event.key.length === 1;
+    // label and the CLI's configured char hotkeys; non-US layouts that shift
+    // digit keys may no-op on the default number row, which is a silent miss
+    // rather than a wrong action.)
+    const ctrlActivate = event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey;
     if (ctrlActivate && (IS_MAC || !isInteractiveShortcutTarget(event.target))) {
-      const target = pickerRows.find((row) => row.key === event.key.toUpperCase());
+      const target = pickerRowForKeyboardKey(pickerRows, event.key);
       if (target) {
         event.preventDefault();
         setSelectedPaneId(target.pane_id);
@@ -2709,6 +2705,27 @@ function liveStateLabel(status: ConnectionStatus) {
     case "connecting":
       return "Connecting";
   }
+}
+
+function pickerRowForKeyboardKey(rows: PickerRow[], key: string) {
+  const normalizedKey = normalizePickerKeyboardKey(key);
+  if (normalizedKey === null) {
+    return undefined;
+  }
+
+  // Match the key returned by `agentscan hotkeys --format json`; this keeps
+  // desktop activation tied to the user's configured picker_keys, not the
+  // built-in default order.
+  return rows.find((row) => normalizePickerKeyboardKey(row.key) === normalizedKey);
+}
+
+function normalizePickerKeyboardKey(key: string) {
+  if (key.length !== 1) {
+    return null;
+  }
+
+  const normalizedKey = key.toUpperCase();
+  return /^[A-Z0-9]$/.test(normalizedKey) ? normalizedKey : null;
 }
 
 // Persistent-window model: the global hotkey raises/focuses the window; it

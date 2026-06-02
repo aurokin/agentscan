@@ -411,6 +411,28 @@ fn tui_frame_paginates_and_limits_selection_to_visible_rows() {
 }
 
 #[test]
+fn tui_frame_uses_custom_picker_key_order() {
+    let picker_keys = super::picker::PickerKeySet::from_config_values(&custom_picker_key_values())
+        .expect("custom key set should parse");
+    let panes = (1..=5).map(tui_test_pane).collect::<Vec<_>>();
+    let mut state = super::tui::TuiState::with_picker_keys(picker_keys);
+    state.replace_panes(panes);
+
+    let frame = super::tui::render_tui_frame_for_size(
+        &mut state,
+        super::tui::TuiTerminalSize {
+            width: 120,
+            height: 12,
+        },
+    );
+
+    assert!(frame.lines[0].starts_with("[A]"));
+    assert!(frame.lines[1].starts_with("[S]"));
+    assert!(frame.lines.iter().any(|line| line.contains("Task 03")));
+    assert!(frame.lines.iter().any(|line| line.contains("Page 1/1")));
+}
+
+#[test]
 fn tui_frame_clamps_to_last_non_empty_page_after_snapshot_removal() {
     let panes = (1..=18).map(tui_test_pane).collect::<Vec<_>>();
     let mut state = super::tui::TuiState::default();

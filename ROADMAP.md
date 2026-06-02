@@ -363,6 +363,9 @@ Delivered baseline:
 - provider icon modes through CLI/env/config, with `emoji` as default and
   `agentscan providers --format json` exposing all marker data, including the
   custom patched Nerd Font `agent-icons-v8` codepoints
+- configurable 16-slot picker key order through `picker_keys` in the core config
+  file, with the previous `1 2 3 4 5 Q E R F G T Z X C V B` order preserved as
+  the default shared contract
 
 Delivered daemon architecture:
 

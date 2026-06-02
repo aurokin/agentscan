@@ -3,9 +3,69 @@ use serde::Serialize;
 
 use super::{DisplayMetadata, PaneLocation, PaneRecord, PaneStatus, Provider};
 
-pub(crate) const PICKER_SELECTION_KEYS: [char; 16] = [
+pub(crate) const DEFAULT_PICKER_SELECTION_KEYS: [char; 16] = [
     '1', '2', '3', '4', '5', 'Q', 'E', 'R', 'F', 'G', 'T', 'Z', 'X', 'C', 'V', 'B',
 ];
+
+const RESERVED_PICKER_KEYS: [char; 2] = ['N', 'P'];
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PickerKeySet {
+    keys: Vec<char>,
+}
+
+impl PickerKeySet {
+    pub(crate) fn from_config_values(values: &[String]) -> Result<Self> {
+        let mut keys = Vec::with_capacity(values.len());
+        for value in values {
+            let key = normalize_config_picker_key(value)?;
+            if RESERVED_PICKER_KEYS.contains(&key) {
+                bail!("picker key {value:?} is reserved for TUI paging");
+            }
+            if keys.contains(&key) {
+                bail!("picker key {value:?} duplicates another configured key");
+            }
+            keys.push(key);
+        }
+
+        if keys.len() != DEFAULT_PICKER_SELECTION_KEYS.len() {
+            bail!(
+                "picker_keys must contain exactly {} keys",
+                DEFAULT_PICKER_SELECTION_KEYS.len()
+            );
+        }
+
+        Ok(Self { keys })
+    }
+
+    pub(crate) fn keys(&self) -> &[char] {
+        &self.keys
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.keys.len()
+    }
+
+    fn contains(&self, key: char) -> bool {
+        self.keys.contains(&key)
+    }
+
+    fn key_list(&self) -> String {
+        self.keys
+            .iter()
+            .map(char::to_string)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+impl Default for PickerKeySet {
+    fn default() -> Self {
+        Self {
+            keys: DEFAULT_PICKER_SELECTION_KEYS.to_vec(),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub(crate) struct PickerRow {
@@ -35,10 +95,11 @@ pub(crate) fn picker_rows(
     panes: &[PaneRecord],
     focused_session: Option<&str>,
     attached_client_count: u32,
+    picker_keys: &PickerKeySet,
 ) -> Vec<PickerRow> {
     panes
         .iter()
-        .zip(PICKER_SELECTION_KEYS)
+        .zip(picker_keys.keys().iter().copied())
         .map(|(pane, key)| {
             let is_active = pane.is_active();
             PickerRow {
@@ -61,34 +122,45 @@ pub(crate) fn picker_rows(
         .collect()
 }
 
-pub(crate) fn normalize_picker_key(raw_key: &str) -> Result<char> {
+pub(crate) fn normalize_picker_key(raw_key: &str, picker_keys: &PickerKeySet) -> Result<char> {
     let trimmed = raw_key.trim();
     let mut characters = trimmed.chars();
     let Some(character) = characters.next() else {
-        bail!("hotkey must be one of {}", picker_key_list());
+        bail!("hotkey must be one of {}", picker_key_list(picker_keys));
     };
     if characters.next().is_some() {
         bail!(
             "hotkey {raw_key:?} must be a single key from {}",
-            picker_key_list()
+            picker_key_list(picker_keys)
         );
     }
 
     let normalized = character.to_ascii_uppercase();
-    if !PICKER_SELECTION_KEYS.contains(&normalized) {
+    if !picker_keys.contains(normalized) {
         bail!(
             "hotkey {raw_key:?} is not supported; expected one of {}",
-            picker_key_list()
+            picker_key_list(picker_keys)
         );
     }
 
     Ok(normalized)
 }
 
-pub(crate) fn picker_key_list() -> String {
-    PICKER_SELECTION_KEYS
-        .iter()
-        .map(char::to_string)
-        .collect::<Vec<_>>()
-        .join(" ")
+pub(crate) fn picker_key_list(picker_keys: &PickerKeySet) -> String {
+    picker_keys.key_list()
+}
+
+fn normalize_config_picker_key(raw_key: &str) -> Result<char> {
+    let mut characters = raw_key.chars();
+    let Some(character) = characters.next() else {
+        bail!("picker_keys entries must be single ASCII letters or digits");
+    };
+    if characters.next().is_some() {
+        bail!("picker key {raw_key:?} must be a single character");
+    }
+    if !character.is_ascii_alphanumeric() {
+        bail!("picker key {raw_key:?} must be an ASCII letter or digit");
+    }
+
+    Ok(character.to_ascii_uppercase())
 }

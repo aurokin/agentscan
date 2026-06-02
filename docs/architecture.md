@@ -160,6 +160,10 @@ Icon mode is a presentation concern resolved by short-lived consumers from CLI,
 environment, config file, then the built-in default. It must not affect daemon
 snapshot payloads, provider classification, or socket protocol state.
 
+Picker key order is a shared picker concern resolved from the core config file.
+Consumers should render keys returned by `agentscan hotkeys --format json`
+instead of assuming the built-in default order.
+
 ## Internal Module Boundaries
 
 The Rust implementation keeps high-churn behavior behind small concern-focused

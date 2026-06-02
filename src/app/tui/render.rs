@@ -8,7 +8,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::state::{
     TuiConnectionKind, TuiConnectionState, last_non_empty_page_start, page_count,
-    page_size_for_terminal, synchronize_key_targets,
+    page_size_for_terminal, synchronize_key_targets_with_keys,
 };
 use super::*;
 
@@ -97,7 +97,7 @@ pub(crate) fn render_tui_frame_for_size_with_icons(
         };
     }
 
-    let page_size = page_size_for_terminal(terminal_size);
+    let page_size = page_size_for_terminal(terminal_size, &state.picker_keys);
     if page_size == 0 {
         state.key_targets.clear();
         state.retired_key_targets.clear();
@@ -120,7 +120,7 @@ pub(crate) fn render_tui_frame_for_size_with_icons(
         .min(state.panes.len());
     let visible_panes = &state.panes[state.page_start..visible_end];
     let previous_key_targets = state.key_targets.clone();
-    synchronize_key_targets(&mut state.key_targets, visible_panes);
+    synchronize_key_targets_with_keys(&mut state.key_targets, visible_panes, &state.picker_keys);
     for (key, pane_id) in previous_key_targets {
         if !state.key_targets.contains_key(&key) {
             state.retired_key_targets.insert(key, pane_id);
