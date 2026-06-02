@@ -24,8 +24,35 @@ impl LifecyclePaths {
 enum LifecycleQuery {
     NotRunning(String),
     Status(Box<ipc::LifecycleStatusFrame>),
-    Incompatible(String),
+    Incompatible {
+        message: String,
+        peer_pid: Option<u32>,
+        can_signal: bool,
+    },
     Busy(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize)]
+struct DaemonSignalIdentity {
+    pid: u32,
+    #[serde(default)]
+    daemon_start_time: Option<String>,
+    executable: String,
+    #[serde(default)]
+    executable_canonical: Option<String>,
+    socket_path: String,
+}
+
+impl DaemonSignalIdentity {
+    fn from_frame(identity: &ipc::DaemonIdentityFrame) -> Self {
+        Self {
+            pid: identity.pid,
+            daemon_start_time: Some(identity.daemon_start_time.clone()),
+            executable: identity.executable.clone(),
+            executable_canonical: identity.executable_canonical.clone(),
+            socket_path: identity.socket_path.clone(),
+        }
+    }
 }
 
 // AUR-175 lands this helper before AUR-176 wires command consumers to it.
@@ -371,15 +398,20 @@ enum SubscriptionConnect {
 
 enum DaemonClientOpen {
     NotRunning(String),
-    Connected(BufReader<std::os::unix::net::UnixStream>),
+    Connected(DaemonConnection),
 }
 
 enum DaemonHello {
     Acked,
     Busy(String),
-    Rejected(String),
-    Incompatible(String),
+    Rejected { message: String, can_signal: bool },
+    Incompatible { message: String, can_signal: bool },
     Unexpected(ipc::DaemonFrame),
+}
+
+struct DaemonConnection {
+    reader: BufReader<std::os::unix::net::UnixStream>,
+    peer_pid: Option<u32>,
 }
 
 struct SubscriptionState {
@@ -763,7 +795,55 @@ fn open_daemon_client_with_frame(
             .shutdown(std::net::Shutdown::Write)
             .with_context(|| format!("failed to close daemon {operation} write side"))?;
     }
-    Ok(DaemonClientOpen::Connected(BufReader::new(stream)))
+    let peer_pid = daemon_socket_peer_pid(&stream);
+    Ok(DaemonClientOpen::Connected(DaemonConnection {
+        reader: BufReader::new(stream),
+        peer_pid,
+    }))
+}
+
+#[cfg(target_os = "linux")]
+fn daemon_socket_peer_pid(stream: &std::os::unix::net::UnixStream) -> Option<u32> {
+    let mut credentials = std::mem::MaybeUninit::<libc::ucred>::zeroed();
+    let mut credentials_len = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).ok()?;
+    let result = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            credentials.as_mut_ptr().cast(),
+            &mut credentials_len,
+        )
+    };
+    if result != 0 {
+        return None;
+    }
+    let credentials = unsafe { credentials.assume_init() };
+    u32::try_from(credentials.pid).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn daemon_socket_peer_pid(stream: &std::os::unix::net::UnixStream) -> Option<u32> {
+    let mut peer_pid = 0 as libc::pid_t;
+    let mut peer_pid_len = libc::socklen_t::try_from(std::mem::size_of::<libc::pid_t>()).ok()?;
+    let result = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            std::ptr::addr_of_mut!(peer_pid).cast(),
+            &mut peer_pid_len,
+        )
+    };
+    if result != 0 {
+        return None;
+    }
+    u32::try_from(peer_pid).ok()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn daemon_socket_peer_pid(_stream: &std::os::unix::net::UnixStream) -> Option<u32> {
+    None
 }
 
 fn daemon_hello_write_not_running_reason(
@@ -785,9 +865,13 @@ fn classify_daemon_hello_frame(frame: ipc::DaemonFrame, operation: &str) -> Daem
             reason: ipc::ShutdownReason::ServerBusy,
             message,
         } => DaemonHello::Busy(message),
-        ipc::DaemonFrame::Shutdown { reason, message } => DaemonHello::Rejected(format!(
-            "daemon rejected {operation} handshake ({reason:?}): {message}"
-        )),
+        ipc::DaemonFrame::Shutdown { reason, message } => DaemonHello::Rejected {
+            message: format!("daemon rejected {operation} handshake ({reason:?}): {message}"),
+            can_signal: matches!(
+                reason,
+                ipc::ShutdownReason::ProtocolMismatch | ipc::ShutdownReason::SchemaMismatch
+            ),
+        },
         ipc::DaemonFrame::HelloAck {
             protocol_version,
             snapshot_schema_version,
@@ -799,51 +883,74 @@ fn classify_daemon_hello_frame(frame: ipc::DaemonFrame, operation: &str) -> Daem
         ipc::DaemonFrame::HelloAck {
             protocol_version,
             snapshot_schema_version,
-        } => DaemonHello::Incompatible(format!(
-            "daemon acknowledged incompatible {operation} handshake (protocol {protocol_version}, schema {snapshot_schema_version}; expected protocol {}, schema {})",
-            ipc::WIRE_PROTOCOL_VERSION,
-            CACHE_SCHEMA_VERSION
-        )),
+        } => DaemonHello::Incompatible {
+            message: format!(
+                "daemon acknowledged incompatible {operation} handshake (protocol {protocol_version}, schema {snapshot_schema_version}; expected protocol {}, schema {})",
+                ipc::WIRE_PROTOCOL_VERSION,
+                CACHE_SCHEMA_VERSION
+            ),
+            can_signal: true,
+        },
         other => DaemonHello::Unexpected(other),
     }
 }
 
 fn lifecycle_status_once(socket_path: &Path) -> Result<LifecycleQuery> {
-    let mut reader = match open_daemon_client(
+    let connection = match open_daemon_client(
         socket_path,
         ipc::ClientMode::LifecycleStatus,
         "lifecycle",
         true,
     )? {
         DaemonClientOpen::NotRunning(reason) => return Ok(LifecycleQuery::NotRunning(reason)),
-        DaemonClientOpen::Connected(reader) => reader,
+        DaemonClientOpen::Connected(connection) => connection,
     };
+    let peer_pid = connection.peer_pid;
+    let mut reader = connection.reader;
     let Some(first_frame) = ipc::read_daemon_frame(&mut reader)? else {
-        return Ok(LifecycleQuery::Incompatible(
-            "daemon closed without lifecycle response".to_string(),
-        ));
+        return Ok(LifecycleQuery::Incompatible {
+            message: "daemon closed without lifecycle response".to_string(),
+            peer_pid,
+            can_signal: false,
+        });
     };
     match classify_daemon_hello_frame(first_frame, "lifecycle") {
         DaemonHello::Busy(message) => Ok(LifecycleQuery::Busy(message)),
-        DaemonHello::Rejected(message) | DaemonHello::Incompatible(message) => {
-            Ok(LifecycleQuery::Incompatible(message))
+        DaemonHello::Rejected {
+            message,
+            can_signal,
         }
+        | DaemonHello::Incompatible {
+            message,
+            can_signal,
+        } => Ok(LifecycleQuery::Incompatible {
+            message,
+            peer_pid,
+            can_signal,
+        }),
         DaemonHello::Acked => {
             let Some(second_frame) = ipc::read_daemon_frame(&mut reader)? else {
-                return Ok(LifecycleQuery::Incompatible(
-                    "daemon acknowledged lifecycle hello but did not send status".to_string(),
-                ));
+                return Ok(LifecycleQuery::Incompatible {
+                    message: "daemon acknowledged lifecycle hello but did not send status"
+                        .to_string(),
+                    peer_pid,
+                    can_signal: false,
+                });
             };
             match second_frame {
                 ipc::DaemonFrame::LifecycleStatus { status } => Ok(LifecycleQuery::Status(status)),
-                other => Ok(LifecycleQuery::Incompatible(format!(
-                    "daemon returned unexpected lifecycle frame {other:?}"
-                ))),
+                other => Ok(LifecycleQuery::Incompatible {
+                    message: format!("daemon returned unexpected lifecycle frame {other:?}"),
+                    peer_pid,
+                    can_signal: false,
+                }),
             }
         }
-        DaemonHello::Unexpected(other) => Ok(LifecycleQuery::Incompatible(format!(
-            "daemon returned unexpected lifecycle frame {other:?}"
-        ))),
+        DaemonHello::Unexpected(other) => Ok(LifecycleQuery::Incompatible {
+            message: format!("daemon returned unexpected lifecycle frame {other:?}"),
+            peer_pid,
+            can_signal: false,
+        }),
     }
 }
 
@@ -852,7 +959,7 @@ fn snapshot_once_from_socket(socket_path: &Path) -> Result<SnapshotQuery> {
     let mut reader =
         match open_daemon_client(socket_path, ipc::ClientMode::Snapshot, "snapshot", true)? {
             DaemonClientOpen::NotRunning(reason) => return Ok(SnapshotQuery::NotRunning(reason)),
-            DaemonClientOpen::Connected(reader) => reader,
+            DaemonClientOpen::Connected(connection) => connection.reader,
         };
     let Some(first_frame) = ipc::read_daemon_frame(&mut reader)? else {
         return Ok(SnapshotQuery::Unexpected(
@@ -861,7 +968,7 @@ fn snapshot_once_from_socket(socket_path: &Path) -> Result<SnapshotQuery> {
     };
     match classify_daemon_hello_frame(first_frame, "snapshot") {
         DaemonHello::Busy(message) => Ok(SnapshotQuery::Busy(message)),
-        DaemonHello::Rejected(message) | DaemonHello::Incompatible(message) => {
+        DaemonHello::Rejected { message, .. } | DaemonHello::Incompatible { message, .. } => {
             Ok(SnapshotQuery::Incompatible(message))
         }
         DaemonHello::Acked => {
@@ -912,14 +1019,14 @@ fn emit_client_event_once(
         DaemonClientOpen::NotRunning(_) => {
             return Ok(ClientEventEmit::NotRunning);
         }
-        DaemonClientOpen::Connected(reader) => reader,
+        DaemonClientOpen::Connected(connection) => connection.reader,
     };
     let Some(first_frame) = ipc::read_daemon_frame(&mut reader)? else {
         return Ok(ClientEventEmit::Unexpected);
     };
     match classify_daemon_hello_frame(first_frame, "client event") {
         DaemonHello::Busy(_) => Ok(ClientEventEmit::Busy),
-        DaemonHello::Rejected(_) | DaemonHello::Incompatible(_) => {
+        DaemonHello::Rejected { .. } | DaemonHello::Incompatible { .. } => {
             Ok(ClientEventEmit::Incompatible)
         }
         DaemonHello::Acked => match ipc::read_daemon_frame(&mut reader)? {
@@ -1232,7 +1339,7 @@ fn subscribe_once_from_socket(socket_path: &Path) -> Result<SubscriptionConnect>
         DaemonClientOpen::NotRunning(reason) => {
             return Ok(SubscriptionConnect::NotRunning(reason));
         }
-        DaemonClientOpen::Connected(reader) => reader,
+        DaemonClientOpen::Connected(connection) => connection.reader,
     };
     let Some(first_frame) = (match read_subscription_bootstrap_frame(&mut reader) {
         BootstrapFrameRead::Frame(frame) => frame,
@@ -1244,7 +1351,7 @@ fn subscribe_once_from_socket(socket_path: &Path) -> Result<SubscriptionConnect>
     };
     match classify_daemon_hello_frame(first_frame, "subscription") {
         DaemonHello::Busy(message) => Ok(SubscriptionConnect::Retryable(message)),
-        DaemonHello::Rejected(message) | DaemonHello::Incompatible(message) => {
+        DaemonHello::Rejected { message, .. } | DaemonHello::Incompatible { message, .. } => {
             Ok(SubscriptionConnect::Incompatible(message))
         }
         DaemonHello::Acked => {
@@ -2379,7 +2486,7 @@ fn wait_for_daemon_readiness(
                     log_path: paths.log_path.clone(),
                 });
             }
-            LifecycleQuery::Incompatible(message) => {
+            LifecycleQuery::Incompatible { message, .. } => {
                 return Err(DaemonSnapshotError::Incompatible { message });
             }
             LifecycleQuery::Busy(message) => {
@@ -2423,14 +2530,162 @@ fn matching_live_status(
             status.identity.pid
         ),
         LifecycleQuery::NotRunning(reason) => bail!("daemon is no longer running: {reason}"),
-        LifecycleQuery::Incompatible(message) => {
+        LifecycleQuery::Incompatible { message, .. } => {
             bail!("{message}; not signaling an incompatible daemon")
         }
         LifecycleQuery::Busy(message) => bail!("{message}; not signaling daemon while busy"),
     }
 }
 
-fn validate_live_identity_for_signal(identity: &ipc::DaemonIdentityFrame) -> Result<()> {
+fn read_identity_sidecar(identity_path: &Path) -> Result<DaemonSignalIdentity> {
+    let bytes = fs::read(identity_path)
+        .with_context(|| format!("failed to read identity {}", identity_path.display()))?;
+    serde_json::from_slice::<DaemonSignalIdentity>(&bytes)
+        .with_context(|| format!("failed to parse identity {}", identity_path.display()))
+}
+
+fn validate_sidecar_identity_for_signal(
+    socket_path: &Path,
+    paths: &LifecyclePaths,
+    identity: &DaemonSignalIdentity,
+    peer_pid: Option<u32>,
+) -> Result<()> {
+    if Path::new(&identity.socket_path) != socket_path {
+        bail!(
+            "daemon identity sidecar socket path {} does not match {}; not signaling incompatible daemon",
+            identity.socket_path,
+            socket_path.display()
+        );
+    }
+    validate_sidecar_peer_pid(identity, peer_pid)?;
+    validate_live_identity_for_signal(identity)?;
+    validate_lifecycle_lock_held(paths)?;
+    validate_live_executable_matches_sidecar(identity)?;
+    Ok(())
+}
+
+fn validate_sidecar_peer_pid(identity: &DaemonSignalIdentity, peer_pid: Option<u32>) -> Result<()> {
+    let Some(peer_pid) = peer_pid else {
+        bail!("daemon socket peer pid is unavailable; not signaling incompatible daemon");
+    };
+    if peer_pid != identity.pid {
+        bail!(
+            "daemon identity sidecar pid {} does not match socket peer pid {}; not signaling incompatible daemon",
+            identity.pid,
+            peer_pid
+        );
+    }
+    Ok(())
+}
+
+fn validate_lifecycle_lock_held(paths: &LifecyclePaths) -> Result<()> {
+    let lock_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&paths.lock_path)
+        .with_context(|| format!("failed to open daemon lock {}", paths.lock_path.display()))?;
+    let result = unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if result == 0 {
+        unsafe {
+            libc::flock(lock_file.as_raw_fd(), libc::LOCK_UN);
+        }
+        bail!(
+            "daemon identity sidecar is stale because lock {} is not held; not signaling incompatible daemon",
+            paths.lock_path.display()
+        );
+    }
+
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::EWOULDBLOCK) || error.raw_os_error() == Some(libc::EAGAIN)
+    {
+        Ok(())
+    } else {
+        Err(error).with_context(|| format!("failed to inspect {}", paths.lock_path.display()))
+    }
+}
+
+fn validate_live_executable_matches_sidecar(identity: &DaemonSignalIdentity) -> Result<()> {
+    let Some(live_executable) = live_process_executable(identity.pid) else {
+        return Ok(());
+    };
+    let expected = identity
+        .executable_canonical
+        .as_deref()
+        .filter(|path| !path.trim().is_empty())
+        .unwrap_or(&identity.executable);
+    if expected.trim().is_empty() {
+        return Ok(());
+    }
+
+    let expected_path = normalize_executable_path(Path::new(expected));
+    let live_path = normalize_executable_path(&live_executable);
+    if expected_path == live_path {
+        return Ok(());
+    }
+
+    bail!(
+        "daemon identity pid {} now points at executable {}; expected {}; not signaling incompatible daemon",
+        identity.pid,
+        live_path.display(),
+        expected_path.display()
+    );
+}
+
+fn validate_initially_matched_identity_for_forced_signal(
+    identity: &DaemonSignalIdentity,
+) -> Result<()> {
+    validate_live_identity_for_signal(identity)?;
+    validate_live_executable_matches_sidecar(identity)
+}
+
+fn normalize_executable_path(path: &Path) -> PathBuf {
+    let path = strip_deleted_executable_suffix(path);
+    fs::canonicalize(&path).unwrap_or(path)
+}
+
+#[cfg(target_os = "linux")]
+fn strip_deleted_executable_suffix(path: &Path) -> PathBuf {
+    let path_text = path.as_os_str().to_string_lossy();
+    path_text
+        .strip_suffix(" (deleted)")
+        .map_or_else(|| path.to_path_buf(), PathBuf::from)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn strip_deleted_executable_suffix(path: &Path) -> PathBuf {
+    path.to_path_buf()
+}
+
+#[cfg(target_os = "linux")]
+fn live_process_executable(pid: u32) -> Option<PathBuf> {
+    fs::read_link(format!("/proc/{pid}/exe")).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn live_process_executable(pid: u32) -> Option<PathBuf> {
+    let mut buffer = vec![0_u8; 4096];
+    let length = unsafe {
+        libc::proc_pidpath(
+            pid as libc::c_int,
+            buffer.as_mut_ptr().cast(),
+            u32::try_from(buffer.len()).ok()?,
+        )
+    };
+    if length <= 0 {
+        return None;
+    }
+    let length = usize::try_from(length).ok()?;
+    buffer.truncate(length);
+    let path = std::str::from_utf8(&buffer).ok()?.trim_end_matches('\0');
+    (!path.trim().is_empty()).then(|| PathBuf::from(path))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn live_process_executable(_pid: u32) -> Option<PathBuf> {
+    None
+}
+
+fn validate_live_identity_for_signal(identity: &DaemonSignalIdentity) -> Result<()> {
     if identity.pid == 0 {
         bail!("daemon live identity did not include a valid pid");
     }
@@ -2468,10 +2723,7 @@ fn wait_for_process_exit(pid: u32, timeout: Duration) -> Result<bool> {
     }
 }
 
-fn remove_matching_identity(
-    identity_path: &Path,
-    identity: &ipc::DaemonIdentityFrame,
-) -> Result<()> {
+fn remove_matching_identity(identity_path: &Path, identity: &DaemonSignalIdentity) -> Result<()> {
     let bytes = match fs::read(identity_path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -2480,7 +2732,7 @@ fn remove_matching_identity(
                 .with_context(|| format!("failed to read identity {}", identity_path.display()));
         }
     };
-    let current = serde_json::from_slice::<ipc::DaemonIdentityFrame>(&bytes)
+    let current = serde_json::from_slice::<DaemonSignalIdentity>(&bytes)
         .with_context(|| format!("failed to parse identity {}", identity_path.display()))?;
     if current != *identity {
         return Ok(());
@@ -2534,7 +2786,9 @@ fn daemon_start_existing_status(
                 lifecycle_state_label(status.state)
             ),
         }),
-        LifecycleQuery::Incompatible(message) => Err(DaemonSnapshotError::Incompatible { message }),
+        LifecycleQuery::Incompatible { message, .. } => {
+            Err(DaemonSnapshotError::Incompatible { message })
+        }
         LifecycleQuery::Busy(message) => Err(DaemonSnapshotError::ServerBusy {
             message: format!("{message}; retry daemon start later"),
         }),
@@ -2568,7 +2822,7 @@ pub(crate) fn daemon_status_with_socket_path(
         LifecycleQuery::Status(status) => {
             emit_lifecycle_status(&paths, &status, format, include_events)
         }
-        LifecycleQuery::Incompatible(message) => {
+        LifecycleQuery::Incompatible { message, .. } => {
             bail!("{}", incompatible_daemon_guidance(&message))
         }
         LifecycleQuery::Busy(message) => bail!("{message}"),
@@ -3067,30 +3321,81 @@ pub(crate) fn daemon_stop() -> Result<()> {
             print_lifecycle_not_running(&socket_path, &paths, &reason);
             Ok(())
         }
-        LifecycleQuery::Incompatible(message) => {
-            bail!("{message}; not signaling an incompatible daemon")
+        LifecycleQuery::Incompatible {
+            message,
+            peer_pid,
+            can_signal,
+        } => {
+            if can_signal {
+                stop_incompatible_daemon_from_identity(&socket_path, &paths, &message, peer_pid)
+            } else {
+                bail!("{message}; not signaling an incompatible daemon")
+            }
         }
         LifecycleQuery::Busy(message) => bail!("{message}; not signaling daemon while busy"),
         LifecycleQuery::Status(status) => {
-            validate_live_identity_for_signal(&status.identity)?;
-            signal_process(status.identity.pid, libc::SIGTERM)?;
-            if !wait_for_process_exit(status.identity.pid, DAEMON_STOP_TIMEOUT)? {
-                let live_status = matching_live_status(&socket_path, &status.identity)?;
-                validate_live_identity_for_signal(&live_status.identity)?;
-                signal_process(live_status.identity.pid, libc::SIGKILL)?;
-                if !wait_for_process_exit(live_status.identity.pid, DAEMON_STOP_TIMEOUT)? {
-                    bail!(
-                        "timed out waiting for daemon pid {} to exit after SIGKILL",
-                        live_status.identity.pid
-                    );
-                }
-            }
-            remove_stale_socket_if_present(&socket_path)?;
-            remove_matching_identity(&paths.identity_path, &status.identity)?;
-            println!("agentscan daemon stopped");
-            Ok(())
+            stop_compatible_daemon(&socket_path, &paths, &status.identity)
         }
     }
+}
+
+fn stop_compatible_daemon(
+    socket_path: &Path,
+    paths: &LifecyclePaths,
+    identity: &ipc::DaemonIdentityFrame,
+) -> Result<()> {
+    let signal_identity = DaemonSignalIdentity::from_frame(identity);
+    validate_live_identity_for_signal(&signal_identity)?;
+    signal_process(signal_identity.pid, libc::SIGTERM)?;
+    if !wait_for_process_exit(signal_identity.pid, DAEMON_STOP_TIMEOUT)? {
+        let live_status = matching_live_status(socket_path, identity)?;
+        let live_signal_identity = DaemonSignalIdentity::from_frame(&live_status.identity);
+        validate_live_identity_for_signal(&live_signal_identity)?;
+        signal_process(live_signal_identity.pid, libc::SIGKILL)?;
+        if !wait_for_process_exit(live_signal_identity.pid, DAEMON_STOP_TIMEOUT)? {
+            bail!(
+                "timed out waiting for daemon pid {} to exit after SIGKILL",
+                live_signal_identity.pid
+            );
+        }
+    }
+    finish_daemon_stop(socket_path, paths, &signal_identity)
+}
+
+fn stop_incompatible_daemon_from_identity(
+    socket_path: &Path,
+    paths: &LifecyclePaths,
+    handshake_message: &str,
+    peer_pid: Option<u32>,
+) -> Result<()> {
+    let identity = read_identity_sidecar(&paths.identity_path)
+        .with_context(|| format!("{handshake_message}; identity sidecar is unavailable"))?;
+    validate_sidecar_identity_for_signal(socket_path, paths, &identity, peer_pid)
+        .with_context(|| format!("{handshake_message}; identity sidecar is not safe to signal"))?;
+
+    signal_process(identity.pid, libc::SIGTERM)?;
+    if !wait_for_process_exit(identity.pid, DAEMON_STOP_TIMEOUT)? {
+        validate_initially_matched_identity_for_forced_signal(&identity)?;
+        signal_process(identity.pid, libc::SIGKILL)?;
+        if !wait_for_process_exit(identity.pid, DAEMON_STOP_TIMEOUT)? {
+            bail!(
+                "timed out waiting for daemon pid {} to exit after SIGKILL",
+                identity.pid
+            );
+        }
+    }
+    finish_daemon_stop(socket_path, paths, &identity)
+}
+
+fn finish_daemon_stop(
+    socket_path: &Path,
+    paths: &LifecyclePaths,
+    identity: &DaemonSignalIdentity,
+) -> Result<()> {
+    remove_stale_socket_if_present(socket_path)?;
+    remove_matching_identity(&paths.identity_path, identity)?;
+    println!("agentscan daemon stopped");
+    Ok(())
 }
 
 pub(crate) fn daemon_restart() -> Result<()> {

@@ -270,7 +270,7 @@ a daemon/tmux integration issue.
 |---------|--------------|-----------|
 | Not running JSON shape | daemon socket missing and auto-start disabled or refused | remove `--no-auto-start`, unset `AGENTSCAN_NO_AUTO_START`, or run `agentscan daemon run` |
 | macOS detached start refused | executable is ad-hoc, invalidly signed, quarantined, or otherwise untrusted | use a signed/notarized build or run foreground `agentscan daemon run` |
-| Protocol/schema incompatible | old daemon still running after upgrade | `agentscan daemon restart` |
+| Protocol/schema incompatible | old daemon still running after upgrade | `agentscan daemon restart`; `agentscan daemon stop` can terminate a mismatched daemon when its identity sidecar and lifecycle lock validate |
 | tmux gone or unavailable | tmux server exited or is not reachable from daemon environment | restart tmux or point `AGENTSCAN_TMUX_SOCKET` at the intended server |
 | Repeated broker fallback | control-mode command path is failing | inspect daemon status JSON and logs, then restart daemon if needed |
 | Remote desktop profile cannot focus | SSH exec has no current tmux client | configure/pass `--client-tty` when known |
