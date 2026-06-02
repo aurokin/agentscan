@@ -195,6 +195,7 @@ Automation contract:
   display markers for all icon modes, marker codepoints, and matching aliases
 - `agentscan hotkeys --format json` exposes the shared picker row model
 - `agentscan hotkey <key>` activates a shared picker key through the same focus path
+- `agentscan tmux hotkey <key>` activates a shared picker key from tmux binds and reports misses with `display-message`
 - TUI-shaped TSV or JSON output is not a supported long-term contract
 
 Operational commands:
@@ -215,6 +216,7 @@ Operational commands:
 - `agentscan hotkeys`
 - `agentscan hotkey <key>`
 - `agentscan tui`
+- `agentscan tmux hotkey <key>`
 - `agentscan tmux set-metadata`
 - `agentscan tmux clear-metadata`
 
@@ -288,7 +290,9 @@ Use:
 - `agentscan providers --format json` for supported provider names, display
   markers for all icon modes, marker codepoints, and aliases
 - `agentscan hotkeys --format json` for shared picker rows
-- `agentscan hotkey <key>` for simple picker-key activation
+- `agentscan hotkey <key>` for strict picker-key activation from automation
+- `agentscan tmux hotkey <key>` for tmux key bindings that should display
+  expected picker misses without opening command output view
 - `agentscan scan` or supported `--refresh` flags when a script intentionally
   needs direct tmux state instead of daemon state
 
@@ -347,7 +351,8 @@ The CLI centers on:
 - `agentscan hotkeys` for the shared picker row model
 - `agentscan hotkey` for picker-key activation
 - `agentscan tui` for interactive pane selection only
-- `agentscan tmux` for tmux-facing integration helpers
+- `agentscan tmux` for tmux-facing integration helpers, including tmux-safe
+  hotkey activation
 
 Shell remains the right place for aliases, launch wrappers, tmux binds, and
 TUI entrypoints. `agentscan` owns pane discovery, provider classification,

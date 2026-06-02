@@ -498,6 +498,26 @@ impl TestHarness {
             .any(|listed_pane_id| listed_pane_id.trim() == pane_id))
     }
 
+    fn pane_in_mode(&self, pane_id: &str) -> Result<bool> {
+        let output = self.tmux_output(["display-message", "-p", "-t", pane_id, "#{pane_in_mode}"])?;
+        Ok(output.trim() == "1")
+    }
+
+    fn wait_for_path(&self, path: &Path) -> Result<()> {
+        let deadline = Instant::now() + DAEMON_TIMEOUT;
+        loop {
+            if path.exists() {
+                return Ok(());
+            }
+
+            if Instant::now() >= deadline {
+                bail!("timed out waiting for {}", path.display());
+            }
+
+            sleep(POLL_INTERVAL);
+        }
+    }
+
     fn client_ttys(&self) -> Result<Vec<String>> {
         Ok(self
             .client_rows()?

@@ -334,8 +334,8 @@ Delivered baseline:
 - provider inference from tmux metadata and titles
 - text and JSON output
 - interactive `agentscan tui`
-- shared picker rows and actions through `agentscan hotkeys --format json` and
-  `agentscan hotkey <key>`
+- shared picker rows and actions through `agentscan hotkeys --format json`,
+  strict `agentscan hotkey <key>`, and tmux-safe `agentscan tmux hotkey <key>`
 - live client events through `agentscan subscribe --format json`
 - versioned JSON snapshot envelope
 - pane metadata model for explicit tmux user options
