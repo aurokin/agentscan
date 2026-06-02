@@ -1390,6 +1390,75 @@ fn hotkey_reports_invalid_or_unassigned_keys() -> Result<()> {
 }
 
 #[test]
+fn tmux_hotkey_binding_reports_unassigned_key_without_entering_view_mode() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let root_pane_id = harness.start_session("tmux-hotkey-unassigned", "sleep 300")?;
+    harness.agentscan([
+        "tmux",
+        "set-metadata",
+        "--pane-id",
+        &root_pane_id,
+        "--provider",
+        "codex",
+        "--label",
+        "Root Task",
+        "--state",
+        "idle",
+    ])?;
+    let mut daemon = harness.start_daemon()?;
+    harness.wait_for_daemon_pane(&mut daemon, &root_pane_id, |_| true)?;
+    let mut client = harness.attach_client("tmux-hotkey-unassigned")?;
+    let done_path = harness._tempdir.path().join("tmux-hotkey-done");
+
+    let output = harness
+        .agentscan_command()?
+        .args(["tmux", "hotkey", "z", "--client-tty", &client.tty])
+        .output()
+        .context("failed to run tmux hotkey with unassigned key")?;
+    assert!(
+        output.status.success(),
+        "tmux hotkey should return success for expected picker misses"
+    );
+    assert!(
+        output.stdout.is_empty() && output.stderr.is_empty(),
+        "tmux hotkey should report misses through display-message only; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let run_shell_command = format!(
+        "TMUX_TMPDIR={} AGENTSCAN_TMUX_SOCKET={} AGENTSCAN_SOCKET_PATH={} AGENTSCAN_CONTROL_MODE_ACTIVE_RECONCILE_INTERVAL_MS=1000 XDG_CACHE_HOME={} HOME={} {} tmux hotkey z --client-tty '#{{client_tty}}' && touch {}",
+        shell_escape_path(&harness.tmux_tmpdir),
+        shell_escape_path(&harness.tmux_socket_path),
+        shell_escape_path(&harness.agentscan_socket_path),
+        shell_escape_path(&harness.cache_home),
+        shell_escape_path(&harness.home_dir),
+        shell_escape_path(&agentscan_bin()?),
+        shell_escape_path(&done_path),
+    );
+
+    harness.tmux([
+        "bind-key",
+        "-T",
+        "agentscan-test",
+        "z",
+        "run-shell",
+        &run_shell_command,
+    ])?;
+    harness.tmux(["switch-client", "-c", &client.tty, "-T", "agentscan-test"])?;
+    harness.send_keys_to_client(&client.tty, ["z"])?;
+    harness.wait_for_path(&done_path)?;
+
+    assert!(
+        !harness.pane_in_mode(&root_pane_id)?,
+        "tmux hotkey failures should use display-message instead of command output view"
+    );
+    client.ensure_running()?;
+
+    Ok(())
+}
+
+#[test]
 fn focus_refresh_bypasses_daemon_socket() -> Result<()> {
     let harness = TestHarness::new()?;
     let _root_pane_id = harness.start_session("focus-refresh-bypass-daemon", "sleep 300")?;

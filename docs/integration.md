@@ -37,7 +37,8 @@ Migration targets:
 | Check daemon lifecycle or readiness | `agentscan daemon status --format json` |
 | Inspect supported providers, icon modes, and aliases | `agentscan providers --format json` |
 | Render a pane picker with stable selection keys | `agentscan hotkeys --format json` |
-| Activate a picker selection from a simple tmux bind | `agentscan hotkey <key>` |
+| Activate a picker selection from automation or desktop code | `agentscan hotkey <key>` |
+| Activate a picker selection from a tmux key binding | `agentscan tmux hotkey <key>` |
 | Open a human pane picker from a tmux bind | `agentscan tui` |
 | Force a direct tmux read for recovery or debugging | `agentscan scan` or a supported `--refresh` flag |
 
@@ -59,8 +60,9 @@ Provider icon rendering is presentation-only. It does not change provider
 classification, daemon socket snapshots, or machine-readable pane records.
 
 Supported modes are `emoji`, `nerd-font`, and `nerd-font-patched`. The default is
-`emoji`. The patched Nerd Font mode is reserved for a future custom font and
-currently falls back to the Nerd Font values.
+`emoji`. The patched Nerd Font mode emits provider glyphs from the
+`agent-icons-v8` manifest and requires a terminal font patched with those
+private-use codepoints.
 
 Resolution precedence is:
 
@@ -109,14 +111,21 @@ TUI. Each row includes the assigned key, pane id, provider, status, display
   surfaces should consume these rows directly, or use the returned `pane_id` with
 `agentscan focus <pane-id>` when acting on a row they already rendered.
 
-Use `agentscan hotkey <key>` as the simple tmux-binding action path. It
-normalizes key case, resolves the key against the current picker model, and
-delegates focus through the same pane validation and tmux focus behavior as
-`agentscan focus`.
+Use `agentscan hotkey <key>` as the strict action path for automation and
+desktop callers. It normalizes key case, resolves the key against the current
+picker model, delegates focus through the same pane validation and tmux focus
+behavior as `agentscan focus`, and exits non-zero when the key is invalid,
+unassigned, stale, or cannot be focused.
 
-Both commands are daemon-backed by default and support `--refresh` for direct
-tmux recovery. `hotkeys` also supports `--all`; `hotkey` accepts `--all` when a
-binding intentionally targets a picker model that includes non-agent panes.
+Use `agentscan tmux hotkey <key>` from tmux key bindings. It uses the same
+picker and focus path, but reports action failures through `tmux
+display-message` and exits successfully so tmux does not open command output
+view for expected picker misses.
+
+These commands are daemon-backed by default and support `--refresh` for direct
+tmux recovery. `hotkeys` also supports `--all`; `hotkey` and `tmux hotkey`
+accept `--all` when a binding intentionally targets a picker model that includes
+non-agent panes.
 
 ## Live Subscription Stream
 

@@ -338,8 +338,8 @@ Delivered baseline:
 - provider inference from tmux metadata and titles
 - text and JSON output
 - interactive `agentscan tui`
-- shared picker rows and actions through `agentscan hotkeys --format json` and
-  `agentscan hotkey <key>`
+- shared picker rows and actions through `agentscan hotkeys --format json`,
+  strict `agentscan hotkey <key>`, and tmux-safe `agentscan tmux hotkey <key>`
 - live client events through `agentscan subscribe --format json`
 - versioned JSON snapshot envelope
 - pane metadata model for explicit tmux user options
@@ -356,7 +356,8 @@ Delivered baseline:
 - inspect provenance for provider, status, classification, and fallback
   decisions
 - provider icon modes through CLI/env/config, with `emoji` as default and
-  `agentscan providers --format json` exposing all marker data
+  `agentscan providers --format json` exposing all marker data, including the
+  custom patched Nerd Font `agent-icons-v8` codepoints
 
 Delivered daemon architecture:
 

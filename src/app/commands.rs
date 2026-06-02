@@ -426,6 +426,13 @@ fn command_daemon(args: &DaemonArgs) -> Result<()> {
 
 fn command_tmux(args: &TmuxArgs, root_list_args: &ListArgs) -> Result<()> {
     match &args.command {
+        TmuxCommands::Hotkey(args) => {
+            reject_root_format(root_list_args, "tmux hotkey")?;
+            reject_root_icons(root_list_args, "tmux hotkey")?;
+            let mut args = args.clone();
+            merge_hotkey_args(&mut args, root_list_args)?;
+            command_tmux_hotkey(&args)
+        }
         TmuxCommands::SetMetadata(args) => {
             reject_root_list_args(root_list_args, "tmux set-metadata")?;
             command_tmux_set_metadata(args)
@@ -435,6 +442,15 @@ fn command_tmux(args: &TmuxArgs, root_list_args: &ListArgs) -> Result<()> {
             command_tmux_clear_metadata(args)
         }
     }
+}
+
+fn command_tmux_hotkey(args: &HotkeyArgs) -> Result<()> {
+    if let Err(error) = command_hotkey(args) {
+        let message = error.to_string();
+        let _ = tmux::display_tmux_message(args.client_tty.as_deref(), &message);
+    }
+
+    Ok(())
 }
 
 fn command_tmux_set_metadata(args: &TmuxSetMetadataArgs) -> Result<()> {

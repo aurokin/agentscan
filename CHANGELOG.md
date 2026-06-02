@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Added
+
+- Added `agentscan tmux hotkey <key>` for tmux key bindings. It uses the shared
+  picker hotkey path but reports invalid, unassigned, stale, or unfocusable
+  selections through `tmux display-message` and exits successfully so expected
+  picker misses do not open tmux command output view.
+
+## 0.5.0 - 2026-06-01
+
+### Changed
+
+- Routed `nerd-font-patched` provider rendering to the custom
+  `agent-icons-v8` private-use codepoints instead of falling back to the
+  standard Nerd Font markers.
+
 ## 0.4.5 - 2026-05-31
 
 ### Added

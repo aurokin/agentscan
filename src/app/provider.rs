@@ -124,7 +124,8 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
     ProviderInfo {
         provider: Provider::Codex,
         canonical_name: "codex",
-        icons: ProviderIconSet::new("💭", "\u{f4ac}", "\u{f4ac}"),
+        // Patched glyphs vendor agent-font-patcher's `agent-icons-v8` manifest.
+        icons: ProviderIconSet::new("💭", "\u{f4ac}", "\u{100040}"),
         metadata_aliases: &["codex"],
         command_aliases: &[ProviderCommandAlias::new("codex", true)],
         title_prefixes: &[],
@@ -134,7 +135,7 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
     ProviderInfo {
         provider: Provider::Claude,
         canonical_name: "claude",
-        icons: ProviderIconSet::new("👾", "\u{f0bc9}", "\u{f0bc9}"),
+        icons: ProviderIconSet::new("👾", "\u{f0bc9}", "\u{100041}"),
         metadata_aliases: &["claude"],
         command_aliases: &[ProviderCommandAlias::new("claude", true)],
         title_prefixes: &["Claude Code | ", "Claude | "],
@@ -144,7 +145,7 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
     ProviderInfo {
         provider: Provider::Gemini,
         canonical_name: "gemini",
-        icons: ProviderIconSet::new("✨", "\u{e370}", "\u{e370}"),
+        icons: ProviderIconSet::new("✨", "\u{e370}", "\u{100044}"),
         metadata_aliases: &["gemini"],
         command_aliases: &[ProviderCommandAlias::new("gemini", true)],
         title_prefixes: &[],
@@ -154,7 +155,7 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
     ProviderInfo {
         provider: Provider::Antigravity,
         canonical_name: "antigravity",
-        icons: ProviderIconSet::new("🛸", "\u{f02af}", "\u{f02af}"),
+        icons: ProviderIconSet::new("🛸", "\u{f02af}", "\u{10004C}"),
         metadata_aliases: &["antigravity", "agy", "google antigravity"],
         command_aliases: &[ProviderCommandAlias::new("agy", false)],
         title_prefixes: &[],
@@ -164,7 +165,7 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
     ProviderInfo {
         provider: Provider::Opencode,
         canonical_name: "opencode",
-        icons: ProviderIconSet::new("🔲", "\u{f0168}", "\u{f0168}"),
+        icons: ProviderIconSet::new("🔲", "\u{f0168}", "\u{100043}"),
         metadata_aliases: &["opencode"],
         command_aliases: &[ProviderCommandAlias::new("opencode", true)],
         title_prefixes: &["OC | "],
@@ -174,7 +175,7 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
     ProviderInfo {
         provider: Provider::Copilot,
         canonical_name: "copilot",
-        icons: ProviderIconSet::new("🛫", "\u{ec1e}", "\u{ec1e}"),
+        icons: ProviderIconSet::new("🛫", "\u{ec1e}", "\u{100049}"),
         metadata_aliases: &["copilot", "github-copilot", "github copilot"],
         command_aliases: &[
             ProviderCommandAlias::new("copilot", false),
@@ -187,7 +188,7 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
     ProviderInfo {
         provider: Provider::CursorCli,
         canonical_name: "cursor_cli",
-        icons: ProviderIconSet::new("🌐", "\u{f01bf}", "\u{f01bf}"),
+        icons: ProviderIconSet::new("🌐", "\u{f01bf}", "\u{100042}"),
         metadata_aliases: &["cursor_cli", "cursor-cli", "cursor cli", "cursor-agent"],
         command_aliases: &[
             ProviderCommandAlias::new("cursor-cli", false),
@@ -200,7 +201,7 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
     ProviderInfo {
         provider: Provider::Pi,
         canonical_name: "pi",
-        icons: ProviderIconSet::new("🥧", "\u{e22c}", "\u{e22c}"),
+        icons: ProviderIconSet::new("🥧", "\u{e22c}", "\u{100052}"),
         metadata_aliases: &["pi", "pi-coding-agent", "pi coding agent"],
         command_aliases: &[ProviderCommandAlias::new("pi-coding-agent", false)],
         title_prefixes: &["π - ", "pi - "],
@@ -210,7 +211,7 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
     ProviderInfo {
         provider: Provider::Grok,
         canonical_name: "grok",
-        icons: ProviderIconSet::new("🚀", "\u{f14de}", "\u{f14de}"),
+        icons: ProviderIconSet::new("🚀", "\u{f14de}", "\u{100051}"),
         metadata_aliases: &["grok", "grok-build", "grok build"],
         command_aliases: &[ProviderCommandAlias::new("grok", true)],
         title_prefixes: &[],
@@ -220,7 +221,7 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
     ProviderInfo {
         provider: Provider::Hermes,
         canonical_name: "hermes",
-        icons: ProviderIconSet::new("⚕️", "⚕", "⚕"),
+        icons: ProviderIconSet::new("⚕️", "⚕", "\u{100045}"),
         metadata_aliases: &["hermes", "hermes-agent", "hermes agent"],
         command_aliases: &[
             ProviderCommandAlias::new("hermes", false),
@@ -233,7 +234,7 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
     ProviderInfo {
         provider: Provider::Droid,
         canonical_name: "droid",
-        icons: ProviderIconSet::new("🏭", "\u{f020f}", "\u{f020f}"),
+        icons: ProviderIconSet::new("🏭", "\u{f020f}", "\u{100056}"),
         metadata_aliases: &["droid", "factory-droid", "factory droid"],
         command_aliases: &[ProviderCommandAlias::new("droid", false)],
         title_prefixes: &["⛬ "],

@@ -501,8 +501,8 @@ fn assert_codex_provider_summary(summaries: &[super::ProviderSummary]) {
     assert_eq!(codex.icons.emoji.codepoints, ["U+1F4AD"]);
     assert_eq!(codex.icons.nerd_font.marker, "\u{f4ac}");
     assert_eq!(codex.icons.nerd_font.codepoints, ["U+F4AC"]);
-    assert_eq!(codex.icons.nerd_font_patched.marker, "\u{f4ac}");
-    assert_eq!(codex.icons.nerd_font_patched.codepoints, ["U+F4AC"]);
+    assert_eq!(codex.icons.nerd_font_patched.marker, "\u{100040}");
+    assert_eq!(codex.icons.nerd_font_patched.codepoints, ["U+100040"]);
     assert_eq!(codex.metadata_aliases, ["codex"]);
     assert!(
         codex
@@ -526,6 +526,39 @@ fn assert_droid_provider_summary(summaries: &[super::ProviderSummary]) {
     assert_eq!(droid.icons.emoji.codepoints, ["U+1F3ED"]);
     assert_eq!(droid.icons.nerd_font.marker, "\u{f020f}");
     assert_eq!(droid.icons.nerd_font.codepoints, ["U+F020F"]);
+    assert_eq!(droid.icons.nerd_font_patched.marker, "\u{100056}");
+    assert_eq!(droid.icons.nerd_font_patched.codepoints, ["U+100056"]);
     assert!(droid.metadata_aliases.contains(&"factory-droid"));
 }
 
+#[test]
+fn patched_provider_icons_follow_agent_icons_v8_manifest() {
+    let expected = [
+        (Provider::Codex, "\u{100040}", ["U+100040"]),
+        (Provider::Claude, "\u{100041}", ["U+100041"]),
+        (Provider::Gemini, "\u{100044}", ["U+100044"]),
+        (Provider::Antigravity, "\u{10004C}", ["U+10004C"]),
+        (Provider::Opencode, "\u{100043}", ["U+100043"]),
+        (Provider::Copilot, "\u{100049}", ["U+100049"]),
+        (Provider::CursorCli, "\u{100042}", ["U+100042"]),
+        (Provider::Pi, "\u{100052}", ["U+100052"]),
+        (Provider::Grok, "\u{100051}", ["U+100051"]),
+        (Provider::Hermes, "\u{100045}", ["U+100045"]),
+        (Provider::Droid, "\u{100056}", ["U+100056"]),
+    ];
+
+    let summaries = super::provider_summaries(IconMode::NerdFontPatched);
+    for (provider, marker, codepoints) in expected {
+        let summary = summaries
+            .iter()
+            .find(|summary| summary.provider == provider)
+            .expect("provider summary should be present");
+        assert_eq!(summary.active_icon_mode, IconMode::NerdFontPatched);
+        assert_eq!(summary.active_marker, marker);
+        assert_eq!(summary.active_marker_codepoints, codepoints);
+        assert_eq!(
+            super::provider_marker(provider, IconMode::NerdFontPatched),
+            marker
+        );
+    }
+}
