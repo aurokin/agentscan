@@ -6,13 +6,50 @@ import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import { Result, useAtomSet, useAtomValue } from "@effect-atom/atom-react";
 import { providerLogo, type LogoTheme } from "./providerLogos";
-import { configureAtom, liveStateAtom, reconnectAtom, startAtom } from "./effect/atoms";
+import {
+  addSshProfileAtom,
+  applyRunnerSettingsAtom,
+  configureAtom,
+  deleteActiveProfileAtom,
+  liveStateAtom,
+  profilesAtom,
+  reconnectAtom,
+  reloadProfilesAtom,
+  selectProfileAtom,
+  startAtom,
+} from "./effect/atoms";
 import type { ConnectionStatus, LiveState, PickerRow } from "./effect/types";
+import {
+  commandPrefix,
+  focusCommandLabel,
+  getActiveProfile,
+  isRunnableProfile,
+  loadProfileState,
+  normalizeRunnerSettings,
+  profileKindLabel,
+  profileSummary,
+  runnerKeyForProfile,
+  runnerSettingsEqual,
+  runnerSettingsForProfile,
+  runnerSummary,
+  validateProfileDraft,
+  type AgentscanPreflight,
+  type DesktopProfile,
+  type DesktopProfileConfig,
+  type EnvironmentVariable,
+  type RunnerSettings,
+} from "./effect/profileModel";
+import {
+  PREFS_SYNC_EVENT,
+  type Orientation,
+  type OrientationPreference,
+  type PrefsSync,
+  type ShellMode,
+  type ThemePreference,
+} from "./effect/prefs";
 import logoUrl from "./assets/agentscan-logo.png";
 
 const PICKER_HOTKEY = "CommandOrControl+Shift+A";
-const SETTINGS_STORAGE_KEY = "agentscan.desktop.localRunnerSettings";
-const PROFILES_STORAGE_KEY = "agentscan.desktop.profiles";
 // Keep in sync with the pre-paint theme script in index.html.
 const THEME_STORAGE_KEY = "agentscan.desktop.theme";
 // macOS "glass": vibrancy backdrop (Rust) + a translucent surface tint (CSS).
@@ -37,7 +74,6 @@ const setGlassClear = (clear: number) => {
   document.documentElement.style.setProperty("--glass-clear", clear.toFixed(3));
 };
 const DEBUG_LOG_LIMIT = 80;
-const LOCAL_PROFILE_ID = "local";
 // Window min-size floors, applied at runtime per orientation. The vertical pair
 // mirrors the startup floor in tauri.{macos.,}conf.json; horizontal drops the
 // height floor so the bar can shrink to dock height instead of a tall slab.
@@ -74,57 +110,16 @@ const DEFAULT_LIVE_STATE: LiveState = {
   rowsRunnerKey: null,
 };
 
-type DesktopProfile = {
-  id: string;
-  name: string;
-  kind: ProfileKind;
-};
-
-type ProfileKind = "local" | "ssh";
-
-type AgentscanPreflight = {
-  binary: string;
-  ok: boolean;
-  version: string | null;
-  error: string | null;
-};
-
-type RunnerSettings = {
-  binaryPath: string;
-  env: EnvironmentVariable[];
-};
-
-type DesktopRunnerSettings =
-  | ({ kind: "local" } & RunnerSettings)
-  | ({ kind: "ssh"; host: string; clientTty: string | null } & RunnerSettings);
-
-type ProfileState = {
-  activeProfileId: string;
-  profiles: DesktopProfileConfig[];
-};
-
-type DesktopProfileConfig = LocalProfileConfig | SshProfileConfig;
-
-type LocalProfileConfig = {
-  id: string;
-  name: string;
-  kind: "local";
-  runner: RunnerSettings;
-};
-
-type SshProfileConfig = {
-  id: string;
-  name: string;
-  kind: "ssh";
-  host: string;
-  clientTty: string;
-  runner: RunnerSettings;
-  enabled: boolean;
-};
-
-type EnvironmentVariable = {
-  name: string;
-  value: string;
+// Synchronous, best-effort localStorage read used only to seed the first paint
+// (active profile / runnerKey / drafts) before the Profiles service atom resolves.
+// All profile WRITES and ongoing reads go through the service; this just matches its
+// initial seed so the first render isn't a flash of default state.
+const readLocalStorage = (key: string): string | null => {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
 };
 
 type DebugEntry = {
@@ -134,48 +129,6 @@ type DebugEntry = {
   label: string;
   detail: string;
 };
-
-// Which window this React tree drives. The dock (window label "main") renders the
-// picker; the settings window (label "settings") renders the settings panel. Both
-// run the same component, gated on this mode plus cross-window pref sync.
-type ShellMode = "dock" | "settings";
-
-// The dock can sit as a tall narrow strip (vertical, the default) or a short wide
-// bar (horizontal). Orientation is derived from the window's own aspect ratio, so
-// dragging it wide-and-short flips the layout axis with no explicit control.
-type Orientation = "vertical" | "horizontal";
-
-// Layout preference. "auto" derives orientation live from the window shape (the
-// responsive default); the other two pin the layout and snap the window to match.
-type OrientationPreference = "auto" | Orientation;
-
-type ThemePreference = "dark" | "light" | "system";
-
-// Separate webview windows don't share React state or the localStorage "storage"
-// event, so prefs the user changes in one window are mirrored to the other over
-// Tauri's event bus. Only user actions emit; the listener applies remote changes
-// without re-emitting, so dock -> settings -> dock can't loop.
-const PREFS_SYNC_EVENT = "agentscan:prefs-sync";
-type PrefsSync =
-  | { kind: "theme"; theme: ThemePreference }
-  | { kind: "orientation"; orientation: OrientationPreference }
-  | { kind: "glass"; enabled: boolean; alpha: number }
-  | { kind: "profiles" }
-  // Dock -> settings: the dock's resolved preflight (with the runnerKey it
-  // describes) so the settings card can reuse it instead of probing itself.
-  // `status` mirrors the dock's LoadState discriminant so the card can reproduce
-  // its tones: "ready" carries `preflight`; "loading" reads as Checking; "failed"
-  // (dock IPC error) reads as Unreachable. `preflight` is non-null only on "ready".
-  | {
-      kind: "preflight";
-      status: LoadState["status"];
-      runnerKey: string;
-      preflight: AgentscanPreflight | null;
-    }
-  // Settings -> dock: ask the dock to re-emit its current preflight. emitTo has
-  // no replay, so a settings window shown after the dock probed would otherwise
-  // miss the result; it requests one on show to reconcile.
-  | { kind: "preflight-request" };
 
 // The dock's resolved preflight as held by the settings window, mirrored from the
 // "preflight" sync above (kind dropped). The settings card reproduces its tones from
@@ -237,10 +190,6 @@ type PickerActivation =
   | { status: "running"; paneId: string }
   | { status: "failed"; message: string };
 
-type DraftValidation = {
-  errors: string[];
-};
-
 function App({ mode }: { mode: ShellMode }) {
   const [state, setState] = useState<LoadState>({ status: "loading" });
   // The settings window never runs its own preflight; instead it reuses the dock's
@@ -249,7 +198,19 @@ function App({ mode }: { mode: ShellMode }) {
   // possible duplicate passphrase prompt) every time Settings is opened, and keeps the
   // card current even while the window is visible-but-unfocused. Always null in the dock.
   const [syncedPreflight, setSyncedPreflight] = useState<SyncedPreflight | null>(null);
-  const [profileState, setProfileState] = useState<ProfileState>(() => loadStoredProfiles());
+  // Profile/settings persistence + cross-window adoption are owned by the Profiles
+  // Effect service; this window observes its state via an atom and drives changes
+  // through the action atoms below. The first synchronous render (before the runtime
+  // resolves the atom) falls back to a direct storage read so the active profile /
+  // runnerKey / drafts are correct on the very first paint, matching the service seed.
+  const initialProfileState = useMemo(() => loadProfileState(readLocalStorage), []);
+  const profileStateResult = useAtomValue(profilesAtom);
+  const profileState = Result.getOrElse(profileStateResult, () => initialProfileState);
+  const selectProfileSet = useAtomSet(selectProfileAtom);
+  const addSshProfileSet = useAtomSet(addSshProfileAtom);
+  const deleteActiveProfileSet = useAtomSet(deleteActiveProfileAtom);
+  const applyRunnerSettingsSet = useAtomSet(applyRunnerSettingsAtom);
+  const reloadProfiles = useAtomSet(reloadProfilesAtom);
   const activeProfile = useMemo(() => getActiveProfile(profileState), [profileState]);
   const runnerSettings = useMemo(() => runnerSettingsForProfile(activeProfile), [activeProfile]);
   // Identity of the exact runner configuration a resolved state describes. It
@@ -257,18 +218,18 @@ function App({ mode }: { mode: ShellMode }) {
   // to the active profile, so resolved preflight/picker data is invalidated
   // whenever the underlying target changes, not just when the profile id does.
   const runnerKey = useMemo(() => runnerKeyForProfile(activeProfile), [activeProfile]);
-  const [profileNameDraft, setProfileNameDraft] = useState(() =>
-    getActiveProfile(loadStoredProfiles()).name,
+  const [profileNameDraft, setProfileNameDraft] = useState(
+    () => getActiveProfile(initialProfileState).name,
   );
-  const [settingsDraft, setSettingsDraft] = useState<RunnerSettings>(() =>
-    getActiveProfile(loadStoredProfiles()).runner,
+  const [settingsDraft, setSettingsDraft] = useState<RunnerSettings>(
+    () => getActiveProfile(initialProfileState).runner,
   );
   const [sshHostDraft, setSshHostDraft] = useState(() => {
-    const profile = getActiveProfile(loadStoredProfiles());
+    const profile = getActiveProfile(initialProfileState);
     return profile.kind === "ssh" ? profile.host : "";
   });
   const [sshClientTtyDraft, setSshClientTtyDraft] = useState(() => {
-    const profile = getActiveProfile(loadStoredProfiles());
+    const profile = getActiveProfile(initialProfileState);
     return profile.kind === "ssh" ? profile.clientTty : "";
   });
   const [debugEntries, setDebugEntries] = useState<DebugEntry[]>([]);
@@ -958,16 +919,28 @@ function App({ mode }: { mode: ShellMode }) {
         setGlassEnabled(payload.enabled);
         setSurfaceAlpha(payload.alpha);
       } else if (payload.kind === "profiles") {
-        // Keep a warm settings window's unsaved drafts: a dock-side source switch must
-        // not silently overwrite an in-progress edit (the window is hidden, not closed,
-        // precisely to preserve it). Active id and drafts both stay on the edited
-        // profile, so they never mismatch; the change is adopted later via the
-        // focus-reconcile path once the edit is applied or reset. The dock always adopts
-        // so its live picker tracks the current profile config.
+        // The Profiles service owns persistence + the reload primitive, but the
+        // adopt/skip DECISION stays here because it gates on the settings form's
+        // unsaved-edit flag — React-synchronous state. Reading isSettingsDirtyRef in
+        // the event handler (not a lagged service Ref) preserves the original
+        // guarantee: a dock-side source switch never clobbers an in-progress edit (the
+        // window is hidden, not closed, precisely to preserve it). The dock always
+        // adopts so its live picker tracks the current profile config; the skipped
+        // change is reconciled later via the focus/clean reload paths.
+        //
+        // The reload itself now applies asynchronously (atom dispatch -> service ref),
+        // where the old code reconciled synchronously via setProfileState. The trigger
+        // stays synchronously dirty-gated, the reload is value-guarded (a no-op snapshot
+        // never touches drafts), and the draft-reset behavior on a genuine active change
+        // is unchanged from before. The only residual is a sub-millisecond window where
+        // an edit begun between this dirty check and the reload landing could be reset —
+        // an inherent, accepted consequence of moving profile state into the service
+        // (closing it fully would mean keeping ProfileState in React). The focus/clean
+        // reconcilers recover any such case on the next focus.
         if (mode === "settings" && isSettingsDirtyRef.current) {
           return;
         }
-        setProfileState(loadStoredProfiles());
+        reloadProfiles();
       } else if (payload.kind === "preflight") {
         // Settings adopts the dock's resolved preflight (keyed by the runnerKey it
         // describes). The card guards on runnerKey === its own active runnerKey, so a
@@ -1024,10 +997,8 @@ function App({ mode }: { mode: ShellMode }) {
         setGlassEnabled(loadStoredGlass());
         setSurfaceAlpha(loadStoredSurfaceAlpha());
         if (!isSettingsDirtyRef.current) {
-          setProfileState((current) => {
-            const reloaded = loadStoredProfiles();
-            return JSON.stringify(current) === JSON.stringify(reloaded) ? current : reloaded;
-          });
+          // The service's reload is value-guarded, so an unchanged snapshot is a no-op.
+          reloadProfiles();
         }
         // Preflight has no localStorage to re-read and emitTo has no replay, so ask the
         // dock to re-emit its current result. Covers a preflight broadcast missed while
@@ -1047,22 +1018,19 @@ function App({ mode }: { mode: ShellMode }) {
       disposed = true;
       unlisten?.();
     };
-  }, [mode]);
+  }, [mode, reloadProfiles]);
 
-  // The profiles listener drops dock-side syncs while this window is dirty, and the
-  // focus-reconcile only runs on a later focus — so a change skipped mid-edit would
-  // linger after Reset/Apply clears the drafts (still focused, no new focus event).
-  // Adopt the latest stored profiles whenever the window is clean. Value-guarded so an
-  // unchanged reload doesn't churn state or reset the picker selection.
+  // The React listener drops dock-side syncs while this window is dirty, and the focus-
+  // reconcile only runs on a later focus — so a change skipped mid-edit would linger
+  // after Reset/Apply clears the drafts (still focused, no new focus event). Reconcile
+  // from storage whenever the window is clean. The service's reload is value-guarded,
+  // so an unchanged snapshot doesn't churn state or reset the picker selection.
   useEffect(() => {
     if (mode !== "settings" || isSettingsDirty) {
       return;
     }
-    setProfileState((current) => {
-      const reloaded = loadStoredProfiles();
-      return JSON.stringify(current) === JSON.stringify(reloaded) ? current : reloaded;
-    });
-  }, [mode, isSettingsDirty]);
+    reloadProfiles();
+  }, [mode, isSettingsDirty, reloadProfiles]);
 
   // Keep the settings window warm: intercept its close so the red button / Cmd-W
   // hides it (instant reopen, drafts preserved) rather than destroying it.
@@ -1311,27 +1279,16 @@ function App({ mode }: { mode: ShellMode }) {
       return;
     }
 
+    // Normalize the draft (and reflect it in the form), then hand the edit to the
+    // service, which merges it onto the latest persisted state, persists, and
+    // broadcasts. Validation + the debug log stay here; persistence is the service's.
     const normalized = normalizeRunnerSettings(settingsDraft);
     setSettingsDraft(normalized);
-    setProfileState((current) => {
-      // Merge onto the LATEST persisted state, not this window's in-memory snapshot: a
-      // warm settings window can hold a stale snapshot (it skips profile syncs while
-      // dirty), so writing that whole snapshot back would clobber dock-side add/delete/
-      // source-switch changes already in localStorage. Apply the edit to the profile this
-      // form is editing (by id) and keep the dock's latest profile list + active source.
-      const editedId = current.activeProfileId;
-      const latest = loadStoredProfiles();
-      const next = updateProfileSettingsById(
-        latest,
-        editedId,
-        profileNameDraft.trim(),
-        normalized,
-        sshHostDraft,
-        sshClientTtyDraft,
-      );
-      storeProfiles(next);
-      void broadcastPrefs({ kind: "profiles" });
-      return next;
+    applyRunnerSettingsSet({
+      name: profileNameDraft,
+      runner: normalized,
+      sshHost: sshHostDraft,
+      sshClientTty: sshClientTtyDraft,
     });
     appendDebugEntry({
       kind: "settings",
@@ -1347,105 +1304,37 @@ function App({ mode }: { mode: ShellMode }) {
     setSshClientTtyDraft(activeProfile.kind === "ssh" ? activeProfile.clientTty : "");
   }
 
+  // The persisted-state mutators live in the Profiles service, which owns the
+  // merge-onto-latest discipline, the same-active no-op, and the cross-window
+  // broadcast. These thin wrappers just dispatch the intent — and the mutator runs
+  // once in an Effect fiber, so the old StrictMode generate-id-once dance in
+  // addSshProfile is no longer needed.
   function selectProfile(id: string) {
-    // A dirty settings window may show a stale active highlight: it skips dock-side profile
-    // syncs mid-edit, and the focus/clean-adopt reconcilers also skip while dirty, so the
-    // card the rail highlights (activeProfile.id) can lag the persisted active source. Clicking
-    // that already-highlighted card must stay a no-op here — otherwise the id !== latest path
-    // below would rewrite localStorage to our stale id and broadcast, flipping the dock off the
-    // source it was deliberately switched to elsewhere (its drafts-preserving switch must win
-    // until Apply/Reset). This divergence only exists while dirty in settings, so clean windows
-    // and the dock are untouched: clicking a different source still writes + broadcasts, and
-    // re-selecting the live active still hits the same-reference no-op below. Keyed on
-    // activeProfile.id (the highlighted card) rather than current.activeProfileId, since
-    // getActiveProfile falls back to the first runnable profile when the active id is unset.
+    // A dirty settings window may highlight a stale active card (it skips dock-side
+    // profile syncs mid-edit, and the focus/clean reconcilers also skip while dirty),
+    // so the highlighted card (activeProfile.id) can lag the persisted active source.
+    // Re-clicking that already-highlighted card must stay a no-op — otherwise the
+    // service's id !== latest path would rewrite storage to our stale id and flip the
+    // dock off the source it was switched to elsewhere. The dirty flag is React-
+    // synchronous, so this guard belongs here, ahead of the dispatch. Clean windows
+    // and the dock are untouched (their highlight matches the persisted active).
     if (mode === "settings" && isSettingsDirty && id === activeProfile.id) {
       return;
     }
-
-    setProfileState((current) => {
-      // Switch active on the LATEST persisted state so a concurrent dock-side
-      // add/delete isn't clobbered by this window's possibly-stale snapshot.
-      const latest = loadStoredProfiles();
-      // Clicking the already-persisted (live) active source must not bump loadShellState
-      // (a needless re-probe momentarily unmatches state.runnerKey, which gates liveReady
-      // off and flickers the connection through "Switching profile…") — so when our
-      // snapshot already matches, keep the SAME reference and do nothing. But a dirty
-      // settings window may hold a stale snapshot
-      // (it skips syncs mid-edit); there, adopt the latest so clicking the dock's current
-      // source navigates to it instead of staying stuck on the stale selection.
-      if (id === latest.activeProfileId) {
-        return JSON.stringify(current) === JSON.stringify(latest) ? current : latest;
-      }
-
-      const profile = latest.profiles.find((candidate) => candidate.id === id);
-      if (!profile || !isRunnableProfile(profile)) {
-        return current;
-      }
-
-      const next = { ...latest, activeProfileId: id };
-      storeProfiles(next);
-      void broadcastPrefs({ kind: "profiles" });
-      return next;
-    });
+    selectProfileSet(id);
   }
 
   function addSshProfile() {
-    // Generate the id ONCE, outside the updater: React StrictMode double-invokes state
-    // updaters in dev, and a fresh id per invocation combined with the in-updater
-    // append+persist would create two profiles from a single click. A stable id plus the
-    // existence guard below make the append idempotent across the doubled invocation.
-    const id = newProfileId("ssh");
-    setProfileState(() => {
-      // Append onto the LATEST persisted state so a concurrent dock-side change isn't
-      // clobbered by this window's possibly-stale snapshot.
-      const latest = loadStoredProfiles();
-      if (latest.profiles.some((profile) => profile.id === id)) {
-        // The first (StrictMode-doubled) invocation already appended and persisted this
-        // profile; don't add a duplicate on the second pass.
-        return latest;
-      }
-      const profile: SshProfileConfig = {
-        id,
-        name: nextRemoteProfileName(latest.profiles),
-        kind: "ssh",
-        host: "",
-        clientTty: "",
-        runner: emptyRunnerSettings(),
-        enabled: true,
-      };
-      const next = {
-        activeProfileId: profile.id,
-        profiles: [...latest.profiles, profile],
-      };
-      storeProfiles(next);
-      void broadcastPrefs({ kind: "profiles" });
-      return next;
-    });
+    addSshProfileSet();
   }
 
   function deleteActiveProfile() {
+    // Guard here too so the debug entry (and its reference to the about-to-be-deleted
+    // profile's name) only fires for a real deletion; the service also no-ops on local.
     if (activeProfile.kind === "local") {
       return;
     }
-
-    const targetId = activeProfile.id;
-    setProfileState(() => {
-      // Remove from the LATEST persisted state so a concurrent dock-side change isn't
-      // clobbered. Keep the latest active source unless it's the profile being deleted.
-      const latest = loadStoredProfiles();
-      const profiles = latest.profiles.filter((profile) => profile.id !== targetId);
-      const fallback = profiles.find((profile) => profile.kind === "local") ?? profiles[0];
-      const next = normalizeProfileState({
-        activeProfileId: profiles.some((profile) => profile.id === latest.activeProfileId)
-          ? latest.activeProfileId
-          : fallback?.id,
-        profiles,
-      });
-      storeProfiles(next);
-      void broadcastPrefs({ kind: "profiles" });
-      return next;
-    });
+    deleteActiveProfileSet();
     appendDebugEntry({
       kind: "settings",
       label: `${activeProfile.name} profile deleted`,
@@ -2238,19 +2127,6 @@ function DebugLog({ entries }: { entries: DebugEntry[] }) {
   );
 }
 
-function loadStoredRunnerSettings(): RunnerSettings {
-  try {
-    const value = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
-    if (!value) {
-      return emptyRunnerSettings();
-    }
-
-    return normalizeRunnerSettings(JSON.parse(value) as Partial<RunnerSettings>);
-  } catch {
-    return emptyRunnerSettings();
-  }
-}
-
 function loadStoredTheme(): ThemePreference {
   try {
     const value = window.localStorage.getItem(THEME_STORAGE_KEY);
@@ -2306,317 +2182,6 @@ function loadStoredSurfaceAlpha(): number {
     // localStorage unavailable; use the default tint.
   }
   return SURFACE_ALPHA_DEFAULT;
-}
-
-function loadStoredProfiles(): ProfileState {
-  try {
-    const value = window.localStorage.getItem(PROFILES_STORAGE_KEY);
-    if (!value) {
-      return defaultProfileState(loadStoredRunnerSettings());
-    }
-
-    return normalizeProfileState(JSON.parse(value) as Partial<ProfileState>);
-  } catch {
-    return defaultProfileState(loadStoredRunnerSettings());
-  }
-}
-
-function storeProfiles(state: ProfileState) {
-  window.localStorage.setItem(PROFILES_STORAGE_KEY, JSON.stringify(state));
-  const localProfile = state.profiles.find((profile) => profile.kind === "local");
-  if (localProfile) {
-    window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(localProfile.runner));
-  }
-}
-
-function storeRunnerSettings(settings: RunnerSettings) {
-  window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
-}
-
-function emptyRunnerSettings(): RunnerSettings {
-  return { binaryPath: "", env: [] };
-}
-
-function defaultProfileState(runner = emptyRunnerSettings()): ProfileState {
-  return {
-    activeProfileId: LOCAL_PROFILE_ID,
-    profiles: [
-      {
-        id: LOCAL_PROFILE_ID,
-        name: "Default",
-        kind: "local",
-        runner: normalizeRunnerSettings(runner),
-      },
-    ],
-  };
-}
-
-function normalizeProfileState(value: Partial<ProfileState>): ProfileState {
-  const profiles = Array.isArray(value.profiles)
-    ? value.profiles.map(normalizeProfile).filter((profile) => profile !== null)
-    : [];
-
-  if (!profiles.some((profile) => profile.kind === "local")) {
-    profiles.unshift(defaultProfileState(loadStoredRunnerSettings()).profiles[0]);
-  }
-
-  const fallbackProfile = profiles.find(isRunnableProfile) ?? profiles[0];
-  const activeProfileId =
-    typeof value.activeProfileId === "string" &&
-    profiles.some((profile) => profile.id === value.activeProfileId && isRunnableProfile(profile))
-      ? value.activeProfileId
-      : fallbackProfile.id;
-
-  return { activeProfileId, profiles };
-}
-
-function normalizeProfile(value: unknown): DesktopProfileConfig | null {
-  if (!value || typeof value !== "object") {
-    return null;
-  }
-
-  const profile = value as Partial<DesktopProfileConfig>;
-  const id = typeof profile.id === "string" && profile.id.trim() ? profile.id.trim() : "";
-  const name = typeof profile.name === "string" && profile.name.trim() ? profile.name.trim() : "";
-  const runner = normalizeRunnerSettings(profile.runner ?? emptyRunnerSettings());
-
-  if (profile.kind === "local") {
-    return {
-      id: id || LOCAL_PROFILE_ID,
-      name: name || "Default",
-      kind: "local",
-      runner,
-    };
-  }
-
-  if (profile.kind === "ssh") {
-    return {
-      id: id || `ssh-${Date.now()}`,
-      name: name || "Remote",
-      kind: "ssh",
-      host: typeof profile.host === "string" ? profile.host.trim() : "",
-      clientTty:
-        typeof profile.clientTty === "string" ? profile.clientTty.trim() : "",
-      runner,
-      // Default to enabled so profiles persisted before the `enabled` field (or
-      // partial profiles missing it) remain selectable; only an explicit false
-      // disables a profile.
-      enabled: profile.enabled !== false,
-    };
-  }
-
-  return null;
-}
-
-function getActiveProfile(state: ProfileState): DesktopProfileConfig {
-  return (
-    state.profiles.find(
-      (profile) => profile.id === state.activeProfileId && isRunnableProfile(profile),
-    ) ??
-    state.profiles.find(isRunnableProfile) ??
-    state.profiles[0]
-  );
-}
-
-function isRunnableProfile(profile: DesktopProfileConfig): boolean {
-  return profile.kind === "local" || profile.enabled;
-}
-
-function updateProfileSettingsById(
-  state: ProfileState,
-  id: string,
-  name: string,
-  runner: RunnerSettings,
-  sshHost: string,
-  sshClientTty: string,
-): ProfileState {
-  // A missing id maps to a no-op, which cleanly handles applying an edit whose target
-  // profile was deleted elsewhere (the edit is simply dropped onto the latest state).
-  return {
-    ...state,
-    profiles: state.profiles.map((profile) =>
-      profile.id === id
-        ? updateProfileSettings(profile, name, runner, sshHost, sshClientTty)
-        : profile,
-    ),
-  };
-}
-
-function updateProfileSettings(
-  profile: DesktopProfileConfig,
-  name: string,
-  runner: RunnerSettings,
-  sshHost: string,
-  sshClientTty: string,
-): DesktopProfileConfig {
-  const normalizedRunner = normalizeRunnerSettings(runner);
-  const normalizedName = name.trim() || profile.name;
-
-  if (profile.kind === "ssh") {
-    return {
-      ...profile,
-      name: normalizedName,
-      host: sshHost.trim(),
-      clientTty: sshClientTty.trim(),
-      runner: normalizedRunner,
-      enabled: true,
-    };
-  }
-
-  return { ...profile, name: normalizedName, runner: normalizedRunner };
-}
-
-function profileSummary(profile: DesktopProfileConfig): DesktopProfile {
-  return {
-    id: profile.id,
-    name: profile.name,
-    kind: profile.kind,
-  };
-}
-
-function runnerSummary(settings: RunnerSettings) {
-  return settings.binaryPath.trim() || "auto-detected agentscan";
-}
-
-// Stable string identity of a profile's full runner configuration. Used to
-// invalidate resolved preflight/picker state when the target changes, including
-// same-profile settings edits (which keep the same id).
-function runnerKeyForProfile(profile: DesktopProfileConfig): string {
-  return JSON.stringify(runnerSettingsForProfile(profile));
-}
-
-function runnerSettingsForProfile(profile: DesktopProfileConfig): DesktopRunnerSettings {
-  if (profile.kind === "ssh") {
-    return {
-      kind: "ssh",
-      host: profile.host,
-      clientTty: profile.clientTty.trim() || null,
-      ...profile.runner,
-    };
-  }
-
-  return {
-    kind: "local",
-    ...profile.runner,
-  };
-}
-
-function commandPrefix(profile: DesktopProfileConfig) {
-  const binary = profile.runner.binaryPath.trim() || "agentscan";
-
-  if (profile.kind === "ssh") {
-    return `ssh ${profile.host || "<host>"} -- ${binary}`;
-  }
-
-  return binary;
-}
-
-function focusCommandLabel(profile: DesktopProfileConfig, paneId: string) {
-  const base = `${commandPrefix(profile)} focus`;
-  if (profile.kind === "ssh" && profile.clientTty.trim()) {
-    return `${base} --client-tty ${profile.clientTty.trim()} ${paneId}`;
-  }
-
-  return `${base} ${paneId}`;
-}
-
-function profileKindLabel(profile: DesktopProfileConfig) {
-  return profile.kind === "ssh" ? "SSH" : "Local";
-}
-
-function validateProfileDraft(
-  profile: DesktopProfileConfig,
-  name: string,
-  runner: RunnerSettings,
-  sshHost: string,
-  sshClientTty: string,
-): DraftValidation {
-  const errors: string[] = [];
-
-  if (!name.trim()) {
-    errors.push("Profile name is required.");
-  }
-
-  if (runner.binaryPath.includes("\0")) {
-    errors.push("agentscan binary cannot contain a null byte.");
-  }
-
-  if (profile.kind === "ssh") {
-    const host = sshHost.trim();
-    if (!host) {
-      errors.push("SSH host is required.");
-    } else if (host.startsWith("-") || /\s/.test(host) || host.includes("\0")) {
-      errors.push("SSH host must be a single host alias and cannot start with '-'.");
-    }
-
-    const clientTty = sshClientTty.trim();
-    if (clientTty && (/\s/.test(clientTty) || clientTty.includes("\0"))) {
-      errors.push("Remote client tty must be a single tty path.");
-    }
-  }
-
-  const seenNames = new Set<string>();
-  runner.env.forEach((variable, index) => {
-    const name = variable.name.trim();
-    if (!name) {
-      errors.push(`Environment row ${index + 1} needs a name.`);
-      return;
-    }
-
-    // Must be a POSIX shell identifier: names are interpolated unquoted into
-    // the remote SSH command, so spaces/hyphens/metacharacters are rejected.
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
-      errors.push(`Environment row ${index + 1} name must be a valid shell identifier.`);
-      return;
-    }
-
-    if (seenNames.has(name)) {
-      errors.push(`Environment variable ${name} is duplicated.`);
-    }
-    seenNames.add(name);
-  });
-
-  return { errors };
-}
-
-function runnerSettingsEqual(left: RunnerSettings, right: RunnerSettings) {
-  if (left.binaryPath !== right.binaryPath || left.env.length !== right.env.length) {
-    return false;
-  }
-
-  return left.env.every(
-    (variable, index) =>
-      variable.name === right.env[index]?.name && variable.value === right.env[index]?.value,
-  );
-}
-
-function newProfileId(prefix: string) {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return `${prefix}-${crypto.randomUUID()}`;
-  }
-
-  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function nextRemoteProfileName(profiles: DesktopProfileConfig[]) {
-  const remoteCount = profiles.filter((profile) => profile.kind === "ssh").length;
-  return remoteCount === 0 ? "Remote" : `Remote ${remoteCount + 1}`;
-}
-
-function normalizeRunnerSettings(settings: Partial<RunnerSettings>): RunnerSettings {
-  const env = Array.isArray(settings.env)
-    ? settings.env
-        .map((variable) => ({
-          name: String(variable.name ?? "").trim(),
-          value: String(variable.value ?? ""),
-        }))
-        .filter((variable) => variable.name.length > 0)
-    : [];
-
-  return {
-    binaryPath: String(settings.binaryPath ?? "").trim(),
-    env,
-  };
 }
 
 function projectOf(row: PickerRow): string {
