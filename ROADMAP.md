@@ -396,7 +396,8 @@ Delivered desktop baseline:
 - app-global `CommandOrControl+Shift+A` summon shortcut
 - cursor-display sidebar placement with primary-display fallback
 - search/filter as client-side UI over returned picker rows
-- local desktop release/smoke workflow and strict version metadata check
+- Apple Silicon macOS desktop release artifact, local desktop release/smoke
+  workflow, and strict version metadata check
 
 Definition of done for the current finish pass:
 

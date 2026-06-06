@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added
+
+- Added a first-class macOS desktop release artifact. Tagged releases now build,
+  sign, notarize, staple, verify, zip, and publish the Apple Silicon Tauri app
+  as `agentscan-desktop-aarch64-apple-darwin.zip` alongside the CLI tarballs.
+
 ## 0.5.1 - 2026-06-02
 
 ### Added

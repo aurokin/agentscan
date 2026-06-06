@@ -132,7 +132,10 @@ commit the `.p12`, the base64 output, or the export password to the repo.
 
 ## Release Behavior
 
-For macOS releases, `.github/workflows/release.yml`:
+For macOS releases, `.github/workflows/release.yml` signs and notarizes both
+Apple Silicon artifacts: the CLI binary tarball and the desktop app zip.
+
+For the CLI artifact, the workflow:
 
 1. Builds the release binary.
 2. Imports the Developer ID certificate into a temporary keychain.
@@ -140,5 +143,16 @@ For macOS releases, `.github/workflows/release.yml`:
 4. Stores notarization credentials in the temporary keychain.
 5. Submits the signed binary to Apple's notary service and waits for acceptance.
 6. Packages the signed/notarized binary into the release tarball.
+
+For the desktop artifact, the workflow:
+
+1. Builds the Tauri app bundle with locked Rust and npm dependencies.
+2. Signs nested Mach-O files and the outer `.app` bundle with Developer ID.
+3. Submits the signed app bundle to Apple's notary service and waits for
+   acceptance.
+4. Staples and validates the notary ticket.
+5. Verifies the app with `codesign` and Gatekeeper `spctl`.
+6. Packages the stapled bundle as
+   `agentscan-desktop-aarch64-apple-darwin.zip`.
 
 Linux artifacts are built and packaged without Apple signing.

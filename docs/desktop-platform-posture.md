@@ -38,8 +38,10 @@ Window lifecycle and positioning:
 Packaging, signing, and notarization:
 
 - The release-quality desktop path is a macOS `.app` bundle built by Tauri.
-- Developer ID signing and notarization are required for release-candidate
-  dogfood builds.
+- Developer ID signing and notarization are required for release artifacts and
+  release-candidate dogfood builds.
+- GitHub Releases publish the Apple Silicon desktop app as
+  `agentscan-desktop-aarch64-apple-darwin.zip`.
 - Linux and Windows packaging are not part of the current release gate.
 
 Window appearance (glass):

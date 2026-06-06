@@ -2,14 +2,18 @@
 
 This document covers the macOS-first desktop app in `desktop/`. The desktop
 app is a Tauri shell over the installed `agentscan` CLI; it does not bundle
-scanner logic or replace the CLI release workflow.
+scanner logic or the CLI binary. The tag-driven GitHub release workflow
+publishes a signed and notarized macOS desktop app zip alongside the CLI
+artifacts.
 
 ## Scope
 
-Use this workflow for local dogfooding and release decisions:
+Use this workflow for local dogfooding, release-candidate verification, and
+published release expectations:
 
 - build the React frontend and Tauri app bundle;
-- sign and notarize the macOS app bundle for local distribution testing;
+- sign and notarize the macOS app bundle;
+- package the notarized app bundle for GitHub Releases;
 - install the built app locally;
 - smoke the local profile, SSH failure path, picker rows, live subscription,
   global hotkey, and focus action.
@@ -104,6 +108,21 @@ Expected app bundle:
 desktop/src-tauri/target/release/bundle/macos/agentscan.app
 ```
 
+## Published Artifact
+
+On `v*` tags, `.github/workflows/release.yml` builds the Apple Silicon desktop
+app with `scripts/build-macos-desktop-app.sh --notarize`, verifies the stapled
+bundle with `codesign` and `spctl`, packages it with `ditto`, and uploads it to
+the GitHub Release as:
+
+```sh
+agentscan-desktop-aarch64-apple-darwin.zip
+```
+
+The desktop zip is included in `SHA256SUMS` with the CLI tarballs. The app
+still preflights and executes a configured `agentscan` binary path; install the
+CLI separately through the release tarball or `mise`.
+
 ## Verify Signing
 
 Run these checks before installing or sharing the app:
@@ -175,5 +194,7 @@ Release decision:
 - All required quality gates from `README.md` pass.
 - The signed app bundle passes `codesign` verification.
 - The app bundle passes Gatekeeper assessment with `spctl`.
+- The GitHub Release includes `agentscan-desktop-aarch64-apple-darwin.zip` and
+  its checksum.
 - Any smoke failure is either fixed before release or recorded as a known
   non-release-blocking issue in Linear.

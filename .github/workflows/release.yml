@@ -16,6 +16,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
       - name: Check tag matches Cargo.toml version
         run: |
           tag_version="${GITHUB_REF_NAME#v}"
@@ -25,6 +30,9 @@ jobs:
             exit 1
           fi
           echo "Tag $GITHUB_REF_NAME matches Cargo.toml version $crate_version"
+
+      - name: Check desktop version metadata
+        run: scripts/check-desktop-version.sh
 
   build:
     name: Build (${{ matrix.target }})
@@ -54,6 +62,14 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+
+      - name: Install Node.js
+        if: ${{ matrix.target == 'aarch64-apple-darwin' }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
 
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
@@ -129,6 +145,22 @@ jobs:
           AGENTSCAN_NOTARY_KEYCHAIN="$APPLE_SIGNING_KEYCHAIN" \
             scripts/notarize-macos-binary.sh target/${{ matrix.target }}/release/agentscan
 
+      - name: Build signed/notarized desktop app
+        if: ${{ matrix.target == 'aarch64-apple-darwin' }}
+        env:
+          AGENTSCAN_CODESIGN_IDENTITY: ${{ secrets.APPLE_DEVELOPER_IDENTITY }}
+          AGENTSCAN_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          AGENTSCAN_NOTARY_KEYCHAIN="$APPLE_SIGNING_KEYCHAIN" \
+            scripts/build-macos-desktop-app.sh --notarize
+
+      - name: Verify desktop app assessment
+        if: ${{ matrix.target == 'aarch64-apple-darwin' }}
+        run: |
+          app="desktop/src-tauri/target/release/bundle/macos/agentscan.app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          spctl -a -vv -t execute "$app"
+
       - name: Package
         run: |
           mkdir -p dist
@@ -136,11 +168,29 @@ jobs:
               -czf dist/agentscan-${{ matrix.target }}.tar.gz \
               agentscan
 
+      - name: Package desktop app
+        if: ${{ matrix.target == 'aarch64-apple-darwin' }}
+        run: |
+          /usr/bin/ditto \
+            -c \
+            -k \
+            --sequesterRsrc \
+            --keepParent \
+            desktop/src-tauri/target/release/bundle/macos/agentscan.app \
+            dist/agentscan-desktop-aarch64-apple-darwin.zip
+
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: agentscan-${{ matrix.target }}
           path: dist/agentscan-${{ matrix.target }}.tar.gz
+
+      - name: Upload desktop artifact
+        if: ${{ matrix.target == 'aarch64-apple-darwin' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: agentscan-desktop-aarch64-apple-darwin
+          path: dist/agentscan-desktop-aarch64-apple-darwin.zip
 
   release:
     name: Release
@@ -156,13 +206,14 @@ jobs:
       - name: Generate checksums
         run: |
           cd dist
-          sha256sum *.tar.gz > SHA256SUMS
+          sha256sum -- *.tar.gz *.zip > SHA256SUMS
 
       - name: Publish release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
           files: |
             dist/*.tar.gz
+            dist/*.zip
             dist/SHA256SUMS
           generate_release_notes: true
           fail_on_unmatched_files: true
@@ -181,8 +232,13 @@ jobs:
             sha256sum --check SHA256SUMS
             ```
 
+            The macOS desktop app is published as `agentscan-desktop-aarch64-apple-darwin.zip`.
+            It is a signed and notarized `.app` bundle for Apple Silicon and uses the installed
+            `agentscan` CLI configured in the app.
+
             ### Targets
 
             - `aarch64-apple-darwin` — macOS Apple Silicon
             - `x86_64-unknown-linux-gnu` — Linux x86_64
             - `aarch64-unknown-linux-gnu` — Linux ARM64
+            - `agentscan-desktop-aarch64-apple-darwin.zip` — macOS desktop app, Apple Silicon
