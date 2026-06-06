@@ -1,4 +1,4 @@
-import { Duration, Effect, Layer, Queue, SubscriptionRef } from "effect";
+import { Duration, Effect, Layer, Queue, Stream, SubscriptionRef } from "effect";
 import { describe, expect, it } from "vitest";
 import { Profiles } from "./Profiles";
 import { PrefsBridge } from "./PrefsBridge";
@@ -38,18 +38,20 @@ const seed = (state: ProfileState): Record<string, string> => ({
 // records outbound broadcasts to assert on. Mirrors how the LiveConnection tests
 // script TauriIpc via Layer.succeed. `store` is mutable so a test can simulate a
 // concurrent dock-side write landing in storage between the ref and a mutator's
-// merge-onto-latest. `mode` is unused by the service today but is part of the
-// boundary's resolution and kept for parity with the real bridge.
-const makeBridge = (_mode: ShellMode, initial: Record<string, string> = {}) =>
+// merge-onto-latest. Profiles never reads `events` (React owns the gated `profiles`
+// adoption), so an empty inbound stream satisfies the boundary shape.
+const makeBridge = (mode: ShellMode, initial: Record<string, string> = {}) =>
   Effect.gen(function* () {
     const store = new Map<string, string>(Object.entries(initial));
     const emitted = yield* Queue.unbounded<PrefsSync>();
     const layer = Layer.succeed(PrefsBridge, {
+      mode,
       loadRaw: (key: string) => store.get(key) ?? null,
       storeRaw: (key: string, value: string) => {
         store.set(key, value);
       },
       emit: (payload: PrefsSync) => Queue.offer(emitted, payload).pipe(Effect.asVoid),
+      events: Stream.empty,
     });
     return { layer, store, emitted };
   });
