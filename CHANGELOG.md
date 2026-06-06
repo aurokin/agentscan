@@ -2,11 +2,26 @@
 
 ## Unreleased
 
+## 0.6.0 - 2026-06-06
+
 ### Added
 
 - Added a first-class macOS desktop release artifact. Tagged releases now build,
   sign, notarize, staple, verify, zip, and publish the Apple Silicon Tauri app
   as `agentscan-desktop-aarch64-apple-darwin.zip` alongside the CLI tarballs.
+
+### Changed
+
+- Migrated desktop profile/settings, preflight, appearance, preference bridge,
+  and picker connection state into Effect services with focused tests, keeping
+  the desktop shell on the shared CLI command contract.
+
+### Fixed
+
+- Added a safe incompatible-daemon stop path for upgrades where protocol/schema
+  mismatch prevents a normal RPC shutdown. `agentscan daemon stop` can now
+  terminate a mismatched daemon only after validating the identity sidecar,
+  socket peer PID, lifecycle lock, live PID, and executable.
 
 ## 0.5.1 - 2026-06-02
 
