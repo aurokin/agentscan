@@ -928,15 +928,18 @@ function App({ mode }: { mode: ShellMode }) {
         // adopts so its live picker tracks the current profile config; the skipped
         // change is reconciled later via the focus/clean reload paths.
         //
-        // The reload itself now applies asynchronously (atom dispatch -> service ref),
-        // where the old code reconciled synchronously via setProfileState. The trigger
-        // stays synchronously dirty-gated, the reload is value-guarded (a no-op snapshot
-        // never touches drafts), and the draft-reset behavior on a genuine active change
-        // is unchanged from before. The only residual is a sub-millisecond window where
-        // an edit begun between this dirty check and the reload landing could be reset —
-        // an inherent, accepted consequence of moving profile state into the service
-        // (closing it fully would mean keeping ProfileState in React). The focus/clean
-        // reconcilers recover any such case on the next focus.
+        // The reload now applies via an async hop (atom dispatch -> Effect fiber ->
+        // service ref -> re-render) rather than a setProfileState called inline here. Note
+        // that old setProfileState was itself a batched React setState, NOT a synchronous
+        // reconcile, so the same draft-reset-on-active-change window already existed; the
+        // hop only widens it by a few microtasks (sub-millisecond). The trigger stays
+        // synchronously dirty-gated, and the reload is value-guarded (an equal snapshot
+        // leaves the ref untouched, so the [activeProfile] reset effect never fires) —
+        // strictly safer than the old unconditional setProfileState, which reinstalled
+        // state even on a no-op sync. The only residual is that sub-ms window where an edit
+        // begun between this dirty check and a genuine-change reload landing could be
+        // reset; closing it fully would mean keeping ProfileState in React (precisely what
+        // this migration removes). The focus/clean reconcilers recover state on next focus.
         if (mode === "settings" && isSettingsDirtyRef.current) {
           return;
         }
