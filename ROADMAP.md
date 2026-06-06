@@ -161,6 +161,11 @@ Implications:
   version, and requested mode
 - compatible socket clients receive `hello_ack`; protocol or schema mismatches
   receive an explicit shutdown frame without acknowledgment
+- lifecycle `stop` is the exception to the data-contract boundary: it may
+  terminate a protocol/schema-mismatched daemon from the persisted identity
+  sidecar only after the sidecar socket path, socket peer PID, lifecycle lock,
+  live PID, and executable checks pass; this path parses only stable sidecar
+  identity fields so older sidecar shapes can still be stopped safely
 - one-shot commands read a full snapshot frame and disconnect
 - TSV is an output adapter only, not the canonical store
 - persisted cache JSON is not a supported IPC boundary

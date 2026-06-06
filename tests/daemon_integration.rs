@@ -18,6 +18,147 @@ use tempfile::TempDir;
 const DAEMON_TIMEOUT: Duration = Duration::from_secs(40);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const CACHE_SNAPSHOT_FIXTURE: &str = include_str!("fixtures/cache_snapshot_v1.json");
+static FAKE_DAEMON_CLEANUP_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn fake_daemon_sigterm_handler(_signal: libc::c_int) {
+    FAKE_DAEMON_CLEANUP_REQUESTED.store(true, Ordering::SeqCst);
+}
+
+#[test]
+#[ignore]
+fn fake_incompatible_daemon_process() -> Result<()> {
+    let Some(socket_path) = std::env::var_os("FAKE_DAEMON_SOCKET").map(PathBuf::from) else {
+        return Ok(());
+    };
+    let lock_path = fake_daemon_env_path("FAKE_DAEMON_LOCK")?;
+    let identity_path = fake_daemon_env_path("FAKE_DAEMON_IDENTITY")?;
+    let ready_pid_path = fake_daemon_env_path("FAKE_DAEMON_READY")?;
+    let protocol_version = fake_daemon_env_u32("FAKE_DAEMON_PROTOCOL")?;
+    let client_snapshot_schema_version = fake_daemon_env_u32("FAKE_DAEMON_CLIENT_SCHEMA")?;
+    let daemon_snapshot_schema_version = fake_daemon_env_u32("FAKE_DAEMON_SCHEMA")?;
+    let cleanup_on_sigterm =
+        std::env::var("FAKE_DAEMON_CLEANUP_ON_SIGTERM").is_ok_and(|value| value == "1");
+    let legacy_identity_sidecar =
+        std::env::var("FAKE_DAEMON_LEGACY_IDENTITY").is_ok_and(|value| value == "1");
+
+    let _ = fs::remove_file(&socket_path);
+    let mut lock_file = Some(
+        fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .with_context(|| format!("failed to open fake daemon lock {}", lock_path.display()))?,
+    );
+    let result = unsafe {
+        libc::flock(
+            lock_file.as_ref().expect("lock should exist").as_raw_fd(),
+            libc::LOCK_EX | libc::LOCK_NB,
+        )
+    };
+    if result != 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("failed to lock {}", lock_path.display()));
+    }
+
+    let executable = std::env::current_exe().context("failed to resolve fake daemon executable")?;
+    let mut identity = serde_json::json!({
+        "pid": std::process::id(),
+        "daemon_start_time": "2026-05-03T00:00:00Z",
+        "executable": executable.display().to_string(),
+        "executable_canonical": fs::canonicalize(&executable)
+            .ok()
+            .map(|path| path.display().to_string()),
+        "socket_path": socket_path.display().to_string(),
+        "protocol_version": protocol_version,
+        "snapshot_schema_version": daemon_snapshot_schema_version
+    });
+    if legacy_identity_sidecar {
+        let identity = identity
+            .as_object_mut()
+            .expect("fake daemon identity should be an object");
+        identity.remove("executable_canonical");
+        identity.remove("protocol_version");
+        identity.remove("snapshot_schema_version");
+    }
+    fs::write(
+        &identity_path,
+        serde_json::to_vec_pretty(&identity).context("failed to encode fake daemon identity")?,
+    )
+    .with_context(|| {
+        format!(
+            "failed to write fake daemon identity {}",
+            identity_path.display()
+        )
+    })?;
+
+    let mut listener = Some(UnixListener::bind(&socket_path).with_context(|| {
+        format!(
+            "failed to bind fake daemon socket {}",
+            socket_path.display()
+        )
+    })?);
+    if cleanup_on_sigterm {
+        unsafe {
+            libc::signal(
+                libc::SIGTERM,
+                fake_daemon_sigterm_handler as *const () as usize,
+            );
+        }
+    }
+    fs::write(&ready_pid_path, std::process::id().to_string())
+        .with_context(|| format!("failed to write {}", ready_pid_path.display()))?;
+
+    let (mut stream, _) = listener
+        .as_ref()
+        .expect("listener should exist")
+        .accept()
+        .context("fake daemon failed to accept lifecycle client")?;
+    let mut request = String::new();
+    let _ = BufReader::new(
+        stream
+            .try_clone()
+            .context("fake daemon stream should clone")?,
+    )
+    .read_line(&mut request);
+    let frame = serde_json::json!({
+        "type": "shutdown",
+        "reason": "schema_mismatch",
+        "message": format!(
+            "unsupported snapshot schema version {client_snapshot_schema_version} (expected {daemon_snapshot_schema_version})"
+        )
+    });
+    writeln!(stream, "{frame}").context("failed to write fake daemon schema mismatch")?;
+    stream
+        .flush()
+        .context("failed to flush fake daemon response")?;
+
+    let mut cleaned = false;
+    loop {
+        if cleanup_on_sigterm && !cleaned && FAKE_DAEMON_CLEANUP_REQUESTED.load(Ordering::SeqCst) {
+            listener.take();
+            let _ = fs::remove_file(&socket_path);
+            let _ = fs::remove_file(&identity_path);
+            lock_file.take();
+            cleaned = true;
+        }
+        sleep(POLL_INTERVAL);
+    }
+}
+
+fn fake_daemon_env_path(name: &str) -> Result<PathBuf> {
+    std::env::var_os(name)
+        .map(PathBuf::from)
+        .with_context(|| format!("{name} was not set"))
+}
+
+fn fake_daemon_env_u32(name: &str) -> Result<u32> {
+    std::env::var(name)
+        .with_context(|| format!("{name} was not set"))?
+        .parse()
+        .with_context(|| format!("{name} was not a u32"))
+}
 
 #[test]
 fn agentscan_uses_explicit_test_tmux_socket_when_default_tmux_tmpdir_is_poisoned() -> Result<()> {
@@ -867,6 +1008,143 @@ fn daemon_lifecycle_stop_cleans_stale_socket() -> Result<()> {
     assert!(
         !harness.agentscan_socket_path.exists(),
         "daemon stop should unlink refused stale Unix socket"
+    );
+    Ok(())
+}
+
+#[test]
+fn daemon_lifecycle_stop_signals_incompatible_daemon_from_sidecar() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let fake_daemon_pid = start_fake_incompatible_daemon(
+        &harness.agentscan_socket_path,
+        snapshot_schema_version() - 1,
+    )?;
+    let mut kill_guard = KillPidGuard::new(fake_daemon_pid);
+
+    let output = harness
+        .agentscan_command()?
+        .args(["daemon", "stop"])
+        .output()
+        .context("failed to run daemon stop")?;
+
+    assert!(
+        output.status.success(),
+        "daemon stop should signal incompatible daemon from sidecar; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("agentscan daemon stopped"),
+        "stop output should report success"
+    );
+    assert!(
+        !harness
+            .agentscan_socket_path
+            .with_extension("sock.identity.json")
+            .exists(),
+        "stop should remove matching identity sidecar"
+    );
+    kill_guard.disarm();
+    Ok(())
+}
+
+#[test]
+fn daemon_lifecycle_stop_signals_incompatible_daemon_with_legacy_sidecar() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let fake_daemon_pid = start_fake_incompatible_daemon_with_legacy_identity_sidecar(
+        &harness.agentscan_socket_path,
+        snapshot_schema_version() - 1,
+    )?;
+    let mut kill_guard = KillPidGuard::new(fake_daemon_pid);
+
+    let output = harness
+        .agentscan_command()?
+        .args(["daemon", "stop"])
+        .output()
+        .context("failed to run daemon stop")?;
+
+    assert!(
+        output.status.success(),
+        "daemon stop should signal incompatible daemon from legacy sidecar; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !harness
+            .agentscan_socket_path
+            .with_extension("sock.identity.json")
+            .exists(),
+        "stop should remove matching legacy identity sidecar"
+    );
+    kill_guard.disarm();
+    Ok(())
+}
+
+#[test]
+fn daemon_lifecycle_stop_sigkills_incompatible_daemon_after_socket_cleanup() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let fake_daemon_pid = start_fake_incompatible_daemon_with_options(
+        &harness.agentscan_socket_path,
+        snapshot_schema_version() - 1,
+        true,
+        false,
+    )?;
+    let mut kill_guard = KillPidGuard::new(fake_daemon_pid);
+
+    let output = harness
+        .agentscan_command()?
+        .args(["daemon", "stop"])
+        .output()
+        .context("failed to run daemon stop")?;
+
+    assert!(
+        output.status.success(),
+        "daemon stop should SIGKILL incompatible daemon after socket cleanup; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !process_is_live_for_test(fake_daemon_pid),
+        "daemon stop should terminate fake daemon pid {fake_daemon_pid}"
+    );
+    kill_guard.disarm();
+    Ok(())
+}
+
+#[test]
+fn daemon_lifecycle_stop_refuses_incompatible_daemon_with_stale_sidecar() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let pid_path = harness
+        .agentscan_socket_path
+        .with_extension("stale-sidecar.pid");
+    let pid = launch_background_sleep(&pid_path)?;
+    let _kill_guard = KillPidGuard::new(pid);
+    write_daemon_identity_sidecar(
+        &harness.agentscan_socket_path,
+        pid,
+        snapshot_schema_version() - 1,
+    )?;
+    let handle = serve_incompatible_lifecycle_once(&harness.agentscan_socket_path);
+
+    let output = harness
+        .agentscan_command()?
+        .args(["daemon", "stop"])
+        .output()
+        .context("failed to run daemon stop")?;
+
+    handle.join().expect("fake daemon should join");
+    assert!(
+        !output.status.success(),
+        "daemon stop should reject stale incompatible sidecar"
+    );
+    let stderr = String::from_utf8(output.stderr).context("stderr was not valid UTF-8")?;
+    assert!(
+        stderr.contains("identity sidecar is not safe to signal"),
+        "expected sidecar safety error, got:\n{stderr}"
+    );
+    assert!(
+        process_is_live_for_test(pid),
+        "stale sidecar rejection should not signal pid {pid}"
     );
     Ok(())
 }
@@ -2502,6 +2780,164 @@ fn accept_fake_daemon_connection(listener: &UnixListener) -> UnixStream {
             Err(error) => panic!("fake daemon accept failed: {error}"),
         }
     }
+}
+
+fn serve_incompatible_lifecycle_once(socket_path: &Path) -> std::thread::JoinHandle<()> {
+    let listener = UnixListener::bind(socket_path).expect("fake daemon socket should bind");
+    listener
+        .set_nonblocking(true)
+        .expect("fake daemon listener should be nonblocking");
+    std::thread::spawn(move || {
+        let mut stream = accept_fake_daemon_connection(&listener);
+        let mut request = String::new();
+        let _ = BufReader::new(stream.try_clone().expect("stream should clone"))
+            .read_line(&mut request);
+        let frame = serde_json::json!({
+            "type": "shutdown",
+            "reason": "schema_mismatch",
+            "message": format!(
+                "unsupported snapshot schema version {} (expected {})",
+                snapshot_schema_version(),
+                snapshot_schema_version() - 1
+            )
+        });
+        writeln!(stream, "{frame}").expect("schema mismatch frame should write");
+        stream.flush().expect("schema mismatch frame should flush");
+    })
+}
+
+fn start_fake_incompatible_daemon(
+    socket_path: &Path,
+    daemon_snapshot_schema_version: u32,
+) -> Result<u32> {
+    start_fake_incompatible_daemon_with_options(
+        socket_path,
+        daemon_snapshot_schema_version,
+        false,
+        false,
+    )
+}
+
+fn start_fake_incompatible_daemon_with_legacy_identity_sidecar(
+    socket_path: &Path,
+    daemon_snapshot_schema_version: u32,
+) -> Result<u32> {
+    start_fake_incompatible_daemon_with_options(
+        socket_path,
+        daemon_snapshot_schema_version,
+        false,
+        true,
+    )
+}
+
+fn start_fake_incompatible_daemon_with_options(
+    socket_path: &Path,
+    daemon_snapshot_schema_version: u32,
+    cleanup_on_sigterm: bool,
+    legacy_identity_sidecar: bool,
+) -> Result<u32> {
+    let ready_pid_path = socket_path.with_extension("fake-incompatible-daemon.pid");
+    let lock_path = socket_path.with_extension("sock.lock");
+    let identity_path = socket_path.with_extension("sock.identity.json");
+    let test_binary = std::env::current_exe().context("failed to resolve current test binary")?;
+    let launch_status = Command::new("sh")
+        .arg("-c")
+        .arg(
+            "exec \"$FAKE_TEST_BIN\" --ignored --exact fake_incompatible_daemon_process --nocapture >/dev/null 2>&1 </dev/null &",
+        )
+        .env("FAKE_TEST_BIN", &test_binary)
+        .env("FAKE_DAEMON_SOCKET", socket_path)
+        .env("FAKE_DAEMON_LOCK", &lock_path)
+        .env("FAKE_DAEMON_IDENTITY", &identity_path)
+        .env("FAKE_DAEMON_READY", &ready_pid_path)
+        .env("FAKE_DAEMON_PROTOCOL", daemon_protocol_version().to_string())
+        .env("FAKE_DAEMON_CLIENT_SCHEMA", snapshot_schema_version().to_string())
+        .env("FAKE_DAEMON_SCHEMA", daemon_snapshot_schema_version.to_string())
+        .env(
+            "FAKE_DAEMON_CLEANUP_ON_SIGTERM",
+            if cleanup_on_sigterm { "1" } else { "0" },
+        )
+        .env(
+            "FAKE_DAEMON_LEGACY_IDENTITY",
+            if legacy_identity_sidecar { "1" } else { "0" },
+        )
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .context("failed to launch fake incompatible daemon")?;
+    assert!(
+        launch_status.success(),
+        "failed to launch fake incompatible daemon: {launch_status}"
+    );
+    let ready_pid = wait_for_pid_file(&ready_pid_path)?;
+    Ok(ready_pid)
+}
+
+fn launch_background_sleep(pid_path: &Path) -> Result<u32> {
+    let launch_script =
+        "sh -c 'echo $$ > \"$PID_PATH\"; exec sleep 300' >/dev/null 2>&1 </dev/null &";
+    let launch_status = Command::new("sh")
+        .env("PID_PATH", pid_path)
+        .args(["-c", launch_script])
+        .status()
+        .context("failed to launch background sleep")?;
+    assert!(
+        launch_status.success(),
+        "failed to launch background sleep: {launch_status}"
+    );
+    wait_for_pid_file(pid_path)
+}
+
+fn write_daemon_identity_sidecar(
+    socket_path: &Path,
+    pid: u32,
+    snapshot_schema_version: u32,
+) -> Result<()> {
+    let sleep_path = command_path("sleep")?;
+    let executable_canonical = fs::canonicalize(&sleep_path)
+        .ok()
+        .map(|path| path.display().to_string());
+    let identity = serde_json::json!({
+        "pid": pid,
+        "daemon_start_time": "2026-05-03T00:00:00Z",
+        "executable": sleep_path.display().to_string(),
+        "executable_canonical": executable_canonical,
+        "socket_path": socket_path.display().to_string(),
+        "protocol_version": daemon_protocol_version(),
+        "snapshot_schema_version": snapshot_schema_version
+    });
+    let identity_path = socket_path.with_extension("sock.identity.json");
+    fs::write(
+        &identity_path,
+        serde_json::to_vec_pretty(&identity).context("failed to encode daemon identity")?,
+    )
+    .with_context(|| {
+        format!(
+            "failed to write daemon identity {}",
+            identity_path.display()
+        )
+    })
+}
+
+fn command_path(command: &str) -> Result<PathBuf> {
+    let output = Command::new("sh")
+        .args(["-c", &format!("command -v {command}")])
+        .output()
+        .with_context(|| format!("failed to resolve command path for {command}"))?;
+    if !output.status.success() {
+        bail!("failed to resolve command path for {command}");
+    }
+    let path = String::from_utf8(output.stdout).context("command path was not valid UTF-8")?;
+    let path = path.trim();
+    if path.is_empty() {
+        bail!("empty command path for {command}");
+    }
+    Ok(PathBuf::from(path))
+}
+
+fn process_is_live_for_test(pid: u32) -> bool {
+    let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
 struct KillPidGuard {
