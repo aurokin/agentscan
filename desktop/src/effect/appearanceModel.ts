@@ -1,5 +1,6 @@
-// Pure appearance model for the desktop shell (theme, dock-layout orientation, and the
-// macOS glass triad). No React, no Effect, no global `window` access — persistence is
+// Pure appearance model for the desktop shell (theme, dock-layout orientation, the macOS
+// glass toggle + tint, and the frameless-chrome toggle). No React, no Effect, no global
+// `window` access — persistence is
 // parameterized over a read/write pair so the Appearance Effect.Service (and its vitest
 // proof) can drive it over an injected storage boundary while App.tsx keeps using the
 // same parsers/serializers to seed its first paint.
@@ -13,6 +14,9 @@ export const THEME_STORAGE_KEY = "agentscan.desktop.theme";
 export const ORIENTATION_STORAGE_KEY = "agentscan.desktop.orientation";
 export const GLASS_STORAGE_KEY = "agentscan.desktop.glass";
 export const SURFACE_ALPHA_STORAGE_KEY = "agentscan.desktop.surfaceAlpha";
+// Frameless dock chrome: drop the native titlebar for a borderless ribbon with custom
+// drag/min/close controls. Off by default (a framed window on first run).
+export const FRAMELESS_STORAGE_KEY = "agentscan.desktop.frameless";
 
 // Tint alpha floor of 0.20 caps transparency at 80% (the slider reads 1 - alpha): the
 // surface always keeps a little tint over the native vibrancy frost, so the UI never
@@ -32,6 +36,7 @@ export type AppearanceState = {
   readonly orientationPref: OrientationPreference;
   readonly glassEnabled: boolean;
   readonly surfaceAlpha: number;
+  readonly framelessEnabled: boolean;
 };
 
 export function parseThemePref(raw: string | null): ThemePreference {
@@ -50,6 +55,13 @@ export function parseGlassEnabled(raw: string | null): boolean {
   // settings controls are gated on IS_MAC), so on non-macOS this value is a dormant,
   // never-applied preference rather than something the model needs to know about.
   return raw === null ? true : raw === "on";
+}
+
+export function parseFrameless(raw: string | null): boolean {
+  // Default OFF (framed window with the native titlebar) on a first run; once the user
+  // toggles it, "on"/"off" is respected. The decorations toggle is cross-platform, so —
+  // unlike glass — this value is live on every platform, not a dormant macOS-only pref.
+  return raw === "on";
 }
 
 export function parseSurfaceAlpha(raw: string | null): number {
@@ -73,6 +85,7 @@ export function loadAppearance(read: StorageRead): AppearanceState {
     orientationPref: parseOrientationPref(read(ORIENTATION_STORAGE_KEY)),
     glassEnabled: parseGlassEnabled(read(GLASS_STORAGE_KEY)),
     surfaceAlpha: parseSurfaceAlpha(read(SURFACE_ALPHA_STORAGE_KEY)),
+    framelessEnabled: parseFrameless(read(FRAMELESS_STORAGE_KEY)),
   };
 }
 
@@ -87,9 +100,12 @@ export const storeGlassEnabled = (write: StorageWrite, value: boolean) =>
   write(GLASS_STORAGE_KEY, value ? "on" : "off");
 export const storeSurfaceAlpha = (write: StorageWrite, value: number) =>
   write(SURFACE_ALPHA_STORAGE_KEY, value.toFixed(2));
+export const storeFrameless = (write: StorageWrite, value: boolean) =>
+  write(FRAMELESS_STORAGE_KEY, value ? "on" : "off");
 
 export const appearanceEqual = (a: AppearanceState, b: AppearanceState): boolean =>
   a.themePref === b.themePref &&
   a.orientationPref === b.orientationPref &&
   a.glassEnabled === b.glassEnabled &&
-  a.surfaceAlpha === b.surfaceAlpha;
+  a.surfaceAlpha === b.surfaceAlpha &&
+  a.framelessEnabled === b.framelessEnabled;

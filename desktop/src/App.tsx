@@ -21,6 +21,7 @@ import {
   reloadProfilesAtom,
   requestPreflightSyncAtom,
   selectProfileAtom,
+  setFramelessAtom,
   setGlassEnabledAtom,
   setOrientationAtom,
   setSurfaceAlphaAtom,
@@ -76,13 +77,23 @@ const DEBUG_LOG_LIMIT = 80;
 // height floor so the bar can shrink to dock height instead of a tall slab.
 const WINDOW_MIN_WIDTH = 220;
 const WINDOW_MIN_HEIGHT_VERTICAL = 520;
-const WINDOW_MIN_HEIGHT_HORIZONTAL = 96;
-// Max-size caps per pinned orientation: vertical stays a strip (width capped, height
-// free), horizontal stays a bar (height capped, width free). "auto" clears the cap.
-// The free axis uses a value larger than any display so it reads as unbounded.
+// Auto-mode floor when the window is wider than tall: lets a freely-dragged window get
+// short without collapsing the chip strip. A PINNED horizontal bar ignores this and locks
+// to BAR_WINDOW_HEIGHT (below) instead, so its height isn't resizable at all.
+const WINDOW_MIN_HEIGHT_HORIZONTAL = 44;
+// Locked height for the pinned horizontal bar: min == max == this, so the bar resizes only
+// horizontally (the layout is tuned for this exact height). Mirrors BAR_WINDOW_HEIGHT in
+// src-tauri/src/lib.rs (the snap height place_bar_window applies) — keep the two in sync.
+const BAR_WINDOW_HEIGHT = 56;
+// Max-size caps per pinned orientation: vertical stays a strip (width capped, height free);
+// the pinned horizontal bar locks height at BAR_WINDOW_HEIGHT (above) with free width.
+// "auto" clears the cap. The free axis uses a value larger than any display.
 const WINDOW_MAX_WIDTH_VERTICAL = 520;
-const WINDOW_MAX_HEIGHT_HORIZONTAL = 200;
 const WINDOW_MAX_UNBOUNDED = 10000;
+// Corner radius (logical px) for frameless mode, matching the macOS window rounding the
+// native frame would otherwise draw. Mirrors --frameless-radius in styles.css and is passed
+// to the native glass backdrop so the vibrancy view rounds to the same curve as the webview.
+const FRAMELESS_CORNER_RADIUS = 12;
 
 // Per-row picker hotkeys are triggered with Control rather than Command. The
 // default key set overlaps macOS ⌘ shortcuts — ⌘Q quits, ⌘C/V/X are clipboard,
@@ -97,6 +108,9 @@ let windowOperationQueue = Promise.resolve();
 // Serializes set_window_glass invokes so a fast off→on toggle can't land its
 // native calls out of order and leave the blur layer out of sync with the UI.
 let glassOperationQueue = Promise.resolve();
+// Same discipline for the frameless decorations toggle: serialize the native
+// set_window_decorations calls so a fast toggle settles on the latest desired state.
+let framelessOperationQueue = Promise.resolve();
 
 // Live-picker subscription state (connection status + rows + epoch fencing + the
 // reconnect/latch policy) is owned by the Effect LiveConnection service. This
@@ -229,6 +243,18 @@ function App({ mode }: { mode: ShellMode }) {
   const startLive = useAtomSet(startAtom);
   const reconnectLive = useAtomSet(reconnectAtom);
   const [pickerFilter, setPickerFilter] = useState("");
+  // Horizontal bar only: search collapses to an icon to save width, expanding to the
+  // field on click. The field also stays open whenever a query is active (so a filter
+  // is always visible/editable). The vertical strip always shows the full field, so this
+  // is inert there. searchInputRef lets the expand action move focus into the field.
+  const [isSearchExpanded, setIsSearchExpanded] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  // Whether the native frame has ACTUALLY been removed (the set_window_decorations effect
+  // resolved successfully), as opposed to the desired `framelessEnabled` preference. All
+  // custom window chrome (drag regions + minimize/close) is gated on this, never the bare
+  // preference, so it can't show as duplicate controls over a still-decorated window while a
+  // toggle is mid-flight or after the native call rejected.
+  const [framelessApplied, setFramelessApplied] = useState(false);
   // Layout axis, seeded from the current window shape and kept in sync on resize.
   const [orientation, setOrientation] = useState<Orientation>(orientationForViewport);
   // Appearance prefs (theme + dock-layout orientation + glass) are owned by the
@@ -239,11 +265,13 @@ function App({ mode }: { mode: ShellMode }) {
   // to a direct storage read so layout/theme/glass are right on the first paint.
   const initialAppearance = useMemo(() => loadAppearance(readLocalStorage), []);
   const appearance = Result.getOrElse(useAtomValue(appearanceAtom), () => initialAppearance);
-  const { themePref, orientationPref, glassEnabled, surfaceAlpha } = appearance;
+  const { themePref, orientationPref, glassEnabled, surfaceAlpha, framelessEnabled } =
+    appearance;
   const setThemePref = useAtomSet(setThemeAtom);
   const setOrientationPref = useAtomSet(setOrientationAtom);
   const setGlassEnabled = useAtomSet(setGlassEnabledAtom);
   const setSurfaceAlpha = useAtomSet(setSurfaceAlphaAtom);
+  const setFrameless = useAtomSet(setFramelessAtom);
   const reloadAppearance = useAtomSet(reloadAppearanceAtom);
   // Layout preference: "auto" follows the live `orientation`; a pinned value overrides it.
   const effectiveOrientation: Orientation =
@@ -728,15 +756,24 @@ function App({ mode }: { mode: ShellMode }) {
     }
     const sizingOrientation: Orientation =
       orientationPref === "auto" ? effectiveOrientation : orientationPref;
-    const minHeight =
-      sizingOrientation === "horizontal"
-        ? WINDOW_MIN_HEIGHT_HORIZONTAL
-        : WINDOW_MIN_HEIGHT_VERTICAL;
+    // Pinned horizontal locks the bar to BAR_WINDOW_HEIGHT (min == max height) so it can
+    // only be resized horizontally — the layout is tuned for that exact height. Pinned
+    // vertical caps width into a strip. "auto" stays free on both axes (just a min floor
+    // matched to the live shape).
+    const minSize =
+      orientationPref === "horizontal"
+        ? new LogicalSize(WINDOW_MIN_WIDTH, BAR_WINDOW_HEIGHT)
+        : new LogicalSize(
+            WINDOW_MIN_WIDTH,
+            sizingOrientation === "horizontal"
+              ? WINDOW_MIN_HEIGHT_HORIZONTAL
+              : WINDOW_MIN_HEIGHT_VERTICAL,
+          );
     const maxSize =
       orientationPref === "vertical"
         ? new LogicalSize(WINDOW_MAX_WIDTH_VERTICAL, WINDOW_MAX_UNBOUNDED)
         : orientationPref === "horizontal"
-          ? new LogicalSize(WINDOW_MAX_UNBOUNDED, WINDOW_MAX_HEIGHT_HORIZONTAL)
+          ? new LogicalSize(WINDOW_MAX_UNBOUNDED, BAR_WINDOW_HEIGHT)
           : null;
     // Place on the first dock mount (so a saved layout opens correctly) and on every
     // pinned reshape, but not on a later "auto" drag — which must not be fought. The
@@ -752,7 +789,7 @@ function App({ mode }: { mode: ShellMode }) {
         // Fully unbind first (null is Tauri's unset) so a larger min can't clash
         // with a stale max, then re-apply the real cap below.
         await win.setMaxSize(null);
-        await win.setMinSize(new LogicalSize(WINDOW_MIN_WIDTH, minHeight));
+        await win.setMinSize(minSize);
         await win.setMaxSize(maxSize);
         if (shouldPlace) {
           await summonPlacementRef.current();
@@ -963,9 +1000,14 @@ function App({ mode }: { mode: ShellMode }) {
       if (cancelled) {
         return;
       }
+      // Round the vibrancy backdrop to match the frameless CSS corners; null lets a framed
+      // window's native rounding apply. Keyed on the APPLIED frameless state (like the CSS
+      // rounding via data-frameless), not the bare preference, so the frost only rounds once
+      // the frame is actually gone. Re-applied whenever that state changes (dep below).
+      const radius = framelessApplied ? FRAMELESS_CORNER_RADIUS : null;
       try {
         if (glassEnabled) {
-          await invoke("set_window_glass", { enabled: true });
+          await invoke("set_window_glass", { enabled: true, radius });
           if (!cancelled) {
             // Flip the surface translucent and arm the adaptive tokens together,
             // so `--glass-clear` is only nonzero once the blur is actually live.
@@ -975,7 +1017,7 @@ function App({ mode }: { mode: ShellMode }) {
         } else {
           document.documentElement.setAttribute("data-glass", "off");
           setGlassClear(0);
-          await invoke("set_window_glass", { enabled: false });
+          await invoke("set_window_glass", { enabled: false, radius });
         }
       } catch (error) {
         // Native call failed: keep the surface opaque AND the tokens un-adapted.
@@ -992,7 +1034,7 @@ function App({ mode }: { mode: ShellMode }) {
     return () => {
       cancelled = true;
     };
-  }, [glassEnabled, mode]);
+  }, [glassEnabled, framelessApplied, mode]);
 
   // Drive the tint opacity via a CSS variable; the data-glass rules in styles.css
   // only consume it while glass is on, so this is harmless when glass is off.
@@ -1008,6 +1050,53 @@ function App({ mode }: { mode: ShellMode }) {
       setGlassClear(glassClearFor(surfaceAlpha));
     }
   }, [surfaceAlpha]);
+
+  // Apply the frameless-chrome preference to the dock window. Like glass, this is a
+  // dock-only native apply (the settings window keeps its normal frame) owned by React,
+  // while persistence + the cross-window mirror live in the Appearance service. The
+  // data-frameless attribute is what surfaces the custom drag region + window controls in
+  // styles.css, so it's flipped only once set_window_decorations resolves — the controls
+  // never render over a still-framed window, and a failed native call leaves the attribute
+  // "off" so we don't strip the only chrome without a working replacement. Serialized
+  // through a queue so a fast toggle settles on the latest desired state.
+  useEffect(() => {
+    if (mode !== "dock") {
+      return;
+    }
+
+    let cancelled = false;
+    framelessOperationQueue = framelessOperationQueue.then(async () => {
+      if (cancelled) {
+        return;
+      }
+      try {
+        await invoke("set_window_decorations", { decorations: !framelessEnabled });
+        if (!cancelled) {
+          document.documentElement.setAttribute(
+            "data-frameless",
+            framelessEnabled ? "on" : "off",
+          );
+          // Reveal/hide the custom chrome only now that the native frame change landed, so
+          // it tracks the real window state rather than the pending preference.
+          setFramelessApplied(framelessEnabled);
+        }
+      } catch (error) {
+        // The native call failed: assume the frame is still present and hide the custom
+        // chrome, so we never stack our controls on top of a native titlebar.
+        document.documentElement.setAttribute("data-frameless", "off");
+        setFramelessApplied(false);
+        appendDebugEntry({
+          kind: "command",
+          label: "Frameless window",
+          detail: errorMessage(error),
+        });
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [framelessEnabled, mode]);
 
   async function activateSelectedRow(row = selectedRow) {
     if (!row || activationInFlightRef.current) {
@@ -1110,11 +1199,13 @@ function App({ mode }: { mode: ShellMode }) {
       void activateSelectedRow();
     } else if (event.key === "Escape") {
       // Persistent-window model: Escape never hides the window. Clear the search
-      // filter if one is active; otherwise it's a no-op.
+      // filter if one is active; otherwise it's a no-op. In the horizontal bar it also
+      // collapses search back to its icon (inert in the always-expanded vertical strip).
       if (pickerFilter) {
         event.preventDefault();
         setPickerFilter("");
       }
+      setIsSearchExpanded(false);
     }
   }
 
@@ -1247,6 +1338,15 @@ function App({ mode }: { mode: ShellMode }) {
     return () => window.removeEventListener("keydown", handler);
   }, [mode]);
 
+  // Move focus into the search field the moment it expands (horizontal bar), so a click
+  // on the search icon lands the caret without a second click. Only fires on the
+  // false->true transition; the field is unmounted while collapsed.
+  useEffect(() => {
+    if (isSearchExpanded) {
+      searchInputRef.current?.focus();
+    }
+  }, [isSearchExpanded]);
+
   // The dock shows its boot/error screen until the active runner has a usable
   // preflight. That covers three not-ready cases: still probing; the probe failed
   // (IPC error); or the probe resolved but reports the CLI unavailable (bad binary
@@ -1259,6 +1359,34 @@ function App({ mode }: { mode: ShellMode }) {
     preflightState.status === "ready" &&
     preflightState.runnerKey === runnerKey &&
     !preflightState.preflight.ok;
+  // Custom window chrome for frameless mode, shared by the boot/recovery screen and the
+  // picker below. Callers gate these on framelessApplied so they only appear once the native
+  // frame is actually gone. data-tauri-drag-region="" adds the drag handle; undefined omits
+  // it (the chrome bands only become draggable when frameless).
+  const dragRegion = framelessApplied ? "" : undefined;
+  const windowControls = (
+    <>
+      <button
+        className="icon-button"
+        type="button"
+        aria-label="Minimize window"
+        title="Minimize"
+        onClick={() => void getCurrentWindow().minimize()}
+      >
+        {"–"}
+      </button>
+      <button
+        className="icon-button window-close"
+        type="button"
+        aria-label="Close window"
+        title="Close"
+        onClick={() => void getCurrentWindow().hide()}
+      >
+        {"×"}
+      </button>
+    </>
+  );
+
   if (mode === "dock" && (preflightState.status !== "ready" || dockPreflightUnusable)) {
     const probing = preflightState.status === "loading";
     const detail =
@@ -1270,9 +1398,18 @@ function App({ mode }: { mode: ShellMode }) {
     return (
       // Recovery UI renders in the live orientation: a centered column in the vertical
       // strip, and a compact row in the horizontal bar (styles.css) so the heading and
-      // the only "Open settings" path stay visible without clipping in the ~120px bar.
-      <main className="sidebar" data-orientation={effectiveOrientation}>
-        <div className="boot-state" aria-live="polite">
+      // the only "Open settings" path stay visible without clipping in the short bar.
+      <main
+        className="sidebar"
+        data-orientation={effectiveOrientation}
+        data-tauri-drag-region={dragRegion}
+      >
+        {/* The drag region must sit on boot-state too, not just <main>: boot-state fills the
+            window (height:100% / flex:1), so Tauri — which starts a drag only when the click
+            target itself carries the attribute — would otherwise see every click land on this
+            covering child and never drag. Clicks on the spinner/copy/button target those
+            elements (no attribute), so they stay non-draggable. */}
+        <div className="boot-state" aria-live="polite" data-tauri-drag-region={dragRegion}>
           <span className="boot-spinner" aria-hidden="true" />
           <div className="boot-copy">
             <h1>{probing ? "Connecting" : "Can’t reach agentscan"}</h1>
@@ -1285,6 +1422,12 @@ function App({ mode }: { mode: ShellMode }) {
             Open settings
           </button>
         </div>
+        {/* Frameless mode strips the native frame, so the recovery screen would otherwise
+            be a borderless window the user can't move/minimize/dismiss while connecting or
+            after a failure. The boot screen has no footer, so float the controls instead. */}
+        {framelessApplied ? (
+          <div className="boot-window-controls">{windowControls}</div>
+        ) : null}
       </main>
     );
   }
@@ -1605,6 +1748,25 @@ function App({ mode }: { mode: ShellMode }) {
               )}
             </div>
 
+            <div className="setting-row">
+              <div className="setting-label">
+                <span>Frameless</span>
+                <span className="setting-hint">
+                  Hide the title bar; drag, minimize, and close from the dock itself
+                </span>
+              </div>
+              <button
+                className={`switch${framelessEnabled ? " on" : ""}`}
+                type="button"
+                role="switch"
+                aria-checked={framelessEnabled}
+                aria-label="Frameless window"
+                onClick={() => setFrameless(!framelessEnabled)}
+              >
+                <span className="switch-thumb" />
+              </button>
+            </div>
+
             {IS_MAC ? (
               <div className="glass-controls">
                 <div className="setting-row">
@@ -1679,30 +1841,72 @@ function App({ mode }: { mode: ShellMode }) {
     );
   }
 
+  // Horizontal bar: collapse search to an icon unless the user expanded it or a query is
+  // active. The vertical strip always shows the full field (searchCollapsed is never true).
+  const searchCollapsed =
+    effectiveOrientation === "horizontal" && !isSearchExpanded && !pickerFilter.trim();
+
   return (
     <main className="sidebar" data-orientation={effectiveOrientation}>
-      <header className="topbar">
-        <div className="search-field">
-          <span className="search-icon" aria-hidden="true">
-            {"⌕"}
-          </span>
-          <input
+      <header className="topbar" data-tauri-drag-region={dragRegion}>
+        {searchCollapsed ? (
+          <button
+            className="icon-button search-expand"
+            type="button"
             aria-label="Search agents"
-            value={pickerFilter}
-            onChange={(event) => setPickerFilter(event.target.value)}
-            placeholder="Search agents"
-          />
-          {pickerFilter.trim() ? (
-            <button
-              className="search-clear"
-              type="button"
-              aria-label="Clear search"
-              onClick={() => setPickerFilter("")}
-            >
-              {"×"}
-            </button>
-          ) : null}
-        </div>
+            title="Search agents"
+            onClick={() => setIsSearchExpanded(true)}
+          >
+            {"⌕"}
+          </button>
+        ) : (
+          <div className="search-field">
+            <span className="search-icon" aria-hidden="true">
+              {"⌕"}
+            </span>
+            <input
+              ref={searchInputRef}
+              aria-label="Search agents"
+              value={pickerFilter}
+              onChange={(event) => setPickerFilter(event.target.value)}
+              placeholder="Search agents"
+              onBlur={() => {
+                // Leaving an empty field collapses it back to the icon (bar only). Defer the
+                // collapse past the current event: blur is a discrete event, so collapsing
+                // here flushes the reflow synchronously and the adjacent reconnect button
+                // shifts left between mousedown and click — eating the click. A macrotask runs
+                // after the click resolves, so the neighbor's onClick lands first.
+                if (effectiveOrientation === "horizontal" && !pickerFilter.trim()) {
+                  setTimeout(() => setIsSearchExpanded(false), 0);
+                }
+              }}
+              onKeyDown={(event) => {
+                // Horizontal bar only: Escape clears the query, collapses to the icon, and
+                // blurs — which unmounts the field so the global key handler (it ignores
+                // input targets) resumes j/k nav. Left as-is in the vertical strip, where
+                // the field is permanent and a field-level Escape was already a no-op.
+                if (event.key === "Escape" && effectiveOrientation === "horizontal") {
+                  event.preventDefault();
+                  if (pickerFilter) {
+                    setPickerFilter("");
+                  }
+                  setIsSearchExpanded(false);
+                  event.currentTarget.blur();
+                }
+              }}
+            />
+            {pickerFilter.trim() ? (
+              <button
+                className="search-clear"
+                type="button"
+                aria-label="Clear search"
+                onClick={() => setPickerFilter("")}
+              >
+                {"×"}
+              </button>
+            ) : null}
+          </div>
+        )}
         {/* Never disabled: this is the only in-dock manual recovery path, and a
             subscribe can hang in "connecting" without ever emitting a frame (e.g. an
             SSH target stuck in auth before stdout). Disabling it there would wedge the
@@ -1764,7 +1968,7 @@ function App({ mode }: { mode: ShellMode }) {
         </div>
       ) : null}
 
-      <footer className="bottombar">
+      <footer className="bottombar" data-tauri-drag-region={dragRegion}>
         <div className="source-switcher" ref={sourceMenuRef}>
           <button
             className="source-trigger"
@@ -1840,15 +2044,23 @@ function App({ mode }: { mode: ShellMode }) {
             </div>
           ) : null}
         </div>
-        <button
-          className="icon-button"
-          type="button"
-          aria-label="Settings"
-          title="Settings"
-          onClick={openSettings}
-        >
-          {"⚙"}
-        </button>
+        {/* Settings and (when frameless) the window controls are one trailing group with a
+            single even gap, so the spacing reads as ⚙ − × rather than settings floating off
+            from a tight min/close pair. The controls are gated on framelessApplied (the
+            applied native state), so they only appear once the titlebar is actually gone —
+            close hides the window (dismiss), matching Escape and the summonable-dock model. */}
+        <div className="bottombar-actions">
+          <button
+            className="icon-button"
+            type="button"
+            aria-label="Settings"
+            title="Settings"
+            onClick={openSettings}
+          >
+            {"⚙"}
+          </button>
+          {framelessApplied ? windowControls : null}
+        </div>
       </footer>
     </main>
   );
@@ -2091,6 +2303,10 @@ function normalizePickerKeyboardKey(key: string) {
 async function raisePickerWindow(place: () => Promise<void> = placePickerWindow) {
   await enqueueWindowOperation(async () => {
     const appWindow = getCurrentWindow();
+    // Restore first: macOS show() does NOT un-minimize a minimized window, so summoning a
+    // dock the user minimized (now reachable via the frameless minimize button) would
+    // silently no-op without this. Mirrors openSettings's unminimize-before-show order.
+    await appWindow.unminimize();
     await place();
     await appWindow.show();
     await appWindow.setFocus();

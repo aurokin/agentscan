@@ -15,6 +15,10 @@
      or glass off, 1 = fully clear). Adaptive tokens interpolate against it so the
      UI firms up as transparency rises. Default 0 keeps the non-glass look. */
   --glass-clear: 0;
+  /* Corner radius for frameless mode, matching the macOS window rounding the native
+     titlebar would otherwise provide. Kept in sync with the FRAMELESS_CORNER_RADIUS
+     passed to the native glass backdrop in App.tsx / set_window_glass. */
+  --frameless-radius: 12px;
   --bg-elevated: #232325;
   --bg-hover: rgba(255, 255, 255, 0.05);
   --bg-selected: rgba(255, 255, 255, 0.08);
@@ -163,6 +167,24 @@ body {
   background: rgba(var(--bg-rgb), var(--surface-alpha));
 }
 
+/* Frameless mode (data-frameless="on") drops the native window frame, and a borderless
+   transparent macOS window draws SQUARE corners — so round the surface ourselves to match
+   the platform. The window is transparent, so clipping the opaque/tinted fill to a rounded
+   rect reveals the desktop at the corners. The matching radius for the native glass
+   backdrop (the rectangular NSVisualEffectView that would otherwise show square frosted
+   corners behind the rounded webview) is applied in Rust via set_window_glass's radius. */
+:root[data-frameless="on"],
+:root[data-frameless="on"] body {
+  background: transparent;
+}
+:root[data-frameless="on"] .sidebar {
+  /* border-radius clips the surface's own background to the rounded shape; the corner
+     notches fall in transparent padding (no child paints a background there), so this
+     rounds cleanly WITHOUT overflow:hidden — which would otherwise clip an inline source
+     dropdown in a frameless vertical strip. */
+  border-radius: var(--frameless-radius);
+}
+
 button,
 input,
 textarea,
@@ -186,6 +208,8 @@ p {
   height: 100vh;
   width: 100%;
   background: var(--bg);
+  /* Positioning context for the frameless boot-screen window controls overlay. */
+  position: relative;
 }
 
 .topbar {
@@ -280,6 +304,33 @@ p {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* Trailing actions in the bottom bar: settings, plus the frameless window controls
+   (minimize/close) when the native titlebar is gone. One flex group with a single even gap
+   so the icons read as a unit rather than settings floating off from a tight min/close
+   pair. The topbar/bottombar bands also act as the window drag handle when frameless
+   (data-tauri-drag-region). */
+.bottombar-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+/* The boot/recovery screen has no footer, so when frameless its window controls float in
+   the top-right corner — enough to move (the screen body is a drag region), minimize, or
+   dismiss a borderless recovery window. */
+.boot-window-controls {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.window-close:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--danger-text);
 }
 
 /* ---------- Live strip ---------- */
@@ -469,15 +520,31 @@ p {
 .sidebar[data-orientation="horizontal"] .picker-scroll {
   overflow-x: auto;
   overflow-y: hidden;
+  /* A little breathing room above the tabs and almost none below, so the tab strip fills
+     the bar's height rather than floating centered with dead space under it. */
+  padding: 6px 8px 2px;
 }
 .sidebar[data-orientation="horizontal"] .picker-groups {
   flex-direction: row;
-  /* Center each group block in the bar's short height instead of top-biasing it. */
-  align-items: center;
+  gap: 12px;
+  /* Stretch each group to the bar's height so its tab strip can fill the space beneath the
+     session caption. The chrome bands (topbar/bottombar) keep their own center alignment,
+     so only the tabs maximize the height while the buttons stay centered. */
+  align-items: stretch;
+}
+/* The session label stacks above its chip strip (kept as a column on purpose, below);
+   in the bar it's a tight caption rather than the vertical strip's roomier header. */
+.sidebar[data-orientation="horizontal"] .group-header {
+  padding: 0 4px 2px;
+  font-size: 11px;
 }
 .sidebar[data-orientation="horizontal"] .agent-list {
   flex-direction: row;
   gap: 6px;
+  /* Fill the height under the session caption and stretch the chips to it, so the tabs
+     maximize the bar's vertical space (their content stays centered within). */
+  flex: 1;
+  align-items: stretch;
 }
 /* .picker-group stays a column on purpose so each group reads as its header above
    a horizontal strip of that group's agents, not the header floating to its left. */
@@ -492,6 +559,9 @@ p {
   flex: 0 0 auto;
   gap: 6px;
   max-width: 200px;
+  /* Tighter than the vertical row's 7px so the chip — the tallest thing in the strip —
+     sets a short bar height. */
+  padding: 5px 8px;
   border: 1px solid var(--border);
 }
 /* Only the label absorbs the max-width squeeze; the dot, logo, and key badge keep
@@ -517,14 +587,24 @@ p {
    controls. Both ends stay content-width (flex 0 0 auto) so the chip strip in the
    middle takes the slack. */
 .sidebar[data-orientation="horizontal"] .topbar {
-  padding: 8px 10px;
+  padding: 6px 10px;
+}
+/* Compact the bar's icon buttons (search-expand, reconnect, settings, source, and the
+   frameless window controls) so the chrome bands don't out-tall the chip strip. */
+.sidebar[data-orientation="horizontal"] .icon-button {
+  width: 28px;
+  height: 28px;
+  font-size: 15px;
 }
 .sidebar[data-orientation="horizontal"] .search-field {
   flex: 0 0 auto;
   width: 170px;
+  /* Shorter than the vertical strip's 34px so an expanded field doesn't become the
+     tallest element and re-inflate the bar. */
+  height: 28px;
 }
 .sidebar[data-orientation="horizontal"] .bottombar {
-  padding: 8px 10px;
+  padding: 6px 10px;
   border-top: none;
   border-left: 1px solid var(--border);
 }
@@ -923,13 +1003,15 @@ kbd {
 }
 
 /* Horizontal bar: lay the recovery out as a compact row so the heading, status, and the
-   only "Open settings" path fit the ~120px bar without clipping. No window resize is
+   only "Open settings" path fit the short bar without clipping. No window resize is
    involved, so an "auto" dock's orientation (derived from the window shape) is undisturbed. */
 .sidebar[data-orientation="horizontal"] .boot-state {
   flex: 1 1 auto;
   flex-direction: row;
   gap: 16px;
-  padding: 12px 20px;
+  /* Tight vertical padding so the stacked heading + status clear the 56px bar inner height
+     (the short ribbon — see BAR_WINDOW_HEIGHT); the wider taps come from the horizontal gap. */
+  padding: 6px 20px;
 }
 .sidebar[data-orientation="horizontal"] .boot-spinner,
 .sidebar[data-orientation="horizontal"] .boot-state button {
@@ -948,6 +1030,9 @@ kbd {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* Compact leading so the two stacked lines fit the short bar regardless of inherited
+     line-height; the ellipsis above handles the horizontal clip. */
+  line-height: 1.25;
 }
 
 /* ---------- Settings ---------- */

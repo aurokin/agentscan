@@ -136,8 +136,8 @@ export const requestPreflightSyncAtom = runtime.fn(
 
 // --- Appearance slice ---
 
-// The persisted appearance triad (theme + dock-layout orientation + glass) both windows
-// observe: Result<AppearanceState>. keepAlive so the inbound-adoption fiber + shared
+// The persisted appearance prefs (theme + dock-layout orientation + glass + frameless)
+// both windows observe: Result<AppearanceState>. keepAlive so the inbound-adoption fiber + shared
 // PrefsBridge persist across StrictMode remounts. React keeps the DOM/Tauri apply effects.
 export const appearanceAtom = Atom.keepAlive(
   runtime.subscriptionRef(Effect.map(Appearance, (a) => a.state)),
@@ -168,6 +168,13 @@ export const setSurfaceAlphaAtom = runtime.fn(
   Effect.fnUntraced(function* (alpha: number) {
     const appearance = yield* Appearance;
     yield* appearance.setSurfaceAlpha(alpha);
+  }),
+);
+
+export const setFramelessAtom = runtime.fn(
+  Effect.fnUntraced(function* (enabled: boolean) {
+    const appearance = yield* Appearance;
+    yield* appearance.setFrameless(enabled);
   }),
 );
 

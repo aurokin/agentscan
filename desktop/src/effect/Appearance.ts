@@ -3,6 +3,7 @@ import { PrefsBridge } from "./PrefsBridge";
 import {
   appearanceEqual,
   loadAppearance,
+  storeFrameless,
   storeGlassEnabled,
   storeOrientationPref,
   storeSurfaceAlpha,
@@ -11,10 +12,10 @@ import {
 } from "./appearanceModel";
 import type { OrientationPreference, ThemePreference } from "./prefs";
 
-// Owns the persisted appearance triad — theme, dock-layout orientation preference, and
-// the macOS glass toggle + tint alpha — as a single SubscriptionRef both windows observe
-// via an atom. Replaces the React useState + per-pref persist effects + the
-// theme/orientation/glass branches of App.tsx's cross-window listener.
+// Owns the persisted appearance prefs — theme, dock-layout orientation preference, the
+// macOS glass toggle + tint alpha, and the frameless-chrome toggle — as a single
+// SubscriptionRef both windows observe via an atom. Replaces the React useState + per-pref
+// persist effects + the theme/orientation/glass branches of App.tsx's cross-window listener.
 //
 // The DOM/Tauri APPLY of these prefs (data-theme, set_window_glass, the CSS vars, window
 // shaping, logo variant) stays in React — it is inherently view/host-coupled. This
@@ -81,6 +82,13 @@ export class Appearance extends Effect.Service<Appearance>()("desktop/Appearance
         yield* bridge.emit({ kind: "glass", enabled: glassEnabled, alpha: surfaceAlpha });
       });
 
+    const setFrameless = (framelessEnabled: boolean) =>
+      Effect.gen(function* () {
+        yield* persist(() => storeFrameless(bridge.storeRaw, framelessEnabled));
+        yield* SubscriptionRef.update(stateRef, (s) => ({ ...s, framelessEnabled }));
+        yield* bridge.emit({ kind: "frameless", enabled: framelessEnabled });
+      });
+
     // Value-guarded re-read of the persisted appearance, backing the settings window's
     // focus reconcile (emitTo has no replay, so a broadcast missed while hidden is
     // recovered on the next focus). No persist, no re-broadcast — it only adopts storage.
@@ -100,8 +108,8 @@ export class Appearance extends Effect.Service<Appearance>()("desktop/Appearance
       });
 
     // Inbound cross-window adoption, forked for the service's lifetime: apply the other
-    // window's theme/orientation/glass change. Other kinds (profiles/preflight) belong to
-    // their own owners and are ignored here.
+    // window's theme/orientation/glass/frameless change. Other kinds (profiles/preflight)
+    // belong to their own owners and are ignored here.
     yield* bridge.events.pipe(
       Stream.runForEach((payload) => {
         switch (payload.kind) {
@@ -118,6 +126,10 @@ export class Appearance extends Effect.Service<Appearance>()("desktop/Appearance
               () => storeGlassEnabled(bridge.storeRaw, payload.enabled),
               () => storeSurfaceAlpha(bridge.storeRaw, payload.alpha),
             ]);
+          case "frameless":
+            return adopt({ framelessEnabled: payload.enabled }, [
+              () => storeFrameless(bridge.storeRaw, payload.enabled),
+            ]);
           default:
             return Effect.void;
         }
@@ -131,6 +143,7 @@ export class Appearance extends Effect.Service<Appearance>()("desktop/Appearance
       setOrientationPref,
       setGlassEnabled,
       setSurfaceAlpha,
+      setFrameless,
       reconcile,
     };
   }),

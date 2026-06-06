@@ -35,8 +35,12 @@ const PICKER_WINDOW_MAX_WIDTH: f64 = 520.0;
 const PICKER_WINDOW_MIN_HEIGHT: f64 = 560.0;
 const PICKER_WINDOW_MAX_HEIGHT: f64 = 960.0;
 // Snap height for the horizontal "bar" dock: a short ribbon along the bottom edge,
-// comfortably above the 96px drag floor the CSS bar uses.
-const BAR_WINDOW_HEIGHT: f64 = 120.0;
+// sized to the stacked session-label + chip strip (the chrome centers within it) rather
+// than a tall slab. This is the inner/content height; a native titlebar (when not in
+// frameless mode) sits above it. The frontend locks a PINNED bar to this exact height
+// (min == max == BAR_WINDOW_HEIGHT in App.tsx) so it only resizes horizontally — keep
+// the two values in sync.
+const BAR_WINDOW_HEIGHT: f64 = 56.0;
 
 static LIVE_PICKER: OnceLock<Mutex<Option<LivePickerSupervisor>>> = OnceLock::new();
 // Serializes whole start operations (stop + spawn + install) so overlapping
@@ -367,7 +371,14 @@ fn place_settings_window(window: tauri::Window) -> Result<(), String> {
 /// the OS blur layer on or off so a translucent webview reveals it. No-op off
 /// macOS, where the toggle isn't offered.
 #[tauri::command]
-fn set_window_glass(window: tauri::WebviewWindow, enabled: bool) -> Result<(), String> {
+fn set_window_glass(
+    window: tauri::WebviewWindow,
+    enabled: bool,
+    // Corner radius for the vibrancy view, matching the CSS frameless rounding so the
+    // frosted backdrop doesn't show square corners behind a rounded webview. None lets the
+    // framed window's native rounding apply.
+    radius: Option<f64>,
+) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         use std::sync::mpsc;
@@ -402,7 +413,7 @@ fn set_window_glass(window: tauri::WebviewWindow, enabled: bool) -> Result<(), S
                             // would wreck light mode — Popover follows the appearance.)
                             NSVisualEffectMaterial::Popover,
                             Some(NSVisualEffectState::Active),
-                            None,
+                            radius,
                         )
                         .map_err(|error| format!("Unable to enable glass: {error}"))?;
                     }
@@ -417,10 +428,20 @@ fn set_window_glass(window: tauri::WebviewWindow, enabled: bool) -> Result<(), S
     #[cfg(not(target_os = "macos"))]
     {
         // Keep the signature stable across platforms; nothing to do without vibrancy.
-        let _ = (&window, enabled);
+        let _ = (&window, enabled, radius);
     }
 
     Ok(())
+}
+
+/// Toggle the window's native decorations (titlebar + the macOS traffic lights). The
+/// frontend owns the frameless preference; this just adds/removes the OS chrome so the
+/// dock can supply its own drag/minimize/close controls when borderless. Cross-platform.
+#[tauri::command]
+fn set_window_decorations(window: tauri::WebviewWindow, decorations: bool) -> Result<(), String> {
+    window
+        .set_decorations(decorations)
+        .map_err(|error| format!("Unable to set window decorations: {error}"))
 }
 
 fn summon_monitor(window: &tauri::Window) -> Result<Option<tauri::Monitor>, String> {
@@ -475,7 +496,12 @@ fn bar_placement_for_work_area(work_area: LogicalWorkArea) -> PickerWindowPlacem
     let width = (work_area.width - PICKER_WINDOW_MARGIN * 2.0).max(PICKER_WINDOW_MIN_WIDTH);
     let height = BAR_WINDOW_HEIGHT;
     // Pin to the bottom of the work area, but never let the bar sit above its top
-    // edge on a work area too short to hold the bar plus its margin.
+    // edge on a work area too short to hold the bar plus its margin. `height` is the
+    // inner/content height (what set_size sets), so this pin is exact for a frameless bar
+    // (outer == inner) — the intended horizontal mode. A framed window's native titlebar
+    // adds outer height the pin doesn't model, so the framed bar overshoots the bottom by
+    // that titlebar; this offset predates the bar-height work (it applied identically at the
+    // old taller height) and self-corrects once decorations are dropped, so it's left as-is.
     let y = (work_area.y + work_area.height - height - PICKER_WINDOW_MARGIN).max(work_area.y);
 
     PickerWindowPlacement {
@@ -1793,6 +1819,7 @@ pub fn run() {
             place_picker_window,
             place_settings_window,
             preflight_agentscan,
+            set_window_decorations,
             set_window_glass,
             start_live_picker,
             stop_live_picker
@@ -1912,11 +1939,11 @@ mod tests {
             }),
             PickerWindowPlacement {
                 x: 116.0,
-                // work_area bottom (24 + 900) minus the bar height (120) and margin (16).
-                y: 788.0,
+                // work_area bottom (24 + 900) minus the bar height (56) and margin (16).
+                y: 852.0,
                 // full work-area width minus both side margins.
                 width: 1408.0,
-                height: 120.0,
+                height: 56.0,
             }
         );
     }
@@ -1934,9 +1961,9 @@ mod tests {
             }),
             PickerWindowPlacement {
                 x: 16.0,
-                y: 284.0,
+                y: 348.0,
                 width: 220.0,
-                height: 120.0,
+                height: 56.0,
             }
         );
         // Large work area: the bar stays a fixed-height ribbon pinned to the bottom.
@@ -1949,9 +1976,9 @@ mod tests {
             }),
             PickerWindowPlacement {
                 x: -1904.0,
-                y: 1464.0,
+                y: 1528.0,
                 width: 2528.0,
-                height: 120.0,
+                height: 56.0,
             }
         );
     }
@@ -1965,15 +1992,15 @@ mod tests {
                 x: 0.0,
                 y: 50.0,
                 width: 1440.0,
-                height: 100.0,
+                height: 60.0,
             }),
             PickerWindowPlacement {
                 x: 16.0,
-                // 50 + 100 - 120 - 16 = 14, above the work-area top (50), so it clamps
+                // 50 + 60 - 56 - 16 = 38, above the work-area top (50), so it clamps
                 // up to y = 50.
                 y: 50.0,
                 width: 1408.0,
-                height: 120.0,
+                height: 56.0,
             }
         );
     }

@@ -6,7 +6,7 @@
 // dock -> settings -> dock can't loop.
 //
 // The payload union spans every migrated concern (profiles, preflight, and the
-// appearance triad). Each Effect service owns the kinds it cares about and ignores
+// appearance prefs). Each Effect service owns the kinds it cares about and ignores
 // the rest; the PrefsBridge fans the raw stream out to all of them.
 
 import type { AgentscanPreflight } from "./profileModel";
@@ -30,6 +30,9 @@ export type PrefsSync =
   | { kind: "theme"; theme: ThemePreference }
   | { kind: "orientation"; orientation: OrientationPreference }
   | { kind: "glass"; enabled: boolean; alpha: number }
+  // Frameless dock chrome toggle, mirrored so the settings window's switch drives the
+  // dock's decorations (the dock owns the apply).
+  | { kind: "frameless"; enabled: boolean }
   // Signal-only: the receiver re-reads persisted profiles. Carries no data so it
   // can never clobber an in-progress edit with a stale snapshot.
   | { kind: "profiles" }
