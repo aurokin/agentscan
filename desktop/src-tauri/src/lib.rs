@@ -644,6 +644,22 @@ fn run_agentscan_preflight_with_timeout(binary: OsString, timeout: Duration) -> 
     }
 }
 
+// Argv for the desktop's picker-row fetch. Always latch-only: the desktop never
+// spawns a daemon from a row fetch — only the explicit "Start agentscan" subscribe
+// may auto-start — so `--no-auto-start` is unconditional here. Without it, a daemon
+// that exits between a subscribe snapshot and this fetch would be silently replaced
+// by `hotkeys`' consumer auto-start, violating the latch-only policy
+// (see docs/adr/desktop-latch-only-daemon-launch.md).
+//
+// This adds no new CLI version floor: `--no-auto-start` is the shared `AutoStartArgs`
+// flattened onto both `subscribe` and `hotkeys` (introduced together), and the default
+// latch flow already runs `subscribe --no-auto-start` before any row fetch. A binary too
+// old to accept the flag therefore fails at subscribe first, not because of this argv —
+// the latch-only desktop already requires `--no-auto-start` support regardless of hotkeys.
+fn hotkeys_args() -> Vec<&'static str> {
+    vec!["hotkeys", "--format", "json", "--no-auto-start"]
+}
+
 fn load_picker_rows_with_runner(runner: &AgentscanRunner) -> Result<Vec<PickerRow>, String> {
     load_picker_rows_from_runner(runner)
 }
@@ -656,7 +672,7 @@ fn load_picker_rows_from_runner_interruptible(
     runner: &AgentscanRunner,
     stop: Option<&AtomicBool>,
 ) -> Result<Vec<PickerRow>, String> {
-    let mut command = agentscan_command(runner, &["hotkeys", "--format", "json"])
+    let mut command = agentscan_command(runner, &hotkeys_args())
         .map_err(|error| classify_desktop_failure(runner, "hotkeys", &error))?;
     let output = run_command_with_timeout_interruptible(&mut command, HOTKEYS_TIMEOUT, stop)
         .map_err(|error| {
@@ -1810,6 +1826,16 @@ mod tests {
         assert_eq!(
             subscribe_args(false),
             vec!["subscribe", "--format", "json", "--no-auto-start"]
+        );
+    }
+
+    #[test]
+    fn hotkeys_args_always_latch_with_no_auto_start() {
+        // The desktop's row fetch must never auto-start a daemon; only an explicit
+        // "Start agentscan" subscribe may. So --no-auto-start is unconditional here.
+        assert_eq!(
+            hotkeys_args(),
+            vec!["hotkeys", "--format", "json", "--no-auto-start"]
         );
     }
 

@@ -45,6 +45,10 @@ This repo uses progressively disclosed documentation.
   - `docs/adr/daemon-event-driven-index-with-reconcile-safety-loop.md`
     ADR for the daemon's event-first state model, reconcile safety loop, and
     observability counters.
+  - `docs/adr/desktop-latch-only-daemon-launch.md`
+    ADR for the desktop app's latch-only daemon policy: the dock never
+    auto-starts a daemon (including at launch); only an explicit "Start
+    agentscan" does. Desktop-only; the TUI keeps its auto-start.
 - `docs/notes/`
   Narrow follow-up or historical notes that are too specific for the primary docs but still worth keeping in the repo.
   - `docs/notes/provider-evidence-roadmap.md`

@@ -1,43 +1,76 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { emitTo, listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import { Result, useAtomSet, useAtomValue } from "@effect-atom/atom-react";
 import { providerLogo, type LogoTheme } from "./providerLogos";
-import { configureAtom, liveStateAtom, reconnectAtom, startAtom } from "./effect/atoms";
+import {
+  addSshProfileAtom,
+  appearanceAtom,
+  applyRunnerSettingsAtom,
+  configureAtom,
+  configurePreflightAtom,
+  deleteActiveProfileAtom,
+  liveStateAtom,
+  preflightStateAtom,
+  profilesAtom,
+  reconnectAtom,
+  reloadAppearanceAtom,
+  reloadProfilesAtom,
+  requestPreflightSyncAtom,
+  selectProfileAtom,
+  setGlassEnabledAtom,
+  setOrientationAtom,
+  setSurfaceAlphaAtom,
+  setThemeAtom,
+  startAtom,
+  syncedPreflightAtom,
+} from "./effect/atoms";
 import type { ConnectionStatus, LiveState, PickerRow } from "./effect/types";
+import type { PreflightState } from "./effect/Preflight";
+import {
+  glassClearFor,
+  loadAppearance,
+  SURFACE_ALPHA_MAX,
+  SURFACE_ALPHA_MIN,
+} from "./effect/appearanceModel";
+import {
+  commandPrefix,
+  focusCommandLabel,
+  getActiveProfile,
+  isRunnableProfile,
+  loadProfileState,
+  normalizeRunnerSettings,
+  profileKindLabel,
+  runnerKeyForProfile,
+  runnerSettingsEqual,
+  runnerSettingsForProfile,
+  runnerSummary,
+  validateProfileDraft,
+  type DesktopProfileConfig,
+  type EnvironmentVariable,
+  type RunnerSettings,
+} from "./effect/profileModel";
+import {
+  PREFS_SYNC_EVENT,
+  type Orientation,
+  type OrientationPreference,
+  type PrefsSync,
+  type ShellMode,
+  type ThemePreference,
+} from "./effect/prefs";
 import logoUrl from "./assets/agentscan-logo.png";
 
 const PICKER_HOTKEY = "CommandOrControl+Shift+A";
-const SETTINGS_STORAGE_KEY = "agentscan.desktop.localRunnerSettings";
-const PROFILES_STORAGE_KEY = "agentscan.desktop.profiles";
-// Keep in sync with the pre-paint theme script in index.html.
-const THEME_STORAGE_KEY = "agentscan.desktop.theme";
-// macOS "glass": vibrancy backdrop (Rust) + a translucent surface tint (CSS).
-const GLASS_STORAGE_KEY = "agentscan.desktop.glass";
-const SURFACE_ALPHA_STORAGE_KEY = "agentscan.desktop.surfaceAlpha";
-// Dock layout preference: "auto" follows the window's aspect ratio; "vertical"/
-// "horizontal" pin the layout and snap the window to that shape.
-const ORIENTATION_STORAGE_KEY = "agentscan.desktop.orientation";
-// Tint alpha floor of 0.20 caps transparency at 80% (the slider reads 1 - alpha):
-// the surface always keeps a little tint over the native vibrancy frost, so the UI
-// never washes out fully even at the most transparent setting.
-const SURFACE_ALPHA_MIN = 0.2;
-const SURFACE_ALPHA_MAX = 1;
-// First-run default: 0.50 alpha == 50% transparency (the slider reads 1 - alpha),
-// a balanced frosted look — clearly glassy but still a substantial surface tint.
-const SURFACE_ALPHA_DEFAULT = 0.5;
-// "How see-through is the surface" as a 0..1 scalar (0 frosted/solid, 1 fully
-// clear) that adaptive tokens interpolate against. Mirrors the slider math.
-const glassClearFor = (alpha: number) =>
-  (SURFACE_ALPHA_MAX - alpha) / (SURFACE_ALPHA_MAX - SURFACE_ALPHA_MIN);
+// Appearance prefs (storage keys, alpha bounds, glassClearFor, the parsers) live in
+// effect/appearanceModel and are owned by the Appearance Effect service; the DOM apply
+// (this setter, the theme/glass/sizing effects) stays here.
 const setGlassClear = (clear: number) => {
   document.documentElement.style.setProperty("--glass-clear", clear.toFixed(3));
 };
 const DEBUG_LOG_LIMIT = 80;
-const LOCAL_PROFILE_ID = "local";
 // Window min-size floors, applied at runtime per orientation. The vertical pair
 // mirrors the startup floor in tauri.{macos.,}conf.json; horizontal drops the
 // height floor so the bar can shrink to dock height instead of a tall slab.
@@ -74,57 +107,16 @@ const DEFAULT_LIVE_STATE: LiveState = {
   rowsRunnerKey: null,
 };
 
-type DesktopProfile = {
-  id: string;
-  name: string;
-  kind: ProfileKind;
-};
-
-type ProfileKind = "local" | "ssh";
-
-type AgentscanPreflight = {
-  binary: string;
-  ok: boolean;
-  version: string | null;
-  error: string | null;
-};
-
-type RunnerSettings = {
-  binaryPath: string;
-  env: EnvironmentVariable[];
-};
-
-type DesktopRunnerSettings =
-  | ({ kind: "local" } & RunnerSettings)
-  | ({ kind: "ssh"; host: string; clientTty: string | null } & RunnerSettings);
-
-type ProfileState = {
-  activeProfileId: string;
-  profiles: DesktopProfileConfig[];
-};
-
-type DesktopProfileConfig = LocalProfileConfig | SshProfileConfig;
-
-type LocalProfileConfig = {
-  id: string;
-  name: string;
-  kind: "local";
-  runner: RunnerSettings;
-};
-
-type SshProfileConfig = {
-  id: string;
-  name: string;
-  kind: "ssh";
-  host: string;
-  clientTty: string;
-  runner: RunnerSettings;
-  enabled: boolean;
-};
-
-type EnvironmentVariable = {
-  name: string;
-  value: string;
+// Synchronous, best-effort localStorage read used only to seed the first paint
+// (active profile / runnerKey / drafts) before the Profiles service atom resolves.
+// All profile WRITES and ongoing reads go through the service; this just matches its
+// initial seed so the first render isn't a flash of default state.
+const readLocalStorage = (key: string): string | null => {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
 };
 
 type DebugEntry = {
@@ -133,57 +125,6 @@ type DebugEntry = {
   kind: "command" | "stream" | "settings";
   label: string;
   detail: string;
-};
-
-// Which window this React tree drives. The dock (window label "main") renders the
-// picker; the settings window (label "settings") renders the settings panel. Both
-// run the same component, gated on this mode plus cross-window pref sync.
-type ShellMode = "dock" | "settings";
-
-// The dock can sit as a tall narrow strip (vertical, the default) or a short wide
-// bar (horizontal). Orientation is derived from the window's own aspect ratio, so
-// dragging it wide-and-short flips the layout axis with no explicit control.
-type Orientation = "vertical" | "horizontal";
-
-// Layout preference. "auto" derives orientation live from the window shape (the
-// responsive default); the other two pin the layout and snap the window to match.
-type OrientationPreference = "auto" | Orientation;
-
-type ThemePreference = "dark" | "light" | "system";
-
-// Separate webview windows don't share React state or the localStorage "storage"
-// event, so prefs the user changes in one window are mirrored to the other over
-// Tauri's event bus. Only user actions emit; the listener applies remote changes
-// without re-emitting, so dock -> settings -> dock can't loop.
-const PREFS_SYNC_EVENT = "agentscan:prefs-sync";
-type PrefsSync =
-  | { kind: "theme"; theme: ThemePreference }
-  | { kind: "orientation"; orientation: OrientationPreference }
-  | { kind: "glass"; enabled: boolean; alpha: number }
-  | { kind: "profiles" }
-  // Dock -> settings: the dock's resolved preflight (with the runnerKey it
-  // describes) so the settings card can reuse it instead of probing itself.
-  // `status` mirrors the dock's LoadState discriminant so the card can reproduce
-  // its tones: "ready" carries `preflight`; "loading" reads as Checking; "failed"
-  // (dock IPC error) reads as Unreachable. `preflight` is non-null only on "ready".
-  | {
-      kind: "preflight";
-      status: LoadState["status"];
-      runnerKey: string;
-      preflight: AgentscanPreflight | null;
-    }
-  // Settings -> dock: ask the dock to re-emit its current preflight. emitTo has
-  // no replay, so a settings window shown after the dock probed would otherwise
-  // miss the result; it requests one on show to reconcile.
-  | { kind: "preflight-request" };
-
-// The dock's resolved preflight as held by the settings window, mirrored from the
-// "preflight" sync above (kind dropped). The settings card reproduces its tones from
-// `status` + `preflight`, guarded by `runnerKey` against its own active runner.
-type SyncedPreflight = {
-  status: LoadState["status"];
-  runnerKey: string;
-  preflight: AgentscanPreflight | null;
 };
 
 // Collapse a preference to the concrete theme in effect, resolving "system" from
@@ -210,22 +151,10 @@ type PickerGroup = {
   rows: PickerRow[];
 };
 
-// Preflight-only resolved state. Picker rows + live connection status now live in
-// the LiveConnection service (liveStateAtom); this `state` only tracks the CLI
-// probe + profile list for the dock and the settings card.
-type LoadState =
-  | { status: "loading" }
-  | {
-      status: "ready";
-      // The runner config this resolved state describes (see runnerKeyForProfile).
-      // `state` lags the active runner by one async cycle on a switch or settings
-      // apply, so consumers compare this to the active runnerKey before trusting
-      // preflight for live decisions.
-      runnerKey: string;
-      profiles: DesktopProfile[];
-      preflight: AgentscanPreflight;
-    }
-  | { status: "failed"; message: string };
+// The dock's resolved preflight is owned by the Preflight Effect service (observed via
+// preflightStateAtom as PreflightState); the picker rows + live connection status live
+// in the LiveConnection service (liveStateAtom).
+const INITIAL_PREFLIGHT: PreflightState = { status: "loading" };
 
 type PickerState =
   | { status: "loading" }
@@ -237,19 +166,37 @@ type PickerActivation =
   | { status: "running"; paneId: string }
   | { status: "failed"; message: string };
 
-type DraftValidation = {
-  errors: string[];
-};
-
 function App({ mode }: { mode: ShellMode }) {
-  const [state, setState] = useState<LoadState>({ status: "loading" });
-  // The settings window never runs its own preflight; instead it reuses the dock's
-  // resolved result, mirrored over the event bus (see the preflight sync below). This
-  // avoids a second `ssh … --version` for remote profiles (an extra round-trip and a
-  // possible duplicate passphrase prompt) every time Settings is opened, and keeps the
-  // card current even while the window is visible-but-unfocused. Always null in the dock.
-  const [syncedPreflight, setSyncedPreflight] = useState<SyncedPreflight | null>(null);
-  const [profileState, setProfileState] = useState<ProfileState>(() => loadStoredProfiles());
+  // The dock's resolved CLI preflight is owned by the Preflight Effect service. The dock
+  // observes preflightStateAtom and drives the probe via configurePreflight; the service
+  // also mirrors each result to the settings window over the shared prefs channel.
+  const preflightState = Result.getOrElse(
+    useAtomValue(preflightStateAtom),
+    () => INITIAL_PREFLIGHT,
+  );
+  const configurePreflight = useAtomSet(configurePreflightAtom);
+  // The settings window never runs its own preflight; it reuses the dock's resolved
+  // result, mirrored over the prefs channel into the service's `synced` ref (observed
+  // here). This avoids a second `ssh … --version` for remote profiles (an extra
+  // round-trip and a possible duplicate passphrase prompt) every time Settings is
+  // opened, and keeps the card current even while the window is visible-but-unfocused.
+  // Always null in the dock (which is the producer, not a consumer). requestPreflightSync
+  // asks the dock to re-emit on focus (emitTo has no replay).
+  const syncedPreflight = Result.getOrElse(useAtomValue(syncedPreflightAtom), () => null);
+  const requestPreflightSync = useAtomSet(requestPreflightSyncAtom);
+  // Profile/settings persistence + cross-window adoption are owned by the Profiles
+  // Effect service; this window observes its state via an atom and drives changes
+  // through the action atoms below. The first synchronous render (before the runtime
+  // resolves the atom) falls back to a direct storage read so the active profile /
+  // runnerKey / drafts are correct on the very first paint, matching the service seed.
+  const initialProfileState = useMemo(() => loadProfileState(readLocalStorage), []);
+  const profileStateResult = useAtomValue(profilesAtom);
+  const profileState = Result.getOrElse(profileStateResult, () => initialProfileState);
+  const selectProfileSet = useAtomSet(selectProfileAtom);
+  const addSshProfileSet = useAtomSet(addSshProfileAtom);
+  const deleteActiveProfileSet = useAtomSet(deleteActiveProfileAtom);
+  const applyRunnerSettingsSet = useAtomSet(applyRunnerSettingsAtom);
+  const reloadProfiles = useAtomSet(reloadProfilesAtom);
   const activeProfile = useMemo(() => getActiveProfile(profileState), [profileState]);
   const runnerSettings = useMemo(() => runnerSettingsForProfile(activeProfile), [activeProfile]);
   // Identity of the exact runner configuration a resolved state describes. It
@@ -257,18 +204,18 @@ function App({ mode }: { mode: ShellMode }) {
   // to the active profile, so resolved preflight/picker data is invalidated
   // whenever the underlying target changes, not just when the profile id does.
   const runnerKey = useMemo(() => runnerKeyForProfile(activeProfile), [activeProfile]);
-  const [profileNameDraft, setProfileNameDraft] = useState(() =>
-    getActiveProfile(loadStoredProfiles()).name,
+  const [profileNameDraft, setProfileNameDraft] = useState(
+    () => getActiveProfile(initialProfileState).name,
   );
-  const [settingsDraft, setSettingsDraft] = useState<RunnerSettings>(() =>
-    getActiveProfile(loadStoredProfiles()).runner,
+  const [settingsDraft, setSettingsDraft] = useState<RunnerSettings>(
+    () => getActiveProfile(initialProfileState).runner,
   );
   const [sshHostDraft, setSshHostDraft] = useState(() => {
-    const profile = getActiveProfile(loadStoredProfiles());
+    const profile = getActiveProfile(initialProfileState);
     return profile.kind === "ssh" ? profile.host : "";
   });
   const [sshClientTtyDraft, setSshClientTtyDraft] = useState(() => {
-    const profile = getActiveProfile(loadStoredProfiles());
+    const profile = getActiveProfile(initialProfileState);
     return profile.kind === "ssh" ? profile.clientTty : "";
   });
   const [debugEntries, setDebugEntries] = useState<DebugEntry[]>([]);
@@ -284,9 +231,21 @@ function App({ mode }: { mode: ShellMode }) {
   const [pickerFilter, setPickerFilter] = useState("");
   // Layout axis, seeded from the current window shape and kept in sync on resize.
   const [orientation, setOrientation] = useState<Orientation>(orientationForViewport);
-  // Layout preference: "auto" follows `orientation`; a pinned value overrides it.
-  const [orientationPref, setOrientationPref] =
-    useState<OrientationPreference>(loadStoredOrientation);
+  // Appearance prefs (theme + dock-layout orientation + glass) are owned by the
+  // Appearance Effect service; both windows observe its state via an atom and drive
+  // changes through these setters (which persist + cross-window broadcast). The DOM/Tauri
+  // apply (data-theme, set_window_glass, window shaping, CSS vars) stays in the effects
+  // below. The first synchronous render (before the runtime resolves the atom) falls back
+  // to a direct storage read so layout/theme/glass are right on the first paint.
+  const initialAppearance = useMemo(() => loadAppearance(readLocalStorage), []);
+  const appearance = Result.getOrElse(useAtomValue(appearanceAtom), () => initialAppearance);
+  const { themePref, orientationPref, glassEnabled, surfaceAlpha } = appearance;
+  const setThemePref = useAtomSet(setThemeAtom);
+  const setOrientationPref = useAtomSet(setOrientationAtom);
+  const setGlassEnabled = useAtomSet(setGlassEnabledAtom);
+  const setSurfaceAlpha = useAtomSet(setSurfaceAlphaAtom);
+  const reloadAppearance = useAtomSet(reloadAppearanceAtom);
+  // Layout preference: "auto" follows the live `orientation`; a pinned value overrides it.
   const effectiveOrientation: Orientation =
     orientationPref === "auto" ? orientation : orientationPref;
   // The summon hotkey is registered once but must place by the LIVE orientation, so a
@@ -305,17 +264,12 @@ function App({ mode }: { mode: ShellMode }) {
   const sourceMenuRef = useRef<HTMLDivElement | null>(null);
   // Debug log is a diagnostic panel — collapsed by default to keep Settings calm.
   const [isDebugOpen, setIsDebugOpen] = useState(false);
-  // Appearance: dark / light / system (system follows the OS).
-  const [themePref, setThemePref] = useState<ThemePreference>(loadStoredTheme);
   // Concrete theme in effect, kept in sync by the theme effect; drives per-theme
-  // logo variant selection. Seeded so first paint picks the right logos.
+  // logo variant selection. Seeded from the service's initial theme so first paint
+  // picks the right logos.
   const [resolvedTheme, setResolvedTheme] = useState<LogoTheme>(() =>
-    resolveThemeMode(loadStoredTheme()),
+    resolveThemeMode(initialAppearance.themePref),
   );
-  // macOS glass: the vibrancy backdrop toggle and the tint opacity over it. The
-  // toggle is only surfaced on macOS; elsewhere these stay inert.
-  const [glassEnabled, setGlassEnabled] = useState<boolean>(loadStoredGlass);
-  const [surfaceAlpha, setSurfaceAlpha] = useState<number>(loadStoredSurfaceAlpha);
   // The glass toggle's async resolution sets `--glass-clear` from the latest
   // alpha; reading it through a render-synced ref keeps the toggle effect off
   // surfaceAlpha's dep list (so a slider tick can't re-fire the native call).
@@ -367,91 +321,11 @@ function App({ mode }: { mode: ShellMode }) {
   const isSettingsDirtyRef = useRef(isSettingsDirty);
   isSettingsDirtyRef.current = isSettingsDirty;
 
-  useEffect(() => {
-    // Only the dock probes. It gates the live picker, so it must run preflight; the
-    // settings window reuses the dock's resolved result over the event bus instead of
-    // firing its own (which for SSH would be a second `ssh … --version` — an extra
-    // round-trip and a possible duplicate passphrase prompt). See the preflight sync.
-    if (mode !== "dock") {
-      return;
-    }
-    let cancelled = false;
-
-    async function loadShellState() {
-      // Keep any existing ready state so a profile/runner reload stays in the
-      // picker (gated to a "Switching profile…" state via activeReadyState)
-      // instead of dropping to the boot screen. Only the very first load, with
-      // no ready state yet, shows the boot "Connecting" screen.
-      setState((current) => (current.status === "ready" ? current : { status: "loading" }));
-
-      try {
-        const profileValidation = validateProfileDraft(
-          activeProfile,
-          activeProfile.name,
-          activeProfile.runner,
-          activeProfile.kind === "ssh" ? activeProfile.host : "",
-          activeProfile.kind === "ssh" ? activeProfile.clientTty : "",
-        );
-        if (profileValidation.errors.length > 0) {
-          const message = profileValidation.errors.join(" ");
-          setState({
-            status: "ready",
-            runnerKey,
-            profiles: profileState.profiles.map(profileSummary),
-            preflight: {
-              binary: commandPrefix(activeProfile),
-              ok: false,
-              version: null,
-              error: message,
-            },
-          });
-          return;
-        }
-
-        const [profiles, preflight] = await Promise.all([
-          Promise.resolve(profileState.profiles.map(profileSummary)),
-          runCommand<AgentscanPreflight>(
-            `${commandPrefix(activeProfile)} --version`,
-            () =>
-              invoke<AgentscanPreflight>("preflight_agentscan", {
-                settings: runnerSettings,
-              }),
-            appendDebugEntry,
-          ),
-        ]);
-
-        if (!cancelled) {
-          setState({ status: "ready", runnerKey, profiles, preflight });
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setState({
-            status: "failed",
-            message: errorMessage(error),
-          });
-        }
-      }
-    }
-
-    void loadShellState();
-
-    return () => {
-      cancelled = true;
-    };
-    // Keyed on runnerKey (the active runner's identity), NOT profileState/runnerSettings:
-    // editing or deleting an INACTIVE profile in Settings syncs a fresh profileState but
-    // leaves the active runner unchanged, so re-running here would needlessly re-probe
-    // (an extra ssh --version / passphrase prompt) for a target that didn't change.
-    // runnerKey is a stable string, so React skips this effect when its value is unchanged;
-    // activeProfile/runnerSettings are fully determined by it where the effect reads them.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runnerKey, mode]);
-
-  // Derived directly from the active profile (not from async preflight state) so
-  // a switch to a synchronously-invalid profile immediately gates the live
-  // picker off in the same render, rather than briefly subscribing the bad
-  // target before loadShellState resolves.
-  const activeProfileValid = useMemo(
+  // The active profile's own validation (its committed values, not the form drafts).
+  // Both the live-picker gate and the preflight target read it: a synchronously-invalid
+  // profile is gated off the picker in the same render (no flash of the bad target) and
+  // resolves to a synthetic failed preflight without an IPC probe.
+  const activeProfileValidation = useMemo(
     () =>
       validateProfileDraft(
         activeProfile,
@@ -459,13 +333,43 @@ function App({ mode }: { mode: ShellMode }) {
         activeProfile.runner,
         activeProfile.kind === "ssh" ? activeProfile.host : "",
         activeProfile.kind === "ssh" ? activeProfile.clientTty : "",
-      ).errors.length === 0,
+      ),
     [activeProfile],
   );
+  const activeProfileValid = activeProfileValidation.errors.length === 0;
+
+  // Drive the Preflight service to the active runner. Only the dock probes (it gates the
+  // live picker); the settings window reuses the dock's result over the prefs channel
+  // instead of firing its own (which for SSH would be a second `ssh … --version` — an
+  // extra round-trip and a possible duplicate passphrase prompt). The service supersedes
+  // an in-flight probe on the next target the way the old `cancelled` flag did, keeps the
+  // previous ready result during a switch, and mirrors each result to settings.
+  useEffect(() => {
+    if (mode !== "dock") {
+      return;
+    }
+    // Precompute the synchronous validation: an invalid profile short-circuits the probe
+    // to a synthetic failed preflight (binary label + joined messages), matching the old
+    // loadShellState invalid branch; null means "probe the CLI".
+    const invalid = activeProfileValid
+      ? null
+      : {
+          binary: commandPrefix(activeProfile),
+          error: activeProfileValidation.errors.join(" "),
+        };
+    configurePreflight({ settings: runnerSettings, runnerKey, invalid });
+    // Keyed on runnerKey (the active runner's identity), NOT profileState/runnerSettings:
+    // editing or deleting an INACTIVE profile syncs a fresh profileState but leaves the
+    // active runner unchanged, so re-running here would needlessly re-probe (an extra ssh
+    // --version / passphrase prompt) for a target that didn't change. activeProfile/
+    // runnerSettings/validation are fully determined by runnerKey where this reads them.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runnerKey, mode, configurePreflight]);
+
   const liveReady =
-    state.status === "ready" &&
-    state.runnerKey === runnerKey &&
-    state.preflight.ok &&
+    preflightState.status === "ready" &&
+    preflightState.runnerKey === runnerKey &&
+    preflightState.preflight.ok &&
     activeProfileValid;
 
   // Drive the LiveConnection service to the active target. The service owns the
@@ -542,26 +446,30 @@ function App({ mode }: { mode: ShellMode }) {
   const statusText = useMemo(() => {
     // Preflight from a not-yet-refreshed previous profile is untrustworthy, so
     // report "Checking" until the resolved state matches the active profile.
-    if (state.status === "loading" || (state.status === "ready" && state.runnerKey !== runnerKey)) {
+    if (
+      preflightState.status === "loading" ||
+      (preflightState.status === "ready" && preflightState.runnerKey !== runnerKey)
+    ) {
       return `Checking ${profileKindLabel(activeProfile)} CLI`;
     }
 
-    if (state.status === "failed") {
+    if (preflightState.status === "failed") {
       return "IPC failed";
     }
 
-    return state.preflight.ok
+    return preflightState.preflight.ok
       ? `${profileKindLabel(activeProfile)} CLI ready`
       : `${profileKindLabel(activeProfile)} CLI unavailable`;
-  }, [activeProfile, state]);
+  }, [activeProfile, preflightState, runnerKey]);
 
-  // `state` lags the active runner by one async cycle after a switch or settings
-  // apply (loadShellState resets it in an effect, after paint). Until the resolved
-  // state's runnerKey matches the active runner, its preflight/picker rows belong
-  // to the previous target, so treat that window as "loading" everywhere ready
-  // data is consumed.
+  // `preflightState` lags the active runner by one async cycle after a switch or settings
+  // apply (the service resolves the new probe asynchronously). Until the resolved state's
+  // runnerKey matches the active runner, its preflight/picker rows belong to the previous
+  // target, so treat that window as "loading" everywhere ready data is consumed.
   const activeReadyState =
-    state.status === "ready" && state.runnerKey === runnerKey ? state : null;
+    preflightState.status === "ready" && preflightState.runnerKey === runnerKey
+      ? preflightState
+      : null;
   // Sources offered in the footer quick-switch: the built-in local runner plus
   // enabled SSH profiles. A remote with no host yet can only resolve to a failed
   // source, so exclude it from quick-switch (it's still listed in Settings, where
@@ -774,15 +682,11 @@ function App({ mode }: { mode: ShellMode }) {
     };
   }, [isSourceMenuOpen]);
 
-  // Apply the theme to <html data-theme> and persist it. "system" resolves from
-  // prefers-color-scheme and re-resolves live when the OS appearance changes.
+  // Apply the theme to <html data-theme>. "system" resolves from prefers-color-scheme
+  // and re-resolves live when the OS appearance changes. Persistence + the cross-window
+  // broadcast are owned by the Appearance service (driven by the setter); this effect
+  // only applies the resolved theme to the DOM and the logo variant.
   useEffect(() => {
-    try {
-      window.localStorage.setItem(THEME_STORAGE_KEY, themePref);
-    } catch {
-      // Persistence is best-effort; the in-memory preference still applies.
-    }
-
     const media = window.matchMedia("(prefers-color-scheme: dark)");
     const apply = () => {
       const resolved =
@@ -810,15 +714,8 @@ function App({ mode }: { mode: ShellMode }) {
     return () => window.removeEventListener("resize", apply);
   }, []);
 
-  // Persist the layout preference. Window shaping is handled by the effect below.
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(ORIENTATION_STORAGE_KEY, orientationPref);
-    } catch {
-      // Persistence is best-effort; the in-memory preference still applies.
-    }
-  }, [orientationPref]);
-
+  // The layout preference is persisted by the Appearance service (driven by the setter);
+  // window shaping for the current orientation is handled by the effect below.
   // Shape and constrain the dock window for the current orientation preference in one
   // race-free sequence ("auto" = free: no cap, no snap). Caps are lifted before min is
   // raised so a larger min can never transiently exceed a stale max; then the real cap
@@ -866,48 +763,6 @@ function App({ mode }: { mode: ShellMode }) {
     });
   }, [mode, orientationPref, effectiveOrientation]);
 
-  // The dock and settings windows mirror shared prefs to each other (separate
-  // webviews don't share React state). The label of the *other* window is the emit
-  // target.
-  const otherWindowLabel = mode === "settings" ? "main" : "settings";
-  const broadcastPrefs = (payload: PrefsSync) => {
-    void emitTo(otherWindowLabel, PREFS_SYNC_EVENT, payload).catch(() => {
-      // Best-effort: the other window still converges on its next reload.
-    });
-  };
-
-  // The preflight the dock currently has resolved, in the sync wire shape. Carries
-  // the dock's LoadState status plus the runnerKey it describes (which lags the active
-  // runner by one async cycle on a switch — exactly as the dock's own card guards);
-  // `preflight` is non-null only when ready. The dock pushes this to settings on every
-  // change and on request; the ref lets the []-dep listener answer a replay request
-  // without capturing stale state.
-  const dockPreflightSync: PrefsSync =
-    state.status === "ready"
-      ? {
-          kind: "preflight",
-          status: "ready",
-          runnerKey: state.runnerKey,
-          preflight: state.preflight,
-        }
-      : { kind: "preflight", status: state.status, runnerKey, preflight: null };
-  const dockPreflightSyncRef = useRef(dockPreflightSync);
-  dockPreflightSyncRef.current = dockPreflightSync;
-
-  // Mirror the dock's resolved preflight to the settings window whenever it changes,
-  // so the settings card reuses it instead of probing itself. Serializing on the JSON
-  // of the payload keeps this from re-emitting on unrelated re-renders (live row
-  // updates re-render the dock frequently). Settings ignores its own (mode-gated).
-  const dockPreflightSyncKey = JSON.stringify(dockPreflightSync);
-  useEffect(() => {
-    if (mode !== "dock") {
-      return;
-    }
-    broadcastPrefs(dockPreflightSync);
-    // dockPreflightSync is recomputed each render; gate on its stable serialization.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, dockPreflightSyncKey]);
-
   // Open the settings window (created hidden at launch, kept warm). The dock no
   // longer renders settings itself.
   const openSettings = () => {
@@ -942,50 +797,42 @@ function App({ mode }: { mode: ShellMode }) {
     void getCurrentWindow().hide();
   };
 
-  // Apply prefs changed in the other window. The listener only sets state — the
-  // existing theme/glass/orientation/profile effects then apply it — and never
-  // re-broadcasts, so window A -> B -> A can't loop.
+  // Apply the cross-window `profiles` sync. Appearance (theme/orientation/glass) and
+  // preflight syncs are consumed by their own Effect services over the same channel
+  // (PrefsBridge installs its own listener), so only the React-synchronously-gated
+  // `profiles` adoption remains here; the handler never re-broadcasts, so A -> B -> A
+  // can't loop.
   useEffect(() => {
     let disposed = false;
     let unlisten: UnlistenFn | null = null;
     void listen<PrefsSync>(PREFS_SYNC_EVENT, (event) => {
       const payload = event.payload;
-      if (payload.kind === "theme") {
-        setThemePref(payload.theme);
-      } else if (payload.kind === "orientation") {
-        setOrientationPref(payload.orientation);
-      } else if (payload.kind === "glass") {
-        setGlassEnabled(payload.enabled);
-        setSurfaceAlpha(payload.alpha);
-      } else if (payload.kind === "profiles") {
-        // Keep a warm settings window's unsaved drafts: a dock-side source switch must
-        // not silently overwrite an in-progress edit (the window is hidden, not closed,
-        // precisely to preserve it). Active id and drafts both stay on the edited
-        // profile, so they never mismatch; the change is adopted later via the
-        // focus-reconcile path once the edit is applied or reset. The dock always adopts
-        // so its live picker tracks the current profile config.
+      if (payload.kind === "profiles") {
+        // The Profiles service owns persistence + the reload primitive, but the
+        // adopt/skip DECISION stays here because it gates on the settings form's
+        // unsaved-edit flag — React-synchronous state. Reading isSettingsDirtyRef in
+        // the event handler (not a lagged service Ref) preserves the original
+        // guarantee: a dock-side source switch never clobbers an in-progress edit (the
+        // window is hidden, not closed, precisely to preserve it). The dock always
+        // adopts so its live picker tracks the current profile config; the skipped
+        // change is reconciled later via the focus/clean reload paths.
+        //
+        // The reload now applies via an async hop (atom dispatch -> Effect fiber ->
+        // service ref -> re-render) rather than a setProfileState called inline here. Note
+        // that old setProfileState was itself a batched React setState, NOT a synchronous
+        // reconcile, so the same draft-reset-on-active-change window already existed; the
+        // hop only widens it by a few microtasks (sub-millisecond). The trigger stays
+        // synchronously dirty-gated, and the reload is value-guarded (an equal snapshot
+        // leaves the ref untouched, so the [activeProfile] reset effect never fires) —
+        // strictly safer than the old unconditional setProfileState, which reinstalled
+        // state even on a no-op sync. The only residual is that sub-ms window where an edit
+        // begun between this dirty check and a genuine-change reload landing could be
+        // reset; closing it fully would mean keeping ProfileState in React (precisely what
+        // this migration removes). The focus/clean reconcilers recover state on next focus.
         if (mode === "settings" && isSettingsDirtyRef.current) {
           return;
         }
-        setProfileState(loadStoredProfiles());
-      } else if (payload.kind === "preflight") {
-        // Settings adopts the dock's resolved preflight (keyed by the runnerKey it
-        // describes). The card guards on runnerKey === its own active runnerKey, so a
-        // result that arrives mid-switch (for the previous source) reads as "Checking"
-        // until the matching one lands. The dock ignores this (it's the producer).
-        if (mode === "settings") {
-          setSyncedPreflight({
-            status: payload.status,
-            runnerKey: payload.runnerKey,
-            preflight: payload.preflight,
-          });
-        }
-      } else if (payload.kind === "preflight-request") {
-        // The dock answers a settings-side replay request with its current preflight.
-        // Read through a ref so this []-dep listener never captures a stale state.
-        if (mode === "dock") {
-          broadcastPrefs(dockPreflightSyncRef.current);
-        }
+        reloadProfiles();
       }
     }).then((fn) => {
       if (disposed) {
@@ -1000,13 +847,12 @@ function App({ mode }: { mode: ShellMode }) {
     };
   }, []);
 
-  // The live listener above can miss a change broadcast before it registered, and
+  // The service listeners above can miss a change broadcast before they registered, and
   // emitTo has no replay — so a warm (hidden) settings window could linger on stale
-  // state with no way to recover short of a restart. Re-read localStorage whenever this
-  // window gains focus (i.e. is shown/reopened) to reconcile. Appearance prefs are
-  // always safe to refresh (primitive setters no-op when unchanged); the profile is
-  // re-seeded only when there are no unsaved edits AND the snapshot actually changed, so
-  // a kept-warm in-progress edit is never clobbered and idle focuses don't churn state.
+  // state with no way to recover short of a restart. Reconcile from storage whenever this
+  // window gains focus (i.e. is shown/reopened). Both reconciles are value-guarded, so an
+  // unchanged snapshot is a no-op; the profile is additionally skipped while there are
+  // unsaved edits, so a kept-warm in-progress edit is never clobbered.
   useEffect(() => {
     if (mode !== "settings") {
       return;
@@ -1019,22 +865,16 @@ function App({ mode }: { mode: ShellMode }) {
         if (!focused) {
           return;
         }
-        setThemePref(loadStoredTheme());
-        setOrientationPref(loadStoredOrientation());
-        setGlassEnabled(loadStoredGlass());
-        setSurfaceAlpha(loadStoredSurfaceAlpha());
+        reloadAppearance();
         if (!isSettingsDirtyRef.current) {
-          setProfileState((current) => {
-            const reloaded = loadStoredProfiles();
-            return JSON.stringify(current) === JSON.stringify(reloaded) ? current : reloaded;
-          });
+          reloadProfiles();
         }
         // Preflight has no localStorage to re-read and emitTo has no replay, so ask the
-        // dock to re-emit its current result. Covers a preflight broadcast missed while
-        // this window was hidden/unfocused (it isn't subscribed to the live picker, so
-        // it can't recompute the result itself) — fixing a card stuck on "Checking"
-        // after a dock-side source switch this window didn't see.
-        broadcastPrefs({ kind: "preflight-request" });
+        // dock (via the Preflight service) to re-emit its current result. Covers a
+        // preflight broadcast missed while this window was hidden/unfocused (it isn't
+        // subscribed to the live picker, so it can't recompute the result itself) —
+        // fixing a card stuck on "Checking" after a dock-side source switch it didn't see.
+        requestPreflightSync();
       })
       .then((fn) => {
         if (disposed) {
@@ -1047,22 +887,19 @@ function App({ mode }: { mode: ShellMode }) {
       disposed = true;
       unlisten?.();
     };
-  }, [mode]);
+  }, [mode, reloadAppearance, reloadProfiles, requestPreflightSync]);
 
-  // The profiles listener drops dock-side syncs while this window is dirty, and the
-  // focus-reconcile only runs on a later focus — so a change skipped mid-edit would
-  // linger after Reset/Apply clears the drafts (still focused, no new focus event).
-  // Adopt the latest stored profiles whenever the window is clean. Value-guarded so an
-  // unchanged reload doesn't churn state or reset the picker selection.
+  // The React listener drops dock-side syncs while this window is dirty, and the focus-
+  // reconcile only runs on a later focus — so a change skipped mid-edit would linger
+  // after Reset/Apply clears the drafts (still focused, no new focus event). Reconcile
+  // from storage whenever the window is clean. The service's reload is value-guarded,
+  // so an unchanged snapshot doesn't churn state or reset the picker selection.
   useEffect(() => {
     if (mode !== "settings" || isSettingsDirty) {
       return;
     }
-    setProfileState((current) => {
-      const reloaded = loadStoredProfiles();
-      return JSON.stringify(current) === JSON.stringify(reloaded) ? current : reloaded;
-    });
-  }, [mode, isSettingsDirty]);
+    reloadProfiles();
+  }, [mode, isSettingsDirty, reloadProfiles]);
 
   // Keep the settings window warm: intercept its close so the red button / Cmd-W
   // hides it (instant reopen, drafts preserved) rather than destroying it.
@@ -1111,19 +948,11 @@ function App({ mode }: { mode: ShellMode }) {
   // desktop through the transparent window: when enabling, raise the blur layer
   // first, then mark the surface translucent; when disabling, go opaque first,
   // then drop the blur. macOS-only — the toggle isn't offered anywhere else.
+  // Persistence + the cross-window mirror are owned by the Appearance service; this
+  // effect only applies the native vibrancy, which lives on the dock (the settings
+  // window is a solid, normally-chromed window and never frosts itself).
   useEffect(() => {
-    if (!IS_MAC) {
-      return;
-    }
-    try {
-      window.localStorage.setItem(GLASS_STORAGE_KEY, glassEnabled ? "on" : "off");
-    } catch {
-      // Best-effort; the in-memory preference still applies this session.
-    }
-
-    // Vibrancy lives on the dock. The settings window is a solid, normally-chromed
-    // window, so it persists + mirrors the pref but never frosts itself.
-    if (mode !== "dock") {
+    if (!IS_MAC || mode !== "dock") {
       return;
     }
 
@@ -1171,17 +1000,12 @@ function App({ mode }: { mode: ShellMode }) {
   // against) is owned by the glass-toggle effect so it stays in lockstep with the
   // actual data-glass state, not the pending React intent. Here we only refresh it
   // for slider moves while glass is already live; on/off transitions are that
-  // effect's job.
+  // effect's job. Persistence is owned by the Appearance service (driven by the setter).
   useEffect(() => {
     const root = document.documentElement;
     root.style.setProperty("--surface-alpha", String(surfaceAlpha));
     if (root.getAttribute("data-glass") === "on") {
       setGlassClear(glassClearFor(surfaceAlpha));
-    }
-    try {
-      window.localStorage.setItem(SURFACE_ALPHA_STORAGE_KEY, surfaceAlpha.toFixed(2));
-    } catch {
-      // Best-effort persistence.
     }
   }, [surfaceAlpha]);
 
@@ -1311,27 +1135,16 @@ function App({ mode }: { mode: ShellMode }) {
       return;
     }
 
+    // Normalize the draft (and reflect it in the form), then hand the edit to the
+    // service, which merges it onto the latest persisted state, persists, and
+    // broadcasts. Validation + the debug log stay here; persistence is the service's.
     const normalized = normalizeRunnerSettings(settingsDraft);
     setSettingsDraft(normalized);
-    setProfileState((current) => {
-      // Merge onto the LATEST persisted state, not this window's in-memory snapshot: a
-      // warm settings window can hold a stale snapshot (it skips profile syncs while
-      // dirty), so writing that whole snapshot back would clobber dock-side add/delete/
-      // source-switch changes already in localStorage. Apply the edit to the profile this
-      // form is editing (by id) and keep the dock's latest profile list + active source.
-      const editedId = current.activeProfileId;
-      const latest = loadStoredProfiles();
-      const next = updateProfileSettingsById(
-        latest,
-        editedId,
-        profileNameDraft.trim(),
-        normalized,
-        sshHostDraft,
-        sshClientTtyDraft,
-      );
-      storeProfiles(next);
-      void broadcastPrefs({ kind: "profiles" });
-      return next;
+    applyRunnerSettingsSet({
+      name: profileNameDraft,
+      runner: normalized,
+      sshHost: sshHostDraft,
+      sshClientTty: sshClientTtyDraft,
     });
     appendDebugEntry({
       kind: "settings",
@@ -1347,105 +1160,37 @@ function App({ mode }: { mode: ShellMode }) {
     setSshClientTtyDraft(activeProfile.kind === "ssh" ? activeProfile.clientTty : "");
   }
 
+  // The persisted-state mutators live in the Profiles service, which owns the
+  // merge-onto-latest discipline, the same-active no-op, and the cross-window
+  // broadcast. These thin wrappers just dispatch the intent — and the mutator runs
+  // once in an Effect fiber, so the old StrictMode generate-id-once dance in
+  // addSshProfile is no longer needed.
   function selectProfile(id: string) {
-    // A dirty settings window may show a stale active highlight: it skips dock-side profile
-    // syncs mid-edit, and the focus/clean-adopt reconcilers also skip while dirty, so the
-    // card the rail highlights (activeProfile.id) can lag the persisted active source. Clicking
-    // that already-highlighted card must stay a no-op here — otherwise the id !== latest path
-    // below would rewrite localStorage to our stale id and broadcast, flipping the dock off the
-    // source it was deliberately switched to elsewhere (its drafts-preserving switch must win
-    // until Apply/Reset). This divergence only exists while dirty in settings, so clean windows
-    // and the dock are untouched: clicking a different source still writes + broadcasts, and
-    // re-selecting the live active still hits the same-reference no-op below. Keyed on
-    // activeProfile.id (the highlighted card) rather than current.activeProfileId, since
-    // getActiveProfile falls back to the first runnable profile when the active id is unset.
+    // A dirty settings window may highlight a stale active card (it skips dock-side
+    // profile syncs mid-edit, and the focus/clean reconcilers also skip while dirty),
+    // so the highlighted card (activeProfile.id) can lag the persisted active source.
+    // Re-clicking that already-highlighted card must stay a no-op — otherwise the
+    // service's id !== latest path would rewrite storage to our stale id and flip the
+    // dock off the source it was switched to elsewhere. The dirty flag is React-
+    // synchronous, so this guard belongs here, ahead of the dispatch. Clean windows
+    // and the dock are untouched (their highlight matches the persisted active).
     if (mode === "settings" && isSettingsDirty && id === activeProfile.id) {
       return;
     }
-
-    setProfileState((current) => {
-      // Switch active on the LATEST persisted state so a concurrent dock-side
-      // add/delete isn't clobbered by this window's possibly-stale snapshot.
-      const latest = loadStoredProfiles();
-      // Clicking the already-persisted (live) active source must not bump loadShellState
-      // (a needless re-probe momentarily unmatches state.runnerKey, which gates liveReady
-      // off and flickers the connection through "Switching profile…") — so when our
-      // snapshot already matches, keep the SAME reference and do nothing. But a dirty
-      // settings window may hold a stale snapshot
-      // (it skips syncs mid-edit); there, adopt the latest so clicking the dock's current
-      // source navigates to it instead of staying stuck on the stale selection.
-      if (id === latest.activeProfileId) {
-        return JSON.stringify(current) === JSON.stringify(latest) ? current : latest;
-      }
-
-      const profile = latest.profiles.find((candidate) => candidate.id === id);
-      if (!profile || !isRunnableProfile(profile)) {
-        return current;
-      }
-
-      const next = { ...latest, activeProfileId: id };
-      storeProfiles(next);
-      void broadcastPrefs({ kind: "profiles" });
-      return next;
-    });
+    selectProfileSet(id);
   }
 
   function addSshProfile() {
-    // Generate the id ONCE, outside the updater: React StrictMode double-invokes state
-    // updaters in dev, and a fresh id per invocation combined with the in-updater
-    // append+persist would create two profiles from a single click. A stable id plus the
-    // existence guard below make the append idempotent across the doubled invocation.
-    const id = newProfileId("ssh");
-    setProfileState(() => {
-      // Append onto the LATEST persisted state so a concurrent dock-side change isn't
-      // clobbered by this window's possibly-stale snapshot.
-      const latest = loadStoredProfiles();
-      if (latest.profiles.some((profile) => profile.id === id)) {
-        // The first (StrictMode-doubled) invocation already appended and persisted this
-        // profile; don't add a duplicate on the second pass.
-        return latest;
-      }
-      const profile: SshProfileConfig = {
-        id,
-        name: nextRemoteProfileName(latest.profiles),
-        kind: "ssh",
-        host: "",
-        clientTty: "",
-        runner: emptyRunnerSettings(),
-        enabled: true,
-      };
-      const next = {
-        activeProfileId: profile.id,
-        profiles: [...latest.profiles, profile],
-      };
-      storeProfiles(next);
-      void broadcastPrefs({ kind: "profiles" });
-      return next;
-    });
+    addSshProfileSet();
   }
 
   function deleteActiveProfile() {
+    // Guard here too so the debug entry (and its reference to the about-to-be-deleted
+    // profile's name) only fires for a real deletion; the service also no-ops on local.
     if (activeProfile.kind === "local") {
       return;
     }
-
-    const targetId = activeProfile.id;
-    setProfileState(() => {
-      // Remove from the LATEST persisted state so a concurrent dock-side change isn't
-      // clobbered. Keep the latest active source unless it's the profile being deleted.
-      const latest = loadStoredProfiles();
-      const profiles = latest.profiles.filter((profile) => profile.id !== targetId);
-      const fallback = profiles.find((profile) => profile.kind === "local") ?? profiles[0];
-      const next = normalizeProfileState({
-        activeProfileId: profiles.some((profile) => profile.id === latest.activeProfileId)
-          ? latest.activeProfileId
-          : fallback?.id,
-        profiles,
-      });
-      storeProfiles(next);
-      void broadcastPrefs({ kind: "profiles" });
-      return next;
-    });
+    deleteActiveProfileSet();
     appendDebugEntry({
       kind: "settings",
       label: `${activeProfile.name} profile deleted`,
@@ -1511,14 +1256,16 @@ function App({ mode }: { mode: ShellMode }) {
   // path. A stale ready state from a profile still switching (runnerKey mismatch) is
   // left to the picker's "Switching…" view, not treated as an error.
   const dockPreflightUnusable =
-    state.status === "ready" && state.runnerKey === runnerKey && !state.preflight.ok;
-  if (mode === "dock" && (state.status !== "ready" || dockPreflightUnusable)) {
-    const probing = state.status === "loading";
+    preflightState.status === "ready" &&
+    preflightState.runnerKey === runnerKey &&
+    !preflightState.preflight.ok;
+  if (mode === "dock" && (preflightState.status !== "ready" || dockPreflightUnusable)) {
+    const probing = preflightState.status === "loading";
     const detail =
-      state.status === "failed"
-        ? state.message
-        : state.status === "ready"
-          ? (state.preflight.error ?? `${profileKindLabel(activeProfile)} CLI unavailable`)
+      preflightState.status === "failed"
+        ? preflightState.message
+        : preflightState.status === "ready"
+          ? (preflightState.preflight.error ?? `${profileKindLabel(activeProfile)} CLI unavailable`)
           : "Waiting for the daemon…";
     return (
       // Recovery UI renders in the live orientation: a centered column in the vertical
@@ -1546,7 +1293,7 @@ function App({ mode }: { mode: ShellMode }) {
     // The profile list comes from profileState (the live source of truth) so
     // add/delete/switch are reflected immediately. The settings window never runs
     // its own preflight (which for SSH would be a duplicate `ssh … --version`); it
-    // reuses the dock's, mirrored over the event bus into `syncedPreflight`. That
+    // reuses the dock's, mirrored by the Preflight service into `syncedPreflight`. That
     // result is only trusted when its runnerKey matches this window's active source;
     // otherwise it describes the previous one mid-switch and reads as "Checking" until
     // the dock re-probes and pushes the matching one (or a focus-time replay request
@@ -1821,10 +1568,7 @@ function App({ mode }: { mode: ShellMode }) {
                   key={option}
                   type="button"
                   aria-pressed={themePref === option}
-                  onClick={() => {
-                    setThemePref(option);
-                    broadcastPrefs({ kind: "theme", theme: option });
-                  }}
+                  onClick={() => setThemePref(option)}
                 >
                   {option === "system" ? "System" : option === "light" ? "Light" : "Dark"}
                 </button>
@@ -1849,10 +1593,7 @@ function App({ mode }: { mode: ShellMode }) {
                     key={option}
                     type="button"
                     aria-pressed={orientationPref === option}
-                    onClick={() => {
-                      setOrientationPref(option);
-                      broadcastPrefs({ kind: "orientation", orientation: option });
-                    }}
+                    onClick={() => setOrientationPref(option)}
                   >
                     {option === "auto"
                       ? "Auto"
@@ -1877,11 +1618,7 @@ function App({ mode }: { mode: ShellMode }) {
                     role="switch"
                     aria-checked={glassEnabled}
                     aria-label="Glass effect"
-                    onClick={() => {
-                      const next = !glassEnabled;
-                      setGlassEnabled(next);
-                      broadcastPrefs({ kind: "glass", enabled: next, alpha: surfaceAlpha });
-                    }}
+                    onClick={() => setGlassEnabled(!glassEnabled)}
                   >
                     <span className="switch-thumb" />
                   </button>
@@ -1904,11 +1641,9 @@ function App({ mode }: { mode: ShellMode }) {
                       max={SURFACE_ALPHA_MAX - SURFACE_ALPHA_MIN}
                       step={0.02}
                       value={SURFACE_ALPHA_MAX - surfaceAlpha}
-                      onChange={(event) => {
-                        const next = SURFACE_ALPHA_MAX - Number(event.target.value);
-                        setSurfaceAlpha(next);
-                        broadcastPrefs({ kind: "glass", enabled: glassEnabled, alpha: next });
-                      }}
+                      onChange={(event) =>
+                        setSurfaceAlpha(SURFACE_ALPHA_MAX - Number(event.target.value))
+                      }
                       aria-label="Glass transparency"
                     />
                   </label>
@@ -1942,12 +1677,6 @@ function App({ mode }: { mode: ShellMode }) {
         </div>
       </main>
     );
-  }
-
-  // Unreachable: the guards above return for every not-ready picker case. This
-  // narrows `state` to "ready" so the picker can read state.preflight/profiles.
-  if (state.status !== "ready") {
-    return null;
   }
 
   return (
@@ -2236,387 +1965,6 @@ function DebugLog({ entries }: { entries: DebugEntry[] }) {
       ))}
     </ol>
   );
-}
-
-function loadStoredRunnerSettings(): RunnerSettings {
-  try {
-    const value = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
-    if (!value) {
-      return emptyRunnerSettings();
-    }
-
-    return normalizeRunnerSettings(JSON.parse(value) as Partial<RunnerSettings>);
-  } catch {
-    return emptyRunnerSettings();
-  }
-}
-
-function loadStoredTheme(): ThemePreference {
-  try {
-    const value = window.localStorage.getItem(THEME_STORAGE_KEY);
-    if (value === "dark" || value === "light" || value === "system") {
-      return value;
-    }
-  } catch {
-    // localStorage unavailable; fall back to following the OS.
-  }
-  return "system";
-}
-
-function loadStoredOrientation(): OrientationPreference {
-  try {
-    const value = window.localStorage.getItem(ORIENTATION_STORAGE_KEY);
-    if (value === "auto" || value === "vertical" || value === "horizontal") {
-      return value;
-    }
-  } catch {
-    // localStorage unavailable; fall back to the responsive default.
-  }
-  return "auto";
-}
-
-function loadStoredGlass(): boolean {
-  // Glass is macOS-only (native vibrancy); other platforms never enable it.
-  if (!IS_MAC) {
-    return false;
-  }
-  try {
-    const raw = window.localStorage.getItem(GLASS_STORAGE_KEY);
-    // Default glass on for macOS on first run (no stored choice); once the user
-    // toggles it, "on"/"off" is persisted and respected.
-    return raw === null ? true : raw === "on";
-  } catch {
-    return true;
-  }
-}
-
-function loadStoredSurfaceAlpha(): number {
-  try {
-    // Guard the missing/empty case explicitly: Number(null) and Number("") are
-    // both 0 (finite), which would otherwise clamp first-time users to the most
-    // transparent setting instead of the frosted default.
-    const raw = window.localStorage.getItem(SURFACE_ALPHA_STORAGE_KEY);
-    if (raw !== null && raw.trim() !== "") {
-      const parsed = Number(raw);
-      if (Number.isFinite(parsed)) {
-        return Math.min(SURFACE_ALPHA_MAX, Math.max(SURFACE_ALPHA_MIN, parsed));
-      }
-    }
-  } catch {
-    // localStorage unavailable; use the default tint.
-  }
-  return SURFACE_ALPHA_DEFAULT;
-}
-
-function loadStoredProfiles(): ProfileState {
-  try {
-    const value = window.localStorage.getItem(PROFILES_STORAGE_KEY);
-    if (!value) {
-      return defaultProfileState(loadStoredRunnerSettings());
-    }
-
-    return normalizeProfileState(JSON.parse(value) as Partial<ProfileState>);
-  } catch {
-    return defaultProfileState(loadStoredRunnerSettings());
-  }
-}
-
-function storeProfiles(state: ProfileState) {
-  window.localStorage.setItem(PROFILES_STORAGE_KEY, JSON.stringify(state));
-  const localProfile = state.profiles.find((profile) => profile.kind === "local");
-  if (localProfile) {
-    window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(localProfile.runner));
-  }
-}
-
-function storeRunnerSettings(settings: RunnerSettings) {
-  window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
-}
-
-function emptyRunnerSettings(): RunnerSettings {
-  return { binaryPath: "", env: [] };
-}
-
-function defaultProfileState(runner = emptyRunnerSettings()): ProfileState {
-  return {
-    activeProfileId: LOCAL_PROFILE_ID,
-    profiles: [
-      {
-        id: LOCAL_PROFILE_ID,
-        name: "Default",
-        kind: "local",
-        runner: normalizeRunnerSettings(runner),
-      },
-    ],
-  };
-}
-
-function normalizeProfileState(value: Partial<ProfileState>): ProfileState {
-  const profiles = Array.isArray(value.profiles)
-    ? value.profiles.map(normalizeProfile).filter((profile) => profile !== null)
-    : [];
-
-  if (!profiles.some((profile) => profile.kind === "local")) {
-    profiles.unshift(defaultProfileState(loadStoredRunnerSettings()).profiles[0]);
-  }
-
-  const fallbackProfile = profiles.find(isRunnableProfile) ?? profiles[0];
-  const activeProfileId =
-    typeof value.activeProfileId === "string" &&
-    profiles.some((profile) => profile.id === value.activeProfileId && isRunnableProfile(profile))
-      ? value.activeProfileId
-      : fallbackProfile.id;
-
-  return { activeProfileId, profiles };
-}
-
-function normalizeProfile(value: unknown): DesktopProfileConfig | null {
-  if (!value || typeof value !== "object") {
-    return null;
-  }
-
-  const profile = value as Partial<DesktopProfileConfig>;
-  const id = typeof profile.id === "string" && profile.id.trim() ? profile.id.trim() : "";
-  const name = typeof profile.name === "string" && profile.name.trim() ? profile.name.trim() : "";
-  const runner = normalizeRunnerSettings(profile.runner ?? emptyRunnerSettings());
-
-  if (profile.kind === "local") {
-    return {
-      id: id || LOCAL_PROFILE_ID,
-      name: name || "Default",
-      kind: "local",
-      runner,
-    };
-  }
-
-  if (profile.kind === "ssh") {
-    return {
-      id: id || `ssh-${Date.now()}`,
-      name: name || "Remote",
-      kind: "ssh",
-      host: typeof profile.host === "string" ? profile.host.trim() : "",
-      clientTty:
-        typeof profile.clientTty === "string" ? profile.clientTty.trim() : "",
-      runner,
-      // Default to enabled so profiles persisted before the `enabled` field (or
-      // partial profiles missing it) remain selectable; only an explicit false
-      // disables a profile.
-      enabled: profile.enabled !== false,
-    };
-  }
-
-  return null;
-}
-
-function getActiveProfile(state: ProfileState): DesktopProfileConfig {
-  return (
-    state.profiles.find(
-      (profile) => profile.id === state.activeProfileId && isRunnableProfile(profile),
-    ) ??
-    state.profiles.find(isRunnableProfile) ??
-    state.profiles[0]
-  );
-}
-
-function isRunnableProfile(profile: DesktopProfileConfig): boolean {
-  return profile.kind === "local" || profile.enabled;
-}
-
-function updateProfileSettingsById(
-  state: ProfileState,
-  id: string,
-  name: string,
-  runner: RunnerSettings,
-  sshHost: string,
-  sshClientTty: string,
-): ProfileState {
-  // A missing id maps to a no-op, which cleanly handles applying an edit whose target
-  // profile was deleted elsewhere (the edit is simply dropped onto the latest state).
-  return {
-    ...state,
-    profiles: state.profiles.map((profile) =>
-      profile.id === id
-        ? updateProfileSettings(profile, name, runner, sshHost, sshClientTty)
-        : profile,
-    ),
-  };
-}
-
-function updateProfileSettings(
-  profile: DesktopProfileConfig,
-  name: string,
-  runner: RunnerSettings,
-  sshHost: string,
-  sshClientTty: string,
-): DesktopProfileConfig {
-  const normalizedRunner = normalizeRunnerSettings(runner);
-  const normalizedName = name.trim() || profile.name;
-
-  if (profile.kind === "ssh") {
-    return {
-      ...profile,
-      name: normalizedName,
-      host: sshHost.trim(),
-      clientTty: sshClientTty.trim(),
-      runner: normalizedRunner,
-      enabled: true,
-    };
-  }
-
-  return { ...profile, name: normalizedName, runner: normalizedRunner };
-}
-
-function profileSummary(profile: DesktopProfileConfig): DesktopProfile {
-  return {
-    id: profile.id,
-    name: profile.name,
-    kind: profile.kind,
-  };
-}
-
-function runnerSummary(settings: RunnerSettings) {
-  return settings.binaryPath.trim() || "auto-detected agentscan";
-}
-
-// Stable string identity of a profile's full runner configuration. Used to
-// invalidate resolved preflight/picker state when the target changes, including
-// same-profile settings edits (which keep the same id).
-function runnerKeyForProfile(profile: DesktopProfileConfig): string {
-  return JSON.stringify(runnerSettingsForProfile(profile));
-}
-
-function runnerSettingsForProfile(profile: DesktopProfileConfig): DesktopRunnerSettings {
-  if (profile.kind === "ssh") {
-    return {
-      kind: "ssh",
-      host: profile.host,
-      clientTty: profile.clientTty.trim() || null,
-      ...profile.runner,
-    };
-  }
-
-  return {
-    kind: "local",
-    ...profile.runner,
-  };
-}
-
-function commandPrefix(profile: DesktopProfileConfig) {
-  const binary = profile.runner.binaryPath.trim() || "agentscan";
-
-  if (profile.kind === "ssh") {
-    return `ssh ${profile.host || "<host>"} -- ${binary}`;
-  }
-
-  return binary;
-}
-
-function focusCommandLabel(profile: DesktopProfileConfig, paneId: string) {
-  const base = `${commandPrefix(profile)} focus`;
-  if (profile.kind === "ssh" && profile.clientTty.trim()) {
-    return `${base} --client-tty ${profile.clientTty.trim()} ${paneId}`;
-  }
-
-  return `${base} ${paneId}`;
-}
-
-function profileKindLabel(profile: DesktopProfileConfig) {
-  return profile.kind === "ssh" ? "SSH" : "Local";
-}
-
-function validateProfileDraft(
-  profile: DesktopProfileConfig,
-  name: string,
-  runner: RunnerSettings,
-  sshHost: string,
-  sshClientTty: string,
-): DraftValidation {
-  const errors: string[] = [];
-
-  if (!name.trim()) {
-    errors.push("Profile name is required.");
-  }
-
-  if (runner.binaryPath.includes("\0")) {
-    errors.push("agentscan binary cannot contain a null byte.");
-  }
-
-  if (profile.kind === "ssh") {
-    const host = sshHost.trim();
-    if (!host) {
-      errors.push("SSH host is required.");
-    } else if (host.startsWith("-") || /\s/.test(host) || host.includes("\0")) {
-      errors.push("SSH host must be a single host alias and cannot start with '-'.");
-    }
-
-    const clientTty = sshClientTty.trim();
-    if (clientTty && (/\s/.test(clientTty) || clientTty.includes("\0"))) {
-      errors.push("Remote client tty must be a single tty path.");
-    }
-  }
-
-  const seenNames = new Set<string>();
-  runner.env.forEach((variable, index) => {
-    const name = variable.name.trim();
-    if (!name) {
-      errors.push(`Environment row ${index + 1} needs a name.`);
-      return;
-    }
-
-    // Must be a POSIX shell identifier: names are interpolated unquoted into
-    // the remote SSH command, so spaces/hyphens/metacharacters are rejected.
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
-      errors.push(`Environment row ${index + 1} name must be a valid shell identifier.`);
-      return;
-    }
-
-    if (seenNames.has(name)) {
-      errors.push(`Environment variable ${name} is duplicated.`);
-    }
-    seenNames.add(name);
-  });
-
-  return { errors };
-}
-
-function runnerSettingsEqual(left: RunnerSettings, right: RunnerSettings) {
-  if (left.binaryPath !== right.binaryPath || left.env.length !== right.env.length) {
-    return false;
-  }
-
-  return left.env.every(
-    (variable, index) =>
-      variable.name === right.env[index]?.name && variable.value === right.env[index]?.value,
-  );
-}
-
-function newProfileId(prefix: string) {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return `${prefix}-${crypto.randomUUID()}`;
-  }
-
-  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function nextRemoteProfileName(profiles: DesktopProfileConfig[]) {
-  const remoteCount = profiles.filter((profile) => profile.kind === "ssh").length;
-  return remoteCount === 0 ? "Remote" : `Remote ${remoteCount + 1}`;
-}
-
-function normalizeRunnerSettings(settings: Partial<RunnerSettings>): RunnerSettings {
-  const env = Array.isArray(settings.env)
-    ? settings.env
-        .map((variable) => ({
-          name: String(variable.name ?? "").trim(),
-          value: String(variable.value ?? ""),
-        }))
-        .filter((variable) => variable.name.length > 0)
-    : [];
-
-  return {
-    binaryPath: String(settings.binaryPath ?? "").trim(),
-    env,
-  };
 }
 
 function projectOf(row: PickerRow): string {
