@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.6.1 - 2026-06-06
+
+### Added
+
+- Added an opt-in frameless macOS desktop window mode with custom drag,
+  minimize, and close controls persisted through the Appearance service.
+
+### Changed
+
+- Refined the macOS desktop horizontal dock into a compact 56px bar with
+  synchronized Rust/TypeScript sizing, collapsible search, tighter spacing,
+  rounded glass corners, and a recovery screen fitted to the bar layout.
+
 ## 0.6.0 - 2026-06-06
 
 ### Added
