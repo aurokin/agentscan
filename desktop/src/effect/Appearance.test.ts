@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { Appearance } from "./Appearance";
 import { PrefsBridge } from "./PrefsBridge";
 import {
+  FRAMELESS_STORAGE_KEY,
   GLASS_STORAGE_KEY,
   ORIENTATION_STORAGE_KEY,
   SURFACE_ALPHA_DEFAULT,
@@ -88,6 +89,7 @@ describe("Appearance", () => {
         [ORIENTATION_STORAGE_KEY]: "horizontal",
         [GLASS_STORAGE_KEY]: "off",
         [SURFACE_ALPHA_STORAGE_KEY]: "0.40",
+        [FRAMELESS_STORAGE_KEY]: "on",
       },
       ({ appearance }) =>
         Effect.gen(function* () {
@@ -97,11 +99,12 @@ describe("Appearance", () => {
             orientationPref: "horizontal",
             glassEnabled: false,
             surfaceAlpha: 0.4,
+            framelessEnabled: true,
           });
         }),
     ));
 
-  it("defaults when storage is empty (system theme, auto layout, glass on, default alpha)", () =>
+  it("defaults when storage is empty (system theme, auto layout, glass on, default alpha, frameless off)", () =>
     run("dock", {}, ({ appearance }) =>
       Effect.gen(function* () {
         const state = yield* SubscriptionRef.get(appearance.state);
@@ -110,6 +113,7 @@ describe("Appearance", () => {
           orientationPref: "auto",
           glassEnabled: true,
           surfaceAlpha: SURFACE_ALPHA_DEFAULT,
+          framelessEnabled: false,
         });
       }),
     ));
@@ -151,6 +155,27 @@ describe("Appearance", () => {
         expect(store.get(SURFACE_ALPHA_STORAGE_KEY)).toBe("0.63"); // toFixed(2)
         expect(yield* Queue.take(emitted)).toEqual({ kind: "glass", enabled: true, alpha: 0.625 });
         expect((yield* SubscriptionRef.get(appearance.state)).surfaceAlpha).toBe(0.625);
+      }),
+    ));
+
+  it("setFrameless persists, broadcasts, and updates the ref", () =>
+    run("settings", {}, ({ appearance, store, emitted }) =>
+      Effect.gen(function* () {
+        yield* appearance.setFrameless(true);
+        expect(store.get(FRAMELESS_STORAGE_KEY)).toBe("on");
+        expect(yield* Queue.take(emitted)).toEqual({ kind: "frameless", enabled: true });
+        expect((yield* SubscriptionRef.get(appearance.state)).framelessEnabled).toBe(true);
+      }),
+    ));
+
+  it("adopts an inbound frameless change, persisting it (the heal) but not re-broadcasting", () =>
+    run("dock", {}, ({ appearance, store, emitted, inbound }) =>
+      Effect.gen(function* () {
+        yield* Queue.offer(inbound, { kind: "frameless", enabled: true });
+        const state = yield* awaitWhere(appearance.state.changes, (s) => s.framelessEnabled);
+        expect(state.framelessEnabled).toBe(true);
+        expect(store.get(FRAMELESS_STORAGE_KEY)).toBe("on");
+        expect(yield* Queue.size(emitted)).toBe(0);
       }),
     ));
 
