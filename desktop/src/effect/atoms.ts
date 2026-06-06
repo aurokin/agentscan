@@ -3,16 +3,23 @@ import { Effect, Layer } from "effect";
 import { LiveConnection, type ConfigureInput } from "./LiveConnection";
 import { Profiles, type ApplyRunnerSettingsInput } from "./Profiles";
 import { Preflight, type PreflightTarget } from "./Preflight";
+import { Appearance } from "./Appearance";
+import type { OrientationPreference, ThemePreference } from "./prefs";
 
-// One runtime per webview window, providing the desktop Effect services. Profiles and
-// Preflight both pull in the shared PrefsBridge (the single agentscan:prefs-sync
-// channel), so they reuse one listener rather than opening their own — Effect memoizes
-// PrefsBridge.Default by reference across the merge. Both windows instantiate this
-// layer; LiveConnection's and Preflight's supervisors idle in the settings window
-// because the dock-only configure paths never enable a target (the latch-only invariant
-// is enforced there, not by withholding the layer).
+// One runtime per webview window, providing the desktop Effect services. Profiles,
+// Preflight, and Appearance all pull in the shared PrefsBridge (the single
+// agentscan:prefs-sync channel), so they reuse one listener rather than opening their
+// own — Effect memoizes PrefsBridge.Default by reference across the merge. Both windows
+// instantiate this layer; LiveConnection's and Preflight's supervisors idle in the
+// settings window because the dock-only configure paths never enable a target (the
+// latch-only invariant is enforced there, not by withholding the layer).
 const runtime = Atom.runtime(
-  Layer.mergeAll(LiveConnection.Default, Profiles.Default, Preflight.Default),
+  Layer.mergeAll(
+    LiveConnection.Default,
+    Profiles.Default,
+    Preflight.Default,
+    Appearance.Default,
+  ),
 );
 
 // --- Live connection slice ---
@@ -124,5 +131,51 @@ export const requestPreflightSyncAtom = runtime.fn(
   Effect.fnUntraced(function* () {
     const preflight = yield* Preflight;
     yield* preflight.requestSync;
+  }),
+);
+
+// --- Appearance slice ---
+
+// The persisted appearance triad (theme + dock-layout orientation + glass) both windows
+// observe: Result<AppearanceState>. keepAlive so the inbound-adoption fiber + shared
+// PrefsBridge persist across StrictMode remounts. React keeps the DOM/Tauri apply effects.
+export const appearanceAtom = Atom.keepAlive(
+  runtime.subscriptionRef(Effect.map(Appearance, (a) => a.state)),
+);
+
+export const setThemeAtom = runtime.fn(
+  Effect.fnUntraced(function* (theme: ThemePreference) {
+    const appearance = yield* Appearance;
+    yield* appearance.setTheme(theme);
+  }),
+);
+
+export const setOrientationAtom = runtime.fn(
+  Effect.fnUntraced(function* (orientation: OrientationPreference) {
+    const appearance = yield* Appearance;
+    yield* appearance.setOrientationPref(orientation);
+  }),
+);
+
+export const setGlassEnabledAtom = runtime.fn(
+  Effect.fnUntraced(function* (enabled: boolean) {
+    const appearance = yield* Appearance;
+    yield* appearance.setGlassEnabled(enabled);
+  }),
+);
+
+export const setSurfaceAlphaAtom = runtime.fn(
+  Effect.fnUntraced(function* (alpha: number) {
+    const appearance = yield* Appearance;
+    yield* appearance.setSurfaceAlpha(alpha);
+  }),
+);
+
+// Value-guarded reconcile from storage, driven by React on the settings window's focus
+// (emitTo has no replay, so a change missed while hidden is recovered on focus).
+export const reloadAppearanceAtom = runtime.fn(
+  Effect.fnUntraced(function* () {
+    const appearance = yield* Appearance;
+    yield* appearance.reconcile;
   }),
 );
