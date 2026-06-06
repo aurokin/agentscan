@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { emitTo, listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
@@ -8,6 +8,7 @@ import { Result, useAtomSet, useAtomValue } from "@effect-atom/atom-react";
 import { providerLogo, type LogoTheme } from "./providerLogos";
 import {
   addSshProfileAtom,
+  appearanceAtom,
   applyRunnerSettingsAtom,
   configureAtom,
   configurePreflightAtom,
@@ -16,14 +17,25 @@ import {
   preflightStateAtom,
   profilesAtom,
   reconnectAtom,
+  reloadAppearanceAtom,
   reloadProfilesAtom,
   requestPreflightSyncAtom,
   selectProfileAtom,
+  setGlassEnabledAtom,
+  setOrientationAtom,
+  setSurfaceAlphaAtom,
+  setThemeAtom,
   startAtom,
   syncedPreflightAtom,
 } from "./effect/atoms";
 import type { ConnectionStatus, LiveState, PickerRow } from "./effect/types";
 import type { PreflightState } from "./effect/Preflight";
+import {
+  glassClearFor,
+  loadAppearance,
+  SURFACE_ALPHA_MAX,
+  SURFACE_ALPHA_MIN,
+} from "./effect/appearanceModel";
 import {
   commandPrefix,
   focusCommandLabel,
@@ -52,26 +64,9 @@ import {
 import logoUrl from "./assets/agentscan-logo.png";
 
 const PICKER_HOTKEY = "CommandOrControl+Shift+A";
-// Keep in sync with the pre-paint theme script in index.html.
-const THEME_STORAGE_KEY = "agentscan.desktop.theme";
-// macOS "glass": vibrancy backdrop (Rust) + a translucent surface tint (CSS).
-const GLASS_STORAGE_KEY = "agentscan.desktop.glass";
-const SURFACE_ALPHA_STORAGE_KEY = "agentscan.desktop.surfaceAlpha";
-// Dock layout preference: "auto" follows the window's aspect ratio; "vertical"/
-// "horizontal" pin the layout and snap the window to that shape.
-const ORIENTATION_STORAGE_KEY = "agentscan.desktop.orientation";
-// Tint alpha floor of 0.20 caps transparency at 80% (the slider reads 1 - alpha):
-// the surface always keeps a little tint over the native vibrancy frost, so the UI
-// never washes out fully even at the most transparent setting.
-const SURFACE_ALPHA_MIN = 0.2;
-const SURFACE_ALPHA_MAX = 1;
-// First-run default: 0.50 alpha == 50% transparency (the slider reads 1 - alpha),
-// a balanced frosted look — clearly glassy but still a substantial surface tint.
-const SURFACE_ALPHA_DEFAULT = 0.5;
-// "How see-through is the surface" as a 0..1 scalar (0 frosted/solid, 1 fully
-// clear) that adaptive tokens interpolate against. Mirrors the slider math.
-const glassClearFor = (alpha: number) =>
-  (SURFACE_ALPHA_MAX - alpha) / (SURFACE_ALPHA_MAX - SURFACE_ALPHA_MIN);
+// Appearance prefs (storage keys, alpha bounds, glassClearFor, the parsers) live in
+// effect/appearanceModel and are owned by the Appearance Effect service; the DOM apply
+// (this setter, the theme/glass/sizing effects) stays here.
 const setGlassClear = (clear: number) => {
   document.documentElement.style.setProperty("--glass-clear", clear.toFixed(3));
 };
@@ -236,9 +231,21 @@ function App({ mode }: { mode: ShellMode }) {
   const [pickerFilter, setPickerFilter] = useState("");
   // Layout axis, seeded from the current window shape and kept in sync on resize.
   const [orientation, setOrientation] = useState<Orientation>(orientationForViewport);
-  // Layout preference: "auto" follows `orientation`; a pinned value overrides it.
-  const [orientationPref, setOrientationPref] =
-    useState<OrientationPreference>(loadStoredOrientation);
+  // Appearance prefs (theme + dock-layout orientation + glass) are owned by the
+  // Appearance Effect service; both windows observe its state via an atom and drive
+  // changes through these setters (which persist + cross-window broadcast). The DOM/Tauri
+  // apply (data-theme, set_window_glass, window shaping, CSS vars) stays in the effects
+  // below. The first synchronous render (before the runtime resolves the atom) falls back
+  // to a direct storage read so layout/theme/glass are right on the first paint.
+  const initialAppearance = useMemo(() => loadAppearance(readLocalStorage), []);
+  const appearance = Result.getOrElse(useAtomValue(appearanceAtom), () => initialAppearance);
+  const { themePref, orientationPref, glassEnabled, surfaceAlpha } = appearance;
+  const setThemePref = useAtomSet(setThemeAtom);
+  const setOrientationPref = useAtomSet(setOrientationAtom);
+  const setGlassEnabled = useAtomSet(setGlassEnabledAtom);
+  const setSurfaceAlpha = useAtomSet(setSurfaceAlphaAtom);
+  const reloadAppearance = useAtomSet(reloadAppearanceAtom);
+  // Layout preference: "auto" follows the live `orientation`; a pinned value overrides it.
   const effectiveOrientation: Orientation =
     orientationPref === "auto" ? orientation : orientationPref;
   // The summon hotkey is registered once but must place by the LIVE orientation, so a
@@ -257,17 +264,12 @@ function App({ mode }: { mode: ShellMode }) {
   const sourceMenuRef = useRef<HTMLDivElement | null>(null);
   // Debug log is a diagnostic panel — collapsed by default to keep Settings calm.
   const [isDebugOpen, setIsDebugOpen] = useState(false);
-  // Appearance: dark / light / system (system follows the OS).
-  const [themePref, setThemePref] = useState<ThemePreference>(loadStoredTheme);
   // Concrete theme in effect, kept in sync by the theme effect; drives per-theme
-  // logo variant selection. Seeded so first paint picks the right logos.
+  // logo variant selection. Seeded from the service's initial theme so first paint
+  // picks the right logos.
   const [resolvedTheme, setResolvedTheme] = useState<LogoTheme>(() =>
-    resolveThemeMode(loadStoredTheme()),
+    resolveThemeMode(initialAppearance.themePref),
   );
-  // macOS glass: the vibrancy backdrop toggle and the tint opacity over it. The
-  // toggle is only surfaced on macOS; elsewhere these stay inert.
-  const [glassEnabled, setGlassEnabled] = useState<boolean>(loadStoredGlass);
-  const [surfaceAlpha, setSurfaceAlpha] = useState<number>(loadStoredSurfaceAlpha);
   // The glass toggle's async resolution sets `--glass-clear` from the latest
   // alpha; reading it through a render-synced ref keeps the toggle effect off
   // surfaceAlpha's dep list (so a slider tick can't re-fire the native call).
@@ -680,15 +682,11 @@ function App({ mode }: { mode: ShellMode }) {
     };
   }, [isSourceMenuOpen]);
 
-  // Apply the theme to <html data-theme> and persist it. "system" resolves from
-  // prefers-color-scheme and re-resolves live when the OS appearance changes.
+  // Apply the theme to <html data-theme>. "system" resolves from prefers-color-scheme
+  // and re-resolves live when the OS appearance changes. Persistence + the cross-window
+  // broadcast are owned by the Appearance service (driven by the setter); this effect
+  // only applies the resolved theme to the DOM and the logo variant.
   useEffect(() => {
-    try {
-      window.localStorage.setItem(THEME_STORAGE_KEY, themePref);
-    } catch {
-      // Persistence is best-effort; the in-memory preference still applies.
-    }
-
     const media = window.matchMedia("(prefers-color-scheme: dark)");
     const apply = () => {
       const resolved =
@@ -716,15 +714,8 @@ function App({ mode }: { mode: ShellMode }) {
     return () => window.removeEventListener("resize", apply);
   }, []);
 
-  // Persist the layout preference. Window shaping is handled by the effect below.
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(ORIENTATION_STORAGE_KEY, orientationPref);
-    } catch {
-      // Persistence is best-effort; the in-memory preference still applies.
-    }
-  }, [orientationPref]);
-
+  // The layout preference is persisted by the Appearance service (driven by the setter);
+  // window shaping for the current orientation is handled by the effect below.
   // Shape and constrain the dock window for the current orientation preference in one
   // race-free sequence ("auto" = free: no cap, no snap). Caps are lifted before min is
   // raised so a larger min can never transiently exceed a stale max; then the real cap
@@ -772,17 +763,6 @@ function App({ mode }: { mode: ShellMode }) {
     });
   }, [mode, orientationPref, effectiveOrientation]);
 
-  // The dock and settings windows mirror shared prefs to each other (separate
-  // webviews don't share React state). The label of the *other* window is the emit
-  // target. Preflight syncs are owned by the Preflight service (over the shared prefs
-  // channel); this remains the emit path for the not-yet-migrated appearance prefs.
-  const otherWindowLabel = mode === "settings" ? "main" : "settings";
-  const broadcastPrefs = (payload: PrefsSync) => {
-    void emitTo(otherWindowLabel, PREFS_SYNC_EVENT, payload).catch(() => {
-      // Best-effort: the other window still converges on its next reload.
-    });
-  };
-
   // Open the settings window (created hidden at launch, kept warm). The dock no
   // longer renders settings itself.
   const openSettings = () => {
@@ -817,24 +797,17 @@ function App({ mode }: { mode: ShellMode }) {
     void getCurrentWindow().hide();
   };
 
-  // Apply prefs changed in the other window. The listener only sets state — the
-  // existing theme/glass/orientation/profile effects then apply it — and never
-  // re-broadcasts, so window A -> B -> A can't loop. Preflight syncs (preflight /
-  // preflight-request) are consumed by the Preflight service over the same channel
-  // (PrefsBridge installs its own listener), so they aren't handled here.
+  // Apply the cross-window `profiles` sync. Appearance (theme/orientation/glass) and
+  // preflight syncs are consumed by their own Effect services over the same channel
+  // (PrefsBridge installs its own listener), so only the React-synchronously-gated
+  // `profiles` adoption remains here; the handler never re-broadcasts, so A -> B -> A
+  // can't loop.
   useEffect(() => {
     let disposed = false;
     let unlisten: UnlistenFn | null = null;
     void listen<PrefsSync>(PREFS_SYNC_EVENT, (event) => {
       const payload = event.payload;
-      if (payload.kind === "theme") {
-        setThemePref(payload.theme);
-      } else if (payload.kind === "orientation") {
-        setOrientationPref(payload.orientation);
-      } else if (payload.kind === "glass") {
-        setGlassEnabled(payload.enabled);
-        setSurfaceAlpha(payload.alpha);
-      } else if (payload.kind === "profiles") {
+      if (payload.kind === "profiles") {
         // The Profiles service owns persistence + the reload primitive, but the
         // adopt/skip DECISION stays here because it gates on the settings form's
         // unsaved-edit flag — React-synchronous state. Reading isSettingsDirtyRef in
@@ -874,13 +847,12 @@ function App({ mode }: { mode: ShellMode }) {
     };
   }, []);
 
-  // The live listener above can miss a change broadcast before it registered, and
+  // The service listeners above can miss a change broadcast before they registered, and
   // emitTo has no replay — so a warm (hidden) settings window could linger on stale
-  // state with no way to recover short of a restart. Re-read localStorage whenever this
-  // window gains focus (i.e. is shown/reopened) to reconcile. Appearance prefs are
-  // always safe to refresh (primitive setters no-op when unchanged); the profile is
-  // re-seeded only when there are no unsaved edits AND the snapshot actually changed, so
-  // a kept-warm in-progress edit is never clobbered and idle focuses don't churn state.
+  // state with no way to recover short of a restart. Reconcile from storage whenever this
+  // window gains focus (i.e. is shown/reopened). Both reconciles are value-guarded, so an
+  // unchanged snapshot is a no-op; the profile is additionally skipped while there are
+  // unsaved edits, so a kept-warm in-progress edit is never clobbered.
   useEffect(() => {
     if (mode !== "settings") {
       return;
@@ -893,12 +865,8 @@ function App({ mode }: { mode: ShellMode }) {
         if (!focused) {
           return;
         }
-        setThemePref(loadStoredTheme());
-        setOrientationPref(loadStoredOrientation());
-        setGlassEnabled(loadStoredGlass());
-        setSurfaceAlpha(loadStoredSurfaceAlpha());
+        reloadAppearance();
         if (!isSettingsDirtyRef.current) {
-          // The service's reload is value-guarded, so an unchanged snapshot is a no-op.
           reloadProfiles();
         }
         // Preflight has no localStorage to re-read and emitTo has no replay, so ask the
@@ -919,7 +887,7 @@ function App({ mode }: { mode: ShellMode }) {
       disposed = true;
       unlisten?.();
     };
-  }, [mode, reloadProfiles, requestPreflightSync]);
+  }, [mode, reloadAppearance, reloadProfiles, requestPreflightSync]);
 
   // The React listener drops dock-side syncs while this window is dirty, and the focus-
   // reconcile only runs on a later focus — so a change skipped mid-edit would linger
@@ -980,19 +948,11 @@ function App({ mode }: { mode: ShellMode }) {
   // desktop through the transparent window: when enabling, raise the blur layer
   // first, then mark the surface translucent; when disabling, go opaque first,
   // then drop the blur. macOS-only — the toggle isn't offered anywhere else.
+  // Persistence + the cross-window mirror are owned by the Appearance service; this
+  // effect only applies the native vibrancy, which lives on the dock (the settings
+  // window is a solid, normally-chromed window and never frosts itself).
   useEffect(() => {
-    if (!IS_MAC) {
-      return;
-    }
-    try {
-      window.localStorage.setItem(GLASS_STORAGE_KEY, glassEnabled ? "on" : "off");
-    } catch {
-      // Best-effort; the in-memory preference still applies this session.
-    }
-
-    // Vibrancy lives on the dock. The settings window is a solid, normally-chromed
-    // window, so it persists + mirrors the pref but never frosts itself.
-    if (mode !== "dock") {
+    if (!IS_MAC || mode !== "dock") {
       return;
     }
 
@@ -1040,17 +1000,12 @@ function App({ mode }: { mode: ShellMode }) {
   // against) is owned by the glass-toggle effect so it stays in lockstep with the
   // actual data-glass state, not the pending React intent. Here we only refresh it
   // for slider moves while glass is already live; on/off transitions are that
-  // effect's job.
+  // effect's job. Persistence is owned by the Appearance service (driven by the setter).
   useEffect(() => {
     const root = document.documentElement;
     root.style.setProperty("--surface-alpha", String(surfaceAlpha));
     if (root.getAttribute("data-glass") === "on") {
       setGlassClear(glassClearFor(surfaceAlpha));
-    }
-    try {
-      window.localStorage.setItem(SURFACE_ALPHA_STORAGE_KEY, surfaceAlpha.toFixed(2));
-    } catch {
-      // Best-effort persistence.
     }
   }, [surfaceAlpha]);
 
@@ -1613,10 +1568,7 @@ function App({ mode }: { mode: ShellMode }) {
                   key={option}
                   type="button"
                   aria-pressed={themePref === option}
-                  onClick={() => {
-                    setThemePref(option);
-                    broadcastPrefs({ kind: "theme", theme: option });
-                  }}
+                  onClick={() => setThemePref(option)}
                 >
                   {option === "system" ? "System" : option === "light" ? "Light" : "Dark"}
                 </button>
@@ -1641,10 +1593,7 @@ function App({ mode }: { mode: ShellMode }) {
                     key={option}
                     type="button"
                     aria-pressed={orientationPref === option}
-                    onClick={() => {
-                      setOrientationPref(option);
-                      broadcastPrefs({ kind: "orientation", orientation: option });
-                    }}
+                    onClick={() => setOrientationPref(option)}
                   >
                     {option === "auto"
                       ? "Auto"
@@ -1669,11 +1618,7 @@ function App({ mode }: { mode: ShellMode }) {
                     role="switch"
                     aria-checked={glassEnabled}
                     aria-label="Glass effect"
-                    onClick={() => {
-                      const next = !glassEnabled;
-                      setGlassEnabled(next);
-                      broadcastPrefs({ kind: "glass", enabled: next, alpha: surfaceAlpha });
-                    }}
+                    onClick={() => setGlassEnabled(!glassEnabled)}
                   >
                     <span className="switch-thumb" />
                   </button>
@@ -1696,11 +1641,9 @@ function App({ mode }: { mode: ShellMode }) {
                       max={SURFACE_ALPHA_MAX - SURFACE_ALPHA_MIN}
                       step={0.02}
                       value={SURFACE_ALPHA_MAX - surfaceAlpha}
-                      onChange={(event) => {
-                        const next = SURFACE_ALPHA_MAX - Number(event.target.value);
-                        setSurfaceAlpha(next);
-                        broadcastPrefs({ kind: "glass", enabled: glassEnabled, alpha: next });
-                      }}
+                      onChange={(event) =>
+                        setSurfaceAlpha(SURFACE_ALPHA_MAX - Number(event.target.value))
+                      }
                       aria-label="Glass transparency"
                     />
                   </label>
@@ -2022,63 +1965,6 @@ function DebugLog({ entries }: { entries: DebugEntry[] }) {
       ))}
     </ol>
   );
-}
-
-function loadStoredTheme(): ThemePreference {
-  try {
-    const value = window.localStorage.getItem(THEME_STORAGE_KEY);
-    if (value === "dark" || value === "light" || value === "system") {
-      return value;
-    }
-  } catch {
-    // localStorage unavailable; fall back to following the OS.
-  }
-  return "system";
-}
-
-function loadStoredOrientation(): OrientationPreference {
-  try {
-    const value = window.localStorage.getItem(ORIENTATION_STORAGE_KEY);
-    if (value === "auto" || value === "vertical" || value === "horizontal") {
-      return value;
-    }
-  } catch {
-    // localStorage unavailable; fall back to the responsive default.
-  }
-  return "auto";
-}
-
-function loadStoredGlass(): boolean {
-  // Glass is macOS-only (native vibrancy); other platforms never enable it.
-  if (!IS_MAC) {
-    return false;
-  }
-  try {
-    const raw = window.localStorage.getItem(GLASS_STORAGE_KEY);
-    // Default glass on for macOS on first run (no stored choice); once the user
-    // toggles it, "on"/"off" is persisted and respected.
-    return raw === null ? true : raw === "on";
-  } catch {
-    return true;
-  }
-}
-
-function loadStoredSurfaceAlpha(): number {
-  try {
-    // Guard the missing/empty case explicitly: Number(null) and Number("") are
-    // both 0 (finite), which would otherwise clamp first-time users to the most
-    // transparent setting instead of the frosted default.
-    const raw = window.localStorage.getItem(SURFACE_ALPHA_STORAGE_KEY);
-    if (raw !== null && raw.trim() !== "") {
-      const parsed = Number(raw);
-      if (Number.isFinite(parsed)) {
-        return Math.min(SURFACE_ALPHA_MAX, Math.max(SURFACE_ALPHA_MIN, parsed));
-      }
-    }
-  } catch {
-    // localStorage unavailable; use the default tint.
-  }
-  return SURFACE_ALPHA_DEFAULT;
 }
 
 function projectOf(row: PickerRow): string {
