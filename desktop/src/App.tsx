@@ -10,15 +10,20 @@ import {
   addSshProfileAtom,
   applyRunnerSettingsAtom,
   configureAtom,
+  configurePreflightAtom,
   deleteActiveProfileAtom,
   liveStateAtom,
+  preflightStateAtom,
   profilesAtom,
   reconnectAtom,
   reloadProfilesAtom,
+  requestPreflightSyncAtom,
   selectProfileAtom,
   startAtom,
+  syncedPreflightAtom,
 } from "./effect/atoms";
 import type { ConnectionStatus, LiveState, PickerRow } from "./effect/types";
+import type { PreflightState } from "./effect/Preflight";
 import {
   commandPrefix,
   focusCommandLabel,
@@ -27,14 +32,11 @@ import {
   loadProfileState,
   normalizeRunnerSettings,
   profileKindLabel,
-  profileSummary,
   runnerKeyForProfile,
   runnerSettingsEqual,
   runnerSettingsForProfile,
   runnerSummary,
   validateProfileDraft,
-  type AgentscanPreflight,
-  type DesktopProfile,
   type DesktopProfileConfig,
   type EnvironmentVariable,
   type RunnerSettings,
@@ -130,15 +132,6 @@ type DebugEntry = {
   detail: string;
 };
 
-// The dock's resolved preflight as held by the settings window, mirrored from the
-// "preflight" sync above (kind dropped). The settings card reproduces its tones from
-// `status` + `preflight`, guarded by `runnerKey` against its own active runner.
-type SyncedPreflight = {
-  status: LoadState["status"];
-  runnerKey: string;
-  preflight: AgentscanPreflight | null;
-};
-
 // Collapse a preference to the concrete theme in effect, resolving "system" from
 // the OS appearance. Used to pick per-theme logo variants.
 function resolveThemeMode(pref: ThemePreference): LogoTheme {
@@ -163,22 +156,10 @@ type PickerGroup = {
   rows: PickerRow[];
 };
 
-// Preflight-only resolved state. Picker rows + live connection status now live in
-// the LiveConnection service (liveStateAtom); this `state` only tracks the CLI
-// probe + profile list for the dock and the settings card.
-type LoadState =
-  | { status: "loading" }
-  | {
-      status: "ready";
-      // The runner config this resolved state describes (see runnerKeyForProfile).
-      // `state` lags the active runner by one async cycle on a switch or settings
-      // apply, so consumers compare this to the active runnerKey before trusting
-      // preflight for live decisions.
-      runnerKey: string;
-      profiles: DesktopProfile[];
-      preflight: AgentscanPreflight;
-    }
-  | { status: "failed"; message: string };
+// The dock's resolved preflight is owned by the Preflight Effect service (observed via
+// preflightStateAtom as PreflightState); the picker rows + live connection status live
+// in the LiveConnection service (liveStateAtom).
+const INITIAL_PREFLIGHT: PreflightState = { status: "loading" };
 
 type PickerState =
   | { status: "loading" }
@@ -191,13 +172,23 @@ type PickerActivation =
   | { status: "failed"; message: string };
 
 function App({ mode }: { mode: ShellMode }) {
-  const [state, setState] = useState<LoadState>({ status: "loading" });
-  // The settings window never runs its own preflight; instead it reuses the dock's
-  // resolved result, mirrored over the event bus (see the preflight sync below). This
-  // avoids a second `ssh … --version` for remote profiles (an extra round-trip and a
-  // possible duplicate passphrase prompt) every time Settings is opened, and keeps the
-  // card current even while the window is visible-but-unfocused. Always null in the dock.
-  const [syncedPreflight, setSyncedPreflight] = useState<SyncedPreflight | null>(null);
+  // The dock's resolved CLI preflight is owned by the Preflight Effect service. The dock
+  // observes preflightStateAtom and drives the probe via configurePreflight; the service
+  // also mirrors each result to the settings window over the shared prefs channel.
+  const preflightState = Result.getOrElse(
+    useAtomValue(preflightStateAtom),
+    () => INITIAL_PREFLIGHT,
+  );
+  const configurePreflight = useAtomSet(configurePreflightAtom);
+  // The settings window never runs its own preflight; it reuses the dock's resolved
+  // result, mirrored over the prefs channel into the service's `synced` ref (observed
+  // here). This avoids a second `ssh … --version` for remote profiles (an extra
+  // round-trip and a possible duplicate passphrase prompt) every time Settings is
+  // opened, and keeps the card current even while the window is visible-but-unfocused.
+  // Always null in the dock (which is the producer, not a consumer). requestPreflightSync
+  // asks the dock to re-emit on focus (emitTo has no replay).
+  const syncedPreflight = Result.getOrElse(useAtomValue(syncedPreflightAtom), () => null);
+  const requestPreflightSync = useAtomSet(requestPreflightSyncAtom);
   // Profile/settings persistence + cross-window adoption are owned by the Profiles
   // Effect service; this window observes its state via an atom and drives changes
   // through the action atoms below. The first synchronous render (before the runtime
@@ -328,91 +319,11 @@ function App({ mode }: { mode: ShellMode }) {
   const isSettingsDirtyRef = useRef(isSettingsDirty);
   isSettingsDirtyRef.current = isSettingsDirty;
 
-  useEffect(() => {
-    // Only the dock probes. It gates the live picker, so it must run preflight; the
-    // settings window reuses the dock's resolved result over the event bus instead of
-    // firing its own (which for SSH would be a second `ssh … --version` — an extra
-    // round-trip and a possible duplicate passphrase prompt). See the preflight sync.
-    if (mode !== "dock") {
-      return;
-    }
-    let cancelled = false;
-
-    async function loadShellState() {
-      // Keep any existing ready state so a profile/runner reload stays in the
-      // picker (gated to a "Switching profile…" state via activeReadyState)
-      // instead of dropping to the boot screen. Only the very first load, with
-      // no ready state yet, shows the boot "Connecting" screen.
-      setState((current) => (current.status === "ready" ? current : { status: "loading" }));
-
-      try {
-        const profileValidation = validateProfileDraft(
-          activeProfile,
-          activeProfile.name,
-          activeProfile.runner,
-          activeProfile.kind === "ssh" ? activeProfile.host : "",
-          activeProfile.kind === "ssh" ? activeProfile.clientTty : "",
-        );
-        if (profileValidation.errors.length > 0) {
-          const message = profileValidation.errors.join(" ");
-          setState({
-            status: "ready",
-            runnerKey,
-            profiles: profileState.profiles.map(profileSummary),
-            preflight: {
-              binary: commandPrefix(activeProfile),
-              ok: false,
-              version: null,
-              error: message,
-            },
-          });
-          return;
-        }
-
-        const [profiles, preflight] = await Promise.all([
-          Promise.resolve(profileState.profiles.map(profileSummary)),
-          runCommand<AgentscanPreflight>(
-            `${commandPrefix(activeProfile)} --version`,
-            () =>
-              invoke<AgentscanPreflight>("preflight_agentscan", {
-                settings: runnerSettings,
-              }),
-            appendDebugEntry,
-          ),
-        ]);
-
-        if (!cancelled) {
-          setState({ status: "ready", runnerKey, profiles, preflight });
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setState({
-            status: "failed",
-            message: errorMessage(error),
-          });
-        }
-      }
-    }
-
-    void loadShellState();
-
-    return () => {
-      cancelled = true;
-    };
-    // Keyed on runnerKey (the active runner's identity), NOT profileState/runnerSettings:
-    // editing or deleting an INACTIVE profile in Settings syncs a fresh profileState but
-    // leaves the active runner unchanged, so re-running here would needlessly re-probe
-    // (an extra ssh --version / passphrase prompt) for a target that didn't change.
-    // runnerKey is a stable string, so React skips this effect when its value is unchanged;
-    // activeProfile/runnerSettings are fully determined by it where the effect reads them.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runnerKey, mode]);
-
-  // Derived directly from the active profile (not from async preflight state) so
-  // a switch to a synchronously-invalid profile immediately gates the live
-  // picker off in the same render, rather than briefly subscribing the bad
-  // target before loadShellState resolves.
-  const activeProfileValid = useMemo(
+  // The active profile's own validation (its committed values, not the form drafts).
+  // Both the live-picker gate and the preflight target read it: a synchronously-invalid
+  // profile is gated off the picker in the same render (no flash of the bad target) and
+  // resolves to a synthetic failed preflight without an IPC probe.
+  const activeProfileValidation = useMemo(
     () =>
       validateProfileDraft(
         activeProfile,
@@ -420,13 +331,43 @@ function App({ mode }: { mode: ShellMode }) {
         activeProfile.runner,
         activeProfile.kind === "ssh" ? activeProfile.host : "",
         activeProfile.kind === "ssh" ? activeProfile.clientTty : "",
-      ).errors.length === 0,
+      ),
     [activeProfile],
   );
+  const activeProfileValid = activeProfileValidation.errors.length === 0;
+
+  // Drive the Preflight service to the active runner. Only the dock probes (it gates the
+  // live picker); the settings window reuses the dock's result over the prefs channel
+  // instead of firing its own (which for SSH would be a second `ssh … --version` — an
+  // extra round-trip and a possible duplicate passphrase prompt). The service supersedes
+  // an in-flight probe on the next target the way the old `cancelled` flag did, keeps the
+  // previous ready result during a switch, and mirrors each result to settings.
+  useEffect(() => {
+    if (mode !== "dock") {
+      return;
+    }
+    // Precompute the synchronous validation: an invalid profile short-circuits the probe
+    // to a synthetic failed preflight (binary label + joined messages), matching the old
+    // loadShellState invalid branch; null means "probe the CLI".
+    const invalid = activeProfileValid
+      ? null
+      : {
+          binary: commandPrefix(activeProfile),
+          error: activeProfileValidation.errors.join(" "),
+        };
+    configurePreflight({ settings: runnerSettings, runnerKey, invalid });
+    // Keyed on runnerKey (the active runner's identity), NOT profileState/runnerSettings:
+    // editing or deleting an INACTIVE profile syncs a fresh profileState but leaves the
+    // active runner unchanged, so re-running here would needlessly re-probe (an extra ssh
+    // --version / passphrase prompt) for a target that didn't change. activeProfile/
+    // runnerSettings/validation are fully determined by runnerKey where this reads them.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runnerKey, mode, configurePreflight]);
+
   const liveReady =
-    state.status === "ready" &&
-    state.runnerKey === runnerKey &&
-    state.preflight.ok &&
+    preflightState.status === "ready" &&
+    preflightState.runnerKey === runnerKey &&
+    preflightState.preflight.ok &&
     activeProfileValid;
 
   // Drive the LiveConnection service to the active target. The service owns the
@@ -503,26 +444,30 @@ function App({ mode }: { mode: ShellMode }) {
   const statusText = useMemo(() => {
     // Preflight from a not-yet-refreshed previous profile is untrustworthy, so
     // report "Checking" until the resolved state matches the active profile.
-    if (state.status === "loading" || (state.status === "ready" && state.runnerKey !== runnerKey)) {
+    if (
+      preflightState.status === "loading" ||
+      (preflightState.status === "ready" && preflightState.runnerKey !== runnerKey)
+    ) {
       return `Checking ${profileKindLabel(activeProfile)} CLI`;
     }
 
-    if (state.status === "failed") {
+    if (preflightState.status === "failed") {
       return "IPC failed";
     }
 
-    return state.preflight.ok
+    return preflightState.preflight.ok
       ? `${profileKindLabel(activeProfile)} CLI ready`
       : `${profileKindLabel(activeProfile)} CLI unavailable`;
-  }, [activeProfile, state]);
+  }, [activeProfile, preflightState, runnerKey]);
 
-  // `state` lags the active runner by one async cycle after a switch or settings
-  // apply (loadShellState resets it in an effect, after paint). Until the resolved
-  // state's runnerKey matches the active runner, its preflight/picker rows belong
-  // to the previous target, so treat that window as "loading" everywhere ready
-  // data is consumed.
+  // `preflightState` lags the active runner by one async cycle after a switch or settings
+  // apply (the service resolves the new probe asynchronously). Until the resolved state's
+  // runnerKey matches the active runner, its preflight/picker rows belong to the previous
+  // target, so treat that window as "loading" everywhere ready data is consumed.
   const activeReadyState =
-    state.status === "ready" && state.runnerKey === runnerKey ? state : null;
+    preflightState.status === "ready" && preflightState.runnerKey === runnerKey
+      ? preflightState
+      : null;
   // Sources offered in the footer quick-switch: the built-in local runner plus
   // enabled SSH profiles. A remote with no host yet can only resolve to a failed
   // source, so exclude it from quick-switch (it's still listed in Settings, where
@@ -829,45 +774,14 @@ function App({ mode }: { mode: ShellMode }) {
 
   // The dock and settings windows mirror shared prefs to each other (separate
   // webviews don't share React state). The label of the *other* window is the emit
-  // target.
+  // target. Preflight syncs are owned by the Preflight service (over the shared prefs
+  // channel); this remains the emit path for the not-yet-migrated appearance prefs.
   const otherWindowLabel = mode === "settings" ? "main" : "settings";
   const broadcastPrefs = (payload: PrefsSync) => {
     void emitTo(otherWindowLabel, PREFS_SYNC_EVENT, payload).catch(() => {
       // Best-effort: the other window still converges on its next reload.
     });
   };
-
-  // The preflight the dock currently has resolved, in the sync wire shape. Carries
-  // the dock's LoadState status plus the runnerKey it describes (which lags the active
-  // runner by one async cycle on a switch — exactly as the dock's own card guards);
-  // `preflight` is non-null only when ready. The dock pushes this to settings on every
-  // change and on request; the ref lets the []-dep listener answer a replay request
-  // without capturing stale state.
-  const dockPreflightSync: PrefsSync =
-    state.status === "ready"
-      ? {
-          kind: "preflight",
-          status: "ready",
-          runnerKey: state.runnerKey,
-          preflight: state.preflight,
-        }
-      : { kind: "preflight", status: state.status, runnerKey, preflight: null };
-  const dockPreflightSyncRef = useRef(dockPreflightSync);
-  dockPreflightSyncRef.current = dockPreflightSync;
-
-  // Mirror the dock's resolved preflight to the settings window whenever it changes,
-  // so the settings card reuses it instead of probing itself. Serializing on the JSON
-  // of the payload keeps this from re-emitting on unrelated re-renders (live row
-  // updates re-render the dock frequently). Settings ignores its own (mode-gated).
-  const dockPreflightSyncKey = JSON.stringify(dockPreflightSync);
-  useEffect(() => {
-    if (mode !== "dock") {
-      return;
-    }
-    broadcastPrefs(dockPreflightSync);
-    // dockPreflightSync is recomputed each render; gate on its stable serialization.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, dockPreflightSyncKey]);
 
   // Open the settings window (created hidden at launch, kept warm). The dock no
   // longer renders settings itself.
@@ -905,7 +819,9 @@ function App({ mode }: { mode: ShellMode }) {
 
   // Apply prefs changed in the other window. The listener only sets state — the
   // existing theme/glass/orientation/profile effects then apply it — and never
-  // re-broadcasts, so window A -> B -> A can't loop.
+  // re-broadcasts, so window A -> B -> A can't loop. Preflight syncs (preflight /
+  // preflight-request) are consumed by the Preflight service over the same channel
+  // (PrefsBridge installs its own listener), so they aren't handled here.
   useEffect(() => {
     let disposed = false;
     let unlisten: UnlistenFn | null = null;
@@ -944,24 +860,6 @@ function App({ mode }: { mode: ShellMode }) {
           return;
         }
         reloadProfiles();
-      } else if (payload.kind === "preflight") {
-        // Settings adopts the dock's resolved preflight (keyed by the runnerKey it
-        // describes). The card guards on runnerKey === its own active runnerKey, so a
-        // result that arrives mid-switch (for the previous source) reads as "Checking"
-        // until the matching one lands. The dock ignores this (it's the producer).
-        if (mode === "settings") {
-          setSyncedPreflight({
-            status: payload.status,
-            runnerKey: payload.runnerKey,
-            preflight: payload.preflight,
-          });
-        }
-      } else if (payload.kind === "preflight-request") {
-        // The dock answers a settings-side replay request with its current preflight.
-        // Read through a ref so this []-dep listener never captures a stale state.
-        if (mode === "dock") {
-          broadcastPrefs(dockPreflightSyncRef.current);
-        }
       }
     }).then((fn) => {
       if (disposed) {
@@ -1004,11 +902,11 @@ function App({ mode }: { mode: ShellMode }) {
           reloadProfiles();
         }
         // Preflight has no localStorage to re-read and emitTo has no replay, so ask the
-        // dock to re-emit its current result. Covers a preflight broadcast missed while
-        // this window was hidden/unfocused (it isn't subscribed to the live picker, so
-        // it can't recompute the result itself) — fixing a card stuck on "Checking"
-        // after a dock-side source switch this window didn't see.
-        broadcastPrefs({ kind: "preflight-request" });
+        // dock (via the Preflight service) to re-emit its current result. Covers a
+        // preflight broadcast missed while this window was hidden/unfocused (it isn't
+        // subscribed to the live picker, so it can't recompute the result itself) —
+        // fixing a card stuck on "Checking" after a dock-side source switch it didn't see.
+        requestPreflightSync();
       })
       .then((fn) => {
         if (disposed) {
@@ -1021,7 +919,7 @@ function App({ mode }: { mode: ShellMode }) {
       disposed = true;
       unlisten?.();
     };
-  }, [mode, reloadProfiles]);
+  }, [mode, reloadProfiles, requestPreflightSync]);
 
   // The React listener drops dock-side syncs while this window is dirty, and the focus-
   // reconcile only runs on a later focus — so a change skipped mid-edit would linger
@@ -1403,14 +1301,16 @@ function App({ mode }: { mode: ShellMode }) {
   // path. A stale ready state from a profile still switching (runnerKey mismatch) is
   // left to the picker's "Switching…" view, not treated as an error.
   const dockPreflightUnusable =
-    state.status === "ready" && state.runnerKey === runnerKey && !state.preflight.ok;
-  if (mode === "dock" && (state.status !== "ready" || dockPreflightUnusable)) {
-    const probing = state.status === "loading";
+    preflightState.status === "ready" &&
+    preflightState.runnerKey === runnerKey &&
+    !preflightState.preflight.ok;
+  if (mode === "dock" && (preflightState.status !== "ready" || dockPreflightUnusable)) {
+    const probing = preflightState.status === "loading";
     const detail =
-      state.status === "failed"
-        ? state.message
-        : state.status === "ready"
-          ? (state.preflight.error ?? `${profileKindLabel(activeProfile)} CLI unavailable`)
+      preflightState.status === "failed"
+        ? preflightState.message
+        : preflightState.status === "ready"
+          ? (preflightState.preflight.error ?? `${profileKindLabel(activeProfile)} CLI unavailable`)
           : "Waiting for the daemon…";
     return (
       // Recovery UI renders in the live orientation: a centered column in the vertical
@@ -1438,7 +1338,7 @@ function App({ mode }: { mode: ShellMode }) {
     // The profile list comes from profileState (the live source of truth) so
     // add/delete/switch are reflected immediately. The settings window never runs
     // its own preflight (which for SSH would be a duplicate `ssh … --version`); it
-    // reuses the dock's, mirrored over the event bus into `syncedPreflight`. That
+    // reuses the dock's, mirrored by the Preflight service into `syncedPreflight`. That
     // result is only trusted when its runnerKey matches this window's active source;
     // otherwise it describes the previous one mid-switch and reads as "Checking" until
     // the dock re-probes and pushes the matching one (or a focus-time replay request
@@ -1834,12 +1734,6 @@ function App({ mode }: { mode: ShellMode }) {
         </div>
       </main>
     );
-  }
-
-  // Unreachable: the guards above return for every not-ready picker case. This
-  // narrows `state` to "ready" so the picker can read state.preflight/profiles.
-  if (state.status !== "ready") {
-    return null;
   }
 
   return (
