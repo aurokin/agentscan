@@ -64,6 +64,13 @@ process for live state. Snapshot frames trigger a picker-row refresh through
 `agentscan hotkeys --format json`, preserving the shared CLI picker contract
 instead of reimplementing key assignment or display shaping in desktop code.
 
+The subscribe-frame contract is intentionally **tolerant of additive frame
+types**: a frame whose `type` is unknown to the client is ignored (a no-op), so a
+newer daemon can introduce frame types without breaking the live view on an older
+desktop build. Only a *known* `type` with a malformed payload, or a line that is
+not valid JSON, is a protocol error that tears the subscription down. Clients
+should follow the same rule rather than adding a dedicated handler per frame type.
+
 When the subscription exits unexpectedly, the UI keeps the last successful
 snapshot visible while reconnecting and uses:
 

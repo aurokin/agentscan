@@ -162,19 +162,43 @@ struct LivePickerSupervisor {
     worker: Option<JoinHandle<()>>,
 }
 
+// Frames the desktop consumes from `agentscan subscribe --format json`. The
+// contract is intentionally **tolerant of additive frame types**: a frame whose
+// `type` is not one of the known variants deserializes to `Unknown` and is ignored
+// (AUR-457), so a newer daemon can introduce frame types without breaking the live
+// view on an older desktop build. A *known* type with a malformed payload, or a
+// line that isn't valid JSON, is still a real protocol error and tears the
+// subscription down — only brand-new `type` strings are absorbed.
 #[derive(Clone, Debug, PartialEq, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum SubscribeFrame {
-    Connecting { message: String },
-    Snapshot { snapshot: serde_json::Value },
-    Offline { message: String, retrying: bool },
-    Shutdown { message: String },
-    Fatal { message: String },
+    Connecting {
+        message: String,
+    },
+    Snapshot {
+        snapshot: serde_json::Value,
+    },
+    Offline {
+        message: String,
+        retrying: bool,
+    },
+    Shutdown {
+        message: String,
+    },
+    Fatal {
+        message: String,
+    },
     // Idle heartbeat the daemon emits ~1/s so it can detect a closed consumer
     // while the stream is otherwise silent. It carries no state, so the live
     // worker ignores it (without it, every heartbeat would fail to parse and
     // tear down the subscription with a spurious "Offline, retrying").
     Keepalive,
+    // Any unrecognized `type`. `#[serde(other)]` matches on the tag alone and
+    // discards the payload, so forward/unknown frames are a no-op instead of a
+    // parse error. This generalizes the Keepalive fix to the whole class: we no
+    // longer need a dedicated variant per future frame type.
+    #[serde(other)]
+    Unknown,
 }
 
 // Wraps every emitted event with the epoch of the subscription that produced
@@ -1233,8 +1257,9 @@ fn live_event_from_subscribe_frame(
             },
             LivePickerWorkerExit::Fatal,
         ))),
-        // Heartbeat: no picker-visible state, so emit nothing and keep reading.
-        SubscribeFrame::Keepalive => Ok(None),
+        // Heartbeat or any unrecognized (forward-compat) frame type: no
+        // picker-visible state, so emit nothing and keep reading the stream.
+        SubscribeFrame::Keepalive | SubscribeFrame::Unknown => Ok(None),
     }
 }
 
@@ -2248,6 +2273,48 @@ mod tests {
         .expect("keepalive maps cleanly");
 
         assert!(event.is_none(), "keepalive must not emit a picker event");
+    }
+
+    #[test]
+    fn subscribe_unknown_frame_type_parses_to_unknown_variant() {
+        // AUR-457: a frame whose `type` is not a known variant must be absorbed as
+        // Unknown (forward-compat) rather than failing to parse, even with a payload.
+        let frame: SubscribeFrame = serde_json::from_str(r#"{"type":"future_thing","x":1}"#)
+            .expect("unknown frame type parses to Unknown");
+
+        assert_eq!(frame, SubscribeFrame::Unknown);
+    }
+
+    #[test]
+    fn unknown_frame_maps_to_no_event() {
+        // Unknown is a no-op for the picker (same as Keepalive): no event, keep reading.
+        let stop = AtomicBool::new(false);
+        let event = live_event_from_subscribe_frame(
+            &AgentscanRunner::Local(LocalRunnerSettings {
+                binary_path: None,
+                env: Vec::new(),
+            }),
+            SubscribeFrame::Unknown,
+            &stop,
+        )
+        .expect("unknown maps cleanly");
+
+        assert!(
+            event.is_none(),
+            "unknown frame must not emit a picker event"
+        );
+    }
+
+    #[test]
+    fn malformed_known_frame_still_errors() {
+        // A *known* type with a missing/bad payload is a real protocol violation and
+        // must still error (→ teardown + reconnect), not be swallowed as Unknown.
+        assert!(
+            serde_json::from_str::<SubscribeFrame>(r#"{"type":"snapshot"}"#).is_err(),
+            "snapshot missing its `snapshot` field must error"
+        );
+        // Non-JSON is likewise a hard error.
+        assert!(serde_json::from_str::<SubscribeFrame>("not json").is_err());
     }
 
     #[test]
