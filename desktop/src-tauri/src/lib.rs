@@ -258,6 +258,12 @@ fn load_picker_rows(settings: Option<DesktopRunnerSettings>) -> Result<Vec<Picke
 }
 
 #[tauri::command]
+fn poll_daemon_status(settings: Option<DesktopRunnerSettings>) -> Result<DaemonPollResult, String> {
+    let runner = AgentscanRunner::from_settings(settings);
+    poll_daemon_status_with_runner(&runner)
+}
+
+#[tauri::command]
 fn focus_picker_row(
     pane_id: String,
     settings: Option<DesktopRunnerSettings>,
@@ -1278,6 +1284,37 @@ fn load_daemon_status(runner: &AgentscanRunner) -> Result<serde_json::Value, Str
     })
 }
 
+// Reachability result for the AUR-518 latch poll: whether a daemon is present
+// enough to escalate to a full subscribe re-arm.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DaemonPollResult {
+    reachable: bool,
+}
+
+// The only confident "no daemon" signal is daemon_state == "not_running" (the core
+// emits that with exit 0 — see daemon/lifecycle.rs). Any live state
+// (ready/initializing/startup_failed/closing) or an unexpected/missing field counts
+// as reachable, so we escalate to a full subscribe rather than silently cheap-poll
+// forever; a command that failed outright (incompatible/busy/SSH/timeout) never
+// reaches here — load_daemon_status returns Err for those.
+fn daemon_status_reachable(status: &serde_json::Value) -> bool {
+    status
+        .get("daemon_state")
+        .and_then(serde_json::Value::as_str)
+        != Some("not_running")
+}
+
+// Cheap latch poll: run `agentscan daemon status --format json` and report whether a
+// daemon is reachable. An Err (incompatible/busy/SSH/timeout) propagates so the
+// frontend escalates to a full subscribe, matching the pre-AUR-518 behavior.
+fn poll_daemon_status_with_runner(runner: &AgentscanRunner) -> Result<DaemonPollResult, String> {
+    let status = load_daemon_status(runner)?;
+    Ok(DaemonPollResult {
+        reachable: daemon_status_reachable(&status),
+    })
+}
+
 // Render collected stderr bytes into a compact message, dropping blank lines.
 // Takes already-buffered bytes (from a pipe collector) so partial diagnostics
 // survive even when the pipe never reaches EOF because a descendant holds it.
@@ -1789,6 +1826,7 @@ pub fn run() {
             place_bar_window,
             place_picker_window,
             place_settings_window,
+            poll_daemon_status,
             preflight_agentscan,
             set_window_decorations,
             set_window_glass,
@@ -1835,6 +1873,26 @@ mod tests {
             hotkeys_args(),
             vec!["hotkeys", "--format", "json", "--no-auto-start"]
         );
+    }
+
+    #[test]
+    fn daemon_status_reachable_only_false_for_not_running() {
+        // The single confident "no daemon" signal — keep cheap-polling, don't re-arm.
+        assert!(!daemon_status_reachable(
+            &serde_json::json!({ "daemon_state": "not_running" })
+        ));
+        // Any live state is reachable — escalate to a full subscribe re-arm.
+        for state in ["ready", "initializing", "startup_failed", "closing"] {
+            assert!(daemon_status_reachable(
+                &serde_json::json!({ "daemon_state": state })
+            ));
+        }
+        // Missing or non-string field: safe-escalate (treat as reachable) rather than
+        // wedge the latch poll on an unexpected payload.
+        assert!(daemon_status_reachable(&serde_json::json!({})));
+        assert!(daemon_status_reachable(
+            &serde_json::json!({ "daemon_state": 7 })
+        ));
     }
 
     #[test]

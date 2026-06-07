@@ -317,7 +317,23 @@ export class LiveConnection extends Effect.Service<LiveConnection>()(
                   rows: [],
                   rowsRunnerKey: null,
                 });
-                yield* Effect.sleep(backoff.noDaemon);
+                // AUR-518: while no daemon is reachable, cheap-poll `agentscan daemon
+                // status` instead of re-arming a full subscribe each tick (which over SSH
+                // spins up a whole remote subscribe process). Sleep first — the subscribe
+                // that just ended already told us there's no daemon — then probe. Keep
+                // polling only while the probe is confident there's no daemon; a reachable
+                // daemon, or a probe that can't tell (error → escalate, today's behavior),
+                // breaks out to re-arm a full subscribe that then connects (→ online) or
+                // surfaces the real terminal. The sleep is the throttle: a constant-false
+                // stub under zero backoff would hot-spin, so tests drive false→true.
+                let reachable = false;
+                while (!reachable) {
+                  yield* Effect.sleep(backoff.noDaemon);
+                  reachable = yield* tauri.pollDaemonStatus(settings).pipe(
+                    Effect.map((result) => result.reachable),
+                    Effect.catchAll(() => Effect.succeed(true)),
+                  );
+                }
               } else {
                 yield* SubscriptionRef.update(
                   stateRef,

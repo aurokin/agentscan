@@ -51,6 +51,13 @@ export class TauriIpc extends Effect.Service<TauriIpc>()("desktop/TauriIpc", {
     loadPickerRows: (settings: DesktopRunnerSettings) =>
       invokeEffect<PickerRow[]>("load_picker_rows", { settings }),
 
+    // Cheap, one-shot `agentscan daemon status --format json` probe used to detect a
+    // daemon while latch-polling, instead of re-arming a full subscribe each tick
+    // (expensive over SSH). `reachable` is true unless the daemon is confidently
+    // absent (daemon_state == "not_running"); a probe error rejects as IpcError.
+    pollDaemonStatus: (settings: DesktopRunnerSettings) =>
+      invokeEffect<{ reachable: boolean }>("poll_daemon_status", { settings }),
+
     // A scoped queue of live envelopes. Awaiting this registers the Tauri listener
     // BEFORE the caller starts a subscription (so no early frame is missed), and
     // unregisters it when the scope closes.
