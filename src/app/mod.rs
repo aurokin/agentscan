@@ -17,6 +17,7 @@ mod cli;
 mod commands;
 mod config;
 mod daemon;
+mod doctor;
 mod ipc;
 mod live;
 mod model;

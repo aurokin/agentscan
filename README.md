@@ -203,6 +203,7 @@ Operational commands:
 - `agentscan`
 - `agentscan scan`
 - `agentscan list`
+- `agentscan doctor`
 - `agentscan inspect <pane_id>`
 - `agentscan focus <pane_id>`
 - `agentscan daemon start`
@@ -221,6 +222,17 @@ Operational commands:
 - `agentscan tmux clear-metadata`
 
 `agentscan` without a subcommand runs the default daemon-backed `list` flow.
+
+When discovery, updates, or focus misbehave, start with `agentscan doctor`. It is
+read-only — it never mutates tmux or daemon state and never auto-starts a daemon —
+and bundles the binary version and macOS trust, config validity, tmux
+reachability, daemon health, a discovery summary, and the picker contract into one
+checklist with `ok`/`warn`/`fail`/`info` statuses. It always exits 0 (status lives
+in the report). Use `agentscan doctor --format json` (versioned `schema_version`)
+for support tooling, `--refresh` to also take a direct tmux snapshot and compare it
+against daemon state, and `--events` to include the recent daemon event ring in
+daemon health.
+
 For local ad-hoc macOS builds or debugging detached-start failures, run the
 daemon in the foreground:
 
@@ -297,6 +309,7 @@ Use:
 - `agentscan list --all --format json` if the consumer previously depended on interactive `--all`
 - `agentscan snapshot --format json` only when the consumer intentionally needs the raw snapshot envelope
 - `agentscan subscribe --format json` for live JSON Lines daemon events
+- `agentscan doctor --format json` for a versioned environment, daemon, and discovery diagnostics report
 - `agentscan daemon status --format json` for daemon lifecycle and readiness checks
 - `agentscan providers --format json` for supported provider names, display
   markers for all icon modes, marker codepoints, and aliases
