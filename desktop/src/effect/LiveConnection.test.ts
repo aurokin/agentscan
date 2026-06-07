@@ -59,6 +59,7 @@ describe("LiveConnection", () => {
           Queue.offer(startCalls, { epoch, autoStart }).pipe(Effect.asVoid),
         stopLivePicker: () => Effect.void,
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
+        pollDaemonStatus: () => Effect.succeed({ reachable: true }),
         liveEvents: Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
       });
 
@@ -142,6 +143,7 @@ describe("LiveConnection", () => {
           Queue.offer(startCalls, { epoch, autoStart }).pipe(Effect.asVoid),
         stopLivePicker: () => Effect.void,
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
+        pollDaemonStatus: () => Effect.succeed({ reachable: true }),
         liveEvents: Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
       });
 
@@ -206,6 +208,7 @@ describe("LiveConnection", () => {
           Effect.fail(new IpcError({ op: "start_live_picker", message: "boom: command failed" })),
         stopLivePicker: () => Effect.void,
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
+        pollDaemonStatus: () => Effect.succeed({ reachable: true }),
         liveEvents: Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
       });
 
@@ -250,6 +253,7 @@ describe("LiveConnection", () => {
         startLivePicker: ({ epoch }) => Queue.offer(startCalls, { epoch }).pipe(Effect.asVoid),
         stopLivePicker: () => Effect.void,
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
+        pollDaemonStatus: () => Effect.succeed({ reachable: true }),
         liveEvents: Effect.flatMap(Ref.getAndSet(failNextListen, false), (shouldFail) =>
           shouldFail
             ? Effect.fail(new IpcError({ op: "listen", message: "listener boom" }))
@@ -309,6 +313,7 @@ describe("LiveConnection", () => {
           Queue.offer(startCalls, { epoch, autoStart }).pipe(Effect.asVoid),
         stopLivePicker: () => Effect.void,
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
+        pollDaemonStatus: () => Effect.succeed({ reachable: true }),
         liveEvents: Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
       });
 
@@ -364,6 +369,7 @@ describe("LiveConnection", () => {
           Queue.offer(startCalls, { epoch, autoStart }).pipe(Effect.asVoid),
         stopLivePicker: () => Effect.void,
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
+        pollDaemonStatus: () => Effect.succeed({ reachable: true }),
         liveEvents: Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
       });
 
@@ -426,6 +432,131 @@ describe("LiveConnection", () => {
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
 
+  it("cheap-polls daemon status and only re-arms a full subscribe once a daemon appears", () =>
+    Effect.gen(function* () {
+      // AUR-518: while no daemon is reachable, the service must NOT re-arm a full
+      // subscribe each backoff tick (expensive over SSH). Instead it cheap-polls
+      // `daemon status`; the full subscribe is re-armed only once the probe reports a
+      // daemon. Here the probe says "no daemon" twice, then "daemon up" — exactly one
+      // full re-arm should land, after the third poll, never per tick.
+      const startCalls = yield* Queue.unbounded<{ epoch: number; autoStart: boolean }>();
+      const events = yield* Queue.unbounded<LivePickerEnvelope>();
+      const pollCount = yield* Ref.make(0);
+      const MockTauri = Layer.succeed(TauriIpc, {
+        startLivePicker: ({ epoch, autoStart }) =>
+          Queue.offer(startCalls, { epoch, autoStart }).pipe(Effect.asVoid),
+        stopLivePicker: () => Effect.void,
+        loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
+        // Absent for the first two probes, reachable on the third.
+        pollDaemonStatus: () =>
+          Ref.updateAndGet(pollCount, (n) => n + 1).pipe(
+            Effect.map((n) => ({ reachable: n >= 3 })),
+          ),
+        liveEvents: Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+      });
+
+      const program = Effect.gen(function* () {
+        const lc = yield* LiveConnection;
+        const awaitStatus = (status: ConnectionStatus["status"]) =>
+          lc.state.changes.pipe(
+            Stream.filter((state) => state.connection.status === status),
+            Stream.runHead,
+            Effect.flatMap(
+              Option.match({
+                onNone: () => Effect.die("state stream ended early"),
+                onSome: Effect.succeed,
+              }),
+            ),
+          );
+
+        // Latch (autoStart:false), then a NoDaemon latch-miss drops us into the poll.
+        yield* lc.configure({ settings: SETTINGS, runnerKey: "k1", enabled: true });
+        const first = yield* Queue.take(startCalls);
+        expect(first.autoStart).toBe(false);
+        yield* Queue.offer(events, {
+          epoch: first.epoch,
+          kind: "offline",
+          message: "daemon auto-start is disabled: socket is missing",
+          retrying: false,
+          diagnostics: null,
+        } as LivePickerEnvelope);
+        yield* awaitStatus("noDaemon");
+
+        // The only re-arm lands after the probe finally reports a daemon (3rd poll),
+        // latch-only — not one full subscribe per backoff tick.
+        const reArm = yield* Queue.take(startCalls);
+        expect(reArm.autoStart).toBe(false);
+        expect(reArm.epoch).toBeGreaterThan(first.epoch);
+        expect(yield* Ref.get(pollCount)).toBe(3);
+        expect(yield* Queue.size(startCalls)).toBe(0);
+      });
+
+      yield* program.pipe(
+        Effect.provide(
+          LiveConnection.DefaultWithoutDependencies.pipe(
+            Layer.provide(Layer.merge(MockTauri, EagerBackoff)),
+          ),
+        ),
+      );
+    }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
+
+  it("falls back to re-arming a full subscribe when the daemon-status probe fails", () =>
+    Effect.gen(function* () {
+      // AUR-518: a probe that can't tell (SSH/timeout/incompatible → IpcError) must not
+      // wedge the latch — it falls back to today's behavior and re-arms a full subscribe,
+      // which then surfaces the real terminal.
+      const startCalls = yield* Queue.unbounded<{ epoch: number; autoStart: boolean }>();
+      const events = yield* Queue.unbounded<LivePickerEnvelope>();
+      const MockTauri = Layer.succeed(TauriIpc, {
+        startLivePicker: ({ epoch, autoStart }) =>
+          Queue.offer(startCalls, { epoch, autoStart }).pipe(Effect.asVoid),
+        stopLivePicker: () => Effect.void,
+        loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
+        pollDaemonStatus: () =>
+          Effect.fail(new IpcError({ op: "poll_daemon_status", message: "ssh: connection refused" })),
+        liveEvents: Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+      });
+
+      const program = Effect.gen(function* () {
+        const lc = yield* LiveConnection;
+        const awaitStatus = (status: ConnectionStatus["status"]) =>
+          lc.state.changes.pipe(
+            Stream.filter((state) => state.connection.status === status),
+            Stream.runHead,
+            Effect.flatMap(
+              Option.match({
+                onNone: () => Effect.die("state stream ended early"),
+                onSome: Effect.succeed,
+              }),
+            ),
+          );
+
+        yield* lc.configure({ settings: SETTINGS, runnerKey: "k1", enabled: true });
+        const first = yield* Queue.take(startCalls);
+        yield* Queue.offer(events, {
+          epoch: first.epoch,
+          kind: "offline",
+          message: "daemon auto-start is disabled: socket is missing",
+          retrying: false,
+          diagnostics: null,
+        } as LivePickerEnvelope);
+        yield* awaitStatus("noDaemon");
+
+        // The failed probe escalates: a fresh latch-only re-arm still happens.
+        const reArm = yield* Queue.take(startCalls);
+        expect(reArm.autoStart).toBe(false);
+        expect(reArm.epoch).toBeGreaterThan(first.epoch);
+      });
+
+      yield* program.pipe(
+        Effect.provide(
+          LiveConnection.DefaultWithoutDependencies.pipe(
+            Layer.provide(Layer.merge(MockTauri, EagerBackoff)),
+          ),
+        ),
+      );
+    }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
+
   it("stops a worker whose start is interrupted by a switch (no orphaned subscription)", () =>
     Effect.gen(function* () {
       const startedEpochs = yield* Queue.unbounded<number>();
@@ -440,6 +571,7 @@ describe("LiveConnection", () => {
           Effect.zipRight(Queue.offer(startedEpochs, epoch), Deferred.await(releaseStart)),
         stopLivePicker: (epoch) => Queue.offer(stoppedEpochs, epoch).pipe(Effect.asVoid),
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
+        pollDaemonStatus: () => Effect.succeed({ reachable: true }),
         liveEvents: Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
       });
 
@@ -475,6 +607,7 @@ describe("LiveConnection", () => {
         startLivePicker: ({ epoch }) => Queue.offer(startCalls, { epoch }).pipe(Effect.asVoid),
         stopLivePicker: () => Effect.void,
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
+        pollDaemonStatus: () => Effect.succeed({ reachable: true }),
         liveEvents: Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
       });
 

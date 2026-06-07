@@ -299,7 +299,10 @@ Implications:
   drops self-heal inside the `agentscan subscribe` CLI, and any session-ending
   close — clean daemon loss or abnormal subscribe-child death alike — surfaces as a
   terminal frame the service re-arms with a fresh, latch-only epoch, so all
-  re-arm/backoff ownership sits in `LiveConnection`.
+  re-arm/backoff ownership sits in `LiveConnection`. While in `noDaemon`, the
+  service cheap-polls `agentscan daemon status --format json` (AUR-518) instead of
+  re-arming a full `subscribe` each backoff tick — expensive over SSH — and only
+  escalates to a full re-arm once a daemon is reachable (or the probe can't tell).
 - the machine that owns tmux also owns `agentscan` daemon lifecycle,
   classification, picker rows, hotkey actions, and focus actions
 - remote desktop support is SSH command execution around documented JSON/JSONL
