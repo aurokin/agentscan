@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+## 0.7.0 - 2026-06-07
+
+### Added
+
+- Added `agentscan doctor`, a read-only diagnostics command for version,
+  executable trust, config validity, tmux reachability, daemon health,
+  discovery drift, picker capacity, and recent daemon events. It supports text
+  output and a versioned JSON report, exits successfully with statuses encoded
+  in the report, and never auto-starts or mutates daemon/tmux state.
+
+### Changed
+
+- Simplified the desktop live-picker worker to a single subscribe attempt per
+  epoch, leaving reconnect ownership in the Effect `LiveConnection` service and
+  preserving latch-only daemon behavior across retries.
+- Reduced desktop no-daemon polling overhead by probing
+  `agentscan daemon status --format json` before re-arming a full live
+  subscription, which is especially important for SSH profiles.
+
+### Fixed
+
+- Made the desktop live worker forward-compatible with additive subscribe
+  frames by ignoring unknown frame types while still rejecting malformed known
+  frames.
+
 ## 0.6.1 - 2026-06-06
 
 ### Added
