@@ -69,12 +69,17 @@ Concretely, in the desktop client:
   threads an explicit `auto_start` flag from the frontend.
 - `subscribe_args(auto_start)` (`lib.rs:936`) appends `--no-auto-start` whenever
   `auto_start` is `false`.
-- `auto_start_for_attempt(requested, already_attempted)` (`lib.rs:947`) is
-  `requested && !already_attempted`: even when the user presses "Start
-  agentscan", only the worker's **first** subscribe attempt may auto-start; every
-  internal retry latches (`lib.rs:868`). A retry must never silently spawn a
-  daemon the user did not ask for, including across a retry loop the TypeScript
-  `LiveConnection` service cannot observe.
+- The live worker is **single-shot**: it runs one `subscribe` per epoch with the
+  `auto_start` it was handed, and never retries internally (AUR-517 removed the
+  in-worker retry loop and its `auto_start_for_attempt` guard). Reconnect is owned by
+  the layers that can observe it: the `agentscan subscribe` CLI self-recovers
+  mid-stream transient drops in its own loop, and on a clean daemon loss or an
+  abnormal subscribe-child death the worker emits a terminal frame that the
+  `LiveConnection` service re-arms — **always with a fresh epoch and
+  `autoStart: false`** (`first && target.autoStart`, `LiveConnection.ts`). So only the
+  *first* subscribe of an explicit "Start agentscan" can auto-start; every reconnect
+  latches. The latch-on-retry invariant therefore now lives in the TypeScript service,
+  not a Rust guard inside a worker loop the service could not observe.
 - The companion picker-row fetch latches too: `hotkeys_args()` (`lib.rs:659`)
   **always** includes `--no-auto-start`. The worker re-derives rows by running
   `agentscan hotkeys` on every subscribe snapshot; because `hotkeys` is itself a

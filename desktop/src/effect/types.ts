@@ -41,7 +41,6 @@ export type LiveSnapshotSummary = {
 // backend). The frontend folds these into ConnectionStatus + rows.
 export type LivePickerEvent =
   | { kind: "connecting"; message: string }
-  | { kind: "reconnecting"; message: string; diagnostics: unknown | null }
   | { kind: "rows"; rows: PickerRow[]; snapshot: LiveSnapshotSummary }
   | { kind: "offline"; message: string; retrying: boolean; diagnostics: unknown | null }
   | { kind: "shutdown"; message: string }

@@ -125,6 +125,76 @@ describe("LiveConnection", () => {
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
 
+  it("re-arms latch-only on an abnormal subscribe-child death (offline retrying:false, non-noDaemon)", () =>
+    Effect.gen(function* () {
+      // AUR-517: the Rust worker is single-shot, so an abnormal subscribe-child death
+      // (spawn/IO/protocol failure or a bare exit) arrives as a terminal Offline with
+      // retrying:false whose message is NOT "auto-start is disabled". This service must
+      // classify it Recoverable and re-arm the subscription with a FRESH epoch, latch-only
+      // (autoStart:false), surfacing "reconnecting" — never noDaemon and never auto-start.
+      // This is where the latch-on-retry invariant now lives (it used to be the Rust
+      // auto_start_for_attempt guard inside the worker's own loop).
+      const startCalls = yield* Queue.unbounded<{ epoch: number; autoStart: boolean }>();
+      const events = yield* Queue.unbounded<LivePickerEnvelope>();
+
+      const MockTauri = Layer.succeed(TauriIpc, {
+        startLivePicker: ({ epoch, autoStart }) =>
+          Queue.offer(startCalls, { epoch, autoStart }).pipe(Effect.asVoid),
+        stopLivePicker: () => Effect.void,
+        loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
+        liveEvents: Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+      });
+
+      const program = Effect.gen(function* () {
+        const lc = yield* LiveConnection;
+
+        const emit = (epoch: number, event: LivePickerEvent) =>
+          Queue.offer(events, { ...event, epoch } as LivePickerEnvelope);
+
+        const awaitStatus = (status: ConnectionStatus["status"]) =>
+          lc.state.changes.pipe(
+            Stream.filter((state) => state.connection.status === status),
+            Stream.runHead,
+            Effect.flatMap(
+              Option.match({
+                onNone: () => Effect.die("state stream ended early"),
+                onSome: Effect.succeed,
+              }),
+            ),
+          );
+
+        // Latch onto a daemon and come online.
+        yield* lc.configure({ settings: SETTINGS, runnerKey: "k1", enabled: true });
+        const first = yield* Queue.take(startCalls);
+        expect(first.autoStart).toBe(false);
+        yield* emit(first.epoch, { kind: "rows", rows: [ROW], snapshot: SNAPSHOT });
+        yield* awaitStatus("online");
+
+        // Abnormal child death: terminal offline, retrying:false, NOT a no-daemon message.
+        yield* emit(first.epoch, {
+          kind: "offline",
+          message: "Unable to read agentscan subscribe output: broken pipe",
+          retrying: false,
+          diagnostics: null,
+        });
+
+        // Recovery: a re-arm on a fresh epoch, latch-only, surfacing "reconnecting".
+        const second = yield* Queue.take(startCalls);
+        expect(second.autoStart).toBe(false);
+        expect(second.epoch).toBeGreaterThan(first.epoch);
+        const reconnecting = yield* awaitStatus("reconnecting");
+        expect(reconnecting.connection.status).toBe("reconnecting");
+      });
+
+      yield* program.pipe(
+        Effect.provide(
+          LiveConnection.DefaultWithoutDependencies.pipe(
+            Layer.provide(Layer.merge(MockTauri, StableBackoff)),
+          ),
+        ),
+      );
+    }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
+
   it("surfaces a worker-install failure as fatal instead of looping forever", () =>
     Effect.gen(function* () {
       // startLivePicker rejects (worker could not be installed at all). With zero
