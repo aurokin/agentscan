@@ -294,7 +294,12 @@ Implications:
   `auto_start: true`. This also makes app launch latch-only (no auto-start at
   startup). The policy and its connection state machine live in the Effect
   `LiveConnection` service (`desktop/src/effect/`), which is the single owner of
-  the live connection lifecycle the dock observes.
+  the live connection lifecycle the dock observes. The Rust live worker is
+  single-shot per epoch (no in-worker retry loop, AUR-517): transient mid-stream
+  drops self-heal inside the `agentscan subscribe` CLI, and any session-ending
+  close — clean daemon loss or abnormal subscribe-child death alike — surfaces as a
+  terminal frame the service re-arms with a fresh, latch-only epoch, so all
+  re-arm/backoff ownership sits in `LiveConnection`.
 - the machine that owns tmux also owns `agentscan` daemon lifecycle,
   classification, picker rows, hotkey actions, and focus actions
 - remote desktop support is SSH command execution around documented JSON/JSONL

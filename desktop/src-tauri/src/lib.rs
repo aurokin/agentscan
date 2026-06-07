@@ -18,7 +18,6 @@ const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(2);
 const HOTKEYS_TIMEOUT: Duration = Duration::from_secs(5);
 const FOCUS_TIMEOUT: Duration = Duration::from_secs(5);
 const DAEMON_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
-const LIVE_RECONNECT_DELAY: Duration = Duration::from_secs(1);
 // Grace period to let a subscribe child exit on its own after its stdout signals
 // termination (EOF or a terminal frame) before we kill it, so a child that
 // lingers can't park the worker thread on an unbounded wait().
@@ -194,10 +193,6 @@ struct LivePickerEnvelope {
 enum LivePickerEvent {
     Connecting {
         message: String,
-    },
-    Reconnecting {
-        message: String,
-        diagnostics: Option<serde_json::Value>,
     },
     Rows {
         rows: Vec<PickerRow>,
@@ -890,52 +885,23 @@ fn run_live_picker_worker(
     epoch: u64,
     auto_start: bool,
 ) {
-    let mut has_connected = false;
-    // Only the first subscribe attempt of this worker may honor an explicit
-    // "Start agentscan" (auto_start=true). Every internal retry latches
-    // (--no-auto-start) so the desktop's latch-only recovery policy holds even
-    // across this loop, which the TS LiveConnection service can't see — a retry
-    // must never silently spawn a daemon the user didn't ask for.
-    let mut attempted = false;
-
-    while !stop.load(Ordering::SeqCst) {
-        if has_connected {
-            emit_live_picker_event(
-                &app,
-                epoch,
-                LivePickerEvent::Reconnecting {
-                    message: "Reconnecting to agentscan subscribe".to_owned(),
-                    diagnostics: load_daemon_status(&runner).ok(),
-                },
-            );
-        } else {
-            emit_live_picker_event(
-                &app,
-                epoch,
-                LivePickerEvent::Connecting {
-                    message: "Connecting to agentscan subscribe".to_owned(),
-                },
-            );
-        }
-
-        let attempt_auto_start = auto_start_for_attempt(auto_start, attempted);
-        attempted = true;
-        match run_live_picker_subscription(
-            &app,
-            &runner,
-            &stop,
-            &child_slot,
-            epoch,
-            attempt_auto_start,
-        ) {
-            LivePickerWorkerExit::Stopped | LivePickerWorkerExit::Shutdown => break,
-            LivePickerWorkerExit::Fatal => break,
-            LivePickerWorkerExit::Retry => {
-                has_connected = true;
-                sleep_until_retry_or_stop(&stop);
-            }
-        }
-    }
+    // Single-shot: one subscribe attempt, no in-worker retry loop. Reconnect is owned by
+    // the layers that can see it. The `agentscan subscribe` CLI self-recovers mid-stream
+    // transient drops in its own loop (frames keep streaming on the live child). On a clean
+    // daemon loss the CLI emits a terminal frame (Shutdown / Offline retrying:false / Fatal);
+    // on an abnormal subscribe-child death (spawn/IO/protocol failure) this worker emits a
+    // terminal Offline{retrying:false}. Either way the TS LiveConnection service re-arms with
+    // a FRESH epoch and autoStart=false (`first && target.autoStart`, LiveConnection.ts), so
+    // the desktop's latch-only recovery holds without this worker advancing the epoch or
+    // auto-starting on its own. The recoverable re-arm backoff (~1s) lives in TS, matching
+    // the old in-worker LIVE_RECONNECT_DELAY. See AUR-517 and the latch-only ADR.
+    //
+    // No connecting/reconnecting frame is emitted here: LiveConnection sets that status
+    // itself before invoking start_live_picker (connecting on the first attach, reconnecting
+    // on a re-arm), and the `agentscan subscribe` CLI emits its own per-connect `connecting`
+    // frame (forwarded in handle_subscribe_frame). An emit here would only duplicate the
+    // former and be overwritten by the latter.
+    run_live_picker_subscription(&app, &runner, &stop, &child_slot, epoch, auto_start);
 
     kill_live_picker_child(&child_slot);
     let _ = live_picker_supervisor().lock().map(|mut supervisor| {
@@ -953,7 +919,6 @@ enum LivePickerWorkerExit {
     Retry,
     Shutdown,
     Fatal,
-    Stopped,
 }
 
 // Subscribe argv for the live worker. `--no-auto-start` is appended when the
@@ -967,13 +932,6 @@ fn subscribe_args(auto_start: bool) -> Vec<&'static str> {
     args
 }
 
-// Whether a given worker subscribe attempt may auto-start the daemon: only the
-// first attempt, and only when an explicit "Start agentscan" requested it. All
-// internal retries latch, so recovery never spawns a daemon on its own.
-fn auto_start_for_attempt(requested: bool, already_attempted: bool) -> bool {
-    requested && !already_attempted
-}
-
 fn run_live_picker_subscription(
     app: &tauri::AppHandle,
     runner: &AgentscanRunner,
@@ -981,7 +939,13 @@ fn run_live_picker_subscription(
     child_slot: &Arc<Mutex<Option<Child>>>,
     epoch: u64,
     auto_start: bool,
-) -> LivePickerWorkerExit {
+) {
+    // Single-shot per AUR-517: this runs ONE subscribe. Any abnormal end of the child
+    // (spawn/IO/protocol failure, or a bare exit with no terminal frame) is reported as a
+    // terminal Offline{retrying:false} so the TS LiveConnection service re-arms with a fresh
+    // epoch (latch-only). Only frames that keep the live child streaming — the daemon's own
+    // Offline{retrying:true} self-heal and a transient row-fetch miss, both in
+    // handle_subscribe_frame — stay retrying:true.
     let mut command = match agentscan_command(runner, &subscribe_args(auto_start)) {
         Ok(command) => command,
         Err(error) => {
@@ -994,7 +958,7 @@ fn run_live_picker_subscription(
                     diagnostics: None,
                 },
             );
-            return LivePickerWorkerExit::Fatal;
+            return;
         }
     };
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -1012,11 +976,11 @@ fn run_live_picker_subscription(
                 epoch,
                 LivePickerEvent::Offline {
                     message,
-                    retrying: true,
+                    retrying: false,
                     diagnostics: load_daemon_status(runner).ok(),
                 },
             );
-            return LivePickerWorkerExit::Retry;
+            return;
         }
     };
 
@@ -1030,11 +994,11 @@ fn run_live_picker_subscription(
                 epoch,
                 LivePickerEvent::Offline {
                     message: "agentscan subscribe did not expose stdout".to_owned(),
-                    retrying: true,
+                    retrying: false,
                     diagnostics: load_daemon_status(runner).ok(),
                 },
             );
-            return LivePickerWorkerExit::Retry;
+            return;
         }
     };
 
@@ -1049,14 +1013,29 @@ fn run_live_picker_subscription(
                 drop(slot);
                 let _ = child.kill();
                 let _ = child.wait();
-                return LivePickerWorkerExit::Stopped;
+                return;
             }
             *slot = Some(child);
         }
         Err(_) => {
             let _ = child.kill();
             let _ = child.wait();
-            return LivePickerWorkerExit::Retry;
+            // Poisoned mutex (a holder panicked): the child is unreachable for a later
+            // stop, so kill it and report a recoverable terminal — TS re-arms (latch-only).
+            emit_live_picker_event(
+                app,
+                epoch,
+                LivePickerEvent::Offline {
+                    message: classify_desktop_failure(
+                        runner,
+                        "subscribe",
+                        "agentscan subscribe state was poisoned",
+                    ),
+                    retrying: false,
+                    diagnostics: load_daemon_status(runner).ok(),
+                },
+            );
+            return;
         }
     }
 
@@ -1067,7 +1046,9 @@ fn run_live_picker_subscription(
     // it — forever. The shared buffer also means the bounded collection below
     // still returns the stderr the thread already read instead of discarding it.
     let stderr_collector = spawn_pipe_collector(stderr);
-    let mut exit = LivePickerWorkerExit::Retry;
+    // Set once a terminal frame (shutdown / offline-retrying-false / fatal) ended the read,
+    // so the generic process-exit fallback below doesn't also emit for a clean terminal.
+    let mut saw_terminal = false;
     // Set when the loop already emitted an Offline describing why it ended, so
     // the generic exit-reason emit below doesn't overwrite it with a vaguer
     // (or, after we kill the child, misleading) message.
@@ -1075,7 +1056,6 @@ fn run_live_picker_subscription(
 
     for line in BufReader::new(stdout).lines() {
         if stop.load(Ordering::SeqCst) {
-            exit = LivePickerWorkerExit::Stopped;
             break;
         }
 
@@ -1084,8 +1064,8 @@ fn run_live_picker_subscription(
             Ok(line) => match serde_json::from_str::<SubscribeFrame>(&line) {
                 Ok(frame) => match handle_subscribe_frame(app, runner, frame, epoch, stop) {
                     LivePickerWorkerExit::Retry => {}
-                    terminal_exit => {
-                        exit = terminal_exit;
+                    _ => {
+                        saw_terminal = true;
                         break;
                     }
                 },
@@ -1100,13 +1080,13 @@ fn run_live_picker_subscription(
                         epoch,
                         LivePickerEvent::Offline {
                             message,
-                            retrying: true,
+                            retrying: false,
                             diagnostics: load_daemon_status(runner).ok(),
                         },
                     );
                     // A malformed frame is a protocol error, not a process exit:
                     // the child keeps stdout open and would block the wait below
-                    // forever. Kill it so the worker can fall through to retry.
+                    // forever. Kill it so the worker can fall through to teardown.
                     kill_live_picker_child(child_slot);
                     reported_offline = true;
                     break;
@@ -1124,7 +1104,7 @@ fn run_live_picker_subscription(
                         epoch,
                         LivePickerEvent::Offline {
                             message,
-                            retrying: true,
+                            retrying: false,
                             diagnostics: load_daemon_status(runner).ok(),
                         },
                     );
@@ -1139,10 +1119,10 @@ fn run_live_picker_subscription(
     let stderr = filter_stderr_text(&collect_pipe(stderr_collector, LIVE_CHILD_EXIT_GRACE));
 
     if stop.load(Ordering::SeqCst) {
-        return LivePickerWorkerExit::Stopped;
+        return;
     }
 
-    if matches!(exit, LivePickerWorkerExit::Retry) && !reported_offline {
+    if !saw_terminal && !reported_offline {
         let message = classify_desktop_failure(
             runner,
             "subscribe",
@@ -1153,13 +1133,11 @@ fn run_live_picker_subscription(
             epoch,
             LivePickerEvent::Offline {
                 message,
-                retrying: true,
+                retrying: false,
                 diagnostics: load_daemon_status(runner).ok(),
             },
         );
     }
-
-    exit
 }
 
 fn handle_subscribe_frame(
@@ -1360,13 +1338,6 @@ fn process_exit_message(status_message: Option<&str>, stderr: &str) -> String {
         (Some(status), false) => format!("{status}: {stderr}"),
         (None, true) => "agentscan subscribe exited".to_owned(),
         (None, false) => stderr.to_owned(),
-    }
-}
-
-fn sleep_until_retry_or_stop(stop: &AtomicBool) {
-    let start = Instant::now();
-    while !stop.load(Ordering::SeqCst) && start.elapsed() < LIVE_RECONNECT_DELAY {
-        thread::sleep(Duration::from_millis(25));
     }
 }
 
@@ -1864,16 +1835,6 @@ mod tests {
             hotkeys_args(),
             vec!["hotkeys", "--format", "json", "--no-auto-start"]
         );
-    }
-
-    #[test]
-    fn auto_start_only_honored_on_first_worker_attempt() {
-        // Explicit "Start agentscan": the first attempt auto-starts, every retry latches.
-        assert!(auto_start_for_attempt(true, false));
-        assert!(!auto_start_for_attempt(true, true));
-        // Latch-only target: stays latch-only on the first attempt and all retries.
-        assert!(!auto_start_for_attempt(false, false));
-        assert!(!auto_start_for_attempt(false, true));
     }
 
     #[test]

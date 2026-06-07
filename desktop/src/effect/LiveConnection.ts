@@ -109,8 +109,6 @@ function foldEvent(
   switch (event.kind) {
     case "connecting":
       return { update: setConnection({ status: "connecting", message: event.message }) };
-    case "reconnecting":
-      return { update: setConnection({ status: "reconnecting", message: event.message }) };
     case "rows":
       return {
         update: () => ({
@@ -127,6 +125,15 @@ function foldEvent(
       return event.retrying
         ? { update: setConnection({ status: "reconnecting", message: event.message }) }
         : {
+            // retrying:false is terminal. "auto-start is disabled" is the latch-miss we offer
+            // Start for (NoDaemon); anything else — including the single-shot worker's
+            // Offline{retrying:false} for an abnormal subscribe-child death (AUR-517) — is
+            // Recoverable, so it re-arms latch-only. We deliberately do NOT escalate an abnormal
+            // death on an explicit Start to fatal: `!online` (no rows yet) can't reliably tell a
+            // genuine "no daemon" from a daemon that connected (Snapshot) but whose row fetch is
+            // failing, or an old daemon handing off via shutdown — escalating would wedge those
+            // recoverable cases on fatal. A real start refusal still surfaces via the daemon's
+            // own fatal frame or the NoDaemon latch-miss.
             terminal: NO_DAEMON_RE.test(event.message)
               ? { _tag: "NoDaemon", message: event.message }
               : { _tag: "Recoverable", message: event.message },
@@ -269,16 +276,26 @@ export class LiveConnection extends Effect.Service<LiveConnection>()(
                   () => tauri.stopLivePicker(epoch).pipe(Effect.ignore),
                 );
 
-              // NoDaemon means "we latched and found no daemon — offer Start". Promote it
-              // to Fatal ONLY for a refusal of our OWN explicit start: autoStart set AND we
-              // never reached online, i.e. the daemon refused to come up at all (macOS
-              // codesign/trust; lifecycle.rs emits the same "auto-start is disabled" text).
-              // Surfacing the real reason beats re-offering the Start the user already
-              // pressed. But once the worker HAS connected (online), a later "auto-start is
-              // disabled" is the Rust worker's own latch-only retry (auto_start_for_attempt
-              // only honors the first attempt) missing the daemon — a genuine no-daemon.
-              // Keep it NoDaemon so the slow auto-latch poll continues instead of wedging on
-              // fatal. A latch re-arm (autoStart=false) is always a genuine no-daemon too.
+              // An explicit Start (autoStart) whose only outcome is a NoDaemon latch-miss that
+              // never reached online is a refusal of our OWN start — e.g. the macOS codesign/
+              // trust preflight, where lifecycle.rs emits "auto-start is disabled". Promote it to
+              // Fatal so the dock surfaces the real reason instead of silently re-arming into a
+              // noDaemon poll the user can't fix. We promote ONLY NoDaemon, and only on the first
+              // (autoStart) attempt before any rows arrived: every latch re-arm runs with
+              // autoStart=false (the only kind this service issues after the first attempt), and
+              // once the worker has connected the terminal is a genuine drop. We deliberately do
+              // NOT promote a Recoverable terminal here (a clean shutdown/ServerClosing, or the
+              // single-shot worker's Offline{retrying:false} for an abnormal subscribe-child
+              // death): `!online` (no rows yet) can't reliably distinguish a true start failure
+              // from a daemon that connected but whose row fetch is failing, so promoting would
+              // wedge recoverable cases on fatal. Those re-arm latch-only instead.
+              //
+              // This is not a regression for abnormal first-attempt deaths: pre-AUR-517 the Rust
+              // worker's in-worker loop ALSO recovered them (emitting retrying:true and retrying
+              // latch-only) — they never settled as fatal. Genuine start failures still surface:
+              // a command that can't even be built emits Fatal (lib.rs run_live_picker_subscription),
+              // the daemon's own refusal arrives as a Fatal frame, and a clean no-daemon refusal
+              // ("auto-start is disabled") is the NoDaemon latch-miss promoted right here.
               const terminal: Terminal =
                 rawTerminal._tag === "NoDaemon" && autoStart && !online
                   ? { _tag: "Fatal", message: rawTerminal.message }
