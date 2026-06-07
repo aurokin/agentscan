@@ -51,8 +51,16 @@ pub fn run() -> Result<()> {
             command_daemon(&args)
         }
         Some(Commands::Tmux(args)) => command_tmux(&args, &root_list_args),
+        Some(Commands::Doctor(args)) => {
+            reject_root_list_args(&root_list_args, "doctor")?;
+            command_doctor(&args)
+        }
         None => command_list(&root_list_args),
     }
+}
+
+fn command_doctor(args: &DoctorArgs) -> Result<()> {
+    doctor::run_doctor(*args)
 }
 
 pub(super) fn merge_list_args(args: &mut ListArgs, root_list_args: &ListArgs) {

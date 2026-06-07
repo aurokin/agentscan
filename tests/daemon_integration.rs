@@ -3007,4 +3007,207 @@ fn validate_snapshot_json(snapshot: &Value) -> Result<()> {
     agentscan::app::bench_support::validate_snapshot_json_for_tests(&snapshot_json)
 }
 
+fn doctor_check<'a>(report: &'a Value, id: &str) -> Option<&'a Value> {
+    report["checks"]
+        .as_array()?
+        .iter()
+        .find(|check| check["id"] == id)
+}
+
+#[test]
+fn doctor_json_warns_and_reports_schema_when_daemon_not_running() -> Result<()> {
+    let harness = TestHarness::new()?;
+
+    // `agentscan_output` bails on a non-zero exit, so a successful call also
+    // asserts the report-only exit-0 contract.
+    let stdout = harness.agentscan_output(["doctor", "--format", "json"])?;
+    let report: Value = serde_json::from_str(&stdout).context("doctor JSON should parse")?;
+
+    assert_eq!(report["schema_version"], 1);
+    assert!(
+        report["generated_at"]
+            .as_str()
+            .is_some_and(|at| !at.is_empty())
+    );
+
+    let daemon = doctor_check(&report, "daemon.health").context("daemon.health check missing")?;
+    assert_eq!(daemon["status"], "warn");
+    assert_eq!(daemon["details"]["daemon_state"], "not_running");
+
+    let tmux = doctor_check(&report, "tmux.reachable").context("tmux.reachable check missing")?;
+    assert_eq!(tmux["status"], "ok");
+
+    Ok(())
+}
+
+#[test]
+fn doctor_json_reports_ready_daemon_and_discovery_when_running() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let pane_id = harness.start_session("doctor-ready", "sleep 300")?;
+    let mut daemon = harness.start_daemon()?;
+    harness.wait_for_daemon_snapshot(&mut daemon, |snapshot| {
+        pane_from_snapshot(snapshot, &pane_id).is_some()
+    })?;
+    harness.agentscan([
+        "tmux",
+        "set-metadata",
+        "--pane-id",
+        &pane_id,
+        "--provider",
+        "codex",
+        "--label",
+        "Doctor",
+        "--state",
+        "idle",
+    ])?;
+    harness.wait_for_daemon_pane(&mut daemon, &pane_id, |pane| pane["provider"] == "codex")?;
+
+    let stdout = harness.agentscan_output(["doctor", "--format", "json"])?;
+    let report: Value = serde_json::from_str(&stdout).context("doctor JSON should parse")?;
+
+    let health = doctor_check(&report, "daemon.health").context("daemon.health check missing")?;
+    assert_eq!(health["status"], "ok");
+    assert_eq!(health["details"]["daemon_state"], "ready");
+
+    let summary =
+        doctor_check(&report, "discovery.summary").context("discovery.summary check missing")?;
+    assert_eq!(summary["status"], "ok");
+    assert_eq!(summary["details"]["source"], "daemon");
+    assert!(
+        summary["details"]["agent_pane_count"]
+            .as_u64()
+            .is_some_and(|count| count >= 1),
+        "expected at least one agent pane, got:\n{stdout}"
+    );
+    assert_eq!(summary["details"]["provider_counts"]["codex"], 1);
+
+    Ok(())
+}
+
+#[test]
+fn doctor_refresh_includes_discovery_compare_when_daemon_running() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let pane_id = harness.start_session("doctor-refresh", "sleep 300")?;
+    let mut daemon = harness.start_daemon()?;
+    harness.wait_for_daemon_snapshot(&mut daemon, |snapshot| {
+        pane_from_snapshot(snapshot, &pane_id).is_some()
+    })?;
+
+    let stdout = harness.agentscan_output(["doctor", "--refresh", "--format", "json"])?;
+    let report: Value = serde_json::from_str(&stdout).context("doctor JSON should parse")?;
+
+    let summary =
+        doctor_check(&report, "discovery.summary").context("discovery.summary check missing")?;
+    assert_eq!(summary["details"]["source"], "direct_tmux");
+
+    let compare =
+        doctor_check(&report, "discovery.compare").context("discovery.compare check missing")?;
+    assert!(
+        compare["status"] == "ok" || compare["status"] == "warn",
+        "unexpected discovery.compare status: {compare}"
+    );
+    assert!(compare["details"]["daemon_pane_count"].as_u64().is_some());
+
+    Ok(())
+}
+
+#[test]
+fn doctor_reports_invalid_config_as_fail_and_still_exits_zero() -> Result<()> {
+    let harness = TestHarness::new()?;
+    // Point config resolution at an isolated XDG_CONFIG_HOME so the broken file
+    // is read deterministically regardless of the ambient environment.
+    let xdg_config_home = harness._tempdir.path().join("xdg-config");
+    let config_dir = xdg_config_home.join("agentscan");
+    fs::create_dir_all(&config_dir)
+        .with_context(|| format!("failed to create {}", config_dir.display()))?;
+    fs::write(config_dir.join("config.toml"), "this is = = not valid toml")
+        .context("failed to write broken config")?;
+
+    let output = harness
+        .agentscan_command()?
+        .env("XDG_CONFIG_HOME", &xdg_config_home)
+        .args(["doctor", "--format", "json"])
+        .output()
+        .context("failed to execute agentscan doctor")?;
+    assert!(
+        output.status.success(),
+        "doctor must exit 0 even with invalid config; status: {}; stderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8(output.stdout).context("doctor stdout was not valid UTF-8")?;
+    let report: Value = serde_json::from_str(&stdout).context("doctor JSON should parse")?;
+
+    let config = doctor_check(&report, "config.valid").context("config.valid check missing")?;
+    assert_eq!(config["status"], "fail");
+    assert!(
+        report["summary"]["fail_count"]
+            .as_u64()
+            .is_some_and(|count| count >= 1)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn doctor_reports_invalid_runtime_option_as_config_fail() -> Result<()> {
+    let harness = TestHarness::new()?;
+    // Icons and picker keys are valid; only the runtime toggle is broken. This
+    // guards against `config.valid` swallowing runtime-option validation errors.
+    let xdg_config_home = harness._tempdir.path().join("xdg-runtime-config");
+    let config_dir = xdg_config_home.join("agentscan");
+    fs::create_dir_all(&config_dir)
+        .with_context(|| format!("failed to create {}", config_dir.display()))?;
+    fs::write(
+        config_dir.join("config.toml"),
+        "icons = \"emoji\"\ndisable_reconcile = \"not-a-bool\"\n",
+    )
+    .context("failed to write config with invalid runtime option")?;
+
+    let output = harness
+        .agentscan_command()?
+        .env("XDG_CONFIG_HOME", &xdg_config_home)
+        .args(["doctor", "--format", "json"])
+        .output()
+        .context("failed to execute agentscan doctor")?;
+    assert!(
+        output.status.success(),
+        "doctor must exit 0 even with invalid runtime config; status: {}; stderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8(output.stdout).context("doctor stdout was not valid UTF-8")?;
+    let report: Value = serde_json::from_str(&stdout).context("doctor JSON should parse")?;
+    let config = doctor_check(&report, "config.valid").context("config.valid check missing")?;
+    assert_eq!(config["status"], "fail");
+
+    Ok(())
+}
+
+#[test]
+fn doctor_text_lists_every_check_id() -> Result<()> {
+    let harness = TestHarness::new()?;
+
+    let stdout = harness.agentscan_output(["doctor"])?;
+    assert!(
+        stdout.contains("agentscan doctor"),
+        "missing header:\n{stdout}"
+    );
+    for id in [
+        "binary.version",
+        "binary.macos_trust",
+        "config.valid",
+        "tmux.reachable",
+        "daemon.health",
+        "discovery.summary",
+        "picker.contract",
+    ] {
+        assert!(stdout.contains(id), "missing check {id} in:\n{stdout}");
+    }
+
+    Ok(())
+}
+
 include!("common/tmux_harness.rs");

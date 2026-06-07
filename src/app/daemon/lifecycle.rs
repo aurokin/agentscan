@@ -21,7 +21,7 @@ impl LifecyclePaths {
     }
 }
 
-enum LifecycleQuery {
+pub(crate) enum LifecycleQuery {
     NotRunning(String),
     Status(Box<ipc::LifecycleStatusFrame>),
     Incompatible {
@@ -278,7 +278,7 @@ impl DaemonStartPolicyDecision {
 
 #[cfg(any(test, target_os = "macos"))]
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum MacExecutableAssessment {
+pub(crate) enum MacExecutableAssessment {
     Trusted,
     Untrusted(String),
 }
@@ -735,6 +735,13 @@ fn lifecycle_status_from_socket(socket_path: &Path, timeout: Duration) -> Result
             result => return Ok(result),
         }
     }
+}
+
+// Read-only daemon lifecycle probe for `agentscan doctor` (AUR-519): the same socket
+// query `daemon status` uses, returning structured `LifecycleQuery` instead of printing.
+// Never auto-starts a daemon.
+pub(crate) fn query_lifecycle_status(socket_path: &Path) -> Result<LifecycleQuery> {
+    lifecycle_status_from_socket(socket_path, LIFECYCLE_CONNECT_TIMEOUT)
 }
 
 fn open_daemon_client(
@@ -3047,7 +3054,7 @@ fn macos_auto_start_recovery_guidance(intent: DaemonStartIntent) -> &'static str
 }
 
 #[cfg(target_os = "macos")]
-fn assess_macos_executable_for_daemon_autostart(path: &Path) -> MacExecutableAssessment {
+pub(crate) fn assess_macos_executable_for_daemon_autostart(path: &Path) -> MacExecutableAssessment {
     let display_output = match Command::new("/usr/bin/codesign")
         .args(["-dv", "--verbose=4"])
         .arg(path)

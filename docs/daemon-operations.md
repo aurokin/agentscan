@@ -8,6 +8,28 @@ Use this document for operational behavior and troubleshooting. Use
 `docs/architecture.md` for the internal model and `docs/integration.md` for
 machine-readable contracts.
 
+## Diagnostics (`agentscan doctor`)
+
+`agentscan doctor` is the high-level first stop when discovery, updates, or focus
+misbehave. It is read-only — it never mutates tmux or daemon state and never
+auto-starts a daemon — and rolls up the binary version and macOS trust, config
+validity, tmux reachability, daemon health, a discovery summary, and the picker
+contract into a single checklist of `ok`/`warn`/`fail`/`info` results. It always
+exits 0; the status lives in the report.
+
+```sh
+agentscan doctor
+agentscan doctor --format json   # versioned schema_version envelope for support tooling
+agentscan doctor --refresh       # also take a direct tmux snapshot and compare to daemon state
+agentscan doctor --events        # include the recent daemon event ring in daemon health
+```
+
+`doctor` summarizes the daemon via the same lifecycle query as `daemon status`,
+but it is a roll-up rather than the authoritative health surface. When a check
+warns or fails, drop to `agentscan daemon status --format json` (see
+[Status JSON](#status-json)) for the full lifecycle, broker, and telemetry
+detail.
+
 ## Start Policy
 
 Normal consumers connect to the daemon socket and auto-start the daemon when it

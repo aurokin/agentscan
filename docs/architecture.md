@@ -153,6 +153,10 @@ The command surface is organized by concern:
 - `agentscan tui`: interactive-only pane picker, not a stdout automation API
 - `agentscan tmux`: tmux-facing helpers, including metadata commands and
   `tmux hotkey` for display-message failure reporting from tmux binds
+- `agentscan doctor`: read-only diagnostics that roll up binary/config/tmux/daemon
+  and discovery checks into one versioned report; it orchestrates the existing
+  read paths (it adds no new detection or daemon behavior) and never mutates state
+  or auto-starts a daemon
 
 The default bare `agentscan` flow is daemon-backed `list`.
 

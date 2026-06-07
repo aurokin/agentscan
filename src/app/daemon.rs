@@ -52,12 +52,14 @@ pub(crate) use events::{
     window_notification_target,
 };
 pub(crate) use lifecycle::{
-    AutoStartPolicy, DaemonSnapshotError, daemon_restart, daemon_run, daemon_start, daemon_status,
-    daemon_stop, emit_pane_focus_event_best_effort, snapshot_via_socket,
-    snapshot_via_socket_path_with_start_command, spawn_subscription_worker,
+    AutoStartPolicy, DaemonSnapshotError, LifecycleQuery, daemon_restart, daemon_run, daemon_start,
+    daemon_status, daemon_stop, emit_pane_focus_event_best_effort, query_lifecycle_status,
+    snapshot_via_socket, snapshot_via_socket_path_with_start_command, spawn_subscription_worker,
     stream_subscription_events_json,
 };
 use lifecycle::{DaemonLifecycleGuard, LifecyclePaths, remove_stale_socket_if_present};
+#[cfg(target_os = "macos")]
+pub(crate) use lifecycle::{MacExecutableAssessment, assess_macos_executable_for_daemon_autostart};
 #[cfg(test)]
 pub(crate) use lifecycle::{
     daemon_status_with_socket_path, snapshot_via_socket_path, test_daemon_restart_with_steps,
