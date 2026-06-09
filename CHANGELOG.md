@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+
+- Added `picker_group_by` config for grouping picker rows by tmux session, git
+  repo, or cwd while preserving `session:window.pane` as the tmux location.
+- Added `workspace` context to `agentscan hotkeys --format json` rows so TUI and
+  desktop clients can render project-oriented groups without parsing
+  `location_tag`; clients use `workspace.id` for grouping and
+  `workspace.label` for display.
+
 ## 0.7.0 - 2026-06-07
 
 ### Added

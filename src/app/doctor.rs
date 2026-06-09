@@ -545,8 +545,8 @@ fn provider_mismatched_pane_ids(
 }
 
 fn picker_contract_check(snapshot: Option<&SnapshotEnvelope>) -> DoctorCheck {
-    let picker_keys = match config::resolve_picker_config() {
-        Ok(config) => config.picker_keys,
+    let picker_config = match config::resolve_picker_config() {
+        Ok(config) => config,
         Err(error) => {
             return DoctorCheck::new(
                 "picker.contract",
@@ -556,6 +556,7 @@ fn picker_contract_check(snapshot: Option<&SnapshotEnvelope>) -> DoctorCheck {
             );
         }
     };
+    let picker_keys = picker_config.picker_keys;
     let key_order: String = picker_keys.keys().iter().collect();
     let capacity = picker_keys.len();
     let Some(snapshot) = snapshot else {
@@ -577,6 +578,7 @@ fn picker_contract_check(snapshot: Option<&SnapshotEnvelope>) -> DoctorCheck {
         &agent_panes,
         focus.focused_session.as_deref(),
         u32::try_from(focus.attached_client_count).unwrap_or(u32::MAX),
+        picker_config.picker_group_by,
         &picker_keys,
     );
     // `picker_rows` zips panes with keys, so it assigns at most `capacity` rows.

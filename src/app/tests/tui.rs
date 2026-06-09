@@ -35,6 +35,34 @@ fn tui_render_rows_include_location_status_and_key_labels() {
 }
 
 #[test]
+fn tui_render_frame_includes_workspace_and_full_location_for_cwd_grouping() {
+    let pane = tmux_pane_row(324026)
+        .session_name("notes")
+        .window_index(4)
+        .pane_id("%41")
+        .command("claude")
+        .title("Claude Code | Working")
+        .tty("/dev/pts/44")
+        .current_path("/home/auro/code/agentscan")
+        .pane();
+    let mut state = super::tui::TuiState::with_picker_config(
+        super::picker::PickerKeySet::default(),
+        super::picker::PickerGroupBy::Cwd,
+    );
+    state.replace_panes(vec![pane]);
+
+    let frame = super::tui::render_tui_frame_for_size(
+        &mut state,
+        super::tui::TuiTerminalSize {
+            width: 120,
+            height: 10,
+        },
+    );
+
+    assert_eq!(frame.lines[0], "[1] 🟡 👾 agentscan notes:4.1 - Working");
+}
+
+#[test]
 fn provider_display_marker_uses_emoji_by_default() {
     assert_provider_markers(
         IconMode::Emoji,
@@ -222,6 +250,143 @@ fn tui_key_assignments_stay_stable_across_rerenders() {
 }
 
 #[test]
+fn tui_key_assignments_reset_after_workspace_reorder() {
+    let pane_one = tmux_pane_row(1)
+        .session_name("work")
+        .pane_id("%1")
+        .command("codex")
+        .title("Task 1")
+        .current_path("/work/beta")
+        .pane();
+    let pane_two = tmux_pane_row(2)
+        .session_name("work")
+        .pane_id("%2")
+        .command("codex")
+        .title("Task 2")
+        .current_path("/work/gamma")
+        .pane();
+    let mut state = super::tui::TuiState::with_picker_config(
+        super::picker::PickerKeySet::default(),
+        super::picker::PickerGroupBy::Cwd,
+    );
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 10,
+    };
+    state.replace_panes(vec![pane_one.clone(), pane_two]);
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(state.test_key_target('1'), Some("%1"));
+    assert_eq!(state.test_key_target('2'), Some("%2"));
+
+    let moved_pane_two = tmux_pane_row(2)
+        .session_name("work")
+        .pane_id("%2")
+        .command("codex")
+        .title("Task 2")
+        .current_path("/work/alpha")
+        .pane();
+    state.replace_panes(vec![pane_one, moved_pane_two]);
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+
+    assert_eq!(frame.visible_pane_ids, vec!["%2", "%1"]);
+    assert_eq!(state.test_key_target('1'), Some("%2"));
+    assert_eq!(state.test_key_target('2'), Some("%1"));
+    assert_eq!(state.test_retired_key_target('1'), None);
+}
+
+#[test]
+fn tui_key_assignments_reset_when_workspace_insertion_shifts_visible_rows() {
+    let pane_one = tmux_pane_row(1)
+        .session_name("work")
+        .pane_id("%1")
+        .command("codex")
+        .title("Task 1")
+        .current_path("/work/alpha")
+        .pane();
+    let pane_two = tmux_pane_row(2)
+        .session_name("work")
+        .pane_id("%2")
+        .command("codex")
+        .title("Task 2")
+        .current_path("/work/gamma")
+        .pane();
+    let inserted_pane = tmux_pane_row(3)
+        .session_name("work")
+        .pane_id("%3")
+        .command("codex")
+        .title("Task 3")
+        .current_path("/work/beta")
+        .pane();
+    let mut state = super::tui::TuiState::with_picker_config(
+        super::picker::PickerKeySet::default(),
+        super::picker::PickerGroupBy::Cwd,
+    );
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 10,
+    };
+    state.replace_panes(vec![pane_one.clone(), pane_two.clone()]);
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(state.test_key_target('1'), Some("%1"));
+    assert_eq!(state.test_key_target('2'), Some("%2"));
+
+    state.replace_panes(vec![pane_one, pane_two, inserted_pane]);
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+
+    assert_eq!(frame.visible_pane_ids, vec!["%1", "%3", "%2"]);
+    assert_eq!(state.test_key_target('1'), Some("%1"));
+    assert_eq!(state.test_key_target('2'), Some("%3"));
+    assert_eq!(state.test_key_target('3'), Some("%2"));
+}
+
+#[test]
+fn tui_workspace_reorder_reanchors_to_previous_visible_pane_page() {
+    let pane = |index: u32, cwd: String| {
+        tmux_pane_row(index)
+            .session_name("work")
+            .pane_id(format!("%{index}"))
+            .command("codex")
+            .title(format!("Task {index}"))
+            .current_path(cwd)
+            .pane()
+    };
+    let panes = (1..=8)
+        .map(|index| pane(index, format!("/work/p{index:02}")))
+        .collect::<Vec<_>>();
+    let mut state = super::tui::TuiState::with_picker_config(
+        super::picker::PickerKeySet::default(),
+        super::picker::PickerGroupBy::Cwd,
+    );
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 6,
+    };
+    state.replace_panes(panes);
+    let first_frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(first_frame.page_size, 4);
+    assert!(state.next_page());
+    let second_frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(second_frame.visible_pane_ids, vec!["%5", "%6", "%7", "%8"]);
+
+    let reordered = (1..=8)
+        .map(|index| {
+            let cwd = if index == 5 {
+                "/work/p00".to_string()
+            } else {
+                format!("/work/p{index:02}")
+            };
+            pane(index, cwd)
+        })
+        .collect::<Vec<_>>();
+    state.replace_panes(reordered);
+    let anchored_frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+
+    assert_eq!(anchored_frame.page_start, 0);
+    assert_eq!(anchored_frame.visible_pane_ids[0], "%5");
+    assert_eq!(state.test_key_target('1'), Some("%5"));
+}
+
+#[test]
 fn tui_retains_retired_key_targets_for_missing_pane_selection() {
     let pane_one = tui_test_pane(1);
     let pane_two = tui_test_pane(2);
@@ -242,6 +407,67 @@ fn tui_retains_retired_key_targets_for_missing_pane_selection() {
         state.test_retired_key_target('2'),
         Some("%2")
     );
+}
+
+#[test]
+fn tui_removal_does_not_reuse_missing_pane_key_before_retiring_it() {
+    let pane_one = tui_test_pane(1);
+    let pane_two = tui_test_pane(2);
+    let mut state = super::tui::TuiState::default();
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 80,
+        height: 12,
+    };
+    state.replace_panes(vec![pane_one, pane_two.clone()]);
+
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(state.test_key_target('1'), Some("%1"));
+    assert_eq!(state.test_key_target('2'), Some("%2"));
+
+    state.replace_panes(vec![pane_two]);
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+
+    assert_eq!(state.test_key_target('1'), None);
+    assert_eq!(state.test_key_target('2'), Some("%2"));
+    assert_eq!(state.test_retired_key_target('1'), Some("%1"));
+}
+
+#[test]
+fn tui_non_session_removal_resets_shifted_visible_keys() {
+    let pane_one = tmux_pane_row(1)
+        .session_name("work")
+        .pane_id("%1")
+        .command("codex")
+        .title("Task 1")
+        .current_path("/work/alpha")
+        .pane();
+    let pane_two = tmux_pane_row(2)
+        .session_name("work")
+        .pane_id("%2")
+        .command("codex")
+        .title("Task 2")
+        .current_path("/work/beta")
+        .pane();
+    let mut state = super::tui::TuiState::with_picker_config(
+        super::picker::PickerKeySet::default(),
+        super::picker::PickerGroupBy::Cwd,
+    );
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 80,
+        height: 12,
+    };
+    state.replace_panes(vec![pane_one, pane_two.clone()]);
+
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(state.test_key_target('1'), Some("%1"));
+    assert_eq!(state.test_key_target('2'), Some("%2"));
+
+    state.replace_panes(vec![pane_two]);
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+
+    assert_eq!(state.test_key_target('1'), Some("%2"));
+    assert_eq!(state.test_key_target('2'), None);
+    assert_eq!(state.test_retired_key_target('1'), None);
 }
 
 #[test]

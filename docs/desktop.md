@@ -65,6 +65,12 @@ server.
 The picker renders rows from `agentscan hotkeys --format json`. Search/filter
 is client-side only: it filters returned rows without changing the shared
 picker JSON contract, provider inference, status inference, or key assignment.
+When the CLI returns workspace context, the desktop groups rows by
+`workspace.id` and renders `workspace.label` as the section header; older remote
+`agentscan` binaries that do not emit workspace context fall back to grouping by
+the session portion of `location_tag`.
+The exact tmux address remains visible through `location_tag` regardless of
+grouping mode.
 
 Selection and activation delegate to the CLI:
 

@@ -25,6 +25,7 @@ export type PickerRow = {
   status: { kind: string };
   display_label: string;
   location_tag: string;
+  workspace?: { id?: string; label?: string; source?: string };
   is_active: boolean;
   is_focused?: boolean;
   attached_client_count?: number;

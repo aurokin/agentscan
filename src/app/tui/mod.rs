@@ -49,7 +49,7 @@ pub(crate) fn run(args: &TuiArgs, config: ResolvedConfig) -> Result<()> {
 fn run_tui_loop(args: &TuiArgs, config: ResolvedConfig) -> Result<()> {
     let icon_mode = config.icons;
     let mut session = TerminalSession::enter()?;
-    let mut state = TuiState::with_picker_keys(config.picker_keys);
+    let mut state = TuiState::with_picker_config(config.picker_keys, config.picker_group_by);
     state.set_connecting("connecting to daemon".to_string());
     draw_tui_frame(&mut session.stdout, &mut state, icon_mode)?;
     write_tui_marker_from_env(TUI_READY_PATH_ENV, "")?;
