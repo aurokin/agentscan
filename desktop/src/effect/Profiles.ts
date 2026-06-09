@@ -110,14 +110,20 @@ export class Profiles extends Effect.Service<Profiles>()("desktop/Profiles", {
         (profile) => profile.kind === "ssh" && profile.host.trim() === "",
       );
       if (draft) {
-        if (draft.id !== latest.activeProfileId) {
-          yield* commit({ ...latest, activeProfileId: draft.id });
+        // Reuse must match the fresh-add UX below: the draft also starts open, so
+        // the folder appears (and streams) the moment the host is configured — a
+        // legacy-migrated draft may be closed (only the active profile was opened).
+        const openProfileIds = latest.openProfileIds.includes(draft.id)
+          ? latest.openProfileIds
+          : [...latest.openProfileIds, draft.id];
+        if (draft.id !== latest.activeProfileId || openProfileIds !== latest.openProfileIds) {
+          yield* commit({ ...latest, activeProfileId: draft.id, openProfileIds });
           return;
         }
-        // Already the persisted active: nothing to commit, but a stale window's ref
-        // may lag storage (dirty windows skip inbound syncs), and without adopting
-        // latest the click would visibly do nothing. Mirrors selectProfile's
-        // same-id path.
+        // Already the persisted active and open: nothing to commit, but a stale
+        // window's ref may lag storage (dirty windows skip inbound syncs), and
+        // without adopting latest the click would visibly do nothing. Mirrors
+        // selectProfile's same-id path.
         const current = yield* SubscriptionRef.get(stateRef);
         if (JSON.stringify(current) !== JSON.stringify(latest)) {
           yield* SubscriptionRef.set(stateRef, latest);

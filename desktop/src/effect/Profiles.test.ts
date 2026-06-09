@@ -163,6 +163,9 @@ describe("Profiles", () => {
           const state = yield* SubscriptionRef.get(profiles.state);
           expect(state.profiles.map((p) => p.id)).toEqual(["local", "ssh-draft"]);
           expect(state.activeProfileId).toBe("ssh-draft");
+          // Reuse matches the fresh-add UX: the draft starts open too (the legacy
+          // migration only opened the previously-active profile).
+          expect(state.openProfileIds).toContain("ssh-draft");
         }),
     ));
 
