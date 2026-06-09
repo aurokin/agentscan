@@ -2,8 +2,24 @@
 
 ## Unreleased
 
+## 0.7.1 - 2026-06-09
+
 ### Added
 
+- Added `picker_group_by` config for grouping picker rows by tmux session, git
+  repo, or cwd while preserving `session:window.pane` as the tmux location.
+  `session` remains the default. `git-repo` and `cwd` order rows by workspace
+  group first, then tmux location, and picker hotkeys are assigned from that
+  backend order.
+- Added workspace context to `agentscan hotkeys --format json` rows so TUI,
+  desktop, automation, and other clients can render project-oriented groups
+  without parsing `location_tag`. Rows now expose `workspace.id` for grouping,
+  `workspace.label` for display, and `workspace.source` for provenance.
+- Added git/cwd workspace resolution for picker rows. The resolver prefers
+  provider-published `agent_metadata.cwd` over tmux's current path, supports
+  normal git repositories, nested repositories, linked worktrees, bare linked
+  worktrees, and submodule-style `.git` files, and keeps same-named directories
+  distinct through stable workspace IDs.
 - When a remote desktop preflight still fails because `agentscan` can't be found
   on the host, the error now includes an actionable hint. A bounded, best-effort
   SSH probe runs the remote's interactive login shell to locate agentscan and
@@ -14,12 +30,25 @@
 - When that probe resolves a path, the dock's "Can't reach agentscan" recovery
   screen shows a **Use this path** button that sets the profile's binary to it
   and re-probes in one click — no trip through settings required.
-- Added `picker_group_by` config for grouping picker rows by tmux session, git
-  repo, or cwd while preserving `session:window.pane` as the tmux location.
-- Added `workspace` context to `agentscan hotkeys --format json` rows so TUI and
-  desktop clients can render project-oriented groups without parsing
-  `location_tag`; clients use `workspace.id` for grouping and
-  `workspace.label` for display.
+
+### Changed
+
+- The terminal TUI now honors `picker_group_by`: it sorts through the shared
+  backend picker model, renders workspace labels alongside the full tmux
+  location when grouping by cwd or git repo, and keeps page anchoring and key
+  targets coherent when workspace ordering changes.
+- The desktop picker now groups rows by backend `workspace.id` and renders
+  `workspace.label` as the section header, falling back to session-derived
+  grouping for older remote `agentscan` binaries that do not emit workspace
+  context. Desktop search now includes workspace label/source text.
+- Text hotkey output now includes the workspace label before the tmux location
+  when non-session grouping is configured, while leaving session grouping output
+  unchanged.
+- `agentscan doctor` now evaluates picker capacity and contract checks with the
+  configured `picker_group_by`, so diagnostics match the actual picker order.
+- Documented picker workspace grouping, client contracts, and the
+  session/location/workspace identity split in the README, integration docs,
+  desktop docs, architecture notes, and ADR.
 
 ### Fixed
 
@@ -32,8 +61,19 @@
   shadow a binary already on PATH), inside a POSIX `sh -c` wrapper so it stays
   correct on any login shell (incl. fish/csh) and safe when a PATH entry contains
   spaces. A remote agentscan is found without configuring an explicit binary
-  path. The same locations were added to the local runner's auto-detect, with
-  version-manager shims searched last so they never shadow a real binary.
+  path.
+- The local desktop runner's auto-detect now searches the same common install
+  locations, prefers a PATH-resolved executable over version-manager shims, and
+  requires the candidate to be an executable file so a non-executable stub cannot
+  shadow a real binary.
+- Remote preflight missing-binary classification now matches the profile's
+  configured binary name, so custom SSH binary names and wrappers get the same
+  not-found guidance and probe behavior as the default `agentscan`.
+- TUI key assignment no longer preserves a visible key slot across a
+  workspace-driven reorder when doing so would make the rendered key disagree
+  with the backend activation target.
+- The desktop recovery action row now wraps, so showing both **Use this path**
+  and **Open settings** does not clip in the horizontal dock.
 
 ## 0.7.0 - 2026-06-07
 
