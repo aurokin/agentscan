@@ -354,6 +354,21 @@ export function profileKindLabel(profile: DesktopProfileConfig): string {
   return profile.kind === "ssh" ? "SSH" : "Local";
 }
 
+// The connection is the source's identity, so two profiles can't share a host.
+// Shared by form validation and commit-time re-checks: load-time dedupe drops a
+// persisted duplicate, so a commit that lets one through silently deletes a source.
+export function sshHostCollides(
+  profiles: DesktopProfileConfig[],
+  id: string,
+  sshHost: string,
+): boolean {
+  const host = sshHost.trim();
+  return (
+    host.length > 0 &&
+    profiles.some((other) => other.id !== id && other.kind === "ssh" && other.host.trim() === host)
+  );
+}
+
 export function validateProfileDraft(
   profile: DesktopProfileConfig,
   runner: RunnerSettings,
@@ -373,12 +388,7 @@ export function validateProfileDraft(
       errors.push("SSH host is required.");
     } else if (host.startsWith("-") || /\s/.test(host) || host.includes("\0")) {
       errors.push("SSH host must be a single host alias and cannot start with '-'.");
-    } else if (
-      profiles.some(
-        (other) => other.id !== profile.id && other.kind === "ssh" && other.host.trim() === host,
-      )
-    ) {
-      // The connection is the source's identity, so two profiles can't share a host.
+    } else if (sshHostCollides(profiles, profile.id, host)) {
       errors.push("A source for this connection already exists.");
     }
 

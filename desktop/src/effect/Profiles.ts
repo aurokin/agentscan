@@ -9,6 +9,7 @@ import {
   normalizeProfileState,
   normalizeRunnerSettings,
   reorderProfile as reorderProfileState,
+  sshHostCollides,
   storeProfileState,
   toggleProfileOpen as toggleProfileOpenState,
   updateProfileSettingsById,
@@ -167,6 +168,14 @@ export class Profiles extends Effect.Service<Profiles>()("desktop/Profiles", {
         // mirrors), merged onto the latest persisted list + active source.
         const editedId = (yield* SubscriptionRef.get(stateRef)).activeProfileId;
         const latest = loadProfileState(bridge.loadRaw);
+        // Re-check the one-host-per-source invariant at commit time: the form
+        // validated against its own window's list, which can be stale while another
+        // window edits, and a persisted duplicate would be silently dropped (source
+        // deleted) by load-time dedupe. Refusing the write loses the edit, not data.
+        const edited = latest.profiles.find((profile) => profile.id === editedId);
+        if (edited?.kind === "ssh" && sshHostCollides(latest.profiles, editedId, input.sshHost)) {
+          return;
+        }
         const next = updateProfileSettingsById(
           latest,
           editedId,

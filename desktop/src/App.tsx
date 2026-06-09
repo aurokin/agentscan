@@ -1273,10 +1273,18 @@ function App({ mode }: { mode: ShellMode }) {
           }),
         appendDebugEntry,
       );
+      // A superseded activation (guard freed early on source close, possibly
+      // re-acquired by a newer row) must not touch the shared activation state.
+      if (activationInFlightRef.current !== token) {
+        return;
+      }
       // Persistent-window model: focusing a pane must not hide the desktop.
       // Reset activation to idle and leave the window visible.
       setActivation({ status: "idle" });
     } catch (error) {
+      if (activationInFlightRef.current !== token) {
+        return;
+      }
       if (!openRunnerKeysRef.current.has(requestRunnerKey)) {
         // The source was closed/edited mid-flight; there is no list left to recover.
         setActivation({ status: "idle" });

@@ -200,6 +200,41 @@ describe("Profiles", () => {
       }),
     ));
 
+  it("applyRunnerSettings refuses a host edit that collides with a concurrent write", () =>
+    run(
+      "settings",
+      seed(stateOf("ssh-1", localProfile, sshProfile("ssh-1", "alpha"))),
+      ({ profiles, store, emitted }) =>
+        Effect.gen(function* () {
+          // Another window adds a source on "beta" after this window's form already
+          // validated; committing "beta" here would persist a duplicate host that
+          // load-time dedupe then silently deletes. The apply must refuse to write.
+          store.set(
+            PROFILES_STORAGE_KEY,
+            JSON.stringify(
+              stateOf(
+                "ssh-1",
+                localProfile,
+                sshProfile("ssh-1", "alpha"),
+                sshProfile("ssh-2", "beta"),
+              ),
+            ),
+          );
+
+          yield* profiles.applyRunnerSettings({
+            runner: { binaryPath: "", env: [] },
+            sshHost: "beta",
+            sshClientTty: "",
+          });
+
+          // No write, no broadcast: the persisted state still has both distinct hosts.
+          const persisted = JSON.parse(store.get(PROFILES_STORAGE_KEY)!) as ProfileState;
+          const hosts = persisted.profiles.map((p) => (p.kind === "ssh" ? p.host : p.id));
+          expect(hosts).toEqual(["local", "alpha", "beta"]);
+          expect(yield* Queue.size(emitted)).toBe(0);
+        }),
+    ));
+
   it("reload reconciles the ref from storage (the dock-adopt + settings focus/clean path)", () =>
     run("settings", seed(stateOf("local", localProfile)), ({ profiles, store }) =>
       Effect.gen(function* () {
