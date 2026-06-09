@@ -615,35 +615,49 @@ fn find_known_agentscan_binary() -> Option<PathBuf> {
     resolve_local_agentscan(
         env::var_os("HOME").as_deref(),
         env::var_os("PATH").as_deref(),
-        |path| path.is_file(),
+        is_executable_file,
     )
+}
+
+// A regular file with at least one execute bit. The PATH scan in
+// resolve_local_agentscan needs this rather than a bare is_file so a
+// non-executable `agentscan` stub on an early PATH entry can't shadow a real
+// executable later on PATH — matching how the OS resolves a bare command name.
+// Desktop builds target unix only (macOS release, Linux CI), so the unix
+// permission check is safe.
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
 }
 
 // Local auto-detect precedence: concrete install dirs, then an explicit PATH
 // lookup, then version-manager shims. The PATH step sits before shims so a real
 // binary on the inherited PATH beats a stale shim, while shims still rescue the
 // GUI-from-Finder case where PATH is minimal and agentscan is only installed via
-// mise/asdf. `exists` is injected so the precedence is unit-testable without
-// touching the filesystem.
+// mise/asdf. Only executable files match (`is_executable`), so a non-executable
+// entry is skipped just as the OS would. `is_executable` is injected so the
+// precedence is unit-testable without touching the filesystem.
 fn resolve_local_agentscan<F>(
     home: Option<&OsStr>,
     path_var: Option<&OsStr>,
-    exists: F,
+    is_executable: F,
 ) -> Option<PathBuf>
 where
     F: Fn(&Path) -> bool,
 {
     agentscan_paths_in(AGENTSCAN_BIN_DIRS, home)
-        .find(|path| exists(path.as_path()))
+        .find(|path| is_executable(path.as_path()))
         .or_else(|| {
             path_var.and_then(|path_var| {
                 env::split_paths(path_var)
                     .map(|dir| dir.join("agentscan"))
-                    .find(|candidate| exists(candidate.as_path()))
+                    .find(|candidate| is_executable(candidate.as_path()))
             })
         })
         .or_else(|| {
-            agentscan_paths_in(AGENTSCAN_SHIM_DIRS, home).find(|path| exists(path.as_path()))
+            agentscan_paths_in(AGENTSCAN_SHIM_DIRS, home).find(|path| is_executable(path.as_path()))
         })
 }
 
@@ -1721,6 +1735,10 @@ fn classify_preflight_failure(runner: &AgentscanRunner, raw: &str) -> PreflightF
 // it for a diagnostic, so this degrades silently rather than guessing.
 const REMOTE_PROBE_BODY: &str = r#"p=$(command -v "$1" 2>/dev/null); case "$p" in /*) [ -x "$p" ] || p=;; *) p=;; esac; printf "ASFOUND=%s\n" "$p""#;
 
+// `2>/dev/null` redirects only stderr (fd 2), dropping rc-file banner/error
+// noise. The `printf "ASFOUND=..."` in REMOTE_PROBE_BODY writes to stdout (fd 1),
+// which is left intact and carries the marker back to parse_remote_probe — so the
+// hint still works in the found-binary case.
 fn remote_probe_script(binary: &str) -> String {
     format!(
         "\"$SHELL\" -lic {} sh {} 2>/dev/null",
@@ -2749,6 +2767,44 @@ mod tests {
             resolved,
             Some(PathBuf::from("/Users/example/.local/share/mise/shims/agentscan"))
         );
+    }
+
+    #[test]
+    fn local_resolution_skips_non_executable_path_entry() {
+        // An earlier PATH entry holds a non-executable `agentscan` (predicate
+        // false); the real executable is later on PATH. The scan must skip the
+        // stub and continue, matching how the OS resolves a bare command name,
+        // instead of pinning the first regular file.
+        let home = Some(OsStr::new("/Users/example"));
+        let path_var = Some(OsStr::new("/stub/bin:/real/bin"));
+        let executable = ["/real/bin/agentscan"];
+
+        let resolved = resolve_local_agentscan(home, path_var, |path| {
+            executable.iter().any(|candidate| Path::new(candidate) == path)
+        });
+
+        assert_eq!(resolved, Some(PathBuf::from("/real/bin/agentscan")));
+    }
+
+    #[test]
+    fn is_executable_file_requires_execute_bit() {
+        let dir = env::temp_dir().join(format!("agentscan-exec-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("create test dir");
+        let exec = dir.join("agentscan-exec");
+        let plain = dir.join("agentscan-plain");
+        fs::write(&exec, "#!/bin/sh\n").expect("write exec");
+        fs::write(&plain, "not runnable").expect("write plain");
+        fs::set_permissions(&exec, fs::Permissions::from_mode(0o755)).expect("chmod exec");
+        fs::set_permissions(&plain, fs::Permissions::from_mode(0o644)).expect("chmod plain");
+
+        assert!(is_executable_file(&exec));
+        assert!(!is_executable_file(&plain));
+        // A directory is not an executable file even with the execute bit set.
+        assert!(!is_executable_file(&dir));
+        // A missing path is not executable.
+        assert!(!is_executable_file(&dir.join("absent")));
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
