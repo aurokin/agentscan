@@ -2420,6 +2420,14 @@ function App({ mode }: { mode: ShellMode }) {
             // Open/close toggles, one per source folder: checking opens that folder
             // (arms its subscription), unchecking closes it. The menu stays open so
             // several sources can be toggled in one visit.
+            //
+            // Deliberately NOT a quick-switch: the dock never changes the active
+            // source. The old single-select footer existed because the dock could
+            // show one source at a time; folders replace that gesture with the open
+            // set. "Active" now only means the settings-edit selection + the single
+            // preflight target, and it changes in Settings (one click away via
+            // "Manage sources…"). Non-active sources don't need activation to work
+            // here — opening a folder arms it, and its failures surface per-folder.
             <div className="source-menu" role="menu">
               {liveSources.map(({ profile, isOpen }) => (
                 <button
