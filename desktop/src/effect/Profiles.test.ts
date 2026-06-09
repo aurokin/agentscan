@@ -153,6 +153,19 @@ describe("Profiles", () => {
       }),
     ));
 
+  it("addSshProfile reuses an existing unconfigured draft instead of adding a second", () =>
+    run(
+      "settings",
+      seed(stateOf("local", localProfile, sshProfile("ssh-draft", ""))),
+      ({ profiles }) =>
+        Effect.gen(function* () {
+          yield* profiles.addSshProfile;
+          const state = yield* SubscriptionRef.get(profiles.state);
+          expect(state.profiles.map((p) => p.id)).toEqual(["local", "ssh-draft"]);
+          expect(state.activeProfileId).toBe("ssh-draft");
+        }),
+    ));
+
   it("deleteActiveProfile removes an active ssh profile and falls back to local", () =>
     run(
       "settings",

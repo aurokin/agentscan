@@ -102,6 +102,19 @@ export class Profiles extends Effect.Service<Profiles>()("desktop/Profiles", {
 
     const addSshProfile = Effect.gen(function* () {
       const latest = loadProfileState(bridge.loadRaw);
+      // "Add remote" means "give me an unconfigured draft to fill in", and at most
+      // one can exist: labels derive from the connection, so a second empty-host
+      // draft would render as an identical card the user can't tell apart. Re-adding
+      // routes back to the existing draft instead.
+      const draft = latest.profiles.find(
+        (profile) => profile.kind === "ssh" && profile.host.trim() === "",
+      );
+      if (draft) {
+        if (draft.id !== latest.activeProfileId) {
+          yield* commit({ ...latest, activeProfileId: draft.id });
+        }
+        return;
+      }
       const profile: SshProfileConfig = {
         id: newProfileId("ssh"),
         kind: "ssh",

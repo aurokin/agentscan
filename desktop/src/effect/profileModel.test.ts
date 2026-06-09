@@ -68,12 +68,14 @@ describe("normalizeProfileState", () => {
     expect(state.profiles.map((profile) => profile.id)).toEqual(["local", "ssh-1", "ssh-3"]);
   });
 
-  it("keeps multiple still-unconfigured (empty-host) remotes", () => {
+  it("collapses multiple still-unconfigured (empty-host) drafts to the first", () => {
+    // Labels derive from the connection, so identical "Remote" cards would be
+    // indistinguishable; one draft is all that's needed to resume configuring.
     const state = normalizeProfileState({
       activeProfileId: "local",
       profiles: [localProfile, sshProfile("ssh-1", ""), sshProfile("ssh-2", "")],
     });
-    expect(state.profiles.map((profile) => profile.id)).toEqual(["local", "ssh-1", "ssh-2"]);
+    expect(state.profiles.map((profile) => profile.id)).toEqual(["local", "ssh-1"]);
   });
 
   it("strips the legacy user-editable name persisted by older versions", () => {

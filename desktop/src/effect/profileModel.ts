@@ -125,10 +125,12 @@ export function normalizeProfileState(
 
   // A source's identity IS its connection, so a persisted state (possibly written by
   // an older version that allowed it) keeps only the first profile per trimmed SSH
-  // host. Empty hosts are still-unconfigured drafts, not a shared connection.
+  // host. Empty-host drafts collapse to the first too: with connection-derived
+  // labels, several would render as identical cards the user can't tell apart, and
+  // only one draft is ever needed to resume configuring.
   const seenHosts = new Set<string>();
   const profiles = mapped.filter((profile) => {
-    if (profile.kind !== "ssh" || !profile.host) {
+    if (profile.kind !== "ssh") {
       return true;
     }
     if (seenHosts.has(profile.host)) {
