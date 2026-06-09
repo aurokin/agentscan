@@ -19,6 +19,10 @@ export type AgentscanPreflight = {
   ok: boolean;
   version: string | null;
   error: string | null;
+  // Absolute remote path the dock can offer as a one-click fix when a remote
+  // preflight fails because agentscan isn't on the SSH PATH but the user's shell
+  // can find it. Null for success, local runners, and unresolvable failures.
+  suggestedBinaryPath: string | null;
 };
 
 export type EnvironmentVariable = {

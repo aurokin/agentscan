@@ -15,6 +15,7 @@ const PREFLIGHT: AgentscanPreflight = {
   ok: true,
   version: "1.0.0",
   error: null,
+  suggestedBinaryPath: null,
 };
 
 // A scripted PrefsBridge: `emitted` records outbound broadcasts to assert on, `inbound`
@@ -121,6 +122,7 @@ describe("Preflight", () => {
             ok: false,
             version: null,
             error: "Host is required.",
+            suggestedBinaryPath: null,
           },
         });
         // The synthetic branch never touches the probe boundary.

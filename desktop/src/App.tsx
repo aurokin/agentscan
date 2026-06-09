@@ -1252,6 +1252,26 @@ function App({ mode }: { mode: ShellMode }) {
     setSshClientTtyDraft(activeProfile.kind === "ssh" ? activeProfile.clientTty : "");
   }
 
+  // One-click fix for the dock recovery screen: when a remote preflight reports
+  // where the user's shell finds agentscan (preflight.suggestedBinaryPath), set
+  // this profile's binary to that path and persist it. The Profiles service edits
+  // the active profile and broadcasts, so the dock re-probes with the new path —
+  // no need to open settings. Persists straight to the active profile (not the
+  // settings form drafts, which the dock never populates).
+  function applySuggestedBinaryPath(path: string) {
+    applyRunnerSettingsSet({
+      name: activeProfile.name,
+      runner: normalizeRunnerSettings({ ...activeProfile.runner, binaryPath: path }),
+      sshHost: activeProfile.kind === "ssh" ? activeProfile.host : "",
+      sshClientTty: activeProfile.kind === "ssh" ? activeProfile.clientTty : "",
+    });
+    appendDebugEntry({
+      kind: "settings",
+      label: `${activeProfile.name} binary set from probe`,
+      detail: path,
+    });
+  }
+
   // The persisted-state mutators live in the Profiles service, which owns the
   // merge-onto-latest discipline, the same-active no-op, and the cross-window
   // broadcast. These thin wrappers just dispatch the intent — and the mutator runs
@@ -1396,6 +1416,12 @@ function App({ mode }: { mode: ShellMode }) {
         : preflightState.status === "ready"
           ? (preflightState.preflight.error ?? `${profileKindLabel(activeProfile)} CLI unavailable`)
           : "Waiting for the daemon…";
+    // A remote not-found preflight may carry the path the user's shell resolves,
+    // letting us offer a one-click fix instead of only routing to settings.
+    const suggestedBinaryPath =
+      preflightState.status === "ready" && !preflightState.preflight.ok
+        ? preflightState.preflight.suggestedBinaryPath
+        : null;
     return (
       // Recovery UI renders in the live orientation: a centered column in the vertical
       // strip, and a compact row in the horizontal bar (styles.css) so the heading and
@@ -1418,10 +1444,18 @@ function App({ mode }: { mode: ShellMode }) {
           </div>
           {/* Always offer a path into settings: a hung "loading" (e.g. a stalled
               profile/SSH preflight) or a CLI-unavailable runner otherwise traps the
-              user with no way to fix the binary path or host. */}
-          <button type="button" onClick={openSettings}>
-            Open settings
-          </button>
+              user with no way to fix the binary path or host. When the remote probe
+              resolved an absolute path, also offer to apply it in one click. */}
+          <div className="boot-actions">
+            {suggestedBinaryPath ? (
+              <button type="button" onClick={() => applySuggestedBinaryPath(suggestedBinaryPath)}>
+                Use this path
+              </button>
+            ) : null}
+            <button type="button" onClick={openSettings}>
+              Open settings
+            </button>
+          </div>
         </div>
         {/* Frameless mode strips the native frame, so the recovery screen would otherwise
             be a borderless window the user can't move/minimize/dismiss while connecting or

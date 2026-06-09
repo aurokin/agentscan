@@ -1002,6 +1002,15 @@ kbd {
   gap: 12px;
 }
 
+/* Recovery actions ("Use this path" + "Open settings"). Wraps so a second button
+   never clips: stacks in the vertical strip, sits inline in the horizontal bar. */
+.boot-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+
 /* Horizontal bar: lay the recovery out as a compact row so the heading, status, and the
    only "Open settings" path fit the short bar without clipping. No window resize is
    involved, so an "auto" dock's orientation (derived from the window shape) is undisturbed. */
@@ -1014,7 +1023,8 @@ kbd {
   padding: 6px 20px;
 }
 .sidebar[data-orientation="horizontal"] .boot-spinner,
-.sidebar[data-orientation="horizontal"] .boot-state button {
+.sidebar[data-orientation="horizontal"] .boot-state button,
+.sidebar[data-orientation="horizontal"] .boot-actions {
   flex: 0 0 auto;
 }
 .sidebar[data-orientation="horizontal"] .boot-copy {
