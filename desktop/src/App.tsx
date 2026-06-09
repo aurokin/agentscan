@@ -161,6 +161,7 @@ function orientationForViewport(): Orientation {
 }
 
 type PickerGroup = {
+  key: string;
   project: string;
   rows: PickerRow[];
 };
@@ -2214,29 +2215,48 @@ function DebugLog({ entries }: { entries: DebugEntry[] }) {
 }
 
 function projectOf(row: PickerRow): string {
+  const workspaceLabel = row.workspace?.label?.trim();
+  if (workspaceLabel) {
+    return workspaceLabel;
+  }
+
   const tag = row.location_tag.trim();
   const session = tag.split(":", 1)[0]?.trim();
   return session || "ungrouped";
 }
 
+function projectKeyOf(row: PickerRow): string {
+  const workspaceId = row.workspace?.id?.trim();
+  if (workspaceId) {
+    return workspaceId;
+  }
+
+  return projectOf(row);
+}
+
 function paneSuffix(row: PickerRow): string {
   const tag = row.location_tag.trim();
+  if (row.workspace?.source && row.workspace.source !== "session") {
+    return tag;
+  }
+
   const colon = tag.indexOf(":");
   return colon >= 0 ? tag.slice(colon + 1) : "";
 }
 
-// Group rows by tmux session (the project), preserving first-seen order both
+// Group rows by backend workspace context, preserving first-seen order both
 // across groups and within each group so keyboard nav matches what's rendered.
 function groupRowsByProject(rows: PickerRow[]): PickerGroup[] {
   const groups: PickerGroup[] = [];
   const byProject = new Map<string, PickerGroup>();
 
   for (const row of rows) {
+    const projectKey = projectKeyOf(row);
     const project = projectOf(row);
-    let group = byProject.get(project);
+    let group = byProject.get(projectKey);
     if (!group) {
-      group = { project, rows: [] };
-      byProject.set(project, group);
+      group = { key: projectKey, project, rows: [] };
+      byProject.set(projectKey, group);
       groups.push(group);
     }
     group.rows.push(row);
@@ -2287,6 +2307,8 @@ function filterPickerRows(rows: PickerRow[], query: string) {
       row.status.kind,
       row.display_label,
       row.location_tag,
+      row.workspace?.label ?? "",
+      row.workspace?.source ?? "",
     ]
       .join(" ")
       .toLowerCase();
@@ -2431,7 +2453,7 @@ function GroupedPicker({
   return (
     <div className="picker-groups">
       {groups.map((group) => (
-        <section className="picker-group" key={group.project}>
+        <section className="picker-group" key={group.key}>
           <h2 className="group-header">{group.project}</h2>
           <ul className="agent-list">
             {group.rows.map((row) => {

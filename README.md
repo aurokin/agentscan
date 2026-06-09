@@ -251,6 +251,7 @@ building once.
 ```toml
 # ${XDG_CONFIG_HOME:-~/.config}/agentscan/config.toml
 icons = "emoji"
+picker_group_by = "session"
 picker_keys = [
   "1", "2", "3", "4", "5",
   "Q", "E", "R", "F", "G", "T",
@@ -259,6 +260,10 @@ picker_keys = [
 disable_reconcile = false
 disable_proc_fallback = false
 ```
+
+`picker_group_by` accepts `session`, `git-repo`, or `cwd`. `session` preserves
+the default tmux-location order. `git-repo` and `cwd` group and order picker rows
+by workspace context first, then by `session:window.pane`.
 
 Supported icon modes:
 

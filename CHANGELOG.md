@@ -14,6 +14,12 @@
 - When that probe resolves a path, the dock's "Can't reach agentscan" recovery
   screen shows a **Use this path** button that sets the profile's binary to it
   and re-probes in one click — no trip through settings required.
+- Added `picker_group_by` config for grouping picker rows by tmux session, git
+  repo, or cwd while preserving `session:window.pane` as the tmux location.
+- Added `workspace` context to `agentscan hotkeys --format json` rows so TUI and
+  desktop clients can render project-oriented groups without parsing
+  `location_tag`; clients use `workspace.id` for grouping and
+  `workspace.label` for display.
 
 ### Fixed
 

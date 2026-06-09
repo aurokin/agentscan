@@ -90,6 +90,10 @@ fn config_defaults_to_emoji_when_file_is_missing() {
         &super::picker::DEFAULT_PICKER_SELECTION_KEYS
     );
     assert_eq!(
+        resolved.picker_group_by,
+        super::picker::PickerGroupBy::Session
+    );
+    assert_eq!(
         resolved.config_path.as_deref(),
         Some(tempdir.path().join("agentscan/config.toml").as_path())
     );
@@ -135,6 +139,33 @@ fn config_reads_custom_picker_keys_from_file() {
 }
 
 #[test]
+fn config_reads_picker_group_by_from_file() {
+    for (value, expected) in [
+        ("session", super::picker::PickerGroupBy::Session),
+        ("git-repo", super::picker::PickerGroupBy::GitRepo),
+        ("cwd", super::picker::PickerGroupBy::Cwd),
+    ] {
+        let tempdir = tempfile::tempdir().expect("tempdir should be created");
+        let config_dir = tempdir.path().join("agentscan");
+        std::fs::create_dir_all(&config_dir).expect("config dir should be created");
+        std::fs::write(
+            config_dir.join("config.toml"),
+            format!("picker_group_by = \"{value}\"\n"),
+        )
+        .expect("config file should be written");
+        let source = config::ConfigSource {
+            xdg_config_home: Some(tempdir.path().to_path_buf()),
+            ..config::ConfigSource::default()
+        };
+
+        let resolved =
+            config::resolve_picker_config_from_source(&source).expect("config should parse");
+
+        assert_eq!(resolved.picker_group_by, expected);
+    }
+}
+
+#[test]
 fn icon_config_ignores_invalid_picker_keys() {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let config_dir = tempdir.path().join("agentscan");
@@ -177,6 +208,27 @@ fn picker_config_ignores_invalid_icons() {
 }
 
 #[test]
+fn icon_config_ignores_invalid_picker_group_by() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let config_dir = tempdir.path().join("agentscan");
+    std::fs::create_dir_all(&config_dir).expect("config dir should be created");
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "icons = \"nerd-font\"\npicker_group_by = \"project\"\n",
+    )
+    .expect("config file should be written");
+    let source = config::ConfigSource {
+        xdg_config_home: Some(tempdir.path().to_path_buf()),
+        ..config::ConfigSource::default()
+    };
+
+    let resolved = config::resolve_icon_config_from_source(&source)
+        .expect("icon-only config should ignore picker group validation");
+
+    assert_eq!(resolved.icons, IconMode::NerdFont);
+}
+
+#[test]
 fn config_rejects_invalid_picker_keys() {
     for (config_text, expected) in [
         ("picker_keys = []\n", "exactly 16"),
@@ -199,6 +251,33 @@ fn config_rejects_invalid_picker_keys() {
 
         let error = config::resolve_config_from_source(&source)
             .expect_err("invalid picker key config should be rejected");
+        let message = format!("{error:#}");
+
+        assert!(
+            message.contains(expected),
+            "expected {expected:?} error for {config_text:?}, got {message}"
+        );
+    }
+}
+
+#[test]
+fn config_rejects_invalid_picker_group_by() {
+    for (config_text, expected) in [
+        ("picker_group_by = \"project\"\n", "session, git-repo, cwd"),
+        ("picker_group_by = []\n", "picker_group_by must be one of"),
+    ] {
+        let tempdir = tempfile::tempdir().expect("tempdir should be created");
+        let config_dir = tempdir.path().join("agentscan");
+        std::fs::create_dir_all(&config_dir).expect("config dir should be created");
+        std::fs::write(config_dir.join("config.toml"), config_text)
+            .expect("config file should be written");
+        let source = config::ConfigSource {
+            xdg_config_home: Some(tempdir.path().to_path_buf()),
+            ..config::ConfigSource::default()
+        };
+
+        let error = config::resolve_config_from_source(&source)
+            .expect_err("invalid picker group config should be rejected");
         let message = format!("{error:#}");
 
         assert!(

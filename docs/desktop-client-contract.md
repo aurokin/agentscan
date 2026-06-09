@@ -38,7 +38,13 @@ desktop code.
 Picker selection keys are part of the CLI picker model. Desktop clients must
 render and activate the returned `row.key` values from
 `agentscan hotkeys --format json` instead of assuming the built-in default order,
-because users can customize `picker_keys` in the host `agentscan` config.
+because users can customize `picker_keys` and `picker_group_by` in the host
+`agentscan` config.
+
+When picker rows include `workspace`, clients should treat `workspace.id` as the
+grouping identity and `workspace.label` as display text. Labels are intentionally
+short and may collide across unrelated repositories or folders; `workspace.id`
+keeps those groups distinct without changing what users see.
 
 ## macOS Window Lifecycle
 

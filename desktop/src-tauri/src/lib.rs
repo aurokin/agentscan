@@ -2333,12 +2333,13 @@ mod tests {
                 "pane_id": "%1",
                 "provider": "codex",
                 "status": { "kind": "idle" },
-                "display_label": "Root Task",
-                "location_tag": "work:0.0",
-                "location": { "session_name": "work" },
-                "display": { "provider_marker": "💭" }
-              }
-            ]"#,
+	                "display_label": "Root Task",
+	                "location_tag": "work:0.0",
+	                "location": { "session_name": "work" },
+	                "workspace": { "label": "agentscan", "source": "git_repo" },
+	                "display": { "provider_marker": "💭" }
+	              }
+	            ]"#,
         )
         .expect("picker row parses");
 
@@ -2348,6 +2349,10 @@ mod tests {
         assert_eq!(rows[0].provider.as_deref(), Some("codex"));
         assert_eq!(rows[0].status.kind, "idle");
         assert_eq!(rows[0].location.session_name, "work");
+        assert_eq!(
+            rows[0].extra["workspace"]["label"].as_str(),
+            Some("agentscan")
+        );
         assert!(rows[0].extra.contains_key("display"));
     }
 

@@ -75,6 +75,7 @@ The config file shape is:
 
 ```toml
 icons = "emoji"
+picker_group_by = "session"
 picker_keys = [
   "1", "2", "3", "4", "5",
   "Q", "E", "R", "F", "G", "T",
@@ -88,6 +89,12 @@ disable_proc_fallback = false
 there is no CLI or environment override. The list remaps the 16 selection slots
 and must contain exactly 16 unique single ASCII letters or digits. Letters are
 normalized case-insensitively. `N` and `P` are reserved for TUI paging.
+
+`picker_group_by` customizes the picker grouping and row order. It is
+config-file only: there is no CLI or environment override. Valid values are
+`session`, `git-repo`, and `cwd`. `session` is the default and preserves the
+current tmux-location order. `git-repo` and `cwd` order rows by workspace group,
+then tmux location; picker hotkeys are assigned after that ordering.
 
 `disable_reconcile` and `disable_proc_fallback` are diagnostic runtime knobs.
 Their environment variables, `AGENTSCAN_DISABLE_RECONCILE` and
@@ -117,11 +124,17 @@ desktop UI code. The default shared key order is:
 
 Use `agentscan hotkeys --format json` to render a picker outside the terminal
 TUI. Each row includes the assigned key, pane id, provider, status, display
-  metadata, display label, structured location, and location tag. Desktop
-  surfaces should consume these rows directly, or use the returned `pane_id` with
+metadata, display label, structured location, location tag, and workspace
+context. Desktop surfaces should consume these rows directly, or use the
+returned `pane_id` with
 `agentscan focus <pane-id>` when acting on a row they already rendered.
 Consumers must render the returned `key` field rather than assuming the default
-order because users may configure `picker_keys`.
+order because users may configure `picker_keys` and `picker_group_by`.
+
+`location_tag` remains the tmux address (`session:window.pane`) in every
+grouping mode. `workspace.label` is the human grouping label, `workspace.id` is
+the machine grouping identity for clients, and `workspace.source` reports
+whether it came from `session`, `git_repo`, or `cwd`.
 
 Use `agentscan hotkey <key>` as the strict action path for automation and
 desktop callers. It normalizes key case, resolves the key against the current

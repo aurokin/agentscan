@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
 
 use crossterm::cursor::MoveTo;
@@ -120,9 +120,18 @@ pub(crate) fn render_tui_frame_for_size_with_icons(
         .min(state.panes.len());
     let visible_panes = &state.panes[state.page_start..visible_end];
     let previous_key_targets = state.key_targets.clone();
+    if state.reset_key_targets_on_next_render {
+        state.key_targets.clear();
+        state.reset_key_targets_on_next_render = false;
+    }
     synchronize_key_targets_with_keys(&mut state.key_targets, visible_panes, &state.picker_keys);
+    let current_pane_ids = state
+        .panes
+        .iter()
+        .map(|pane| pane.pane_id.as_str())
+        .collect::<HashSet<_>>();
     for (key, pane_id) in previous_key_targets {
-        if !state.key_targets.contains_key(&key) {
+        if !state.key_targets.contains_key(&key) && !current_pane_ids.contains(pane_id.as_str()) {
             state.retired_key_targets.insert(key, pane_id);
         }
     }
@@ -135,8 +144,13 @@ pub(crate) fn render_tui_frame_for_size_with_icons(
         .map(|pane| pane.pane_id.clone())
         .collect::<Vec<_>>();
     let row_width = usize::from(terminal_size.width);
-    let mut lines =
-        render_rows_for_width_with_icons(visible_panes, &state.key_targets, row_width, icon_mode);
+    let mut lines = render_rows_for_width_with_location_labels_and_icons(
+        visible_panes,
+        &state.key_targets,
+        row_width,
+        &state.pane_location_labels,
+        icon_mode,
+    );
     lines.extend(render_footer_lines(
         state.page_start,
         page_size,
@@ -175,6 +189,22 @@ pub(crate) fn render_rows_for_width_with_icons(
     width: usize,
     icon_mode: IconMode,
 ) -> Vec<String> {
+    render_rows_for_width_with_location_labels_and_icons(
+        panes,
+        key_targets,
+        width,
+        &HashMap::new(),
+        icon_mode,
+    )
+}
+
+fn render_rows_for_width_with_location_labels_and_icons(
+    panes: &[PaneRecord],
+    key_targets: &BTreeMap<char, String>,
+    width: usize,
+    location_labels: &HashMap<String, String>,
+    icon_mode: IconMode,
+) -> Vec<String> {
     let key_labels: HashMap<&str, char> = key_targets
         .iter()
         .map(|(key, pane_id)| (pane_id.as_str(), *key))
@@ -187,6 +217,7 @@ pub(crate) fn render_rows_for_width_with_icons(
                 pane,
                 key_labels.get(pane.pane_id.as_str()).copied(),
                 width,
+                location_labels,
                 icon_mode,
             )
         })
@@ -197,18 +228,26 @@ fn render_pane_row(
     pane: &PaneRecord,
     selection: Option<char>,
     width: usize,
+    location_labels: &HashMap<String, String>,
     icon_mode: IconMode,
 ) -> String {
     let selection_label = selection
         .map(|assigned_key| format!("[{assigned_key}]"))
         .unwrap_or_else(|| "   ".to_string());
     let provider = provider_display_marker(pane.provider, icon_mode);
+    let fallback_location;
+    let location = if let Some(location) = location_labels.get(pane.pane_id.as_str()) {
+        location.as_str()
+    } else {
+        fallback_location = pane.location.tag();
+        fallback_location.as_str()
+    };
     let prefix = format!(
         "{} {} {} {} - ",
         selection_label,
         status_emoji(pane.status.kind),
         provider,
-        pane.location.tag()
+        location
     );
     let sanitized_label = sanitize_tui_label(pane.display.label.as_str());
     format_row_with_trailing_label(&prefix, sanitized_label.as_str(), width)

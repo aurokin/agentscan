@@ -322,6 +322,7 @@ fn command_hotkeys(args: &HotkeysArgs) -> Result<()> {
             &snapshot.panes,
             focus.focused_session.as_deref(),
             u32::try_from(focus.attached_client_count).unwrap_or(u32::MAX),
+            config.picker_group_by,
             &config.picker_keys,
         ),
         args.format,
@@ -335,7 +336,13 @@ fn command_hotkey(args: &HotkeyArgs) -> Result<()> {
     snapshot::filter_snapshot(&mut snapshot, args.all);
     // Focus highlight and client count are irrelevant when resolving a key to a
     // pane to switch to.
-    let rows = picker::picker_rows(&snapshot.panes, None, 0, &config.picker_keys);
+    let rows = picker::picker_rows(
+        &snapshot.panes,
+        None,
+        0,
+        config.picker_group_by,
+        &config.picker_keys,
+    );
     let row = rows
         .iter()
         .find(|row| row.key == selected_key)

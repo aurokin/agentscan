@@ -83,19 +83,35 @@ impl Default for TuiConnectionState {
 #[derive(Debug, Default)]
 pub(crate) struct TuiState {
     pub(super) picker_keys: picker::PickerKeySet,
+    pub(super) picker_group_by: picker::PickerGroupBy,
     pub(super) key_targets: BTreeMap<char, String>,
     pub(super) retired_key_targets: BTreeMap<char, String>,
     pub(super) panes: Vec<PaneRecord>,
+    pub(super) pane_location_labels: HashMap<String, String>,
+    pub(super) workspace_cache: picker::PickerWorkspaceCache,
     pub(super) error_message: Option<String>,
     pub(super) connection: TuiConnectionState,
     pub(super) page_start: usize,
+    pub(super) reset_key_targets_on_next_render: bool,
     last_terminal_size: Option<TuiTerminalSize>,
 }
 
 impl TuiState {
+    #[cfg(test)]
     pub(crate) fn with_picker_keys(picker_keys: picker::PickerKeySet) -> Self {
         Self {
             picker_keys,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn with_picker_config(
+        picker_keys: picker::PickerKeySet,
+        picker_group_by: picker::PickerGroupBy,
+    ) -> Self {
+        Self {
+            picker_keys,
+            picker_group_by,
             ..Self::default()
         }
     }
@@ -109,14 +125,44 @@ impl TuiState {
     }
 
     pub(crate) fn replace_panes(&mut self, panes: Vec<PaneRecord>) {
-        let merged_panes = merge_tui_session_panes(&self.panes, panes);
-        let page_start = reanchor_page_start(
+        let mut merged_panes = merge_tui_session_panes(&self.panes, panes);
+        picker::sort_panes_for_picker_with_cache(
+            &mut merged_panes,
+            self.picker_group_by,
+            &mut self.workspace_cache,
+        );
+        let order_changed = pane_id_order(&self.panes) != pane_id_order(&merged_panes);
+        let same_panes_reordered = order_changed && same_pane_id_set(&self.panes, &merged_panes);
+        let page_size = self.page_size();
+        let page_start = if same_panes_reordered {
+            reanchor_page_start_to_page_boundary(
+                &self.panes,
+                &merged_panes,
+                self.page_start,
+                page_size,
+            )
+        } else {
+            reanchor_page_start(&self.panes, &merged_panes, self.page_start, page_size)
+        };
+        let visible_key_slots_changed = visible_key_slots_changed(
             &self.panes,
             &merged_panes,
             self.page_start,
-            self.page_size(),
+            page_start,
+            page_size,
+        );
+        if visible_key_slots_changed
+            && (same_panes_reordered || self.picker_group_by != picker::PickerGroupBy::Session)
+        {
+            self.reset_key_targets_on_next_render = true;
+        }
+        let pane_location_labels = pane_location_labels(
+            &merged_panes,
+            self.picker_group_by,
+            &mut self.workspace_cache,
         );
         self.panes = merged_panes;
+        self.pane_location_labels = pane_location_labels;
         self.page_start = page_start;
         self.error_message = None;
         self.connection = TuiConnectionState::connected();
@@ -126,6 +172,8 @@ impl TuiState {
         self.key_targets.clear();
         self.retired_key_targets.clear();
         self.panes.clear();
+        self.pane_location_labels.clear();
+        self.workspace_cache.clear();
         self.page_start = 0;
         self.error_message = Some(message.clone());
         self.connection = TuiConnectionState::unavailable(message);
@@ -222,6 +270,26 @@ fn reanchor_page_start(
     previous_page_start.min(last_non_empty_page_start(updated_panes.len(), page_size))
 }
 
+fn reanchor_page_start_to_page_boundary(
+    previous_panes: &[PaneRecord],
+    updated_panes: &[PaneRecord],
+    previous_page_start: usize,
+    page_size: usize,
+) -> usize {
+    let anchored_start = reanchor_page_start(
+        previous_panes,
+        updated_panes,
+        previous_page_start,
+        page_size,
+    );
+    if page_size == 0 {
+        return 0;
+    }
+
+    ((anchored_start / page_size) * page_size)
+        .min(last_non_empty_page_start(updated_panes.len(), page_size))
+}
+
 pub(crate) fn merge_tui_session_panes(
     current_order: &[PaneRecord],
     updated_panes: Vec<PaneRecord>,
@@ -246,6 +314,94 @@ pub(crate) fn merge_tui_session_panes(
     }
 
     ordered_panes
+}
+
+fn pane_id_order(panes: &[PaneRecord]) -> Vec<&str> {
+    panes.iter().map(|pane| pane.pane_id.as_str()).collect()
+}
+
+fn same_pane_id_set(left: &[PaneRecord], right: &[PaneRecord]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+
+    let left_ids = left
+        .iter()
+        .map(|pane| pane.pane_id.as_str())
+        .collect::<HashSet<_>>();
+    right
+        .iter()
+        .all(|pane| left_ids.contains(pane.pane_id.as_str()))
+}
+
+fn visible_key_slots_changed(
+    previous_panes: &[PaneRecord],
+    updated_panes: &[PaneRecord],
+    previous_page_start: usize,
+    updated_page_start: usize,
+    page_size: usize,
+) -> bool {
+    if previous_panes.is_empty() || updated_panes.is_empty() || page_size == 0 {
+        return false;
+    }
+
+    let previous_visible_end = previous_page_start
+        .saturating_add(page_size)
+        .min(previous_panes.len());
+    let previous_slots = previous_panes
+        [previous_page_start.min(previous_panes.len())..previous_visible_end]
+        .iter()
+        .enumerate()
+        .map(|(slot, pane)| (pane.pane_id.as_str(), slot))
+        .collect::<HashMap<_, _>>();
+    let updated_visible_end = updated_page_start
+        .saturating_add(page_size)
+        .min(updated_panes.len());
+
+    updated_panes[updated_page_start.min(updated_panes.len())..updated_visible_end]
+        .iter()
+        .enumerate()
+        .any(|(slot, pane)| {
+            previous_slots
+                .get(pane.pane_id.as_str())
+                .is_some_and(|previous_slot| *previous_slot != slot)
+        })
+}
+
+fn pane_location_labels(
+    panes: &[PaneRecord],
+    picker_group_by: picker::PickerGroupBy,
+    workspace_cache: &mut picker::PickerWorkspaceCache,
+) -> HashMap<String, String> {
+    panes
+        .iter()
+        .map(|pane| {
+            (
+                pane.pane_id.clone(),
+                pane_picker_location_label(pane, picker_group_by, workspace_cache),
+            )
+        })
+        .collect()
+}
+
+fn pane_picker_location_label(
+    pane: &PaneRecord,
+    picker_group_by: picker::PickerGroupBy,
+    workspace_cache: &mut picker::PickerWorkspaceCache,
+) -> String {
+    let location_tag = pane.location.tag();
+    if picker_group_by == picker::PickerGroupBy::Session {
+        return location_tag;
+    }
+
+    let workspace = workspace_cache.workspace_for_pane(pane, picker_group_by);
+    if workspace.source == picker::PickerWorkspaceSource::Session
+        || workspace.label == pane.location.session_name
+    {
+        location_tag
+    } else {
+        format!("{} {}", workspace.label, location_tag)
+    }
 }
 
 pub(crate) fn synchronize_key_targets(

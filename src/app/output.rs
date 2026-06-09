@@ -74,9 +74,19 @@ fn print_picker_rows_text(rows: &[picker::PickerRow]) {
             row.key,
             row.status.kind.as_str(),
             provider,
-            row.location_tag,
+            picker_row_location_text(row),
             row.display_label
         );
+    }
+}
+
+fn picker_row_location_text(row: &picker::PickerRow) -> String {
+    if row.workspace.source == picker::PickerWorkspaceSource::Session
+        || row.workspace.label == row.location.session_name
+    {
+        row.location_tag.clone()
+    } else {
+        format!("{} {}", row.workspace.label, row.location_tag)
     }
 }
 

@@ -95,6 +95,11 @@ impl TmuxPaneRowBuilder {
         self
     }
 
+    fn agent_cwd(mut self, agent_cwd: impl Into<String>) -> Self {
+        self.row.agent_cwd = Some(agent_cwd.into());
+        self
+    }
+
     fn pane_active(mut self, pane_active: bool) -> Self {
         self.row.pane_active = pane_active;
         self

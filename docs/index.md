@@ -49,6 +49,10 @@ This repo uses progressively disclosed documentation.
     ADR for the desktop app's latch-only daemon policy: the dock never
     auto-starts a daemon (including at launch); only an explicit "Start
     agentscan" does. Desktop-only; the TUI keeps its auto-start.
+  - `docs/adr/picker-workspace-grouping-and-location-identity.md`
+    ADR for separating picker workspace grouping from tmux location
+    identity, preserving `session:window.pane`, and keeping picker hotkey
+    assignment backend-owned.
 - `docs/notes/`
   Narrow follow-up or historical notes that are too specific for the primary docs but still worth keeping in the repo.
   - `docs/notes/provider-evidence-roadmap.md`

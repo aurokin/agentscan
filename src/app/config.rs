@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
-use super::picker::PickerKeySet;
+use super::picker::{PickerGroupBy, PickerKeySet};
 
 pub(crate) const ICONS_ENV_VAR: &str = "AGENTSCAN_ICONS";
 pub(crate) const DISABLE_RECONCILE_ENV_VAR: &str = "AGENTSCAN_DISABLE_RECONCILE";
@@ -49,6 +49,7 @@ pub(crate) struct CliConfigOverrides {
 pub(crate) struct ResolvedConfig {
     pub(crate) icons: IconMode,
     pub(crate) picker_keys: PickerKeySet,
+    pub(crate) picker_group_by: PickerGroupBy,
     pub(crate) config_path: Option<PathBuf>,
 }
 
@@ -61,6 +62,7 @@ pub(crate) struct ResolvedIconConfig {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ResolvedPickerConfig {
     pub(crate) picker_keys: PickerKeySet,
+    pub(crate) picker_group_by: PickerGroupBy,
     pub(crate) config_path: Option<PathBuf>,
 }
 
@@ -76,6 +78,7 @@ pub(crate) struct ResolvedRuntimeOptions {
 struct FileConfig {
     icons: Option<toml::Value>,
     picker_keys: Option<toml::Value>,
+    picker_group_by: Option<toml::Value>,
     disable_reconcile: Option<toml::Value>,
     disable_proc_fallback: Option<toml::Value>,
 }
@@ -111,10 +114,12 @@ pub(crate) fn resolve_config_from_source(source: &ConfigSource) -> Result<Resolv
     let (config_path, file_config) = load_file_config(source)?;
     let icons = resolve_icon_mode(source, &file_config, config_path.as_deref())?;
     let picker_keys = resolve_picker_keys(&file_config, config_path.as_deref())?;
+    let picker_group_by = resolve_picker_group_by(&file_config, config_path.as_deref())?;
 
     Ok(ResolvedConfig {
         icons,
         picker_keys,
+        picker_group_by,
         config_path,
     })
 }
@@ -144,9 +149,11 @@ pub(crate) fn resolve_picker_config_from_source(
 ) -> Result<ResolvedPickerConfig> {
     let (config_path, file_config) = load_file_config(source)?;
     let picker_keys = resolve_picker_keys(&file_config, config_path.as_deref())?;
+    let picker_group_by = resolve_picker_group_by(&file_config, config_path.as_deref())?;
 
     Ok(ResolvedPickerConfig {
         picker_keys,
+        picker_group_by,
         config_path,
     })
 }
@@ -287,6 +294,21 @@ fn resolve_picker_keys(
     .map(|picker_keys| picker_keys.unwrap_or_default())
 }
 
+fn resolve_picker_group_by(
+    file_config: &FileConfig,
+    config_path: Option<&Path>,
+) -> Result<PickerGroupBy> {
+    with_config_context(
+        file_config
+            .picker_group_by
+            .as_ref()
+            .map(parse_picker_group_by_value)
+            .transpose(),
+        config_path,
+    )
+    .map(|picker_group_by| picker_group_by.unwrap_or_default())
+}
+
 fn parse_icon_mode_value(value: &toml::Value, source_name: &str) -> Result<IconMode> {
     let Some(value) = value.as_str() else {
         bail!("invalid {source_name} value; expected one of: emoji, nerd-font, nerd-font-patched");
@@ -320,6 +342,21 @@ fn parse_picker_key_set(value: &toml::Value) -> Result<PickerKeySet> {
     }
 
     PickerKeySet::from_config_values(&keys)
+}
+
+fn parse_picker_group_by_value(value: &toml::Value) -> Result<PickerGroupBy> {
+    let Some(value) = value.as_str() else {
+        bail!("picker_group_by must be one of: session, git-repo, cwd");
+    };
+
+    match value.trim() {
+        "session" => Ok(PickerGroupBy::Session),
+        "git-repo" => Ok(PickerGroupBy::GitRepo),
+        "cwd" => Ok(PickerGroupBy::Cwd),
+        other => bail!(
+            "invalid picker_group_by value `{other}`; expected one of: session, git-repo, cwd"
+        ),
+    }
 }
 
 fn with_config_context<T>(result: Result<T>, config_path: Option<&Path>) -> Result<T> {
