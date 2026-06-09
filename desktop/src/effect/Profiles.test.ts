@@ -23,12 +23,17 @@ const sshProfile = (id: string, host = "box", enabled = true) => ({
   enabled,
 });
 
-const stateOf = (activeProfileId: string, ...profiles: ProfileState["profiles"]): ProfileState => ({
+// Deliberately the LEGACY persisted shape (no openProfileIds), so seeds exercise
+// the open-state migration; loadProfileState normalizes it to open the active id.
+const stateOf = (
+  activeProfileId: string,
+  ...profiles: ProfileState["profiles"]
+): Partial<ProfileState> => ({
   activeProfileId,
   profiles,
 });
 
-const seed = (state: ProfileState): Record<string, string> => ({
+const seed = (state: Partial<ProfileState>): Record<string, string> => ({
   [PROFILES_STORAGE_KEY]: JSON.stringify(state),
 });
 
@@ -206,5 +211,81 @@ describe("Profiles", () => {
         const state = yield* SubscriptionRef.get(profiles.state);
         expect(state.activeProfileId).toBe("ssh-1");
       }),
+    ));
+
+  it("migrates a legacy persisted state (no openProfileIds) to open the active profile", () =>
+    run("dock", seed(stateOf("ssh-1", localProfile, sshProfile("ssh-1"))), ({ profiles }) =>
+      Effect.gen(function* () {
+        const state = yield* SubscriptionRef.get(profiles.state);
+        expect(state.openProfileIds).toEqual(["ssh-1"]);
+      }),
+    ));
+
+  it("toggleProfileOpen persists the open set and broadcasts", () =>
+    run(
+      "dock",
+      seed(stateOf("local", localProfile, sshProfile("ssh-1"))),
+      ({ profiles, store, emitted }) =>
+        Effect.gen(function* () {
+          yield* profiles.toggleProfileOpen("ssh-1");
+          const state = yield* SubscriptionRef.get(profiles.state);
+          expect(state.openProfileIds).toEqual(["local", "ssh-1"]);
+          const persisted = JSON.parse(store.get(PROFILES_STORAGE_KEY)!) as ProfileState;
+          expect(persisted.openProfileIds).toEqual(["local", "ssh-1"]);
+          expect(yield* Queue.take(emitted)).toEqual({ kind: "profiles" });
+
+          yield* profiles.toggleProfileOpen("ssh-1");
+          expect((yield* SubscriptionRef.get(profiles.state)).openProfileIds).toEqual(["local"]);
+        }),
+    ));
+
+  it("toggleProfileOpen with an unknown id is a no-op (no write, no broadcast)", () =>
+    run("dock", seed(stateOf("local", localProfile)), ({ profiles, emitted }) =>
+      Effect.gen(function* () {
+        yield* profiles.toggleProfileOpen("ghost");
+        expect(yield* Queue.size(emitted)).toBe(0);
+      }),
+    ));
+
+  it("reorderProfile persists the new source order", () =>
+    run(
+      "dock",
+      seed(stateOf("local", localProfile, sshProfile("ssh-1"), sshProfile("ssh-2", "other"))),
+      ({ profiles, store, emitted }) =>
+        Effect.gen(function* () {
+          yield* profiles.reorderProfile("ssh-2", "local");
+          const state = yield* SubscriptionRef.get(profiles.state);
+          expect(state.profiles.map((p) => p.id)).toEqual(["ssh-2", "local", "ssh-1"]);
+          const persisted = JSON.parse(store.get(PROFILES_STORAGE_KEY)!) as ProfileState;
+          expect(persisted.profiles.map((p) => p.id)).toEqual(["ssh-2", "local", "ssh-1"]);
+          expect(yield* Queue.take(emitted)).toEqual({ kind: "profiles" });
+        }),
+    ));
+
+  it("addSshProfile starts the new source open", () =>
+    run("settings", seed(stateOf("local", localProfile)), ({ profiles }) =>
+      Effect.gen(function* () {
+        yield* profiles.addSshProfile;
+        const state = yield* SubscriptionRef.get(profiles.state);
+        const added = state.profiles.find((p) => p.kind === "ssh")!;
+        expect(state.openProfileIds).toEqual(["local", added.id]);
+      }),
+    ));
+
+  it("deleteActiveProfile drops the deleted id from the open set, keeping the rest", () =>
+    run(
+      "settings",
+      seed({
+        activeProfileId: "ssh-1",
+        profiles: [localProfile, sshProfile("ssh-1"), sshProfile("ssh-2", "other")],
+        openProfileIds: ["ssh-2", "ssh-1"],
+      }),
+      ({ profiles }) =>
+        Effect.gen(function* () {
+          yield* profiles.deleteActiveProfile;
+          const state = yield* SubscriptionRef.get(profiles.state);
+          expect(state.profiles.map((p) => p.id)).toEqual(["local", "ssh-2"]);
+          expect(state.openProfileIds).toEqual(["ssh-2"]);
+        }),
     ));
 });

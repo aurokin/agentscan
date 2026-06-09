@@ -309,9 +309,30 @@ Implications:
   `LiveConnection` runs one supervised subscription fiber per configured source
   over a per-key state map (`configure` diffs a target list: start added keys,
   interrupt removed keys, leave unchanged keys running). The latch-only policy,
-  epoch fencing, and explicit-Start latch all apply per key. The dock currently
-  configures a single source (the active profile); the keyed plumbing exists so
-  multiple host folders can hold live subscriptions concurrently.
+  epoch fencing, and explicit-Start latch all apply per key. The dock configures
+  one target per OPEN host folder (below), so multiple sources hold live
+  subscriptions concurrently.
+- the dock's vertical strip is a list of host folders: one collapsible section
+  per enabled source, in the user's persisted source order (drag-reorder in
+  Settings). Open folder = live subscription armed + that source's
+  workspace-grouped rows and per-source recovery strip; closed folder = header
+  only, no subscription. Open state persists per profile id
+  (`openProfileIds`; migration opens the previously-active profile). Row
+  keybinds (Ctrl+<key>) are owned by exactly ONE source — the topmost open
+  folder in source order (`keybindOwnerId`) — and resolve only against the
+  owner's rows; other folders render their key labels dimmed as information,
+  and every activation runs with the row's OWN source's runner settings.
+  Ownership follows reorder and passes to the next open folder when the owner
+  closes. The horizontal bar keeps the single-source presentation, showing the
+  keybind owner. Preflight still probes only the settings-selected active
+  source; other open sources arm on committed-profile validity and surface
+  failures through their keyed live state. The full-screen boot/recovery
+  takeover is scoped to when no other open folder could render; with another
+  folder open, the active source's preflight failure surfaces inside its own
+  folder (error dot + Open settings strip). The horizontal bar still shows
+  only the owner's keyed live state, so when the takeover is suppressed the
+  active source's preflight failure has no dedicated surface there — a known
+  gap of the single-source bar, not of the folder model.
 - the machine that owns tmux also owns `agentscan` daemon lifecycle,
   classification, picker rows, hotkey actions, and focus actions
 - remote desktop support is SSH command execution around documented JSON/JSONL

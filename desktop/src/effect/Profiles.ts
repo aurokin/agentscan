@@ -8,7 +8,9 @@ import {
   newProfileId,
   normalizeProfileState,
   normalizeRunnerSettings,
+  reorderProfile as reorderProfileState,
   storeProfileState,
+  toggleProfileOpen as toggleProfileOpenState,
   updateProfileSettingsById,
   type ProfileState,
   type RunnerSettings,
@@ -76,8 +78,9 @@ export class Profiles extends Effect.Service<Profiles>()("desktop/Profiles", {
         const latest = loadProfileState(bridge.loadRaw);
         if (id === latest.activeProfileId) {
           // Clicking the already-persisted active source must not re-commit (a needless
-          // write/broadcast momentarily flickers the dock through "Switching profile…").
-          // Adopt latest only if our ref actually diverged (a dirty window may lag).
+          // write/broadcast that would also re-run every profileState-keyed effect in
+          // both windows). Adopt latest only if our ref actually diverged (a dirty
+          // window may lag).
           if (JSON.stringify(current) !== JSON.stringify(latest)) {
             yield* SubscriptionRef.set(stateRef, latest);
           }
@@ -105,6 +108,9 @@ export class Profiles extends Effect.Service<Profiles>()("desktop/Profiles", {
       yield* commit({
         activeProfileId: profile.id,
         profiles: [...latest.profiles, profile],
+        // New sources start open so the folder appears (and streams) the moment
+        // the host is configured.
+        openProfileIds: [...latest.openProfileIds, profile.id],
       });
     });
 
@@ -124,9 +130,36 @@ export class Profiles extends Effect.Service<Profiles>()("desktop/Profiles", {
           ? latest.activeProfileId
           : fallback?.id,
         profiles,
+        // Pass the open set through (normalize drops the deleted id); omitting it
+        // would trip the legacy migration and reset every folder to closed-but-active.
+        openProfileIds: latest.openProfileIds,
       });
       yield* commit(next);
     });
+
+    // Open/close one source's folder. Merges onto the LATEST persisted state like
+    // every mutator; an unknown id is a no-op (no write, no broadcast).
+    const toggleProfileOpen = (id: string) =>
+      Effect.gen(function* () {
+        const latest = loadProfileState(bridge.loadRaw);
+        const next = toggleProfileOpenState(latest, id);
+        if (next === latest) {
+          return;
+        }
+        yield* commit(next);
+      });
+
+    // Drag-reorder one source onto another. Keybind ownership is derived from the
+    // resulting profiles order; a no-op move commits nothing.
+    const reorderProfile = (id: string, targetId: string) =>
+      Effect.gen(function* () {
+        const latest = loadProfileState(bridge.loadRaw);
+        const next = reorderProfileState(latest, id, targetId);
+        if (next === latest) {
+          return;
+        }
+        yield* commit(next);
+      });
 
     const applyRunnerSettings = (input: ApplyRunnerSettingsInput) =>
       Effect.gen(function* () {
@@ -150,6 +183,8 @@ export class Profiles extends Effect.Service<Profiles>()("desktop/Profiles", {
       addSshProfile,
       deleteActiveProfile,
       applyRunnerSettings,
+      toggleProfileOpen,
+      reorderProfile,
       // Value-guarded reconcile from storage, driven by React on the cross-window
       // profiles sync and the settings focus/clean transitions.
       reload,

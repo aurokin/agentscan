@@ -97,6 +97,22 @@ export const applyRunnerSettingsAtom = runtime.fn(
   }),
 );
 
+// Open/close one source's folder in the vertical strip (open = live subscription).
+export const toggleProfileOpenAtom = runtime.fn(
+  Effect.fnUntraced(function* (id: string) {
+    const profiles = yield* Profiles;
+    yield* profiles.toggleProfileOpen(id);
+  }),
+);
+
+// Drag-reorder a source onto another; keybind ownership follows the new order.
+export const reorderProfileAtom = runtime.fn(
+  Effect.fnUntraced(function* (input: { readonly id: string; readonly targetId: string }) {
+    const profiles = yield* Profiles;
+    yield* profiles.reorderProfile(input.id, input.targetId);
+  }),
+);
+
 // Value-guarded reconcile from storage, driven by React on the cross-window profiles
 // sync and the settings window's focus/clean transitions (emitTo has no replay).
 export const reloadProfilesAtom = runtime.fn(

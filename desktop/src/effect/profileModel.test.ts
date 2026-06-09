@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
+  defaultProfileState,
+  keybindOwnerId,
   normalizeProfileState,
+  reorderProfile,
   runnerKeyForProfile,
   sourceLabel,
+  toggleProfileOpen,
   validateProfileDraft,
   type DesktopProfileConfig,
   type LocalProfileConfig,
   type PreflightLabelSource,
+  type ProfileState,
   type SshProfileConfig,
 } from "./profileModel";
 
@@ -83,6 +88,130 @@ describe("normalizeProfileState", () => {
     for (const profile of state.profiles) {
       expect(profile).not.toHaveProperty("name");
     }
+  });
+
+  it("migrates a state persisted before the folder UI to open the active profile", () => {
+    const state = normalizeProfileState({
+      activeProfileId: "ssh-1",
+      profiles: [localProfile, sshProfile("ssh-1", "box")],
+    });
+    expect(state.openProfileIds).toEqual(["ssh-1"]);
+  });
+
+  it("keeps persisted open ids, dropping unknown profiles and duplicates", () => {
+    const state = normalizeProfileState({
+      activeProfileId: "local",
+      profiles: [localProfile, sshProfile("ssh-1", "box")],
+      openProfileIds: ["ssh-1", "ssh-1", "ghost"],
+    });
+    expect(state.openProfileIds).toEqual(["ssh-1"]);
+  });
+
+  it("preserves an explicit all-closed state (no migration on an empty list)", () => {
+    const state = normalizeProfileState({
+      activeProfileId: "local",
+      profiles: [localProfile, sshProfile("ssh-1", "box")],
+      openProfileIds: [],
+    });
+    expect(state.openProfileIds).toEqual([]);
+  });
+
+  it("defaults a fresh state to an open local folder", () => {
+    expect(defaultProfileState().openProfileIds).toEqual(["local"]);
+  });
+});
+
+const stateOf = (
+  openProfileIds: string[],
+  ...profiles: DesktopProfileConfig[]
+): ProfileState => ({
+  activeProfileId: profiles[0]?.id ?? "local",
+  profiles,
+  openProfileIds,
+});
+
+describe("keybindOwnerId", () => {
+  it("picks the FIRST OPEN profile in source order", () => {
+    const state = stateOf(
+      ["ssh-1", "local"],
+      localProfile,
+      sshProfile("ssh-1", "box"),
+      sshProfile("ssh-2", "other"),
+    );
+    expect(keybindOwnerId(state)).toBe("local");
+  });
+
+  it("returns null when no folder is open", () => {
+    expect(keybindOwnerId(stateOf([], localProfile, sshProfile("ssh-1", "box")))).toBeNull();
+  });
+
+  it("skips a closed earlier source", () => {
+    const state = stateOf(["ssh-1"], localProfile, sshProfile("ssh-1", "box"));
+    expect(keybindOwnerId(state)).toBe("ssh-1");
+  });
+
+  it("ignores open ids that are not folder-eligible (empty host, disabled)", () => {
+    const disabled: SshProfileConfig = { ...sshProfile("ssh-2", "other"), enabled: false };
+    const state = stateOf(
+      ["ssh-empty", "ssh-2", "ssh-1"],
+      sshProfile("ssh-empty", ""),
+      disabled,
+      sshProfile("ssh-1", "box"),
+      localProfile,
+    );
+    expect(keybindOwnerId(state)).toBe("ssh-1");
+  });
+
+  it("follows a reorder, and passes to the next open folder when the owner closes", () => {
+    let state = stateOf(["local", "ssh-1"], localProfile, sshProfile("ssh-1", "box"));
+    expect(keybindOwnerId(state)).toBe("local");
+
+    state = reorderProfile(state, "ssh-1", "local");
+    expect(keybindOwnerId(state)).toBe("ssh-1");
+
+    state = toggleProfileOpen(state, "ssh-1");
+    expect(keybindOwnerId(state)).toBe("local");
+  });
+});
+
+describe("toggleProfileOpen", () => {
+  it("opens a closed folder and closes an open one", () => {
+    const state = stateOf(["local"], localProfile, sshProfile("ssh-1", "box"));
+    const opened = toggleProfileOpen(state, "ssh-1");
+    expect(opened.openProfileIds).toEqual(["local", "ssh-1"]);
+    expect(toggleProfileOpen(opened, "local").openProfileIds).toEqual(["ssh-1"]);
+  });
+
+  it("returns the same state for an unknown id", () => {
+    const state = stateOf(["local"], localProfile);
+    expect(toggleProfileOpen(state, "ghost")).toBe(state);
+  });
+});
+
+describe("reorderProfile", () => {
+  const base = () =>
+    stateOf(
+      ["local"],
+      localProfile,
+      sshProfile("ssh-1", "box"),
+      sshProfile("ssh-2", "other"),
+    );
+
+  it("dragging down lands after the target", () => {
+    const state = reorderProfile(base(), "local", "ssh-1");
+    expect(state.profiles.map((profile) => profile.id)).toEqual(["ssh-1", "local", "ssh-2"]);
+  });
+
+  it("dragging up lands before the target", () => {
+    const state = reorderProfile(base(), "ssh-2", "local");
+    expect(state.profiles.map((profile) => profile.id)).toEqual(["ssh-2", "local", "ssh-1"]);
+  });
+
+  it("returns the same state for a no-op or unknown move", () => {
+    const state = base();
+    expect(reorderProfile(state, "local", "local")).toBe(state);
+    expect(reorderProfile(state, "ghost", "local")).toBe(state);
+    expect(reorderProfile(state, "local", "ghost")).toBe(state);
   });
 });
 

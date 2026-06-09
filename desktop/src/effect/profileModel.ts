@@ -42,6 +42,10 @@ export type DesktopRunnerSettings =
 export type ProfileState = {
   activeProfileId: string;
   profiles: DesktopProfileConfig[];
+  // Folder open state for the dock's vertical strip: a source's folder is open
+  // (live subscription armed) iff its profile id is listed here. Source order is
+  // the profiles array order, which also decides keybind ownership.
+  openProfileIds: string[];
 };
 
 export type DesktopProfileConfig = LocalProfileConfig | SshProfileConfig;
@@ -105,6 +109,7 @@ export function defaultProfileState(runner: RunnerSettings = emptyRunnerSettings
         runner: normalizeRunnerSettings(runner),
       },
     ],
+    openProfileIds: [LOCAL_PROFILE_ID],
   };
 }
 
@@ -144,7 +149,17 @@ export function normalizeProfileState(
       ? value.activeProfileId
       : fallbackProfile.id;
 
-  return { activeProfileId, profiles };
+  // Open folders, filtered to surviving profiles. A state persisted before the
+  // folder UI has no openProfileIds: the previously-active profile starts open so
+  // the upgrade keeps exactly the old one-subscription behavior.
+  const openSource = Array.isArray(value.openProfileIds)
+    ? value.openProfileIds.filter((id): id is string => typeof id === "string")
+    : [activeProfileId];
+  const openProfileIds = [
+    ...new Set(openSource.filter((id) => profiles.some((profile) => profile.id === id))),
+  ];
+
+  return { activeProfileId, profiles, openProfileIds };
 }
 
 export function normalizeProfile(value: unknown): DesktopProfileConfig | null {
@@ -195,6 +210,60 @@ export function getActiveProfile(state: ProfileState): DesktopProfileConfig {
 
 export function isRunnableProfile(profile: DesktopProfileConfig): boolean {
   return profile.kind === "local" || profile.enabled;
+}
+
+// A source the dock can render as a host folder (and subscribe to): the local
+// runner, or an enabled remote with a configured connection. A still-unconfigured
+// (empty-host) remote lives only in Settings until it gets a host.
+export function isFolderProfile(profile: DesktopProfileConfig): boolean {
+  return (
+    isRunnableProfile(profile) && (profile.kind === "local" || profile.host.trim().length > 0)
+  );
+}
+
+export function folderProfiles(state: ProfileState): DesktopProfileConfig[] {
+  return state.profiles.filter(isFolderProfile);
+}
+
+// Row keybinds (Ctrl+<key>) are owned by exactly one source: the FIRST OPEN
+// folder in the user's source order. Null when no folder is open.
+export function keybindOwnerId(state: ProfileState): string | null {
+  return (
+    state.profiles.find(
+      (profile) => isFolderProfile(profile) && state.openProfileIds.includes(profile.id),
+    )?.id ?? null
+  );
+}
+
+// Open/close one source's folder. Returns the SAME state for an unknown id so
+// callers can skip a no-op commit.
+export function toggleProfileOpen(state: ProfileState, id: string): ProfileState {
+  if (!state.profiles.some((profile) => profile.id === id)) {
+    return state;
+  }
+  return {
+    ...state,
+    openProfileIds: state.openProfileIds.includes(id)
+      ? state.openProfileIds.filter((openId) => openId !== id)
+      : [...state.openProfileIds, id],
+  };
+}
+
+// Move the dragged profile onto the target's position (after it when dragging
+// down, before it when dragging up — the usual list-reorder feel). Keybind
+// ownership is derived from this order. Returns the SAME state when nothing moves.
+export function reorderProfile(state: ProfileState, id: string, targetId: string): ProfileState {
+  const fromIndex = state.profiles.findIndex((profile) => profile.id === id);
+  const targetIndex = state.profiles.findIndex((profile) => profile.id === targetId);
+  if (fromIndex < 0 || targetIndex < 0 || fromIndex === targetIndex) {
+    return state;
+  }
+  const moved = state.profiles[fromIndex];
+  const profiles = state.profiles.filter((profile) => profile.id !== id);
+  // Inserting at the target's ORIGINAL index lands after it when dragging down
+  // (the removal shifted it left by one) and before it when dragging up.
+  profiles.splice(targetIndex, 0, moved);
+  return { ...state, profiles };
 }
 
 export function updateProfileSettingsById(

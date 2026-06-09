@@ -182,8 +182,9 @@ describe("Preflight", () => {
         yield* Queue.take(started); // probe 1
         yield* awaitWhere(preflight.state.changes, (s) => s.status === "ready");
 
-        // Switch to k2: its probe is gated. The service must KEEP k1's ready state (so the
-        // dock shows "Switching…" via the runnerKey mismatch), not flash loading.
+        // Switch to k2: its probe is gated. The service must KEEP k1's ready state (so
+        // the dock doesn't flash its boot screen mid-switch; consumers treat the
+        // runnerKey mismatch as unresolved), not flash loading.
         yield* preflight.configure({ settings: SETTINGS, runnerKey: "k2", invalid: null });
         yield* Queue.take(started); // probe 2 has begun (state already read + kept)
         expect(yield* SubscriptionRef.get(preflight.state)).toEqual({
