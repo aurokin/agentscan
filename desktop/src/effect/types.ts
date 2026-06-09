@@ -38,8 +38,10 @@ export type LiveSnapshotSummary = {
 };
 
 // The raw event the Rust worker emits over the Tauri event bus, stamped with the
-// epoch of the subscription that produced it (see LivePickerEnvelope on the
-// backend). The frontend folds these into ConnectionStatus + rows.
+// source key and epoch of the subscription that produced it (see
+// LivePickerEnvelope on the backend). The event channel is shared by all keyed
+// workers, so the frontend routes frames per source by sourceKey and fences
+// stale workers by epoch, folding them into ConnectionStatus + rows.
 export type LivePickerEvent =
   | { kind: "connecting"; message: string }
   | { kind: "rows"; rows: PickerRow[]; snapshot: LiveSnapshotSummary }
@@ -47,7 +49,7 @@ export type LivePickerEvent =
   | { kind: "shutdown"; message: string }
   | { kind: "fatal"; message: string; diagnostics: unknown | null };
 
-export type LivePickerEnvelope = LivePickerEvent & { epoch: number };
+export type LivePickerEnvelope = LivePickerEvent & { sourceKey: string; epoch: number };
 
 // The connection status the dock renders. `noDaemon` is new to the Effect slice:
 // the dock latches onto an existing daemon and never starts one itself, so when

@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     env,
     ffi::{OsStr, OsString},
     io::{BufRead, BufReader},
@@ -6,7 +7,7 @@ use std::{
     process::{Child, Command, ExitStatus, Stdio},
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -45,17 +46,18 @@ const PICKER_WINDOW_MAX_HEIGHT: f64 = 960.0;
 // the two values in sync.
 const BAR_WINDOW_HEIGHT: f64 = 56.0;
 
-static LIVE_PICKER: OnceLock<Mutex<Option<LivePickerSupervisor>>> = OnceLock::new();
+// One live supervisor per source key (the frontend's runnerKey), so multiple
+// sources can stream concurrently; starting/stopping a key never disturbs the
+// other keys' workers.
+static LIVE_PICKER: OnceLock<Mutex<HashMap<String, LivePickerSupervisor>>> = OnceLock::new();
 // Serializes whole start operations (stop + spawn + install) so overlapping
 // starts cannot interleave and leave a newer start silently no-op'ing while an
-// older one wins the install race.
-static LIVE_PICKER_START: OnceLock<Mutex<()>> = OnceLock::new();
-// Highest subscription epoch we have honored with a start. The frontend issues
+// older one wins the install race. The guarded map holds, per source key, the
+// highest subscription epoch we have honored with a start: the frontend issues
 // strictly-increasing epochs (persisted across reload/HMR), so a late start()
-// from a torn-down page carries a lower epoch; rejecting it here keeps that
-// stale start from replacing the live page's worker. Read/written only under
-// the start lock.
-static LIVE_PICKER_LAST_STARTED: AtomicU64 = AtomicU64::new(0);
+// from a torn-down page carries a lower epoch and is rejected — keeping a stale
+// start from replacing the live page's worker for that key.
+static LIVE_PICKER_START: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -216,12 +218,15 @@ enum SubscribeFrame {
     Unknown,
 }
 
-// Wraps every emitted event with the epoch of the subscription that produced
-// it. The live event channel is global, so on a profile switch a late frame
-// from the previous worker can still arrive; the frontend compares the epoch to
-// the subscription it requested and drops events from a superseded worker.
+// Wraps every emitted event with the source key and epoch of the subscription
+// that produced it. The live event channel is global and shared by all keyed
+// workers, so the frontend routes each frame to its source by `source_key`; a
+// late frame from a superseded worker (e.g. after a re-arm) still carries the
+// old epoch and is dropped by the per-key epoch comparison.
 #[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct LivePickerEnvelope {
+    source_key: String,
     epoch: u64,
     #[serde(flatten)]
     event: LivePickerEvent,
@@ -330,6 +335,9 @@ fn focus_picker_row(
 fn start_live_picker(
     app: tauri::AppHandle,
     settings: Option<DesktopRunnerSettings>,
+    // The frontend's runnerKey for this subscription's source. Starting replaces
+    // only this key's supervisor; other sources' workers keep streaming.
+    source_key: String,
     epoch: u64,
     // Latch policy: the desktop owns daemon lifecycle, so reconnect/latch attempts
     // pass `false` (subscribe with `--no-auto-start`, connecting only if a daemon is
@@ -337,15 +345,16 @@ fn start_live_picker(
     auto_start: bool,
 ) -> Result<(), String> {
     let runner = AgentscanRunner::from_settings(settings);
-    start_live_picker_with_runner(app, runner, epoch, auto_start)
+    start_live_picker_with_runner(app, runner, source_key, epoch, auto_start)
 }
 
 #[tauri::command]
-fn stop_live_picker(epoch: u64) -> Result<(), String> {
+fn stop_live_picker(source_key: String, epoch: u64) -> Result<(), String> {
     // Epoch-guarded so a stale stop (e.g. from a reloaded/HMR'd frontend whose
     // async cleanup arrives after a newer subscription has started) cannot tear
-    // down the current worker. Only stop if the running supervisor is this epoch.
-    stop_live_picker_supervisor_for_epoch(Some(epoch))
+    // down the current worker. Only stop this key's supervisor, and only if it
+    // is running this epoch.
+    stop_live_picker_supervisor_for_epoch(&source_key, Some(epoch))
 }
 
 #[tauri::command]
@@ -960,37 +969,49 @@ fn focus_args_for_runner<'a>(
     Ok(args)
 }
 
+// Per-key stale-start gate: honor a start only when its epoch advances past the
+// highest epoch already honored for that source key. Keys gate independently,
+// so one source's stale start can never block — or tear down — another's worker.
+fn epoch_advances(last_started: &HashMap<String, u64>, source_key: &str, epoch: u64) -> bool {
+    last_started
+        .get(source_key)
+        .is_none_or(|last| epoch > *last)
+}
+
 fn start_live_picker_with_runner(
     app: tauri::AppHandle,
     runner: AgentscanRunner,
+    source_key: String,
     epoch: u64,
     auto_start: bool,
 ) -> Result<(), String> {
     // Hold the start lock across the whole stop+spawn+install so overlapping
     // starts can't interleave; the loser would otherwise see a supervisor
     // installed between our stop and re-lock and silently no-op.
-    let _start_guard = live_picker_start_lock()
+    let mut last_started = live_picker_start_lock()
         .lock()
         .map_err(|_| "live picker start lock poisoned".to_owned())?;
 
     // Ignore a stale start whose epoch does not advance past the last one we
-    // honored. Epochs increase strictly across reloads/HMR, so a lower-or-equal
-    // epoch here means this start came from a torn-down page; installing it
-    // would stop the live page's worker and the live page (filtering on its own
-    // higher epoch) would then drop every frame. We only *commit* the epoch
-    // after the worker is installed (below), so a failed start does not advance
-    // the guard and silently reject the frontend's retry of the same epoch.
-    if epoch <= LIVE_PICKER_LAST_STARTED.load(Ordering::SeqCst) {
+    // honored for this key. Epochs increase strictly across reloads/HMR, so a
+    // lower-or-equal epoch here means this start came from a torn-down page;
+    // installing it would stop the live page's worker and the live page
+    // (filtering on its own higher epoch) would then drop every frame. We only
+    // *commit* the epoch after the worker is installed (below), so a failed
+    // start does not advance the guard and silently reject the frontend's retry
+    // of the same epoch.
+    if !epoch_advances(&last_started, &source_key, epoch) {
         return Ok(());
     }
 
-    // Replace any running supervisor so the requested subscription (and its
-    // epoch) always starts. stop joins the old worker without holding the
-    // supervisor lock, so re-locking below is safe and (under the start lock)
-    // no other start can install in between.
-    stop_live_picker_supervisor()?;
+    // Replace any running supervisor for this key so the requested subscription
+    // (and its epoch) always starts; other keys' workers are untouched. stop
+    // joins the old worker without holding the supervisor lock, so re-locking
+    // below is safe and (under the start lock) no other start can install in
+    // between.
+    stop_live_picker_supervisor(&source_key)?;
 
-    let mut supervisor = live_picker_supervisor()
+    let mut supervisors = live_picker_supervisors()
         .lock()
         .map_err(|_| "live picker supervisor lock poisoned".to_owned())?;
 
@@ -998,44 +1019,64 @@ fn start_live_picker_with_runner(
     let child = Arc::new(Mutex::new(None));
     let worker_stop = Arc::clone(&stop);
     let worker_child = Arc::clone(&child);
+    let worker_key = source_key.clone();
     let worker = thread::Builder::new()
         .name("agentscan-live-picker".to_owned())
         .spawn(move || {
-            run_live_picker_worker(app, runner, worker_stop, worker_child, epoch, auto_start)
+            run_live_picker_worker(
+                app,
+                runner,
+                worker_key,
+                worker_stop,
+                worker_child,
+                epoch,
+                auto_start,
+            )
         })
         .map_err(|error| format!("Unable to start live picker worker: {error}"))?;
 
-    *supervisor = Some(LivePickerSupervisor {
-        epoch,
-        stop,
-        child,
-        worker: Some(worker),
-    });
+    supervisors.insert(
+        source_key.clone(),
+        LivePickerSupervisor {
+            epoch,
+            stop,
+            child,
+            worker: Some(worker),
+        },
+    );
+    drop(supervisors);
 
     // Commit the epoch only now that the worker is installed.
-    LIVE_PICKER_LAST_STARTED.store(epoch, Ordering::SeqCst);
+    last_started.insert(source_key, epoch);
 
     Ok(())
 }
 
-fn stop_live_picker_supervisor() -> Result<(), String> {
-    stop_live_picker_supervisor_for_epoch(None)
+fn stop_live_picker_supervisor(source_key: &str) -> Result<(), String> {
+    stop_live_picker_supervisor_for_epoch(source_key, None)
 }
 
-// Take and tear down the current supervisor. When `target` is Some, only stop
-// if the running supervisor's epoch matches (used by the epoch-guarded command);
-// when None, stop unconditionally (used by start to replace any prior worker).
-// The worker is joined after the lock guard is dropped to avoid deadlocking with
-// the worker's own supervisor cleanup.
-fn stop_live_picker_supervisor_for_epoch(target: Option<u64>) -> Result<(), String> {
+// Take and tear down the supervisor for one source key. When `target` is Some,
+// only stop if that key's supervisor is running this epoch (used by the
+// epoch-guarded command); when None, stop unconditionally (used by start to
+// replace any prior worker for the key). The worker is joined after the lock
+// guard is dropped to avoid deadlocking with the worker's own supervisor cleanup.
+fn stop_live_picker_supervisor_for_epoch(
+    source_key: &str,
+    target: Option<u64>,
+) -> Result<(), String> {
     let supervisor = {
-        let mut guard = live_picker_supervisor()
+        let mut guard = live_picker_supervisors()
             .lock()
             .map_err(|_| "live picker supervisor lock poisoned".to_owned())?;
         let matches = guard
-            .as_ref()
+            .get(source_key)
             .is_some_and(|current| target.is_none_or(|epoch| current.epoch == epoch));
-        if matches { guard.take() } else { None }
+        if matches {
+            guard.remove(source_key)
+        } else {
+            None
+        }
     };
 
     if let Some(mut supervisor) = supervisor {
@@ -1050,17 +1091,18 @@ fn stop_live_picker_supervisor_for_epoch(target: Option<u64>) -> Result<(), Stri
     Ok(())
 }
 
-fn live_picker_supervisor() -> &'static Mutex<Option<LivePickerSupervisor>> {
-    LIVE_PICKER.get_or_init(|| Mutex::new(None))
+fn live_picker_supervisors() -> &'static Mutex<HashMap<String, LivePickerSupervisor>> {
+    LIVE_PICKER.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn live_picker_start_lock() -> &'static Mutex<()> {
-    LIVE_PICKER_START.get_or_init(|| Mutex::new(()))
+fn live_picker_start_lock() -> &'static Mutex<HashMap<String, u64>> {
+    LIVE_PICKER_START.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn run_live_picker_worker(
     app: tauri::AppHandle,
     runner: AgentscanRunner,
+    source_key: String,
     stop: Arc<AtomicBool>,
     child_slot: Arc<Mutex<Option<Child>>>,
     epoch: u64,
@@ -1082,15 +1124,23 @@ fn run_live_picker_worker(
     // on a re-arm), and the `agentscan subscribe` CLI emits its own per-connect `connecting`
     // frame (forwarded in handle_subscribe_frame). An emit here would only duplicate the
     // former and be overwritten by the latter.
-    run_live_picker_subscription(&app, &runner, &stop, &child_slot, epoch, auto_start);
+    run_live_picker_subscription(
+        &app,
+        &runner,
+        &source_key,
+        &stop,
+        &child_slot,
+        epoch,
+        auto_start,
+    );
 
     kill_live_picker_child(&child_slot);
-    let _ = live_picker_supervisor().lock().map(|mut supervisor| {
-        if supervisor
-            .as_ref()
+    let _ = live_picker_supervisors().lock().map(|mut supervisors| {
+        if supervisors
+            .get(&source_key)
             .is_some_and(|current| Arc::ptr_eq(&current.stop, &stop))
         {
-            *supervisor = None;
+            supervisors.remove(&source_key);
         }
     });
 }
@@ -1116,6 +1166,7 @@ fn subscribe_args(auto_start: bool) -> Vec<&'static str> {
 fn run_live_picker_subscription(
     app: &tauri::AppHandle,
     runner: &AgentscanRunner,
+    source_key: &str,
     stop: &AtomicBool,
     child_slot: &Arc<Mutex<Option<Child>>>,
     epoch: u64,
@@ -1133,6 +1184,7 @@ fn run_live_picker_subscription(
             let message = classify_desktop_failure(runner, "subscribe", &error);
             emit_live_picker_event(
                 app,
+                source_key,
                 epoch,
                 LivePickerEvent::Fatal {
                     message,
@@ -1154,6 +1206,7 @@ fn run_live_picker_subscription(
             );
             emit_live_picker_event(
                 app,
+                source_key,
                 epoch,
                 LivePickerEvent::Offline {
                     message,
@@ -1172,6 +1225,7 @@ fn run_live_picker_subscription(
             let _ = child.wait();
             emit_live_picker_event(
                 app,
+                source_key,
                 epoch,
                 LivePickerEvent::Offline {
                     message: "agentscan subscribe did not expose stdout".to_owned(),
@@ -1205,6 +1259,7 @@ fn run_live_picker_subscription(
             // stop, so kill it and report a recoverable terminal — TS re-arms (latch-only).
             emit_live_picker_event(
                 app,
+                source_key,
                 epoch,
                 LivePickerEvent::Offline {
                     message: classify_desktop_failure(
@@ -1243,13 +1298,15 @@ fn run_live_picker_subscription(
         match line {
             Ok(line) if line.trim().is_empty() => {}
             Ok(line) => match serde_json::from_str::<SubscribeFrame>(&line) {
-                Ok(frame) => match handle_subscribe_frame(app, runner, frame, epoch, stop) {
-                    LivePickerWorkerExit::Retry => {}
-                    _ => {
-                        saw_terminal = true;
-                        break;
+                Ok(frame) => {
+                    match handle_subscribe_frame(app, runner, frame, source_key, epoch, stop) {
+                        LivePickerWorkerExit::Retry => {}
+                        _ => {
+                            saw_terminal = true;
+                            break;
+                        }
                     }
-                },
+                }
                 Err(error) => {
                     let message = classify_desktop_failure(
                         runner,
@@ -1258,6 +1315,7 @@ fn run_live_picker_subscription(
                     );
                     emit_live_picker_event(
                         app,
+                        source_key,
                         epoch,
                         LivePickerEvent::Offline {
                             message,
@@ -1282,6 +1340,7 @@ fn run_live_picker_subscription(
                     );
                     emit_live_picker_event(
                         app,
+                        source_key,
                         epoch,
                         LivePickerEvent::Offline {
                             message,
@@ -1311,6 +1370,7 @@ fn run_live_picker_subscription(
         );
         emit_live_picker_event(
             app,
+            source_key,
             epoch,
             LivePickerEvent::Offline {
                 message,
@@ -1325,6 +1385,7 @@ fn handle_subscribe_frame(
     app: &tauri::AppHandle,
     runner: &AgentscanRunner,
     frame: SubscribeFrame,
+    source_key: &str,
     epoch: u64,
     stop: &AtomicBool,
 ) -> LivePickerWorkerExit {
@@ -1333,12 +1394,13 @@ fn handle_subscribe_frame(
         // keep reading the stream without disturbing the picker.
         Ok(None) => LivePickerWorkerExit::Retry,
         Ok(Some((event, exit))) => {
-            emit_live_picker_event(app, epoch, event);
+            emit_live_picker_event(app, source_key, epoch, event);
             exit
         }
         Err(message) => {
             emit_live_picker_event(
                 app,
+                source_key,
                 epoch,
                 LivePickerEvent::Fatal {
                     message,
@@ -1554,8 +1616,21 @@ fn process_exit_message(status_message: Option<&str>, stderr: &str) -> String {
     }
 }
 
-fn emit_live_picker_event(app: &tauri::AppHandle, epoch: u64, event: LivePickerEvent) {
-    let _ = tauri::Emitter::emit(app, LIVE_PICKER_EVENT, LivePickerEnvelope { epoch, event });
+fn emit_live_picker_event(
+    app: &tauri::AppHandle,
+    source_key: &str,
+    epoch: u64,
+    event: LivePickerEvent,
+) {
+    let _ = tauri::Emitter::emit(
+        app,
+        LIVE_PICKER_EVENT,
+        LivePickerEnvelope {
+            source_key: source_key.to_owned(),
+            epoch,
+            event,
+        },
+    );
 }
 
 fn validate_picker_rows(rows: &[PickerRow]) -> Result<(), String> {
@@ -2282,6 +2357,74 @@ mod tests {
             subscribe_args(false),
             vec!["subscribe", "--format", "json", "--no-auto-start"]
         );
+    }
+
+    #[test]
+    fn start_epoch_gate_is_per_key() {
+        let mut last_started = HashMap::new();
+        last_started.insert("source-a".to_owned(), 5);
+
+        // Same key: only a strictly newer epoch advances; equal/older is stale.
+        assert!(!epoch_advances(&last_started, "source-a", 4));
+        assert!(!epoch_advances(&last_started, "source-a", 5));
+        assert!(epoch_advances(&last_started, "source-a", 6));
+
+        // A different key gates independently — its own history starts empty, so
+        // source-a's higher watermark cannot reject source-b's first start.
+        assert!(epoch_advances(&last_started, "source-b", 1));
+    }
+
+    #[test]
+    fn live_picker_envelope_tags_source_key_and_epoch() {
+        let envelope = LivePickerEnvelope {
+            source_key: "ssh:koopa".to_owned(),
+            epoch: 7,
+            event: LivePickerEvent::Connecting {
+                message: "connecting".to_owned(),
+            },
+        };
+
+        let json = serde_json::to_value(&envelope).expect("envelope serializes");
+
+        // The frontend routes frames per source by `sourceKey` (camelCase over the
+        // wire) and fences stale workers by `epoch`; the event payload stays flattened.
+        assert_eq!(json["sourceKey"], "ssh:koopa");
+        assert_eq!(json["epoch"], 7);
+        assert_eq!(json["kind"], "connecting");
+        assert_eq!(json["message"], "connecting");
+    }
+
+    #[test]
+    fn stop_supervisor_epoch_gate_only_stops_its_own_key() {
+        // Keys are unique to this test so the shared global map stays isolated
+        // from other tests running in parallel.
+        let key_a = "test-stop-gate-a";
+        let key_b = "test-stop-gate-b";
+        let supervisor = |epoch: u64| LivePickerSupervisor {
+            epoch,
+            stop: Arc::new(AtomicBool::new(false)),
+            child: Arc::new(Mutex::new(None)),
+            worker: None,
+        };
+        {
+            let mut guard = live_picker_supervisors().lock().expect("supervisor lock");
+            guard.insert(key_a.to_owned(), supervisor(5));
+            guard.insert(key_b.to_owned(), supervisor(9));
+        }
+
+        // A stale stop (wrong epoch) leaves the key's supervisor running.
+        stop_live_picker_supervisor_for_epoch(key_a, Some(4)).expect("stale stop is a no-op");
+        {
+            let guard = live_picker_supervisors().lock().expect("supervisor lock");
+            assert_eq!(guard.get(key_a).map(|current| current.epoch), Some(5));
+        }
+        // A matching stop removes ONLY its own key; the sibling key is untouched.
+        stop_live_picker_supervisor_for_epoch(key_a, Some(5)).expect("matching stop succeeds");
+
+        let mut guard = live_picker_supervisors().lock().expect("supervisor lock");
+        assert!(!guard.contains_key(key_a));
+        assert_eq!(guard.get(key_b).map(|current| current.epoch), Some(9));
+        guard.remove(key_b);
     }
 
     #[test]

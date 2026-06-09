@@ -13,7 +13,7 @@ import {
   configureAtom,
   configurePreflightAtom,
   deleteActiveProfileAtom,
-  liveStateAtom,
+  liveStatesAtom,
   preflightStateAtom,
   profilesAtom,
   reconnectAtom,
@@ -30,6 +30,7 @@ import {
   syncedPreflightAtom,
 } from "./effect/atoms";
 import type { ConnectionStatus, LiveState, PickerRow } from "./effect/types";
+import { liveStateFor, type LiveStates } from "./effect/LiveConnection";
 import type { PreflightState } from "./effect/Preflight";
 import {
   glassClearFor,
@@ -114,13 +115,11 @@ let glassOperationQueue = Promise.resolve();
 let framelessOperationQueue = Promise.resolve();
 
 // Live-picker subscription state (connection status + rows + epoch fencing + the
-// reconnect/latch policy) is owned by the Effect LiveConnection service. This
-// component drives it via configure/reconnect/start and observes liveStateAtom.
-const DEFAULT_LIVE_STATE: LiveState = {
-  connection: { status: "connecting", message: "Starting live client" },
-  rows: [],
-  rowsRunnerKey: null,
-};
+// reconnect/latch policy) is owned by the Effect LiveConnection service, as a
+// per-source map keyed by runnerKey. This component drives it via
+// configure/reconnect/start and observes liveStatesAtom, reading the active
+// runner's entry through liveStateFor (which supplies the initial fallback).
+const EMPTY_LIVE_STATES: LiveStates = new Map<string, LiveState>();
 
 // Synchronous, best-effort localStorage read used only to seed the first paint
 // (active profile / runnerKey / drafts) before the Profiles service atom resolves.
@@ -169,7 +168,7 @@ type PickerGroup = {
 
 // The dock's resolved preflight is owned by the Preflight Effect service (observed via
 // preflightStateAtom as PreflightState); the picker rows + live connection status live
-// in the LiveConnection service (liveStateAtom).
+// in the LiveConnection service (liveStatesAtom).
 const INITIAL_PREFLIGHT: PreflightState = { status: "loading" };
 
 type PickerState =
@@ -233,11 +232,13 @@ function App({ mode }: { mode: ShellMode }) {
   });
   const [debugEntries, setDebugEntries] = useState<DebugEntry[]>([]);
   // Live connection (status + rows) is owned by the LiveConnection service. The dock
-  // observes liveStateAtom and drives the service via configure/reconnect/start. The
-  // settings window mounts these too (separate webview/runtime) but never enables a
-  // target, so its supervisor stays idle.
-  const liveResult = useAtomValue(liveStateAtom);
-  const live: LiveState = Result.getOrElse(liveResult, () => DEFAULT_LIVE_STATE);
+  // observes liveStatesAtom — a per-source map — and drives the service via
+  // configure/reconnect/start, reading the active runner's entry. The settings
+  // window mounts these too (separate webview/runtime) but never configures a
+  // target, so its supervisors stay idle.
+  const liveResult = useAtomValue(liveStatesAtom);
+  const liveStates = Result.getOrElse(liveResult, () => EMPTY_LIVE_STATES);
+  const live: LiveState = liveStateFor(liveStates, runnerKey);
   const configureLive = useAtomSet(configureAtom);
   const startLive = useAtomSet(startAtom);
   const reconnectLive = useAtomSet(reconnectAtom);
@@ -411,16 +412,17 @@ function App({ mode }: { mode: ShellMode }) {
     preflightState.preflight.ok &&
     activeProfileValid;
 
-  // Drive the LiveConnection service to the active target. The service owns the
-  // subscription, epoch fencing, reconnect/latch backoff, and recovery; this just
-  // tells it WHICH runner to track and WHETHER it's ready (preflight ok + valid
-  // profile + dock). configure dedupes on runnerKey + enabled, so an inactive-profile
+  // Drive the LiveConnection service to the active target (a single-element list
+  // for now — the service supports N concurrent sources). The service owns the
+  // subscriptions, epoch fencing, reconnect/latch backoff, and recovery; this just
+  // tells it WHICH runners to track and WHETHER each is ready (preflight ok + valid
+  // profile + dock). configure diffs on runnerKey + enabled, so an inactive-profile
   // edit that leaves the active runner unchanged doesn't re-arm the worker.
   useEffect(() => {
     if (mode !== "dock") {
       return;
     }
-    configureLive({ settings: runnerSettings, runnerKey, enabled: liveReady });
+    configureLive([{ settings: runnerSettings, runnerKey, enabled: liveReady }]);
   }, [mode, runnerKey, liveReady, runnerSettings, configureLive]);
 
   // Resolve the local machine's hostname once for the local source label. Both the
@@ -1161,7 +1163,7 @@ function App({ mode }: { mode: ShellMode }) {
       // the live client: re-subscribing makes the daemon publish a fresh initial
       // snapshot, which the worker re-derives via load_picker_rows, dropping the dead
       // row. This is the push-model equivalent of the old one-shot refetch.
-      reconnectLive();
+      reconnectLive(requestRunnerKey);
     } finally {
       // Only release the guard if this is still the active target. After a
       // profile/settings switch the effect already cleared the ref (and a newer
@@ -1972,7 +1974,7 @@ function App({ mode }: { mode: ShellMode }) {
           type="button"
           aria-label="Reconnect"
           title="Reconnect"
-          onClick={() => reconnectLive()}
+          onClick={() => reconnectLive(runnerKey)}
         >
           <span className={isReconnecting ? "spin" : undefined}>{"↻"}</span>
         </button>
@@ -1981,8 +1983,8 @@ function App({ mode }: { mode: ShellMode }) {
       {displayConnection.status !== "online" ? (
         <LiveStrip
           status={displayConnection}
-          onStart={() => startLive()}
-          onReconnect={() => reconnectLive()}
+          onStart={() => startLive(runnerKey)}
+          onReconnect={() => reconnectLive(runnerKey)}
         />
       ) : null}
 

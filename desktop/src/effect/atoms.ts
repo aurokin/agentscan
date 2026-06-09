@@ -24,35 +24,39 @@ const runtime = Atom.runtime(
 
 // --- Live connection slice ---
 
-// The live state the dock observes: Result<LiveState> (connection status + rows).
-// keepAlive so the supervised connection fiber persists across re-renders/StrictMode
-// remounts for the dock session rather than tearing down when momentarily unmounted.
-export const liveStateAtom = Atom.keepAlive(
-  runtime.subscriptionRef(Effect.map(LiveConnection, (lc) => lc.state)),
+// The per-key live states the dock observes: Result<LiveStates> (connection
+// status + rows per configured source, keyed by runnerKey; read entries through
+// liveStateFor). keepAlive so the supervised connection fibers persist across
+// re-renders/StrictMode remounts for the dock session rather than tearing down
+// when momentarily unmounted.
+export const liveStatesAtom = Atom.keepAlive(
+  runtime.subscriptionRef(Effect.map(LiveConnection, (lc) => lc.states)),
 );
 
 // The only path that may spawn a daemon — the "Start agentscan" affordance.
+// Applies only to the given source.
 export const startAtom = runtime.fn(
-  Effect.fnUntraced(function* () {
+  Effect.fnUntraced(function* (runnerKey: string) {
     const lc = yield* LiveConnection;
-    yield* lc.start;
+    yield* lc.start(runnerKey);
   }),
 );
 
-// Re-arm the live connection now (latch only). Backs the Refresh button and the
-// fatal-state Reconnect action.
+// Re-arm one source's live connection now (latch only). Backs the Refresh button
+// and the fatal-state Reconnect action.
 export const reconnectAtom = runtime.fn(
-  Effect.fnUntraced(function* () {
+  Effect.fnUntraced(function* (runnerKey: string) {
     const lc = yield* LiveConnection;
-    yield* lc.reconnect;
+    yield* lc.reconnect(runnerKey);
   }),
 );
 
-// Re-target the connection when the active profile/preflight changes.
+// Reconcile the live connections to the listed targets when the active
+// profile/preflight changes.
 export const configureAtom = runtime.fn(
-  Effect.fnUntraced(function* (input: ConfigureInput) {
+  Effect.fnUntraced(function* (targets: ReadonlyArray<ConfigureInput>) {
     const lc = yield* LiveConnection;
-    yield* lc.configure(input);
+    yield* lc.configure(targets);
   }),
 );
 

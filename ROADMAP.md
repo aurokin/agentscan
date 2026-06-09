@@ -303,6 +303,15 @@ Implications:
   service cheap-polls `agentscan daemon status --format json` (AUR-518) instead of
   re-arming a full `subscribe` each backoff tick — expensive over SSH — and only
   escalates to a full re-arm once a daemon is reachable (or the probe can't tell).
+- the desktop live pipeline is keyed multi-source, not single-source: the Rust
+  side holds one supervisor per source key (the frontend's runnerKey) with
+  per-key epoch gating, every live event envelope carries its source key, and
+  `LiveConnection` runs one supervised subscription fiber per configured source
+  over a per-key state map (`configure` diffs a target list: start added keys,
+  interrupt removed keys, leave unchanged keys running). The latch-only policy,
+  epoch fencing, and explicit-Start latch all apply per key. The dock currently
+  configures a single source (the active profile); the keyed plumbing exists so
+  multiple host folders can hold live subscriptions concurrently.
 - the machine that owns tmux also owns `agentscan` daemon lifecycle,
   classification, picker rows, hotkey actions, and focus actions
 - remote desktop support is SSH command execution around documented JSON/JSONL

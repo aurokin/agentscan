@@ -1,6 +1,16 @@
-import { Deferred, Duration, Effect, Layer, Option, Queue, Ref, Stream } from "effect";
+import {
+  Deferred,
+  Duration,
+  Effect,
+  Layer,
+  Option,
+  Queue,
+  Ref,
+  Stream,
+  SubscriptionRef,
+} from "effect";
 import { describe, expect, it } from "vitest";
-import { LiveConnection, LiveConnectionConfig } from "./LiveConnection";
+import { LiveConnection, LiveConnectionConfig, type LiveStates } from "./LiveConnection";
 import { IpcError, TauriIpc } from "./TauriIpc";
 import type {
   ConnectionStatus,
@@ -8,6 +18,7 @@ import type {
   LivePickerEnvelope,
   LivePickerEvent,
   LiveSnapshotSummary,
+  LiveState,
   PickerRow,
 } from "./types";
 
@@ -47,49 +58,67 @@ const EagerBackoff = Layer.succeed(LiveConnectionConfig, {
   backoff: { recoverable: Duration.zero, noDaemon: Duration.zero },
 });
 
+// A frame as the Rust worker emits it: tagged with the source key (for per-source
+// routing on the shared event channel) and the producing subscription's epoch.
+const envelope = (
+  sourceKey: string,
+  epoch: number,
+  event: LivePickerEvent,
+): LivePickerEnvelope => ({ ...event, sourceKey, epoch }) as LivePickerEnvelope;
+
+// Block until one source's connection state reaches a given status (changes replays
+// the current map, so this resolves immediately if already there).
+const awaitKeyStatus = (
+  states: SubscriptionRef.SubscriptionRef<LiveStates>,
+  key: string,
+  status: ConnectionStatus["status"],
+): Effect.Effect<LiveState> =>
+  states.changes.pipe(
+    Stream.filter((map) => map.get(key)?.connection.status === status),
+    Stream.map((map) => map.get(key) as LiveState),
+    Stream.runHead,
+    Effect.flatMap(
+      Option.match({
+        onNone: () => Effect.die("state stream ended early"),
+        onSome: Effect.succeed,
+      }),
+    ),
+  );
+
 describe("LiveConnection", () => {
   it("latches without auto-start, recovers on shutdown, surfaces noDaemon, and only Start auto-starts", () =>
     Effect.gen(function* () {
-      // Scripted IPC: record each start (epoch + autoStart) and feed live frames.
-      const startCalls = yield* Queue.unbounded<{ epoch: number; autoStart: boolean }>();
+      // Scripted IPC: record each start (key + epoch + autoStart) and feed live frames.
+      const startCalls = yield* Queue.unbounded<{
+        sourceKey: string;
+        epoch: number;
+        autoStart: boolean;
+      }>();
       const events = yield* Queue.unbounded<LivePickerEnvelope>();
 
       const MockTauri = Layer.succeed(TauriIpc, {
-        startLivePicker: ({ epoch, autoStart }) =>
-          Queue.offer(startCalls, { epoch, autoStart }).pipe(Effect.asVoid),
+        startLivePicker: ({ sourceKey, epoch, autoStart }) =>
+          Queue.offer(startCalls, { sourceKey, epoch, autoStart }).pipe(Effect.asVoid),
         stopLivePicker: () => Effect.void,
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
         pollDaemonStatus: () => Effect.succeed({ reachable: true }),
-        liveEvents: Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
       });
 
       const program = Effect.gen(function* () {
         const lc = yield* LiveConnection;
 
         const emit = (epoch: number, event: LivePickerEvent) =>
-          Queue.offer(events, { ...event, epoch } as LivePickerEnvelope);
-
-        // Block until the connection state reaches a given status (changes replays
-        // the current value, so this resolves immediately if already there).
-        const awaitStatus = (status: ConnectionStatus["status"]) =>
-          lc.state.changes.pipe(
-            Stream.filter((state) => state.connection.status === status),
-            Stream.runHead,
-            Effect.flatMap(
-              Option.match({
-                onNone: () => Effect.die("state stream ended early"),
-                onSome: Effect.succeed,
-              }),
-            ),
-          );
+          Queue.offer(events, envelope("k1", epoch, event));
 
         // 1. Enable the source → first subscription must LATCH (autoStart false),
-        //    and a rows frame brings it online.
-        yield* lc.configure({ settings: SETTINGS, runnerKey: "k1", enabled: true });
+        //    carry the source key, and a rows frame brings it online.
+        yield* lc.configure([{ settings: SETTINGS, runnerKey: "k1", enabled: true }]);
         const first = yield* Queue.take(startCalls);
+        expect(first.sourceKey).toBe("k1");
         expect(first.autoStart).toBe(false);
         yield* emit(first.epoch, { kind: "rows", rows: [ROW], snapshot: SNAPSHOT });
-        const online = yield* awaitStatus("online");
+        const online = yield* awaitKeyStatus(lc.states, "k1", "online");
         expect(online.rows.map((r) => r.pane_id)).toEqual(["%1"]);
 
         // 2. Daemon closes → auto re-arm, still latch-only (autoStart false).
@@ -107,12 +136,12 @@ describe("LiveConnection", () => {
           message: "daemon auto-start is disabled: socket is missing",
           diagnostics: null,
         });
-        const noDaemon = yield* awaitStatus("noDaemon");
+        const noDaemon = yield* awaitKeyStatus(lc.states, "k1", "noDaemon");
         expect(noDaemon.connection.status).toBe("noDaemon");
         expect(noDaemon.rows).toEqual([]);
 
         // 4. Explicit "Start agentscan" → re-arm WITH auto-start (the only such path).
-        yield* lc.start;
+        yield* lc.start("k1");
         const third = yield* Queue.take(startCalls);
         expect(third.autoStart).toBe(true);
       });
@@ -144,33 +173,21 @@ describe("LiveConnection", () => {
         stopLivePicker: () => Effect.void,
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
         pollDaemonStatus: () => Effect.succeed({ reachable: true }),
-        liveEvents: Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
       });
 
       const program = Effect.gen(function* () {
         const lc = yield* LiveConnection;
 
         const emit = (epoch: number, event: LivePickerEvent) =>
-          Queue.offer(events, { ...event, epoch } as LivePickerEnvelope);
-
-        const awaitStatus = (status: ConnectionStatus["status"]) =>
-          lc.state.changes.pipe(
-            Stream.filter((state) => state.connection.status === status),
-            Stream.runHead,
-            Effect.flatMap(
-              Option.match({
-                onNone: () => Effect.die("state stream ended early"),
-                onSome: Effect.succeed,
-              }),
-            ),
-          );
+          Queue.offer(events, envelope("k1", epoch, event));
 
         // Latch onto a daemon and come online.
-        yield* lc.configure({ settings: SETTINGS, runnerKey: "k1", enabled: true });
+        yield* lc.configure([{ settings: SETTINGS, runnerKey: "k1", enabled: true }]);
         const first = yield* Queue.take(startCalls);
         expect(first.autoStart).toBe(false);
         yield* emit(first.epoch, { kind: "rows", rows: [ROW], snapshot: SNAPSHOT });
-        yield* awaitStatus("online");
+        yield* awaitKeyStatus(lc.states, "k1", "online");
 
         // Abnormal child death: terminal offline, retrying:false, NOT a no-daemon message.
         yield* emit(first.epoch, {
@@ -180,12 +197,14 @@ describe("LiveConnection", () => {
           diagnostics: null,
         });
 
-        // Recovery: a re-arm on a fresh epoch, latch-only, surfacing "reconnecting".
+        // Recovery: a re-arm on a fresh epoch, latch-only, surfacing "reconnecting" —
+        // with the key's last rows preserved (no same-source flicker).
         const second = yield* Queue.take(startCalls);
         expect(second.autoStart).toBe(false);
         expect(second.epoch).toBeGreaterThan(first.epoch);
-        const reconnecting = yield* awaitStatus("reconnecting");
+        const reconnecting = yield* awaitKeyStatus(lc.states, "k1", "reconnecting");
         expect(reconnecting.connection.status).toBe("reconnecting");
+        expect(reconnecting.rows.map((r) => r.pane_id)).toEqual(["%1"]);
       });
 
       yield* program.pipe(
@@ -209,22 +228,13 @@ describe("LiveConnection", () => {
         stopLivePicker: () => Effect.void,
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
         pollDaemonStatus: () => Effect.succeed({ reachable: true }),
-        liveEvents: Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
       });
 
       const program = Effect.gen(function* () {
         const lc = yield* LiveConnection;
-        yield* lc.configure({ settings: SETTINGS, runnerKey: "k1", enabled: true });
-        const fatal = yield* lc.state.changes.pipe(
-          Stream.filter((state) => state.connection.status === "fatal"),
-          Stream.runHead,
-          Effect.flatMap(
-            Option.match({
-              onNone: () => Effect.die("state stream ended early"),
-              onSome: Effect.succeed,
-            }),
-          ),
-        );
+        yield* lc.configure([{ settings: SETTINGS, runnerKey: "k1", enabled: true }]);
+        const fatal = yield* awaitKeyStatus(lc.states, "k1", "fatal");
         // The real cause is surfaced, not swallowed under a generic message.
         expect((fatal.connection as { message: string }).message).toContain("boom");
         expect(fatal.rows).toEqual([]);
@@ -254,44 +264,32 @@ describe("LiveConnection", () => {
         stopLivePicker: () => Effect.void,
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
         pollDaemonStatus: () => Effect.succeed({ reachable: true }),
-        liveEvents: Effect.flatMap(Ref.getAndSet(failNextListen, false), (shouldFail) =>
-          shouldFail
-            ? Effect.fail(new IpcError({ op: "listen", message: "listener boom" }))
-            : Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
-        ),
+        liveEvents: () =>
+          Effect.flatMap(Ref.getAndSet(failNextListen, false), (shouldFail) =>
+            shouldFail
+              ? Effect.fail(new IpcError({ op: "listen", message: "listener boom" }))
+              : Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+          ),
       });
 
       const program = Effect.gen(function* () {
         const lc = yield* LiveConnection;
-        const awaitStatus = (status: ConnectionStatus["status"]) =>
-          lc.state.changes.pipe(
-            Stream.filter((state) => state.connection.status === status),
-            Stream.runHead,
-            Effect.flatMap(
-              Option.match({
-                onNone: () => Effect.die("state stream ended early"),
-                onSome: Effect.succeed,
-              }),
-            ),
-          );
 
         // First arm: the listener install fails → fatal (not a silent wedge), and no
         // subscription was started (liveEvents is acquired before startLivePicker).
-        yield* lc.configure({ settings: SETTINGS, runnerKey: "k1", enabled: true });
-        const fatal = yield* awaitStatus("fatal");
+        yield* lc.configure([{ settings: SETTINGS, runnerKey: "k1", enabled: true }]);
+        const fatal = yield* awaitKeyStatus(lc.states, "k1", "fatal");
         expect((fatal.connection as { message: string }).message).toContain("listener boom");
 
         // Reconnect: the supervisor is still alive, re-arms, the listener now installs,
         // a subscription starts, and a rows frame brings it online.
-        yield* lc.reconnect;
+        yield* lc.reconnect("k1");
         const started = yield* Queue.take(startCalls);
-        yield* Queue.offer(events, {
-          epoch: started.epoch,
-          kind: "rows",
-          rows: [ROW],
-          snapshot: SNAPSHOT,
-        } as LivePickerEnvelope);
-        const online = yield* awaitStatus("online");
+        yield* Queue.offer(
+          events,
+          envelope("k1", started.epoch, { kind: "rows", rows: [ROW], snapshot: SNAPSHOT }),
+        );
+        const online = yield* awaitKeyStatus(lc.states, "k1", "online");
         expect(online.rows.map((r) => r.pane_id)).toEqual(["%1"]);
       });
 
@@ -314,40 +312,31 @@ describe("LiveConnection", () => {
         stopLivePicker: () => Effect.void,
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
         pollDaemonStatus: () => Effect.succeed({ reachable: true }),
-        liveEvents: Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
       });
 
       const program = Effect.gen(function* () {
         const lc = yield* LiveConnection;
-        const awaitStatus = (status: ConnectionStatus["status"]) =>
-          lc.state.changes.pipe(
-            Stream.filter((state) => state.connection.status === status),
-            Stream.runHead,
-            Effect.flatMap(
-              Option.match({
-                onNone: () => Effect.die("state stream ended early"),
-                onSome: Effect.succeed,
-              }),
-            ),
-          );
 
         // Latch first, then the user explicitly clicks Start (autoStart true).
-        yield* lc.configure({ settings: SETTINGS, runnerKey: "k1", enabled: true });
+        yield* lc.configure([{ settings: SETTINGS, runnerKey: "k1", enabled: true }]);
         yield* Queue.take(startCalls); // the latch attempt
-        yield* lc.start;
+        yield* lc.start("k1");
         const started = yield* Queue.take(startCalls);
         expect(started.autoStart).toBe(true);
 
         // The daemon refuses OUR explicit start (macOS codesign/trust). It carries the
         // same "auto-start is disabled" text as a latch-miss, but because we asked to
         // start it must settle on fatal (surface the reason) — not loop back to Start.
-        yield* Queue.offer(events, {
-          epoch: started.epoch,
-          kind: "fatal",
-          message: "daemon auto-start is disabled: codesign failed",
-          diagnostics: null,
-        } as LivePickerEnvelope);
-        const fatal = yield* awaitStatus("fatal");
+        yield* Queue.offer(
+          events,
+          envelope("k1", started.epoch, {
+            kind: "fatal",
+            message: "daemon auto-start is disabled: codesign failed",
+            diagnostics: null,
+          }),
+        );
+        const fatal = yield* awaitKeyStatus(lc.states, "k1", "fatal");
         expect((fatal.connection as { message: string }).message).toContain("codesign");
       });
 
@@ -370,52 +359,41 @@ describe("LiveConnection", () => {
         stopLivePicker: () => Effect.void,
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
         pollDaemonStatus: () => Effect.succeed({ reachable: true }),
-        liveEvents: Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
       });
 
       const program = Effect.gen(function* () {
         const lc = yield* LiveConnection;
-        const awaitStatus = (status: ConnectionStatus["status"]) =>
-          lc.state.changes.pipe(
-            Stream.filter((state) => state.connection.status === status),
-            Stream.runHead,
-            Effect.flatMap(
-              Option.match({
-                onNone: () => Effect.die("state stream ended early"),
-                onSome: Effect.succeed,
-              }),
-            ),
-          );
 
         // Latch, then the user clicks Start (autoStart true) and the daemon comes up.
-        yield* lc.configure({ settings: SETTINGS, runnerKey: "k1", enabled: true });
+        yield* lc.configure([{ settings: SETTINGS, runnerKey: "k1", enabled: true }]);
         yield* Queue.take(startCalls); // the latch attempt
-        yield* lc.start;
+        yield* lc.start("k1");
         const started = yield* Queue.take(startCalls);
         expect(started.autoStart).toBe(true);
 
         // The explicit Start SUCCEEDS — a rows frame brings it online.
-        yield* Queue.offer(events, {
-          epoch: started.epoch,
-          kind: "rows",
-          rows: [ROW],
-          snapshot: SNAPSHOT,
-        } as LivePickerEnvelope);
-        yield* awaitStatus("online");
+        yield* Queue.offer(
+          events,
+          envelope("k1", started.epoch, { kind: "rows", rows: [ROW], snapshot: SNAPSHOT }),
+        );
+        yield* awaitKeyStatus(lc.states, "k1", "online");
 
         // Then the daemon dies and the worker's OWN latch-only retry (same epoch,
         // auto_start already spent) finds none, reporting the same "auto-start is
         // disabled" text as a refusal. Because we already connected, this is a
         // latch-miss — it must stay noDaemon and keep slow-polling, NOT promote to
         // fatal the way a never-connected Start refusal does.
-        yield* Queue.offer(events, {
-          epoch: started.epoch,
-          kind: "offline",
-          message: "daemon auto-start is disabled: socket is missing",
-          retrying: false,
-          diagnostics: null,
-        } as LivePickerEnvelope);
-        const noDaemon = yield* awaitStatus("noDaemon");
+        yield* Queue.offer(
+          events,
+          envelope("k1", started.epoch, {
+            kind: "offline",
+            message: "daemon auto-start is disabled: socket is missing",
+            retrying: false,
+            diagnostics: null,
+          }),
+        );
+        const noDaemon = yield* awaitKeyStatus(lc.states, "k1", "noDaemon");
         expect(noDaemon.connection.status).toBe("noDaemon");
 
         // The auto-latch poll re-arms latch-only — recovery never re-spawns a daemon.
@@ -452,35 +430,26 @@ describe("LiveConnection", () => {
           Ref.updateAndGet(pollCount, (n) => n + 1).pipe(
             Effect.map((n) => ({ reachable: n >= 3 })),
           ),
-        liveEvents: Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
       });
 
       const program = Effect.gen(function* () {
         const lc = yield* LiveConnection;
-        const awaitStatus = (status: ConnectionStatus["status"]) =>
-          lc.state.changes.pipe(
-            Stream.filter((state) => state.connection.status === status),
-            Stream.runHead,
-            Effect.flatMap(
-              Option.match({
-                onNone: () => Effect.die("state stream ended early"),
-                onSome: Effect.succeed,
-              }),
-            ),
-          );
 
         // Latch (autoStart:false), then a NoDaemon latch-miss drops us into the poll.
-        yield* lc.configure({ settings: SETTINGS, runnerKey: "k1", enabled: true });
+        yield* lc.configure([{ settings: SETTINGS, runnerKey: "k1", enabled: true }]);
         const first = yield* Queue.take(startCalls);
         expect(first.autoStart).toBe(false);
-        yield* Queue.offer(events, {
-          epoch: first.epoch,
-          kind: "offline",
-          message: "daemon auto-start is disabled: socket is missing",
-          retrying: false,
-          diagnostics: null,
-        } as LivePickerEnvelope);
-        yield* awaitStatus("noDaemon");
+        yield* Queue.offer(
+          events,
+          envelope("k1", first.epoch, {
+            kind: "offline",
+            message: "daemon auto-start is disabled: socket is missing",
+            retrying: false,
+            diagnostics: null,
+          }),
+        );
+        yield* awaitKeyStatus(lc.states, "k1", "noDaemon");
 
         // The only re-arm lands after the probe finally reports a daemon (3rd poll),
         // latch-only — not one full subscribe per backoff tick.
@@ -514,33 +483,23 @@ describe("LiveConnection", () => {
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
         pollDaemonStatus: () =>
           Effect.fail(new IpcError({ op: "poll_daemon_status", message: "ssh: connection refused" })),
-        liveEvents: Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
       });
 
       const program = Effect.gen(function* () {
         const lc = yield* LiveConnection;
-        const awaitStatus = (status: ConnectionStatus["status"]) =>
-          lc.state.changes.pipe(
-            Stream.filter((state) => state.connection.status === status),
-            Stream.runHead,
-            Effect.flatMap(
-              Option.match({
-                onNone: () => Effect.die("state stream ended early"),
-                onSome: Effect.succeed,
-              }),
-            ),
-          );
-
-        yield* lc.configure({ settings: SETTINGS, runnerKey: "k1", enabled: true });
+        yield* lc.configure([{ settings: SETTINGS, runnerKey: "k1", enabled: true }]);
         const first = yield* Queue.take(startCalls);
-        yield* Queue.offer(events, {
-          epoch: first.epoch,
-          kind: "offline",
-          message: "daemon auto-start is disabled: socket is missing",
-          retrying: false,
-          diagnostics: null,
-        } as LivePickerEnvelope);
-        yield* awaitStatus("noDaemon");
+        yield* Queue.offer(
+          events,
+          envelope("k1", first.epoch, {
+            kind: "offline",
+            message: "daemon auto-start is disabled: socket is missing",
+            retrying: false,
+            diagnostics: null,
+          }),
+        );
+        yield* awaitKeyStatus(lc.states, "k1", "noDaemon");
 
         // The failed probe escalates: a fresh latch-only re-arm still happens.
         const reArm = yield* Queue.take(startCalls);
@@ -557,37 +516,38 @@ describe("LiveConnection", () => {
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
 
-  it("stops a worker whose start is interrupted by a switch (no orphaned subscription)", () =>
+  it("stops a worker whose start is interrupted by a key removal (no orphaned subscription)", () =>
     Effect.gen(function* () {
       const startedEpochs = yield* Queue.unbounded<number>();
-      const stoppedEpochs = yield* Queue.unbounded<number>();
+      const stoppedCalls = yield* Queue.unbounded<{ sourceKey: string; epoch: number }>();
       const events = yield* Queue.unbounded<LivePickerEnvelope>();
-      // Gate the (uninterruptible) start so the target can be switched WHILE the first
+      // Gate the (uninterruptible) start so the key can be removed WHILE the first
       // start is still in flight — the exact window the acquireUseRelease fix protects.
       const releaseStart = yield* Deferred.make<void>();
 
       const MockTauri = Layer.succeed(TauriIpc, {
         startLivePicker: ({ epoch }) =>
           Effect.zipRight(Queue.offer(startedEpochs, epoch), Deferred.await(releaseStart)),
-        stopLivePicker: (epoch) => Queue.offer(stoppedEpochs, epoch).pipe(Effect.asVoid),
+        stopLivePicker: ({ sourceKey, epoch }) =>
+          Queue.offer(stoppedCalls, { sourceKey, epoch }).pipe(Effect.asVoid),
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
         pollDaemonStatus: () => Effect.succeed({ reachable: true }),
-        liveEvents: Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
       });
 
       const program = Effect.gen(function* () {
         const lc = yield* LiveConnection;
         // Arm k1: the first start begins and blocks (still "in flight").
-        yield* lc.configure({ settings: SETTINGS, runnerKey: "k1", enabled: true });
+        yield* lc.configure([{ settings: SETTINGS, runnerKey: "k1", enabled: true }]);
         const inFlightEpoch = yield* Queue.take(startedEpochs);
-        // Switch to a DISABLED target mid-start: the interrupt is masked until the
-        // uninterruptible start finishes, and the new target installs no replacement
-        // worker — so without cleanup the in-flight worker would orphan.
-        yield* lc.configure({ settings: SETTINGS, runnerKey: "k2", enabled: false });
+        // Reconfigure to a DISABLED k2 mid-start: k1 is removed and interrupted, the
+        // interrupt is masked until the uninterruptible start finishes, and k2
+        // installs no worker — so without cleanup the in-flight worker would orphan.
+        yield* lc.configure([{ settings: SETTINGS, runnerKey: "k2", enabled: false }]);
         // Let the start complete; the pending interrupt then runs release -> stop.
         yield* Deferred.succeed(releaseStart, undefined);
-        const stoppedEpoch = yield* Queue.take(stoppedEpochs);
-        expect(stoppedEpoch).toBe(inFlightEpoch);
+        const stopped = yield* Queue.take(stoppedCalls);
+        expect(stopped).toEqual({ sourceKey: "k1", epoch: inFlightEpoch });
       });
 
       yield* program.pipe(
@@ -599,63 +559,82 @@ describe("LiveConnection", () => {
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
 
-  it("stamps rows with their runner and keeps the prior runner's key during a switch", () =>
+  it("runs multiple sources concurrently, routing frames per key and stopping only removed keys", () =>
     Effect.gen(function* () {
-      const startCalls = yield* Queue.unbounded<{ epoch: number }>();
-      const events = yield* Queue.unbounded<LivePickerEnvelope>();
+      const startCalls = yield* Queue.unbounded<{ sourceKey: string; epoch: number }>();
+      const stoppedCalls = yield* Queue.unbounded<{ sourceKey: string; epoch: number }>();
+      // The Tauri event bus fans out: each subscription registers its own listener.
+      // The real liveEvents filters frames to its sourceKey at offer time, but this
+      // mock deliberately broadcasts EVERY envelope to every queue (ignoring the
+      // key), so the test also proves the consumer's own per-key check in
+      // consumeUntilTerminal routes correctly on an unfiltered channel.
+      const queues = yield* Ref.make<ReadonlyArray<Queue.Queue<LivePickerEnvelope>>>([]);
+      const emit = (env: LivePickerEnvelope) =>
+        Ref.get(queues).pipe(
+          Effect.flatMap(Effect.forEach((queue) => Queue.offer(queue, env))),
+          Effect.asVoid,
+        );
       const MockTauri = Layer.succeed(TauriIpc, {
-        startLivePicker: ({ epoch }) => Queue.offer(startCalls, { epoch }).pipe(Effect.asVoid),
-        stopLivePicker: () => Effect.void,
+        startLivePicker: ({ sourceKey, epoch }) =>
+          Queue.offer(startCalls, { sourceKey, epoch }).pipe(Effect.asVoid),
+        stopLivePicker: ({ sourceKey, epoch }) =>
+          Queue.offer(stoppedCalls, { sourceKey, epoch }).pipe(Effect.asVoid),
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
         pollDaemonStatus: () => Effect.succeed({ reachable: true }),
-        liveEvents: Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+        liveEvents: () =>
+          Effect.gen(function* () {
+            const queue = yield* Queue.unbounded<LivePickerEnvelope>();
+            yield* Ref.update(queues, (current) => [...current, queue]);
+            return queue as Queue.Dequeue<LivePickerEnvelope>;
+          }),
       });
 
       const program = Effect.gen(function* () {
         const lc = yield* LiveConnection;
-        const awaitStatus = (status: ConnectionStatus["status"]) =>
-          lc.state.changes.pipe(
-            Stream.filter((state) => state.connection.status === status),
-            Stream.runHead,
-            Effect.flatMap(
-              Option.match({
-                onNone: () => Effect.die("state stream ended early"),
-                onSome: Effect.succeed,
-              }),
-            ),
-          );
 
-        // Source A (k1) latches and streams rows → the rows carry runner k1.
-        yield* lc.configure({ settings: SETTINGS, runnerKey: "k1", enabled: true });
+        // Both sources arm concurrently — one subscription per key.
+        yield* lc.configure([
+          { settings: SETTINGS, runnerKey: "k1", enabled: true },
+          { settings: SETTINGS, runnerKey: "k2", enabled: true },
+        ]);
         const a = yield* Queue.take(startCalls);
-        yield* Queue.offer(events, {
-          epoch: a.epoch,
-          kind: "rows",
-          rows: [ROW],
-          snapshot: SNAPSHOT,
-        } as LivePickerEnvelope);
-        const onlineA = yield* awaitStatus("online");
-        expect(onlineA.rowsRunnerKey).toBe("k1");
-
-        // Switch to source B (k2). The new subscription is connecting and the service
-        // preserves A's rows (no same-runner flicker) — but they stay stamped k1, so
-        // the dock's runner gate (rowsRunnerKey === active) rejects them instead of
-        // rendering A's panes (and activating one against B's settings).
-        yield* lc.configure({ settings: SETTINGS, runnerKey: "k2", enabled: true });
-        const connectingB = yield* awaitStatus("connecting");
-        expect(connectingB.rowsRunnerKey).toBe("k1");
-        expect(connectingB.rows.map((r) => r.pane_id)).toEqual(["%1"]);
-
-        // B then streams its own rows → now stamped k2 and trusted.
         const b = yield* Queue.take(startCalls);
-        yield* Queue.offer(events, {
-          epoch: b.epoch,
-          kind: "rows",
-          rows: [ROW],
-          snapshot: SNAPSHOT,
-        } as LivePickerEnvelope);
-        const onlineB = yield* awaitStatus("online");
-        expect(onlineB.rowsRunnerKey).toBe("k2");
+        const byKey = new Map([a, b].map((call) => [call.sourceKey, call] as const));
+        expect([...byKey.keys()].sort()).toEqual(["k1", "k2"]);
+        const k1 = byKey.get("k1")!;
+        const k2 = byKey.get("k2")!;
+
+        // Rows tagged k1 land ONLY in k1's entry: k1 goes online while k2 — sharing
+        // the same event channel — stays connecting with no rows.
+        yield* emit(envelope("k1", k1.epoch, { kind: "rows", rows: [ROW], snapshot: SNAPSHOT }));
+        const onlineK1 = yield* awaitKeyStatus(lc.states, "k1", "online");
+        expect(onlineK1.rowsRunnerKey).toBe("k1");
+        const statesAfterK1 = yield* SubscriptionRef.get(lc.states);
+        expect(statesAfterK1.get("k2")?.connection.status).toBe("connecting");
+        expect(statesAfterK1.get("k2")?.rows).toEqual([]);
+
+        // k2's own rows bring it online too — both sources are live at once.
+        yield* emit(envelope("k2", k2.epoch, { kind: "rows", rows: [ROW], snapshot: SNAPSHOT }));
+        const onlineK2 = yield* awaitKeyStatus(lc.states, "k2", "online");
+        expect(onlineK2.rowsRunnerKey).toBe("k2");
+
+        // Removing k2 stops ONLY its worker and drops its state entry; k1 keeps
+        // running untouched (no re-arm, still online).
+        yield* lc.configure([{ settings: SETTINGS, runnerKey: "k1", enabled: true }]);
+        const stopped = yield* Queue.take(stoppedCalls);
+        expect(stopped).toEqual({ sourceKey: "k2", epoch: k2.epoch });
+        const dropped = yield* lc.states.changes.pipe(
+          Stream.filter((map) => !map.has("k2")),
+          Stream.runHead,
+          Effect.flatMap(
+            Option.match({
+              onNone: () => Effect.die("state stream ended early"),
+              onSome: Effect.succeed,
+            }),
+          ),
+        );
+        expect(dropped.get("k1")?.connection.status).toBe("online");
+        expect(yield* Queue.size(startCalls)).toBe(0);
       });
 
       yield* program.pipe(
