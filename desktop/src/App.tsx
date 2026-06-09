@@ -220,7 +220,9 @@ function App({ mode }: { mode: ShellMode }) {
   const initialProfileState = useMemo(() => loadProfileState(readLocalStorage), []);
   const profileStateResult = useAtomValue(profilesAtom);
   const profileState = Result.getOrElse(profileStateResult, () => initialProfileState);
-  const selectProfileSet = useAtomSet(selectProfileAtom);
+  // Promise mode so the horizontal footer's settings deep-link can await the
+  // selection commit before opening the window; other callers ignore the promise.
+  const selectProfileSet = useAtomSet(selectProfileAtom, { mode: "promise" });
   const addSshProfileSet = useAtomSet(addSshProfileAtom);
   const deleteActiveProfileSet = useAtomSet(deleteActiveProfileAtom);
   // Promise mode: the apply outcome ("applied" | "duplicate-host") drives the
@@ -1536,7 +1538,7 @@ function App({ mode }: { mode: ShellMode }) {
     if (mode === "settings" && isSettingsDirty && id === activeProfile.id) {
       return;
     }
-    selectProfileSet(id);
+    void selectProfileSet(id);
   }
 
   function addSshProfile() {
@@ -2450,10 +2452,16 @@ function App({ mode }: { mode: ShellMode }) {
               // from the settings-selected active profile): landing in Settings on a
               // different source than the label promised would manage the wrong one.
               // This is a deep-link INTO the settings selection, not a dock-side
-              // quick-switch — the open/close menu below still never selects.
+              // quick-switch — the open/close menu below still never selects. The
+              // retarget is deliberate and cheap: the probe moves to the source the
+              // bar is DISPLAYING (open, so an online channel stays armed), no
+              // subscription churns, and a user after the previous selection is one
+              // card-click away. Await the commit so the window can't load the old
+              // selection; open regardless of the outcome (Settings is the goal).
               if (effectiveOrientation === "horizontal") {
-                selectProfile(triggerProfile.id);
-                openSettings();
+                void selectProfileSet(triggerProfile.id)
+                  .catch(() => {})
+                  .then(() => openSettings());
               } else {
                 setIsSourceMenuOpen((open) => !open);
               }

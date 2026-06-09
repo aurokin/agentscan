@@ -997,6 +997,11 @@ fn epoch_advances(fence: &StartFence, source_key: &str, epoch: u64) -> bool {
 
 // Commit a honored start into the fence, evicting the lowest-epoch entry (and
 // raising the floor to it) once past the cap so edits can't grow it unboundedly.
+// Eviction never weakens the gate: only the MINIMUM entry is evicted and the
+// floor rises to exactly that epoch, so for the evicted key `epoch > floor` is at
+// least as strict as its `epoch > last` entry was (a worker started at epoch E is
+// evicted only when E is the minimum, leaving floor >= E — the would-be window
+// floor < S <= E is empty), and for every other key the floor only adds strictness.
 fn commit_start_epoch(fence: &mut StartFence, source_key: String, epoch: u64) {
     fence.last_started.insert(source_key, epoch);
     if fence.last_started.len() > LIVE_PICKER_FENCE_CAP
@@ -2433,6 +2438,11 @@ mod tests {
             "source-new",
             LIVE_PICKER_FENCE_CAP as u64 + 2
         ));
+
+        // Gate equivalence for the evicted key: the floor equals exactly the epoch
+        // its entry held, so eviction cannot admit any start its entry would have
+        // rejected — a worker still running at the evicted epoch stays protected.
+        assert!(!epoch_advances(&fence, "source-1", fence.floor));
     }
 
     #[test]
