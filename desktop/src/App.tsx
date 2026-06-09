@@ -630,12 +630,17 @@ function App({ mode }: { mode: ShellMode }) {
     preflightState.status === "ready" &&
     preflightState.runnerKey === runnerKey &&
     !preflightState.preflight.ok;
-  // The resolved failure surfaced inside the active source's own folder: its live
-  // target is gated off on a failed probe, so without this the folder's keyed
-  // state would read as a dishonest perpetual "Waiting for a source".
+  // The active source's failure surfaced inside its own folder (or the homeless
+  // strip below): its live target is gated off (or left disarmed) on a failed
+  // probe, so without this the folder's keyed state would read as a dishonest
+  // perpetual "Waiting for a source". Covers both a resolved-but-unusable probe
+  // and the probe itself failing ("failed" carries no runnerKey; like the boot
+  // screen, we treat it as the active runner's, modulo the one-async-cycle lag).
   const activePreflightError = dockPreflightUnusable
     ? (preflightState.preflight.error ?? `${profileKindLabel(activeProfile)} CLI unavailable`)
-    : null;
+    : preflightState.status === "failed"
+      ? preflightState.message
+      : null;
   // The full-screen boot/recovery takeover is scoped to the states where no OTHER
   // open folder could render anyway: preflight is single-source (only the active
   // profile is probed), so blanking the whole dock for the active source's
@@ -2241,6 +2246,21 @@ function App({ mode }: { mode: ShellMode }) {
           // enabled source, in the user's order. Open = live subscription + that
           // source's workspace-grouped rows; closed = header only, no subscription.
           <div className="source-folders">
+            {activePreflightError !== null &&
+            !liveSources.some((source) => source.runnerKey === runnerKey) ? (
+              // The active source can be folder-INeligible (e.g. a just-added remote
+              // with no host yet): it renders no folder, and with another folder open
+              // the boot screen is suppressed, so without this strip its failure has
+              // no surface at all. Same recovery shape as the in-folder strip.
+              <div className="live-strip error" aria-live="polite">
+                <span className="status-dot" data-tone="error" />
+                <span className="live-label">{labelFor(activeProfile)}</span>
+                <span className="live-message">{activePreflightError}</span>
+                <button className="live-action" type="button" onClick={openSettings}>
+                  Open settings
+                </button>
+              </div>
+            ) : null}
             {sourceViews.map((view) => {
               // The active source's resolved-failing preflight surfaces in its own
               // folder: its live target is gated off on a failed probe, so the keyed
