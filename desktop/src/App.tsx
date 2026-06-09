@@ -1747,8 +1747,24 @@ function App({ mode }: { mode: ShellMode }) {
     // hide it then and offer a quiet "add remote" affordance instead.
     const hasMultipleSources = profileState.profiles.length > 1;
     // Shared by both header layouts (see adaptive header below).
+    const activeIsOpen = profileState.openProfileIds.includes(activeProfile.id);
     const detailActions = (
       <div className="detail-actions">
+        {/* Open/close must be reachable from Settings too: the horizontal bar has
+            no room for the dock's folder menu (a 56px window clips any popup), so
+            without this a pinned-horizontal user who closed every folder could
+            never arm a subscription again without switching layouts. Only
+            folder-eligible sources can open (a draft has nothing to subscribe). */}
+        {folderProfiles(profileState).some((profile) => profile.id === activeProfile.id) ? (
+          <button
+            className="ghost-button"
+            type="button"
+            aria-pressed={activeIsOpen}
+            onClick={() => toggleProfileOpenSet(activeProfile.id)}
+          >
+            {activeIsOpen ? "Close in dock" : "Open in dock"}
+          </button>
+        ) : null}
         {activeProfile.kind === "ssh" ? (
           <button className="ghost-button danger" type="button" onClick={deleteActiveProfile}>
             Delete
