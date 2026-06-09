@@ -3,16 +3,10 @@
 // the Profiles Effect.Service (and its vitest proof) can drive it over an injected
 // storage boundary while App.tsx keeps using the same derivations for rendering.
 //
-// These types mirror the Rust contracts in src-tauri/src/lib.rs (DesktopRunnerSettings,
-// DesktopProfile) and were previously inlined in App.tsx.
+// These types mirror the Rust contracts in src-tauri/src/lib.rs (DesktopRunnerSettings)
+// and were previously inlined in App.tsx.
 
 export type ProfileKind = "local" | "ssh";
-
-export type DesktopProfile = {
-  id: string;
-  name: string;
-  kind: ProfileKind;
-};
 
 export type AgentscanPreflight = {
   binary: string;
@@ -50,14 +44,12 @@ export type DesktopProfileConfig = LocalProfileConfig | SshProfileConfig;
 
 export type LocalProfileConfig = {
   id: string;
-  name: string;
   kind: "local";
   runner: RunnerSettings;
 };
 
 export type SshProfileConfig = {
   id: string;
-  name: string;
   kind: "ssh";
   host: string;
   clientTty: string;
@@ -105,7 +97,6 @@ export function defaultProfileState(runner: RunnerSettings = emptyRunnerSettings
     profiles: [
       {
         id: LOCAL_PROFILE_ID,
-        name: "Default",
         kind: "local",
         runner: normalizeRunnerSettings(runner),
       },
@@ -119,9 +110,24 @@ export function normalizeProfileState(
   value: Partial<ProfileState>,
   fallbackRunner: RunnerSettings = emptyRunnerSettings(),
 ): ProfileState {
-  const profiles = Array.isArray(value.profiles)
+  const mapped = Array.isArray(value.profiles)
     ? value.profiles.map(normalizeProfile).filter((profile): profile is DesktopProfileConfig => profile !== null)
     : [];
+
+  // A source's identity IS its connection, so a persisted state (possibly written by
+  // an older version that allowed it) keeps only the first profile per trimmed SSH
+  // host. Empty hosts are still-unconfigured drafts, not a shared connection.
+  const seenHosts = new Set<string>();
+  const profiles = mapped.filter((profile) => {
+    if (profile.kind !== "ssh" || !profile.host) {
+      return true;
+    }
+    if (seenHosts.has(profile.host)) {
+      return false;
+    }
+    seenHosts.add(profile.host);
+    return true;
+  });
 
   if (!profiles.some((profile) => profile.kind === "local")) {
     profiles.unshift(defaultProfileState(fallbackRunner).profiles[0]);
@@ -142,15 +148,15 @@ export function normalizeProfile(value: unknown): DesktopProfileConfig | null {
     return null;
   }
 
+  // Rebuilding the profile field-by-field also strips the user-editable `name`
+  // older versions persisted; labels are derived from the connection now.
   const profile = value as Partial<DesktopProfileConfig>;
   const id = typeof profile.id === "string" && profile.id.trim() ? profile.id.trim() : "";
-  const name = typeof profile.name === "string" && profile.name.trim() ? profile.name.trim() : "";
   const runner = normalizeRunnerSettings(profile.runner ?? emptyRunnerSettings());
 
   if (profile.kind === "local") {
     return {
       id: id || LOCAL_PROFILE_ID,
-      name: name || "Default",
       kind: "local",
       runner,
     };
@@ -159,7 +165,6 @@ export function normalizeProfile(value: unknown): DesktopProfileConfig | null {
   if (profile.kind === "ssh") {
     return {
       id: id || `ssh-${Date.now()}`,
-      name: name || "Remote",
       kind: "ssh",
       host: typeof profile.host === "string" ? profile.host.trim() : "",
       clientTty: typeof profile.clientTty === "string" ? profile.clientTty.trim() : "",
@@ -191,7 +196,6 @@ export function isRunnableProfile(profile: DesktopProfileConfig): boolean {
 export function updateProfileSettingsById(
   state: ProfileState,
   id: string,
-  name: string,
   runner: RunnerSettings,
   sshHost: string,
   sshClientTty: string,
@@ -201,27 +205,22 @@ export function updateProfileSettingsById(
   return {
     ...state,
     profiles: state.profiles.map((profile) =>
-      profile.id === id
-        ? updateProfileSettings(profile, name, runner, sshHost, sshClientTty)
-        : profile,
+      profile.id === id ? updateProfileSettings(profile, runner, sshHost, sshClientTty) : profile,
     ),
   };
 }
 
 export function updateProfileSettings(
   profile: DesktopProfileConfig,
-  name: string,
   runner: RunnerSettings,
   sshHost: string,
   sshClientTty: string,
 ): DesktopProfileConfig {
   const normalizedRunner = normalizeRunnerSettings(runner);
-  const normalizedName = name.trim() || profile.name;
 
   if (profile.kind === "ssh") {
     return {
       ...profile,
-      name: normalizedName,
       host: sshHost.trim(),
       clientTty: sshClientTty.trim(),
       runner: normalizedRunner,
@@ -229,15 +228,7 @@ export function updateProfileSettings(
     };
   }
 
-  return { ...profile, name: normalizedName, runner: normalizedRunner };
-}
-
-export function profileSummary(profile: DesktopProfileConfig): DesktopProfile {
-  return {
-    id: profile.id,
-    name: profile.name,
-    kind: profile.kind,
-  };
+  return { ...profile, runner: normalizedRunner };
 }
 
 export function runnerSummary(settings: RunnerSettings): string {
@@ -292,16 +283,12 @@ export function profileKindLabel(profile: DesktopProfileConfig): string {
 
 export function validateProfileDraft(
   profile: DesktopProfileConfig,
-  name: string,
   runner: RunnerSettings,
   sshHost: string,
   sshClientTty: string,
+  profiles: DesktopProfileConfig[],
 ): DraftValidation {
   const errors: string[] = [];
-
-  if (!name.trim()) {
-    errors.push("Profile name is required.");
-  }
 
   if (runner.binaryPath.includes("\0")) {
     errors.push("agentscan binary cannot contain a null byte.");
@@ -313,6 +300,13 @@ export function validateProfileDraft(
       errors.push("SSH host is required.");
     } else if (host.startsWith("-") || /\s/.test(host) || host.includes("\0")) {
       errors.push("SSH host must be a single host alias and cannot start with '-'.");
+    } else if (
+      profiles.some(
+        (other) => other.id !== profile.id && other.kind === "ssh" && other.host.trim() === host,
+      )
+    ) {
+      // The connection is the source's identity, so two profiles can't share a host.
+      errors.push("A source for this connection already exists.");
     }
 
     const clientTty = sshClientTty.trim();
@@ -364,9 +358,14 @@ export function newProfileId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-export function nextRemoteProfileName(profiles: DesktopProfileConfig[]): string {
-  const remoteCount = profiles.filter((profile) => profile.kind === "ssh").length;
-  return remoteCount === 0 ? "Remote" : `Remote ${remoteCount + 1}`;
+// Display label for an agentscan source, derived from its connection: the local
+// machine keyed by its hostname, a remote keyed by its SSH host (each falling back
+// to a generic label when its host isn't known).
+export function sourceLabel(profile: DesktopProfileConfig, localHostLabel: string): string {
+  if (profile.kind === "ssh") {
+    return profile.host.trim() || "Remote";
+  }
+  return localHostLabel || "agentscan";
 }
 
 // Read the local profile's runner settings from storage (the `agentscan.desktop.

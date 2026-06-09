@@ -10,16 +10,14 @@ import type { ShellMode } from "./prefs";
 
 const localProfile = {
   id: "local",
-  name: "Default",
   kind: "local" as const,
   runner: { binaryPath: "", env: [] },
 };
 
-const sshProfile = (id: string, name: string, enabled = true) => ({
+const sshProfile = (id: string, host = "box", enabled = true) => ({
   id,
-  name,
   kind: "ssh" as const,
-  host: "box",
+  host,
   clientTty: "",
   runner: { binaryPath: "", env: [] },
   enabled,
@@ -80,7 +78,7 @@ const run = <A>(
 
 describe("Profiles", () => {
   it("seeds initial state from storage", () =>
-    run("dock", seed(stateOf("local", localProfile, sshProfile("ssh-1", "Remote"))), ({ profiles }) =>
+    run("dock", seed(stateOf("local", localProfile, sshProfile("ssh-1"))), ({ profiles }) =>
       Effect.gen(function* () {
         const state = yield* SubscriptionRef.get(profiles.state);
         expect(state.activeProfileId).toBe("local");
@@ -101,7 +99,7 @@ describe("Profiles", () => {
   it("selectProfile switches active, persists, and broadcasts", () =>
     run(
       "dock",
-      seed(stateOf("local", localProfile, sshProfile("ssh-1", "Remote"))),
+      seed(stateOf("local", localProfile, sshProfile("ssh-1"))),
       ({ profiles, store, emitted }) =>
         Effect.gen(function* () {
           yield* profiles.selectProfile("ssh-1");
@@ -119,7 +117,7 @@ describe("Profiles", () => {
   it("selectProfile ignores a non-runnable (disabled) profile", () =>
     run(
       "dock",
-      seed(stateOf("local", localProfile, sshProfile("ssh-1", "Remote", false))),
+      seed(stateOf("local", localProfile, sshProfile("ssh-1", "box", false))),
       ({ profiles, emitted }) =>
         Effect.gen(function* () {
           yield* profiles.selectProfile("ssh-1");
@@ -153,7 +151,7 @@ describe("Profiles", () => {
   it("deleteActiveProfile removes an active ssh profile and falls back to local", () =>
     run(
       "settings",
-      seed(stateOf("ssh-1", localProfile, sshProfile("ssh-1", "Remote"))),
+      seed(stateOf("ssh-1", localProfile, sshProfile("ssh-1"))),
       ({ profiles }) =>
         Effect.gen(function* () {
           yield* profiles.deleteActiveProfile;
@@ -180,11 +178,10 @@ describe("Profiles", () => {
         // edits the local profile (its ref still only knows the local profile).
         store.set(
           PROFILES_STORAGE_KEY,
-          JSON.stringify(stateOf("local", localProfile, sshProfile("ssh-9", "Dock Added"))),
+          JSON.stringify(stateOf("local", localProfile, sshProfile("ssh-9", "dock-box"))),
         );
 
         yield* profiles.applyRunnerSettings({
-          name: "Default",
           runner: { binaryPath: "/opt/agentscan", env: [] },
           sshHost: "",
           sshClientTty: "",
@@ -203,7 +200,7 @@ describe("Profiles", () => {
       Effect.gen(function* () {
         store.set(
           PROFILES_STORAGE_KEY,
-          JSON.stringify(stateOf("ssh-1", localProfile, sshProfile("ssh-1", "Remote"))),
+          JSON.stringify(stateOf("ssh-1", localProfile, sshProfile("ssh-1"))),
         );
         yield* profiles.reload;
         const state = yield* SubscriptionRef.get(profiles.state);

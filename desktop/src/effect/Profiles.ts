@@ -6,7 +6,6 @@ import {
   isRunnableProfile,
   loadProfileState,
   newProfileId,
-  nextRemoteProfileName,
   normalizeProfileState,
   normalizeRunnerSettings,
   storeProfileState,
@@ -18,8 +17,7 @@ import {
 
 export type ApplyRunnerSettingsInput = {
   // The form drafts, already validated by the caller. The service normalizes the
-  // runner and trims the name, then merges this onto the latest persisted state.
-  readonly name: string;
+  // runner, then merges this onto the latest persisted state.
   readonly runner: RunnerSettings;
   readonly sshHost: string;
   readonly sshClientTty: string;
@@ -98,7 +96,6 @@ export class Profiles extends Effect.Service<Profiles>()("desktop/Profiles", {
       const latest = loadProfileState(bridge.loadRaw);
       const profile: SshProfileConfig = {
         id: newProfileId("ssh"),
-        name: nextRemoteProfileName(latest.profiles),
         kind: "ssh",
         host: "",
         clientTty: "",
@@ -140,7 +137,6 @@ export class Profiles extends Effect.Service<Profiles>()("desktop/Profiles", {
         const next = updateProfileSettingsById(
           latest,
           editedId,
-          input.name.trim(),
           normalizeRunnerSettings(input.runner),
           input.sshHost,
           input.sshClientTty,

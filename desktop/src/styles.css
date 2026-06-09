@@ -927,26 +927,14 @@ kbd {
   white-space: nowrap;
 }
 
-/* Two-line source row: name disambiguates sources (incl. remotes sharing a
-   host), with the agentscan identity beneath it. */
 .source-option-text {
   display: flex;
   flex-direction: column;
-  gap: 1px;
   flex: 1 1 auto;
   min-width: 0;
 }
 
 .source-option-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.source-option-sub {
-  font-size: 11px;
-  color: var(--text-dim);
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1392,7 +1380,6 @@ button:disabled {
 .source-card-text {
   display: flex;
   flex-direction: column;
-  gap: 1px;
   flex: 1 1 auto;
   min-width: 0;
 }
@@ -1400,15 +1387,6 @@ button:disabled {
 .source-card-name {
   font-size: 13px;
   font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.source-card-sub {
-  font-size: 11px;
-  color: var(--text-dim);
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

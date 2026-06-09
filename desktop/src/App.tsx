@@ -49,8 +49,8 @@ import {
   runnerSettingsEqual,
   runnerSettingsForProfile,
   runnerSummary,
+  sourceLabel,
   validateProfileDraft,
-  type DesktopProfileConfig,
   type EnvironmentVariable,
   type RunnerSettings,
 } from "./effect/profileModel";
@@ -219,9 +219,6 @@ function App({ mode }: { mode: ShellMode }) {
   // to the active profile, so resolved preflight/picker data is invalidated
   // whenever the underlying target changes, not just when the profile id does.
   const runnerKey = useMemo(() => runnerKeyForProfile(activeProfile), [activeProfile]);
-  const [profileNameDraft, setProfileNameDraft] = useState(
-    () => getActiveProfile(initialProfileState).name,
-  );
   const [settingsDraft, setSettingsDraft] = useState<RunnerSettings>(
     () => getActiveProfile(initialProfileState).runner,
   );
@@ -333,21 +330,20 @@ function App({ mode }: { mode: ShellMode }) {
     () =>
       validateProfileDraft(
         activeProfile,
-        profileNameDraft,
         settingsDraft,
         sshHostDraft,
         sshClientTtyDraft,
+        profileState.profiles,
       ),
-    [activeProfile, profileNameDraft, settingsDraft, sshHostDraft, sshClientTtyDraft],
+    [activeProfile, settingsDraft, sshHostDraft, sshClientTtyDraft, profileState.profiles],
   );
   const isSettingsDirty = useMemo(
     () =>
-      profileNameDraft.trim() !== activeProfile.name ||
       sshHostDraft.trim() !== (activeProfile.kind === "ssh" ? activeProfile.host : "") ||
       sshClientTtyDraft.trim() !==
         (activeProfile.kind === "ssh" ? activeProfile.clientTty : "") ||
       !runnerSettingsEqual(settingsDraft, activeProfile.runner),
-    [activeProfile, profileNameDraft, settingsDraft, sshHostDraft, sshClientTtyDraft],
+    [activeProfile, settingsDraft, sshHostDraft, sshClientTtyDraft],
   );
   // Render-synced mirror so the settings focus-reconcile listener can read the latest
   // dirty state without re-subscribing on every keystroke.
@@ -362,12 +358,12 @@ function App({ mode }: { mode: ShellMode }) {
     () =>
       validateProfileDraft(
         activeProfile,
-        activeProfile.name,
         activeProfile.runner,
         activeProfile.kind === "ssh" ? activeProfile.host : "",
         activeProfile.kind === "ssh" ? activeProfile.clientTty : "",
+        profileState.profiles,
       ),
-    [activeProfile],
+    [activeProfile, profileState.profiles],
   );
   const activeProfileValid = activeProfileValidation.errors.length === 0;
 
@@ -666,7 +662,6 @@ function App({ mode }: { mode: ShellMode }) {
     // activationInFlightRef lets the new target activate immediately rather than waiting
     // on a stale focus_picker_row's finally. The live client's reconnect/retry policy is
     // owned by the LiveConnection service, which re-targets on the runnerKey change.
-    setProfileNameDraft(activeProfile.name);
     setSettingsDraft(activeProfile.runner);
     setSshHostDraft(activeProfile.kind === "ssh" ? activeProfile.host : "");
     setSshClientTtyDraft(activeProfile.kind === "ssh" ? activeProfile.clientTty : "");
@@ -1234,15 +1229,15 @@ function App({ mode }: { mode: ShellMode }) {
   function applyRunnerSettings() {
     const validation = validateProfileDraft(
       activeProfile,
-      profileNameDraft,
       settingsDraft,
       sshHostDraft,
       sshClientTtyDraft,
+      profileState.profiles,
     );
     if (validation.errors.length > 0) {
       appendDebugEntry({
         kind: "settings",
-        label: `${activeProfile.name} settings rejected`,
+        label: `${sourceLabel(activeProfile, localHostLabel)} settings rejected`,
         detail: validation.errors.join(" · "),
       });
       return;
@@ -1254,20 +1249,18 @@ function App({ mode }: { mode: ShellMode }) {
     const normalized = normalizeRunnerSettings(settingsDraft);
     setSettingsDraft(normalized);
     applyRunnerSettingsSet({
-      name: profileNameDraft,
       runner: normalized,
       sshHost: sshHostDraft,
       sshClientTty: sshClientTtyDraft,
     });
     appendDebugEntry({
       kind: "settings",
-      label: `${activeProfile.name} settings applied`,
+      label: `${sourceLabel(activeProfile, localHostLabel)} settings applied`,
       detail: `${runnerSummary(normalized)} · ${normalized.env.length} env ${normalized.env.length === 1 ? "name" : "names"}`,
     });
   }
 
   function resetProfileSettings() {
-    setProfileNameDraft(activeProfile.name);
     setSettingsDraft(activeProfile.runner);
     setSshHostDraft(activeProfile.kind === "ssh" ? activeProfile.host : "");
     setSshClientTtyDraft(activeProfile.kind === "ssh" ? activeProfile.clientTty : "");
@@ -1281,14 +1274,13 @@ function App({ mode }: { mode: ShellMode }) {
   // settings form drafts, which the dock never populates).
   function applySuggestedBinaryPath(path: string) {
     applyRunnerSettingsSet({
-      name: activeProfile.name,
       runner: normalizeRunnerSettings({ ...activeProfile.runner, binaryPath: path }),
       sshHost: activeProfile.kind === "ssh" ? activeProfile.host : "",
       sshClientTty: activeProfile.kind === "ssh" ? activeProfile.clientTty : "",
     });
     appendDebugEntry({
       kind: "settings",
-      label: `${activeProfile.name} binary set from probe`,
+      label: `${sourceLabel(activeProfile, localHostLabel)} binary set from probe`,
       detail: path,
     });
   }
@@ -1319,14 +1311,14 @@ function App({ mode }: { mode: ShellMode }) {
 
   function deleteActiveProfile() {
     // Guard here too so the debug entry (and its reference to the about-to-be-deleted
-    // profile's name) only fires for a real deletion; the service also no-ops on local.
+    // profile's label) only fires for a real deletion; the service also no-ops on local.
     if (activeProfile.kind === "local") {
       return;
     }
     deleteActiveProfileSet();
     appendDebugEntry({
       kind: "settings",
-      label: `${activeProfile.name} profile deleted`,
+      label: `${sourceLabel(activeProfile, localHostLabel)} profile deleted`,
       detail: "active profile changed",
     });
   }
@@ -1594,8 +1586,9 @@ function App({ mode }: { mode: ShellMode }) {
                       {profile.kind === "ssh" ? "⇆" : "⌂"}
                     </span>
                     <span className="source-card-text">
-                      <span className="source-card-name">{profile.name}</span>
-                      <span className="source-card-sub">{sourceLabel(profile, localHostLabel)}</span>
+                      <span className="source-card-name">
+                        {sourceLabel(profile, localHostLabel)}
+                      </span>
                     </span>
                     <span className={`kind-chip ${profile.kind}`}>
                       {profile.kind === "ssh" ? "remote" : "local"}
@@ -1625,7 +1618,7 @@ function App({ mode }: { mode: ShellMode }) {
                     <span className={`kind-chip ${activeProfile.kind}`}>
                       {activeProfile.kind === "ssh" ? "remote" : "local"}
                     </span>
-                    <h2>{activeProfile.name}</h2>
+                    <h2>{sourceLabel(activeProfile, localHostLabel)}</h2>
                   </div>
                   {detailActions}
                 </div>
@@ -1655,13 +1648,6 @@ function App({ mode }: { mode: ShellMode }) {
               ) : null}
 
               <div className="field-grid">
-                <label className="field">
-                  <span className="field-label">Name</span>
-                  <input
-                    value={profileNameDraft}
-                    onChange={(event) => setProfileNameDraft(event.target.value)}
-                  />
-                </label>
                 {activeProfile.kind === "ssh" ? (
                   <label className="field">
                     <span className="field-label">SSH host</span>
@@ -2076,8 +2062,9 @@ function App({ mode }: { mode: ShellMode }) {
                       {isActive ? "✓" : ""}
                     </span>
                     <span className="source-option-text">
-                      <span className="source-option-name">{profile.name}</span>
-                      <span className="source-option-sub">{sourceLabel(profile, localHostLabel)}</span>
+                      <span className="source-option-name">
+                        {sourceLabel(profile, localHostLabel)}
+                      </span>
                     </span>
                   </button>
                 );
@@ -2297,16 +2284,6 @@ function statusTone(kind: string): string {
     default:
       return "unknown";
   }
-}
-
-// Footer label for an agentscan source: the local machine keyed by its hostname,
-// or a remote keyed by its SSH host (each falling back when its host isn't known).
-function sourceLabel(profile: DesktopProfileConfig, localHostLabel: string): string {
-  if (profile.kind === "ssh") {
-    const host = profile.host.trim();
-    return host ? `agentscan @ ${host}` : profile.name;
-  }
-  return localHostLabel || "agentscan";
 }
 
 function filterPickerRows(rows: PickerRow[], query: string) {
