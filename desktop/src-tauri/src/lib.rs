@@ -589,32 +589,73 @@ enum AgentscanBinDir {
     Abs(&'static str),
 }
 
-// Candidate dirs in precedence order. The original GUI-launch dirs come first
-// (cargo, Homebrew, /usr/local/bin — unchanged), then `~/.local/bin`, then the
-// version-manager shim dirs LAST. Shims are wrappers (symlinks to mise/asdf), so
-// keeping them last means a stale shim or an unavailable manager can never shadow
-// a real binary found in an earlier dir. For the SSH PATH this whole list is
-// appended *after* the inherited PATH (remote_path_assignment), so the remote's
-// own resolution always wins and these only act as a fallback.
+// Concrete install dirs in precedence order: a real `agentscan` binary lives
+// directly in one of these. The original GUI-launch dirs come first (cargo,
+// Homebrew, /usr/local/bin — unchanged), then `~/.local/bin`.
 const AGENTSCAN_BIN_DIRS: &[AgentscanBinDir] = &[
     AgentscanBinDir::Home(".cargo/bin"),
     AgentscanBinDir::Abs("/opt/homebrew/bin"),
     AgentscanBinDir::Abs("/usr/local/bin"),
     AgentscanBinDir::Home(".local/bin"),
+];
+
+// Version-manager shim dirs. Shims are thin wrappers (mise/asdf symlinks), so a
+// stale shim or an unavailable manager must never shadow a real binary. They are
+// tried LAST everywhere: on the SSH PATH they are appended after both `$PATH` and
+// the concrete dirs (remote_path_sh_script); in local auto-detect they are tried
+// only after the concrete dirs *and* an explicit PATH lookup
+// (resolve_local_agentscan), so an `agentscan` already resolvable via PATH always
+// wins over a leftover shim.
+const AGENTSCAN_SHIM_DIRS: &[AgentscanBinDir] = &[
     AgentscanBinDir::Home(".local/share/mise/shims"),
     AgentscanBinDir::Home(".asdf/shims"),
 ];
 
 fn find_known_agentscan_binary() -> Option<PathBuf> {
-    known_agentscan_paths(env::var_os("HOME").as_deref()).find(|path| path.is_file())
+    resolve_local_agentscan(
+        env::var_os("HOME").as_deref(),
+        env::var_os("PATH").as_deref(),
+        |path| path.is_file(),
+    )
 }
 
-fn known_agentscan_paths(home: Option<&OsStr>) -> impl Iterator<Item = PathBuf> {
+// Local auto-detect precedence: concrete install dirs, then an explicit PATH
+// lookup, then version-manager shims. The PATH step sits before shims so a real
+// binary on the inherited PATH beats a stale shim, while shims still rescue the
+// GUI-from-Finder case where PATH is minimal and agentscan is only installed via
+// mise/asdf. `exists` is injected so the precedence is unit-testable without
+// touching the filesystem.
+fn resolve_local_agentscan<F>(
+    home: Option<&OsStr>,
+    path_var: Option<&OsStr>,
+    exists: F,
+) -> Option<PathBuf>
+where
+    F: Fn(&Path) -> bool,
+{
+    agentscan_paths_in(AGENTSCAN_BIN_DIRS, home)
+        .find(|path| exists(path.as_path()))
+        .or_else(|| {
+            path_var.and_then(|path_var| {
+                env::split_paths(path_var)
+                    .map(|dir| dir.join("agentscan"))
+                    .find(|candidate| exists(candidate.as_path()))
+            })
+        })
+        .or_else(|| {
+            agentscan_paths_in(AGENTSCAN_SHIM_DIRS, home).find(|path| exists(path.as_path()))
+        })
+}
+
+fn agentscan_paths_in(
+    dirs: &'static [AgentscanBinDir],
+    home: Option<&OsStr>,
+) -> impl Iterator<Item = PathBuf> {
     let home = home
         .filter(|home| !home.is_empty())
         .map(|home| Path::new(home).to_owned());
 
-    AGENTSCAN_BIN_DIRS.iter().filter_map(move |dir| match dir {
+    dirs.iter().filter_map(move |dir| match dir {
         AgentscanBinDir::Home(rel) => home.as_ref().map(|home| home.join(rel).join("agentscan")),
         AgentscanBinDir::Abs(abs) => Some(Path::new(abs).join("agentscan")),
     })
@@ -1829,7 +1870,7 @@ fn remote_agentscan_script(settings: &SshRunnerSettings, args: &[&str]) -> Resul
 // applies it after this.
 fn remote_path_sh_script() -> String {
     let mut path = String::from("PATH=\"${PATH:+$PATH:}");
-    for (index, dir) in AGENTSCAN_BIN_DIRS.iter().enumerate() {
+    for (index, dir) in AGENTSCAN_BIN_DIRS.iter().chain(AGENTSCAN_SHIM_DIRS).enumerate() {
         if index > 0 {
             path.push(':');
         }
@@ -2616,10 +2657,13 @@ mod tests {
 
     #[test]
     fn known_agentscan_paths_include_gui_launch_locations() {
-        let paths: Vec<_> = known_agentscan_paths(Some(OsStr::new("/Users/example"))).collect();
+        let home = Some(OsStr::new("/Users/example"));
+        let paths: Vec<_> = agentscan_paths_in(AGENTSCAN_BIN_DIRS, home)
+            .chain(agentscan_paths_in(AGENTSCAN_SHIM_DIRS, home))
+            .collect();
 
-        // Original GUI-launch dirs first (cargo, Homebrew, /usr/local/bin), then
-        // ~/.local/bin, then the version-manager shims LAST so a stale shim never
+        // Concrete GUI-launch dirs first (cargo, Homebrew, /usr/local/bin,
+        // ~/.local/bin), then the version-manager shims LAST so a stale shim never
         // shadows a real binary above it.
         assert_eq!(
             paths,
@@ -2636,7 +2680,10 @@ mod tests {
 
     #[test]
     fn known_agentscan_paths_skip_empty_home() {
-        let paths: Vec<_> = known_agentscan_paths(Some(OsStr::new(""))).collect();
+        let home = Some(OsStr::new(""));
+        let paths: Vec<_> = agentscan_paths_in(AGENTSCAN_BIN_DIRS, home)
+            .chain(agentscan_paths_in(AGENTSCAN_SHIM_DIRS, home))
+            .collect();
 
         assert_eq!(
             paths,
@@ -2644,6 +2691,63 @@ mod tests {
                 PathBuf::from("/opt/homebrew/bin/agentscan"),
                 PathBuf::from("/usr/local/bin/agentscan"),
             ]
+        );
+    }
+
+    #[test]
+    fn local_resolution_prefers_concrete_dir_over_path_and_shim() {
+        let home = Some(OsStr::new("/Users/example"));
+        let path_var = Some(OsStr::new("/custom/bin"));
+        let present = [
+            "/Users/example/.cargo/bin/agentscan",
+            "/custom/bin/agentscan",
+            "/Users/example/.asdf/shims/agentscan",
+        ];
+
+        let resolved = resolve_local_agentscan(home, path_var, |path| {
+            present.iter().any(|candidate| Path::new(candidate) == path)
+        });
+
+        assert_eq!(
+            resolved,
+            Some(PathBuf::from("/Users/example/.cargo/bin/agentscan"))
+        );
+    }
+
+    #[test]
+    fn local_resolution_prefers_path_binary_over_stale_shim() {
+        // A real agentscan resolvable on the inherited PATH plus a leftover mise
+        // shim. PATH must win so a stale shim never shadows a working binary that
+        // the prior (bare-name) spawn would have found.
+        let home = Some(OsStr::new("/Users/example"));
+        let path_var = Some(OsStr::new("/custom/bin:/usr/bin"));
+        let present = [
+            "/custom/bin/agentscan",
+            "/Users/example/.local/share/mise/shims/agentscan",
+        ];
+
+        let resolved = resolve_local_agentscan(home, path_var, |path| {
+            present.iter().any(|candidate| Path::new(candidate) == path)
+        });
+
+        assert_eq!(resolved, Some(PathBuf::from("/custom/bin/agentscan")));
+    }
+
+    #[test]
+    fn local_resolution_falls_back_to_shim_when_path_lacks_binary() {
+        // GUI launched from Finder: a minimal PATH without agentscan, installed
+        // only via mise. The shim is the only way to find it.
+        let home = Some(OsStr::new("/Users/example"));
+        let path_var = Some(OsStr::new("/usr/bin:/bin"));
+        let present = ["/Users/example/.local/share/mise/shims/agentscan"];
+
+        let resolved = resolve_local_agentscan(home, path_var, |path| {
+            present.iter().any(|candidate| Path::new(candidate) == path)
+        });
+
+        assert_eq!(
+            resolved,
+            Some(PathBuf::from("/Users/example/.local/share/mise/shims/agentscan"))
         );
     }
 
