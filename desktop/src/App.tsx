@@ -630,15 +630,23 @@ function App({ mode }: { mode: ShellMode }) {
     preflightState.status === "ready" &&
     preflightState.runnerKey === runnerKey &&
     !preflightState.preflight.ok;
+  // A failed PROBE is diagnostics about STARTING, not about a running channel: the
+  // active source's subscription may be online and streaming (its arming carries
+  // across the probe window — killing a healthy live channel over a transient
+  // `--version` hiccup would strand the folder dark with no recovery probe, since
+  // probes only re-fire on a runnerKey change). When the channel is online, the
+  // live stream is the ground truth and keeps rendering; the channel reports its
+  // own failures via LiveStrip.
+  const activeLiveOnline = liveStateFor(liveStates, runnerKey).connection.status === "online";
   // The active source's failure surfaced inside its own folder (or the homeless
   // strip below): its live target is gated off (or left disarmed) on a failed
   // probe, so without this the folder's keyed state would read as a dishonest
-  // perpetual "Waiting for a source". Covers both a resolved-but-unusable probe
-  // and the probe itself failing ("failed" carries no runnerKey; like the boot
-  // screen, we treat it as the active runner's, modulo the one-async-cycle lag).
+  // perpetual "Waiting for a source". Covers a resolved-but-unusable probe, and
+  // the probe itself failing ("failed" carries no runnerKey; like the boot screen,
+  // we treat it as the active runner's) — unless the channel is already online.
   const activePreflightError = dockPreflightUnusable
     ? (preflightState.preflight.error ?? `${profileKindLabel(activeProfile)} CLI unavailable`)
-    : preflightState.status === "failed"
+    : preflightState.status === "failed" && !activeLiveOnline
       ? preflightState.message
       : null;
   // The full-screen boot/recovery takeover is scoped to the states where no OTHER
@@ -660,7 +668,11 @@ function App({ mode }: { mode: ShellMode }) {
   );
   const dockBootScreenVisible =
     mode === "dock" &&
-    (preflightState.status !== "ready" || dockPreflightUnusable) &&
+    (dockPreflightUnusable ||
+      // A non-ready probe blanks the dock only when the channel isn't already
+      // streaming (failed-probe-while-online must not hide healthy rows; loading
+      // is only reachable on first load, before anything could be online).
+      (preflightState.status !== "ready" && !activeLiveOnline)) &&
     activeFolderOpen &&
     !hasOpenFolderBeyondActive;
   // One view per folder-eligible source: its keyed live state, the picker

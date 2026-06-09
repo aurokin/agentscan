@@ -127,16 +127,21 @@ export function normalizeProfileState(
   // an older version that allowed it) keeps only the first profile per trimmed SSH
   // host. Empty-host drafts collapse to the first too: with connection-derived
   // labels, several would render as identical cards the user can't tell apart, and
-  // only one draft is ever needed to resume configuring.
-  const seenHosts = new Set<string>();
+  // only one draft is ever needed to resume configuring. References to a dropped
+  // duplicate (the active id, open ids) remap to the surviving profile of the same
+  // connection — the user's selection was the connection, not the duplicate row.
+  const survivorByHost = new Map<string, string>();
+  const remap = new Map<string, string>();
   const profiles = mapped.filter((profile) => {
     if (profile.kind !== "ssh") {
       return true;
     }
-    if (seenHosts.has(profile.host)) {
+    const survivor = survivorByHost.get(profile.host);
+    if (survivor !== undefined) {
+      remap.set(profile.id, survivor);
       return false;
     }
-    seenHosts.add(profile.host);
+    survivorByHost.set(profile.host, profile.id);
     return true;
   });
 
@@ -145,17 +150,24 @@ export function normalizeProfileState(
   }
 
   const fallbackProfile = profiles.find(isRunnableProfile) ?? profiles[0];
+  const requestedActiveId =
+    typeof value.activeProfileId === "string"
+      ? (remap.get(value.activeProfileId) ?? value.activeProfileId)
+      : undefined;
   const activeProfileId =
-    typeof value.activeProfileId === "string" &&
-    profiles.some((profile) => profile.id === value.activeProfileId && isRunnableProfile(profile))
-      ? value.activeProfileId
+    requestedActiveId !== undefined &&
+    profiles.some((profile) => profile.id === requestedActiveId && isRunnableProfile(profile))
+      ? requestedActiveId
       : fallbackProfile.id;
 
-  // Open folders, filtered to surviving profiles. A state persisted before the
-  // folder UI has no openProfileIds: the previously-active profile starts open so
-  // the upgrade keeps exactly the old one-subscription behavior.
+  // Open folders, remapped to dedupe survivors and filtered to surviving profiles.
+  // A state persisted before the folder UI has no openProfileIds: the previously-
+  // active profile starts open so the upgrade keeps exactly the old
+  // one-subscription behavior.
   const openSource = Array.isArray(value.openProfileIds)
-    ? value.openProfileIds.filter((id): id is string => typeof id === "string")
+    ? value.openProfileIds
+        .filter((id): id is string => typeof id === "string")
+        .map((id) => remap.get(id) ?? id)
     : [activeProfileId];
   const openProfileIds = [
     ...new Set(openSource.filter((id) => profiles.some((profile) => profile.id === id))),

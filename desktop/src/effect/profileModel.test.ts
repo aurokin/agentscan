@@ -68,6 +68,19 @@ describe("normalizeProfileState", () => {
     expect(state.profiles.map((profile) => profile.id)).toEqual(["local", "ssh-1", "ssh-3"]);
   });
 
+  it("remaps a dropped duplicate's active and open references to the survivor", () => {
+    // The user's selection was the connection, not the duplicate row: an upgrade
+    // must not flip the settings target to local or close the connection's folder.
+    const state = normalizeProfileState({
+      activeProfileId: "ssh-2",
+      profiles: [localProfile, sshProfile("ssh-1", "box"), sshProfile("ssh-2", "box")],
+      openProfileIds: ["ssh-2"],
+    });
+    expect(state.profiles.map((profile) => profile.id)).toEqual(["local", "ssh-1"]);
+    expect(state.activeProfileId).toBe("ssh-1");
+    expect(state.openProfileIds).toEqual(["ssh-1"]);
+  });
+
   it("collapses multiple still-unconfigured (empty-host) drafts to the first", () => {
     // Labels derive from the connection, so identical "Remote" cards would be
     // indistinguishable; one draft is all that's needed to resume configuring.
