@@ -15,6 +15,10 @@ use std::{
 use tauri::Manager;
 
 const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(2);
+// Diagnostic-only probe that runs an interactive remote login shell (sources
+// rc files), so it gets a larger budget than the bare `--version` preflight. It
+// runs at most once, on an SSH preflight that already failed as binary-not-found.
+const REMOTE_PROBE_TIMEOUT: Duration = Duration::from_secs(8);
 const HOTKEYS_TIMEOUT: Duration = Duration::from_secs(5);
 const FOCUS_TIMEOUT: Duration = Duration::from_secs(5);
 const DAEMON_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
@@ -68,6 +72,11 @@ struct AgentscanPreflight {
     ok: bool,
     version: Option<String>,
     error: Option<String>,
+    // An absolute remote path the desktop can offer as a one-click fix when a
+    // remote preflight fails because `agentscan` isn't on the SSH PATH but the
+    // user's own shell can find it (see classify_preflight_failure). `None` for
+    // success, local runners, and unresolvable failures.
+    suggested_binary_path: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
@@ -570,22 +579,45 @@ fn agentscan_binary_for_settings(settings: &LocalRunnerSettings) -> OsString {
         .unwrap_or_else(agentscan_binary)
 }
 
+// A directory where agentscan commonly lives but a non-interactive shell's PATH
+// often omits.
+enum AgentscanBinDir {
+    // Resolved against `$HOME` (the local home for auto-detect, or `$HOME` in the
+    // remote shell for the SSH PATH).
+    Home(&'static str),
+    // An absolute path.
+    Abs(&'static str),
+}
+
+// Candidate dirs in precedence order. The original GUI-launch dirs come first
+// (cargo, Homebrew, /usr/local/bin — unchanged), then `~/.local/bin`, then the
+// version-manager shim dirs LAST. Shims are wrappers (symlinks to mise/asdf), so
+// keeping them last means a stale shim or an unavailable manager can never shadow
+// a real binary found in an earlier dir. For the SSH PATH this whole list is
+// appended *after* the inherited PATH (remote_path_assignment), so the remote's
+// own resolution always wins and these only act as a fallback.
+const AGENTSCAN_BIN_DIRS: &[AgentscanBinDir] = &[
+    AgentscanBinDir::Home(".cargo/bin"),
+    AgentscanBinDir::Abs("/opt/homebrew/bin"),
+    AgentscanBinDir::Abs("/usr/local/bin"),
+    AgentscanBinDir::Home(".local/bin"),
+    AgentscanBinDir::Home(".local/share/mise/shims"),
+    AgentscanBinDir::Home(".asdf/shims"),
+];
+
 fn find_known_agentscan_binary() -> Option<PathBuf> {
     known_agentscan_paths(env::var_os("HOME").as_deref()).find(|path| path.is_file())
 }
 
 fn known_agentscan_paths(home: Option<&OsStr>) -> impl Iterator<Item = PathBuf> {
-    let home_candidate = home
+    let home = home
         .filter(|home| !home.is_empty())
-        .map(|home| Path::new(home).join(".cargo/bin/agentscan"));
+        .map(|home| Path::new(home).to_owned());
 
-    [
-        home_candidate,
-        Some(PathBuf::from("/opt/homebrew/bin/agentscan")),
-        Some(PathBuf::from("/usr/local/bin/agentscan")),
-    ]
-    .into_iter()
-    .flatten()
+    AGENTSCAN_BIN_DIRS.iter().filter_map(move |dir| match dir {
+        AgentscanBinDir::Home(rel) => home.as_ref().map(|home| home.join(rel).join("agentscan")),
+        AgentscanBinDir::Abs(abs) => Some(Path::new(abs).join("agentscan")),
+    })
 }
 
 impl AgentscanRunner {
@@ -650,22 +682,29 @@ fn run_agentscan_preflight_with_runner(runner: &AgentscanRunner) -> AgentscanPre
             ok: true,
             version: Some(String::from_utf8_lossy(&output.stdout).trim().to_owned()),
             error: None,
+            suggested_binary_path: None,
         },
         Ok(output) => {
-            let error = stderr_or_status("agentscan", &output.stderr, output.status);
+            let raw = stderr_or_status("agentscan", &output.stderr, output.status);
+            let failure = classify_preflight_failure(runner, &raw);
             AgentscanPreflight {
                 binary: binary_display,
                 ok: false,
                 version: None,
-                error: Some(classify_desktop_failure(runner, "preflight", &error)),
+                error: Some(failure.message),
+                suggested_binary_path: failure.suggested_binary_path,
             }
         }
-        Err(error) => AgentscanPreflight {
-            binary: binary_display,
-            ok: false,
-            version: None,
-            error: Some(classify_desktop_failure(runner, "preflight", &error)),
-        },
+        Err(error) => {
+            let failure = classify_preflight_failure(runner, &error);
+            AgentscanPreflight {
+                binary: binary_display,
+                ok: false,
+                version: None,
+                error: Some(failure.message),
+                suggested_binary_path: failure.suggested_binary_path,
+            }
+        }
     }
 }
 
@@ -679,18 +718,21 @@ fn run_agentscan_preflight_with_timeout(binary: OsString, timeout: Duration) -> 
             ok: true,
             version: Some(String::from_utf8_lossy(&output.stdout).trim().to_owned()),
             error: None,
+            suggested_binary_path: None,
         },
         Ok(output) => AgentscanPreflight {
             binary: binary_display,
             ok: false,
             version: None,
             error: Some(stderr_or_status("agentscan", &output.stderr, output.status)),
+            suggested_binary_path: None,
         },
         Err(error) => AgentscanPreflight {
             binary: binary_display,
             ok: false,
             version: None,
             error: Some(error.to_string()),
+            suggested_binary_path: None,
         },
     }
 }
@@ -1534,11 +1576,18 @@ fn classify_desktop_failure(runner: &AgentscanRunner, operation: &str, message: 
         return format!("tmux is unavailable: {trimmed}");
     }
 
-    if (lower.contains("command not found")
-        || lower.contains("not found")
-        || lower.contains("no such file or directory"))
-        && lower.contains("agentscan")
-    {
+    // Match the binary's *configured* name, so an SSH profile with a custom name
+    // (e.g. `scanctl`) is still recognized as not-found. The remote `env` error
+    // echoes that name. Local keeps the literal "agentscan" — a local spawn error
+    // ("No such file or directory (os error 2)") doesn't echo the resolved path.
+    let binary_not_found = match runner {
+        AgentscanRunner::Ssh(settings) => looks_like_binary_not_found(
+            &lower,
+            &remote_agentscan_binary_for_settings(settings).to_lowercase(),
+        ),
+        AgentscanRunner::Local(_) => looks_like_binary_not_found(&lower, "agentscan"),
+    };
+    if binary_not_found {
         return match runner {
             AgentscanRunner::Ssh(_) => {
                 format!("Remote agentscan binary was not found: {trimmed}")
@@ -1558,6 +1607,141 @@ fn classify_desktop_failure(runner: &AgentscanRunner, operation: &str, message: 
     }
 
     trimmed.to_owned()
+}
+
+// Lowercased-message predicate for "the configured binary itself could not be
+// found" (vs. auth/connectivity/tmux/pane failures). `binary_lower` is the
+// lowercased configured command name/path, so a custom binary name is matched by
+// its own name rather than a hard-coded "agentscan". Shared by the failure
+// classifier and the SSH preflight hint so both agree on what counts.
+fn looks_like_binary_not_found(lower: &str, binary_lower: &str) -> bool {
+    (lower.contains("command not found")
+        || lower.contains("not found")
+        || lower.contains("no such file or directory"))
+        && lower.contains(binary_lower)
+}
+
+// A classified preflight failure: the message to show, plus an optional remote
+// path the desktop can offer as a one-click "use this path" fix.
+struct PreflightFailure {
+    message: String,
+    suggested_binary_path: Option<String>,
+}
+
+// Classify a preflight failure, and for a remote not-found turn the dead-end
+// into an actionable hint by probing where the user's own shell finds agentscan.
+// The probe is gated to this case (binary missing on an otherwise-reachable
+// host) so it runs at most once and never on connectivity/auth failures.
+fn classify_preflight_failure(runner: &AgentscanRunner, raw: &str) -> PreflightFailure {
+    let classified = classify_desktop_failure(runner, "preflight", raw);
+    if let AgentscanRunner::Ssh(settings) = runner
+        && looks_like_binary_not_found(
+            &raw.to_lowercase(),
+            &remote_agentscan_binary_for_settings(settings).to_lowercase(),
+        )
+        && let Some(probe) = remote_not_found_probe(settings)
+    {
+        let message = format!("{classified} {}", remote_not_found_hint_message(&probe));
+        let suggested_binary_path = match probe {
+            RemoteAgentscanProbe::Found(path) => Some(path),
+            RemoteAgentscanProbe::Missing => None,
+        };
+        return PreflightFailure {
+            message,
+            suggested_binary_path,
+        };
+    }
+    PreflightFailure {
+        message: classified,
+        suggested_binary_path: None,
+    }
+}
+
+// Marker-delimited probe of the remote's login + interactive shell (`-lic`),
+// which mirrors the SSH login session the user themselves get — and is exactly
+// the environment whose PATH the desktop's own commands run under. `-l` sources
+// `.profile`/`.zprofile`, `-i` sources `.zshrc`/`.bashrc`; together they cover
+// the common cases. (A bash account whose `.bash_profile` doesn't source
+// `.bashrc` and whose PATH lives only in `.bashrc` isn't covered — but such a
+// setup isn't on the SSH login PATH either, so it's genuinely unreachable here;
+// reporting not-found is correct, not a miss.)
+//
+// The probed name is the *configured* binary (forwarded as `$1`), so a custom
+// command name or wrapper is resolved rather than a hard-coded "agentscan" — the
+// "Use this path" action must never overwrite a profile with the wrong binary.
+// Only an absolute, executable path is emitted as `ASFOUND=<path>`, so an
+// alias/function/builtin (which `command -v` prints as non-path text) is reported
+// as not-found rather than persisted as a bogus binary path. The `ASFOUND=`
+// marker survives any rc-file stdout banner noise.
+//
+// Best-effort and POSIX-family-scoped: the snippet is POSIX `sh` syntax, so a
+// fish/csh login shell rejects it and the probe yields no hint (the plain
+// not-found error + "Open settings" still stand). Per-shell branching isn't worth
+// it for a diagnostic, so this degrades silently rather than guessing.
+const REMOTE_PROBE_BODY: &str = r#"p=$(command -v "$1" 2>/dev/null); case "$p" in /*) [ -x "$p" ] || p=;; *) p=;; esac; printf "ASFOUND=%s\n" "$p""#;
+
+fn remote_probe_script(binary: &str) -> String {
+    format!(
+        "\"$SHELL\" -lic {} sh {} 2>/dev/null",
+        shell_quote(REMOTE_PROBE_BODY),
+        shell_quote(binary),
+    )
+}
+
+enum RemoteAgentscanProbe {
+    Found(String),
+    Missing,
+}
+
+// Best-effort: returns None when the probe can't run or the host is unreachable
+// (BatchMode/ConnectTimeout fail fast), so we enrich only when we have a result.
+fn remote_not_found_probe(settings: &SshRunnerSettings) -> Option<RemoteAgentscanProbe> {
+    let mut command = ssh_probe_command(settings).ok()?;
+    let output = run_command_with_timeout(&mut command, REMOTE_PROBE_TIMEOUT).ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_remote_probe(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn ssh_probe_command(settings: &SshRunnerSettings) -> Result<Command, String> {
+    validate_ssh_host(&settings.host)?;
+
+    let binary = remote_agentscan_binary_for_settings(settings);
+    let mut command = Command::new("ssh");
+    command
+        .arg("-n")
+        .arg("-o")
+        .arg("BatchMode=yes")
+        .arg("-o")
+        .arg("ConnectTimeout=5")
+        .arg("--")
+        .arg(settings.host.trim())
+        .arg(remote_probe_script(&binary))
+        .stdin(Stdio::null());
+    Ok(command)
+}
+
+fn parse_remote_probe(stdout: &str) -> Option<RemoteAgentscanProbe> {
+    let value = stdout
+        .lines()
+        .rev()
+        .find_map(|line| line.strip_prefix("ASFOUND="))?
+        .trim();
+    Some(if value.is_empty() {
+        RemoteAgentscanProbe::Missing
+    } else {
+        RemoteAgentscanProbe::Found(value.to_owned())
+    })
+}
+
+fn remote_not_found_hint_message(probe: &RemoteAgentscanProbe) -> String {
+    match probe {
+        RemoteAgentscanProbe::Found(path) => format!(
+            "Your shell finds agentscan at {path}, but it isn't on the non-interactive PATH SSH uses (your shell adds it only in an interactive rc file). Set this profile's agentscan binary to {path}."
+        ),
+        RemoteAgentscanProbe::Missing => "agentscan was not found on the remote host. Install it there, or set this profile's agentscan binary to its absolute path.".to_owned(),
+    }
 }
 
 #[cfg(test)]
@@ -1604,14 +1788,21 @@ fn ssh_agentscan_command(settings: &SshRunnerSettings, args: &[&str]) -> Result<
 fn remote_agentscan_script(settings: &SshRunnerSettings, args: &[&str]) -> Result<String, String> {
     validate_command_env(&settings.env)?;
 
-    let mut parts = Vec::with_capacity(settings.env.len() + args.len() + 3);
-    // Run via `exec env NAME=VALUE ... binary args` rather than the POSIX
-    // `NAME=VALUE exec binary` prefix form. SSH hands this string to the remote
-    // user's login shell, and the inline assignment prefix is not portable
-    // (csh/tcsh reject it). `env` is an external command parsed identically by
-    // every shell, so env-bearing SSH profiles work regardless of remote shell.
+    // Wrap the invocation in `sh -c` so the PATH augmentation runs with
+    // guaranteed POSIX semantics — quoted "$PATH" (no word-splitting when a PATH
+    // entry contains spaces), colon-joined, "$HOME" expanded — regardless of the
+    // remote login shell. Only *invoking* `sh` depends on that shell, which every
+    // shell can do (incl. fish, where `$PATH` is a space-joined list, and
+    // csh/tcsh, which reject the inline `NAME=VALUE` prefix) — preserving the
+    // shell-agnostic property the bare `exec env` form had. The env assignments,
+    // binary, and args are forwarded as positional parameters (`"$@"`), so they
+    // keep their outer shell-quoting and need no inner re-quoting.
+    let mut parts = Vec::with_capacity(settings.env.len() + args.len() + 6);
     parts.push("exec".to_owned());
-    parts.push("env".to_owned());
+    parts.push("sh".to_owned());
+    parts.push("-c".to_owned());
+    parts.push(shell_quote(&remote_path_sh_script()));
+    parts.push("sh".to_owned()); // $0 for the inner shell; real args follow as "$@"
     for variable in &settings.env {
         parts.push(format!(
             "{}={}",
@@ -1622,6 +1813,36 @@ fn remote_agentscan_script(settings: &SshRunnerSettings, args: &[&str]) -> Resul
     parts.push(shell_quote(&remote_agentscan_binary_for_settings(settings)));
     parts.extend(args.iter().map(|arg| shell_quote(arg)));
     Ok(parts.join(" "))
+}
+
+// POSIX `sh -c` body. Broadens PATH so a bare-name `agentscan` resolves on the
+// remote: a non-interactive `ssh host "cmd"` shell skips rc files, so version-
+// manager (mise/asdf), cargo, and `~/.local/bin` dirs are absent and `env
+// agentscan` would fail with "No such file or directory". The fallback dirs are
+// appended *after* `$PATH`, so the remote's own resolution wins and a stale shim
+// can't shadow a binary already on PATH. "$PATH"/"$HOME" are double-quoted so a
+// PATH entry with spaces isn't split; the dir list is a fixed constant, so there
+// is no injection surface. `${PATH:+$PATH:}` keeps the inherited PATH (with its
+// trailing separator) only when it's non-empty, so an empty remote PATH doesn't
+// yield a leading `:` — which would otherwise make `env` search the cwd first.
+// A PATH set in the profile env (forwarded in `"$@"`) still wins, since `env`
+// applies it after this.
+fn remote_path_sh_script() -> String {
+    let mut path = String::from("PATH=\"${PATH:+$PATH:}");
+    for (index, dir) in AGENTSCAN_BIN_DIRS.iter().enumerate() {
+        if index > 0 {
+            path.push(':');
+        }
+        match dir {
+            AgentscanBinDir::Home(rel) => {
+                path.push_str("$HOME/");
+                path.push_str(rel);
+            }
+            AgentscanBinDir::Abs(abs) => path.push_str(abs),
+        }
+    }
+    path.push('"');
+    format!("{path}; export PATH; exec env \"$@\"")
 }
 
 fn validate_ssh_host(host: &str) -> Result<(), String> {
@@ -2392,12 +2613,18 @@ mod tests {
     fn known_agentscan_paths_include_gui_launch_locations() {
         let paths: Vec<_> = known_agentscan_paths(Some(OsStr::new("/Users/example"))).collect();
 
+        // Original GUI-launch dirs first (cargo, Homebrew, /usr/local/bin), then
+        // ~/.local/bin, then the version-manager shims LAST so a stale shim never
+        // shadows a real binary above it.
         assert_eq!(
             paths,
             vec![
                 PathBuf::from("/Users/example/.cargo/bin/agentscan"),
                 PathBuf::from("/opt/homebrew/bin/agentscan"),
                 PathBuf::from("/usr/local/bin/agentscan"),
+                PathBuf::from("/Users/example/.local/bin/agentscan"),
+                PathBuf::from("/Users/example/.local/share/mise/shims/agentscan"),
+                PathBuf::from("/Users/example/.asdf/shims/agentscan"),
             ]
         );
     }
@@ -2526,7 +2753,42 @@ mod tests {
 
         assert_eq!(
             remote_agentscan_script(&settings, &["hotkeys", "--format", "json"]).unwrap(),
-            "exec env AGENTSCAN_TMUX_SOCKET='/tmp/tmux socket' QUOTE='can'\\''t' '/opt/bin/agentscan custom' 'hotkeys' '--format' 'json'"
+            "exec sh -c 'PATH=\"${PATH:+$PATH:}$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.local/share/mise/shims:$HOME/.asdf/shims\"; export PATH; exec env \"$@\"' sh AGENTSCAN_TMUX_SOCKET='/tmp/tmux socket' QUOTE='can'\\''t' '/opt/bin/agentscan custom' 'hotkeys' '--format' 'json'"
+        );
+    }
+
+    #[test]
+    fn remote_script_appends_fallback_bin_dirs_after_path() {
+        // Regression: a non-interactive `ssh host "cmd"` shell skips rc files, so
+        // a bare-name `agentscan` lookup misses version-manager (mise/asdf),
+        // cargo, and `~/.local/bin` installs. The remote script broadens PATH so
+        // `env` resolves it — but *after* `$PATH`, so the remote's own resolution
+        // wins and a stale shim can't shadow a binary already on PATH. The PATH
+        // work runs inside `sh -c` so it's correct on any login shell (fish/csh).
+        let settings = SshRunnerSettings {
+            host: "devbox".to_owned(),
+            client_tty: None,
+            binary_path: None,
+            env: Vec::new(),
+        };
+
+        let script = remote_agentscan_script(&settings, &["--version"]).unwrap();
+        assert_eq!(
+            script,
+            "exec sh -c 'PATH=\"${PATH:+$PATH:}$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.local/share/mise/shims:$HOME/.asdf/shims\"; export PATH; exec env \"$@\"' sh 'agentscan' '--version'"
+        );
+        // Shell-agnostic wrapper; "$PATH" double-quoted (whitespace-safe) and kept
+        // first via `${PATH:+$PATH:}` (no leading colon -> no cwd lookup when PATH
+        // is empty); the mise shim dir is present and the binary is forwarded via
+        // "$@".
+        assert!(script.starts_with("exec sh -c "));
+        assert!(script.contains("PATH=\"${PATH:+$PATH:}"));
+        assert!(script.contains("exec env \"$@\""));
+        assert!(script.contains("$HOME/.local/share/mise/shims"));
+        // Shim dirs trail the real-binary dirs so a wrapper never wins first.
+        assert!(
+            script.find("$HOME/.cargo/bin").unwrap()
+                < script.find("$HOME/.local/share/mise/shims").unwrap()
         );
     }
 
@@ -2547,7 +2809,9 @@ mod tests {
             vec![
                 OsStr::new("--"),
                 OsStr::new("user@devbox"),
-                OsStr::new("exec env 'agentscan' 'subscribe' '--format' 'json'")
+                OsStr::new(
+                    "exec sh -c 'PATH=\"${PATH:+$PATH:}$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.local/share/mise/shims:$HOME/.asdf/shims\"; export PATH; exec env \"$@\"' sh 'agentscan' 'subscribe' '--format' 'json'"
+                )
             ]
         );
     }
@@ -2624,6 +2888,147 @@ mod tests {
             classify_desktop_failure(&runner, "focus", "can't find pane: %42")
                 .starts_with("Focus target is stale")
         );
+    }
+
+    #[test]
+    fn binary_not_found_predicate_matches_missing_binary_only() {
+        // The desktop's reproduced failure and a plain "command not found".
+        assert!(looks_like_binary_not_found(
+            "env: 'agentscan': no such file or directory",
+            "agentscan"
+        ));
+        assert!(looks_like_binary_not_found(
+            "agentscan: command not found",
+            "agentscan"
+        ));
+        // A custom binary name is matched by its own name, not a hard-coded "agentscan".
+        assert!(looks_like_binary_not_found(
+            "env: 'scanctl': no such file or directory",
+            "scanctl"
+        ));
+        assert!(!looks_like_binary_not_found(
+            "env: 'scanctl': no such file or directory",
+            "agentscan"
+        ));
+        // Not a missing-binary failure: auth, and a non-matching missing file.
+        assert!(!looks_like_binary_not_found(
+            "permission denied (publickey)",
+            "agentscan"
+        ));
+        assert!(!looks_like_binary_not_found(
+            "tmux: no such file or directory",
+            "agentscan"
+        ));
+    }
+
+    #[test]
+    fn custom_named_ssh_binary_not_found_is_classified() {
+        // A custom SSH binary name (no "agentscan" substring) must still classify
+        // as not-found so the recovery probe/hint can fire — gate parity with the
+        // name-aware probe.
+        let runner = AgentscanRunner::Ssh(SshRunnerSettings {
+            host: "devbox".to_owned(),
+            client_tty: None,
+            binary_path: Some("scanctl".to_owned()),
+            env: Vec::new(),
+        });
+        let message = classify_desktop_failure(
+            &runner,
+            "preflight",
+            "env: 'scanctl': No such file or directory",
+        );
+        assert!(message.starts_with("Remote agentscan binary was not found"));
+    }
+
+    #[test]
+    fn ssh_probe_command_uses_fast_fail_flags_and_interactive_probe() {
+        let settings = SshRunnerSettings {
+            host: "devbox".to_owned(),
+            client_tty: None,
+            binary_path: None,
+            env: Vec::new(),
+        };
+        let command = ssh_probe_command(&settings).expect("probe command builds");
+
+        assert_eq!(command.get_program(), OsStr::new("ssh"));
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            vec![
+                OsStr::new("-n"),
+                OsStr::new("-o"),
+                OsStr::new("BatchMode=yes"),
+                OsStr::new("-o"),
+                OsStr::new("ConnectTimeout=5"),
+                OsStr::new("--"),
+                OsStr::new("devbox"),
+                OsStr::new(&remote_probe_script("agentscan")),
+            ]
+        );
+        let probe = remote_probe_script("agentscan");
+        // Login + interactive (`-lic`): `-i` sources `.zshrc`/`.bashrc` (mise/asdf)
+        // and `-l` sources `.profile`/`.zprofile` — together mirroring the SSH login
+        // shell. Only an absolute, executable path is reported (`[ -x ]` + the `/*`
+        // case), so an alias/function is never persisted as a binary path. The
+        // configured name is probed via `$1` (forwarded as a positional), not a
+        // hard-coded "agentscan".
+        assert!(probe.contains("-lic"));
+        assert!(probe.contains("[ -x "));
+        assert!(probe.contains("command -v \"$1\""));
+        assert!(probe.ends_with("sh 'agentscan' 2>/dev/null"));
+    }
+
+    #[test]
+    fn ssh_probe_uses_configured_binary_name() {
+        // A profile with a custom binary name must be probed by that name, so the
+        // "Use this path" suggestion can't overwrite it with the default agentscan.
+        let probe = remote_probe_script("agentscan-beta");
+        assert!(probe.ends_with("sh 'agentscan-beta' 2>/dev/null"));
+        assert!(!probe.contains("command -v agentscan-beta")); // name goes via $1, not inlined
+        assert!(probe.contains("command -v \"$1\""));
+    }
+
+    #[test]
+    fn parse_remote_probe_reads_marker_through_rc_noise() {
+        // rc files may print their own stdout banner before the marker line.
+        let found = parse_remote_probe("welcome to devbox\nASFOUND=/opt/tools/agentscan\n")
+            .expect("probe parses");
+        assert!(
+            matches!(found, RemoteAgentscanProbe::Found(path) if path == "/opt/tools/agentscan")
+        );
+
+        assert!(matches!(
+            parse_remote_probe("ASFOUND=\n").expect("probe parses"),
+            RemoteAgentscanProbe::Missing
+        ));
+        // No marker at all (e.g. csh rejected the probe) -> nothing to report.
+        assert!(parse_remote_probe("totally unrelated output").is_none());
+    }
+
+    #[test]
+    fn remote_not_found_hint_distinguishes_path_gap_from_missing() {
+        let found = remote_not_found_hint_message(&RemoteAgentscanProbe::Found(
+            "/home/me/.local/share/mise/shims/agentscan".to_owned(),
+        ));
+        assert!(found.contains("/home/me/.local/share/mise/shims/agentscan"));
+        assert!(found.contains("Set this profile's agentscan binary"));
+
+        let missing = remote_not_found_hint_message(&RemoteAgentscanProbe::Missing);
+        assert!(missing.contains("not found on the remote host"));
+    }
+
+    #[test]
+    fn local_preflight_not_found_carries_no_remote_suggestion() {
+        // A local runner never triggers the SSH probe, so the classified failure
+        // stands alone with no path to one-click-apply.
+        let runner = AgentscanRunner::Local(LocalRunnerSettings::default());
+        let failure = classify_preflight_failure(&runner, "agentscan: command not found");
+
+        assert!(
+            failure
+                .message
+                .starts_with("agentscan binary was not found")
+        );
+        assert!(failure.suggested_binary_path.is_none());
     }
 
     #[test]

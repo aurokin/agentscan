@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### Added
+
+- When a remote desktop preflight still fails because `agentscan` can't be found
+  on the host, the error now includes an actionable hint. A bounded, best-effort
+  SSH probe runs the remote's interactive login shell to locate agentscan and
+  reports either "your shell finds it at `<path>` — set this profile's binary to
+  it" or "not installed on the host." The probe is gated to the not-found case
+  (so it never runs on auth/connectivity failures) and uses
+  `BatchMode`/`ConnectTimeout` to fail fast offline.
+- When that probe resolves a path, the dock's "Can't reach agentscan" recovery
+  screen shows a **Use this path** button that sets the profile's binary to it
+  and re-probes in one click — no trip through settings required.
+
+### Fixed
+
+- The desktop SSH runner now resolves `agentscan` installed via version managers
+  (mise/asdf), `~/.cargo/bin`, or `~/.local/bin` on the remote host. A
+  non-interactive `ssh host "cmd"` shell skips rc files, so those dirs were
+  absent from PATH and preflight failed with `env: 'agentscan': No such file or
+  directory`. The remote command now appends them to PATH (after the inherited
+  `$PATH`, so the remote's own resolution still wins and a stale shim can't
+  shadow a binary already on PATH), inside a POSIX `sh -c` wrapper so it stays
+  correct on any login shell (incl. fish/csh) and safe when a PATH entry contains
+  spaces. A remote agentscan is found without configuring an explicit binary
+  path. The same locations were added to the local runner's auto-detect, with
+  version-manager shims searched last so they never shadow a real binary.
+
 ## 0.6.1 - 2026-06-06
 
 ### Added

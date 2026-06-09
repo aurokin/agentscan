@@ -308,6 +308,34 @@ Implications:
 - remote desktop support is SSH command execution around documented JSON/JSONL
   CLI surfaces, not daemon socket forwarding, remote tmux parsing, or a
   desktop-specific scanner protocol
+- the remote command runs in a non-interactive `ssh host "cmd"` shell, which
+  skips rc files, so version-manager (mise/asdf), `~/.cargo/bin`, and
+  `~/.local/bin` installs are absent from its PATH. To keep remote agentscan
+  plug-and-play, the SSH runner appends those dirs to PATH inside a POSIX
+  `sh -c 'PATH="$PATH:…"; export PATH; exec env "$@"'` wrapper (binary/args/env
+  forwarded as `"$@"`) so a bare-name `agentscan` resolves without the user
+  configuring an explicit binary path. The `sh -c` wrapper keeps the command
+  shell-agnostic — correct on fish (where `$PATH` is a list) and csh, and safe
+  when a PATH entry contains spaces — preserving the property the bare `exec env`
+  form had; the dir list is a fixed constant, so there is no injection surface.
+  Dirs are appended *after* `$PATH` — so the remote's own resolution always wins
+  and a stale shim can't shadow a binary already on PATH — and version-manager
+  shims sit last in the fallback list for the same reason. An explicit binary
+  path or a PATH set in profile env still wins. The same precedence-ordered dir
+  set seeds the local runner's auto-detect.
+- remote diagnosis stays explicit and bounded, not eager: only when a preflight
+  fails as binary-not-found does the desktop run one best-effort SSH probe (the
+  remote's login + interactive shell — `-l` for `.profile`/`.zprofile`, `-i` for
+  `.zshrc`/`.bashrc` — to mirror the SSH login shell the desktop's commands run
+  under) to locate agentscan and turn the dead-end into an actionable hint. It
+  probes the profile's *configured* binary name (not a hard-coded `agentscan`, so
+  a custom name/wrapper isn't overwritten) and reports only an absolute,
+  executable path (an alias/function is never offered as a binary), is gated to
+  the not-found case, fails fast (`BatchMode`/`ConnectTimeout`), and
+  degrades silently — including for non-POSIX (fish/csh) login shells — so it
+  never slows or muddies local-only debugging when no host is reachable. The CLI
+  `doctor` stays local-only; SSH-client logic lives in the desktop, which owns the
+  transport boundary.
 - non-default remote tmux targets must propagate both `AGENTSCAN_TMUX_SOCKET`
   and an isolated `AGENTSCAN_SOCKET_PATH` so the remote daemon and tmux server
   stay paired
