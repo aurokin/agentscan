@@ -291,6 +291,10 @@ function App({ mode }: { mode: ShellMode }) {
   // remote over SSH). Open state for the inline dropdown.
   const [isSourceMenuOpen, setIsSourceMenuOpen] = useState(false);
   const sourceMenuRef = useRef<HTMLDivElement | null>(null);
+  // The local machine's short hostname, fetched once from the backend, shown as the
+  // local source's label (the way a remote source is keyed by its SSH host). Empty
+  // until it resolves; sourceLabel falls back to a generic label in the meantime.
+  const [localHostLabel, setLocalHostLabel] = useState("");
   // Debug log is a diagnostic panel — collapsed by default to keep Settings calm.
   const [isDebugOpen, setIsDebugOpen] = useState(false);
   // Concrete theme in effect, kept in sync by the theme effect; drives per-theme
@@ -412,6 +416,23 @@ function App({ mode }: { mode: ShellMode }) {
     }
     configureLive({ settings: runnerSettings, runnerKey, enabled: liveReady });
   }, [mode, runnerKey, liveReady, runnerSettings, configureLive]);
+
+  // Resolve the local machine's hostname once for the local source label. Both the
+  // dock and the settings window render it, so this runs ungated; a failure just
+  // leaves the generic fallback in place.
+  useEffect(() => {
+    let cancelled = false;
+    void invoke<string>("local_host_label")
+      .then((label) => {
+        if (!cancelled) {
+          setLocalHostLabel(label);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     // The global summon hotkey belongs to the dock; registering it in both windows
@@ -1574,7 +1595,7 @@ function App({ mode }: { mode: ShellMode }) {
                     </span>
                     <span className="source-card-text">
                       <span className="source-card-name">{profile.name}</span>
-                      <span className="source-card-sub">{sourceLabel(profile)}</span>
+                      <span className="source-card-sub">{sourceLabel(profile, localHostLabel)}</span>
                     </span>
                     <span className={`kind-chip ${profile.kind}`}>
                       {profile.kind === "ssh" ? "remote" : "local"}
@@ -2027,7 +2048,7 @@ function App({ mode }: { mode: ShellMode }) {
               data-tone={sourceStatusTone}
               aria-hidden="true"
             />
-            <span className="source-label">{sourceLabel(activeProfile)}</span>
+            <span className="source-label">{sourceLabel(activeProfile, localHostLabel)}</span>
             <span
               className={`source-caret${isSourceMenuOpen ? " open" : ""}`}
               aria-hidden="true"
@@ -2056,7 +2077,7 @@ function App({ mode }: { mode: ShellMode }) {
                     </span>
                     <span className="source-option-text">
                       <span className="source-option-name">{profile.name}</span>
-                      <span className="source-option-sub">{sourceLabel(profile)}</span>
+                      <span className="source-option-sub">{sourceLabel(profile, localHostLabel)}</span>
                     </span>
                   </button>
                 );
@@ -2278,14 +2299,14 @@ function statusTone(kind: string): string {
   }
 }
 
-// Footer label for an agentscan source: the local runner, or a remote keyed by
-// its SSH host (falling back to the profile name when the host isn't set yet).
-function sourceLabel(profile: DesktopProfileConfig): string {
+// Footer label for an agentscan source: the local machine keyed by its hostname,
+// or a remote keyed by its SSH host (each falling back when its host isn't known).
+function sourceLabel(profile: DesktopProfileConfig, localHostLabel: string): string {
   if (profile.kind === "ssh") {
     const host = profile.host.trim();
     return host ? `agentscan @ ${host}` : profile.name;
   }
-  return "agentscan";
+  return localHostLabel || "agentscan";
 }
 
 function filterPickerRows(rows: PickerRow[], query: string) {
