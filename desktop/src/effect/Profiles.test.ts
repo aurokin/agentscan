@@ -166,6 +166,27 @@ describe("Profiles", () => {
         }),
     ));
 
+  it("addSshProfile adopts the latest state when the draft is already the persisted active", () =>
+    run(
+      "settings",
+      seed(stateOf("local", localProfile, sshProfile("ssh-draft", ""))),
+      ({ profiles, store, emitted }) =>
+        Effect.gen(function* () {
+          // Another window already routed to the draft; this window's ref still says
+          // local is active. The click must resync the ref, not visibly do nothing.
+          store.set(
+            PROFILES_STORAGE_KEY,
+            JSON.stringify(stateOf("ssh-draft", localProfile, sshProfile("ssh-draft", ""))),
+          );
+          yield* profiles.addSshProfile;
+          const state = yield* SubscriptionRef.get(profiles.state);
+          expect(state.activeProfileId).toBe("ssh-draft");
+          expect(state.profiles.map((p) => p.id)).toEqual(["local", "ssh-draft"]);
+          // Ref-only adoption: no write, no broadcast.
+          expect(yield* Queue.size(emitted)).toBe(0);
+        }),
+    ));
+
   it("deleteActiveProfile removes an active ssh profile and falls back to local", () =>
     run(
       "settings",

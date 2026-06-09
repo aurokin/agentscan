@@ -112,6 +112,15 @@ export class Profiles extends Effect.Service<Profiles>()("desktop/Profiles", {
       if (draft) {
         if (draft.id !== latest.activeProfileId) {
           yield* commit({ ...latest, activeProfileId: draft.id });
+          return;
+        }
+        // Already the persisted active: nothing to commit, but a stale window's ref
+        // may lag storage (dirty windows skip inbound syncs), and without adopting
+        // latest the click would visibly do nothing. Mirrors selectProfile's
+        // same-id path.
+        const current = yield* SubscriptionRef.get(stateRef);
+        if (JSON.stringify(current) !== JSON.stringify(latest)) {
+          yield* SubscriptionRef.set(stateRef, latest);
         }
         return;
       }

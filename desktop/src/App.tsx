@@ -650,9 +650,18 @@ function App({ mode }: { mode: ShellMode }) {
   const hasOpenFolderBeyondActive = liveSources.some(
     (source) => source.isOpen && source.runnerKey !== runnerKey,
   );
+  // …and it also requires the active source to be PARTICIPATING (its folder open):
+  // a closed folder is header-only with no subscription, so its loading/failing
+  // preflight must not take over a dock the user deliberately quieted — that would
+  // hide the folder list (the only way to reopen anything). A homeless active
+  // source (no folder) surfaces through the error strip above the folders instead.
+  const activeFolderOpen = liveSources.some(
+    (source) => source.isOpen && source.runnerKey === runnerKey,
+  );
   const dockBootScreenVisible =
     mode === "dock" &&
     (preflightState.status !== "ready" || dockPreflightUnusable) &&
+    activeFolderOpen &&
     !hasOpenFolderBeyondActive;
   // One view per folder-eligible source: its keyed live state, the picker
   // projection of it, and the query-filtered workspace groups. The filter applies
