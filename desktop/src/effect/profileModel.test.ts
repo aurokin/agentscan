@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   normalizeProfileState,
+  runnerKeyForProfile,
   sourceLabel,
   validateProfileDraft,
   type DesktopProfileConfig,
   type LocalProfileConfig,
+  type PreflightLabelSource,
   type SshProfileConfig,
 } from "./profileModel";
 
@@ -96,5 +98,41 @@ describe("sourceLabel", () => {
   it("labels the local source by the machine hostname, with a generic fallback", () => {
     expect(sourceLabel(localProfile, "mymac")).toBe("mymac");
     expect(sourceLabel(localProfile, "")).toBe("agentscan");
+  });
+
+  it("prefers the probed remote hostname when the preflight matches the profile's runner", () => {
+    const profile = sshProfile("ssh-1", "user@box");
+    const preflight: PreflightLabelSource = {
+      runnerKey: runnerKeyForProfile(profile),
+      preflight: { remoteHostLabel: "koopa" },
+    };
+    expect(sourceLabel(profile, "mymac", preflight)).toBe("koopa");
+  });
+
+  it("ignores a probed hostname whose runnerKey does not match the profile", () => {
+    const profile = sshProfile("ssh-1", "user@box");
+    const stale: PreflightLabelSource = {
+      runnerKey: runnerKeyForProfile(sshProfile("ssh-2", "user@other")),
+      preflight: { remoteHostLabel: "koopa" },
+    };
+    expect(sourceLabel(profile, "mymac", stale)).toBe("user@box");
+  });
+
+  it("falls back to the configured host when the matching preflight probed no hostname", () => {
+    const profile = sshProfile("ssh-1", "user@box");
+    const preflight: PreflightLabelSource = {
+      runnerKey: runnerKeyForProfile(profile),
+      preflight: { remoteHostLabel: null },
+    };
+    expect(sourceLabel(profile, "mymac", preflight)).toBe("user@box");
+    expect(sourceLabel(profile, "mymac", { ...preflight, preflight: null })).toBe("user@box");
+  });
+
+  it("never applies a probed hostname to the local source", () => {
+    const preflight: PreflightLabelSource = {
+      runnerKey: runnerKeyForProfile(localProfile),
+      preflight: { remoteHostLabel: "koopa" },
+    };
+    expect(sourceLabel(localProfile, "mymac", preflight)).toBe("mymac");
   });
 });

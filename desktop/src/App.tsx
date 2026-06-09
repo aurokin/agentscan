@@ -52,6 +52,7 @@ import {
   sourceLabel,
   validateProfileDraft,
   type EnvironmentVariable,
+  type PreflightLabelSource,
   type RunnerSettings,
 } from "./effect/profileModel";
 import {
@@ -292,6 +293,15 @@ function App({ mode }: { mode: ShellMode }) {
   // local source's label (the way a remote source is keyed by its SSH host). Empty
   // until it resolves; sourceLabel falls back to a generic label in the meantime.
   const [localHostLabel, setLocalHostLabel] = useState("");
+  // The probed remote hostname as a label source: the dock from its own resolved
+  // preflight, settings from the dock's mirror. sourceLabel only honors it for the
+  // profile whose runnerKey matches, so a stale probe can never label a source.
+  const labelPreflight: PreflightLabelSource | null =
+    mode === "dock"
+      ? preflightState.status === "ready"
+        ? preflightState
+        : null
+      : syncedPreflight;
   // Debug log is a diagnostic panel — collapsed by default to keep Settings calm.
   const [isDebugOpen, setIsDebugOpen] = useState(false);
   // Concrete theme in effect, kept in sync by the theme effect; drives per-theme
@@ -1237,7 +1247,7 @@ function App({ mode }: { mode: ShellMode }) {
     if (validation.errors.length > 0) {
       appendDebugEntry({
         kind: "settings",
-        label: `${sourceLabel(activeProfile, localHostLabel)} settings rejected`,
+        label: `${sourceLabel(activeProfile, localHostLabel, labelPreflight)} settings rejected`,
         detail: validation.errors.join(" · "),
       });
       return;
@@ -1255,7 +1265,7 @@ function App({ mode }: { mode: ShellMode }) {
     });
     appendDebugEntry({
       kind: "settings",
-      label: `${sourceLabel(activeProfile, localHostLabel)} settings applied`,
+      label: `${sourceLabel(activeProfile, localHostLabel, labelPreflight)} settings applied`,
       detail: `${runnerSummary(normalized)} · ${normalized.env.length} env ${normalized.env.length === 1 ? "name" : "names"}`,
     });
   }
@@ -1280,7 +1290,7 @@ function App({ mode }: { mode: ShellMode }) {
     });
     appendDebugEntry({
       kind: "settings",
-      label: `${sourceLabel(activeProfile, localHostLabel)} binary set from probe`,
+      label: `${sourceLabel(activeProfile, localHostLabel, labelPreflight)} binary set from probe`,
       detail: path,
     });
   }
@@ -1318,7 +1328,7 @@ function App({ mode }: { mode: ShellMode }) {
     deleteActiveProfileSet();
     appendDebugEntry({
       kind: "settings",
-      label: `${sourceLabel(activeProfile, localHostLabel)} profile deleted`,
+      label: `${sourceLabel(activeProfile, localHostLabel, labelPreflight)} profile deleted`,
       detail: "active profile changed",
     });
   }
@@ -1587,7 +1597,7 @@ function App({ mode }: { mode: ShellMode }) {
                     </span>
                     <span className="source-card-text">
                       <span className="source-card-name">
-                        {sourceLabel(profile, localHostLabel)}
+                        {sourceLabel(profile, localHostLabel, labelPreflight)}
                       </span>
                     </span>
                     <span className={`kind-chip ${profile.kind}`}>
@@ -1618,7 +1628,7 @@ function App({ mode }: { mode: ShellMode }) {
                     <span className={`kind-chip ${activeProfile.kind}`}>
                       {activeProfile.kind === "ssh" ? "remote" : "local"}
                     </span>
-                    <h2>{sourceLabel(activeProfile, localHostLabel)}</h2>
+                    <h2>{sourceLabel(activeProfile, localHostLabel, labelPreflight)}</h2>
                   </div>
                   {detailActions}
                 </div>
@@ -2034,7 +2044,7 @@ function App({ mode }: { mode: ShellMode }) {
               data-tone={sourceStatusTone}
               aria-hidden="true"
             />
-            <span className="source-label">{sourceLabel(activeProfile, localHostLabel)}</span>
+            <span className="source-label">{sourceLabel(activeProfile, localHostLabel, labelPreflight)}</span>
             <span
               className={`source-caret${isSourceMenuOpen ? " open" : ""}`}
               aria-hidden="true"
@@ -2063,7 +2073,7 @@ function App({ mode }: { mode: ShellMode }) {
                     </span>
                     <span className="source-option-text">
                       <span className="source-option-name">
-                        {sourceLabel(profile, localHostLabel)}
+                        {sourceLabel(profile, localHostLabel, labelPreflight)}
                       </span>
                     </span>
                   </button>

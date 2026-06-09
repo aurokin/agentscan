@@ -77,6 +77,12 @@ struct AgentscanPreflight {
     // user's own shell can find it (see classify_preflight_failure). `None` for
     // success, local runners, and unresolvable failures.
     suggested_binary_path: Option<String>,
+    // The remote machine's short hostname, probed inside the same SSH exec as the
+    // version check (see remote_preflight_sh_script) so a successful remote
+    // preflight can upgrade the source label from the configured host string.
+    // `None` for local runners, failures, and when the remote `hostname` yields
+    // nothing.
+    remote_host_label: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
@@ -746,14 +752,21 @@ fn run_agentscan_preflight(binary: OsString) -> AgentscanPreflight {
 fn run_agentscan_preflight_with_runner(runner: &AgentscanRunner) -> AgentscanPreflight {
     let binary_display = runner.display_binary();
 
-    match run_agentscan_command(runner, &["--version"], PREFLIGHT_TIMEOUT) {
-        Ok(output) if output.status.success() => AgentscanPreflight {
-            binary: binary_display,
-            ok: true,
-            version: Some(String::from_utf8_lossy(&output.stdout).trim().to_owned()),
-            error: None,
-            suggested_binary_path: None,
-        },
+    let result = agentscan_preflight_command(runner)
+        .and_then(|mut command| run_command_with_timeout(&mut command, PREFLIGHT_TIMEOUT));
+    match result {
+        Ok(output) if output.status.success() => {
+            let (remote_host_label, version_output) =
+                split_remote_host_marker(&String::from_utf8_lossy(&output.stdout));
+            AgentscanPreflight {
+                binary: binary_display,
+                ok: true,
+                version: Some(version_output.trim().to_owned()),
+                error: None,
+                suggested_binary_path: None,
+                remote_host_label,
+            }
+        }
         Ok(output) => {
             let raw = stderr_or_status("agentscan", &output.stderr, output.status);
             let failure = classify_preflight_failure(runner, &raw);
@@ -763,6 +776,7 @@ fn run_agentscan_preflight_with_runner(runner: &AgentscanRunner) -> AgentscanPre
                 version: None,
                 error: Some(failure.message),
                 suggested_binary_path: failure.suggested_binary_path,
+                remote_host_label: None,
             }
         }
         Err(error) => {
@@ -773,9 +787,31 @@ fn run_agentscan_preflight_with_runner(runner: &AgentscanRunner) -> AgentscanPre
                 version: None,
                 error: Some(failure.message),
                 suggested_binary_path: failure.suggested_binary_path,
+                remote_host_label: None,
             }
         }
     }
+}
+
+// Split the host-probe marker line out of preflight stdout: the probed short
+// hostname (None when the marker is absent or its value is empty) plus the
+// remaining lines, which feed the existing version parsing. Local preflights
+// never print the marker, so they fall through to (None, stdout).
+fn split_remote_host_marker(stdout: &str) -> (Option<String>, String) {
+    let mut label = None;
+    let mut rest = Vec::new();
+    for line in stdout.lines() {
+        match line.strip_prefix(REMOTE_HOST_MARKER) {
+            Some(value) => {
+                let value = short_host_label(value.trim());
+                if !value.is_empty() {
+                    label = Some(value.to_owned());
+                }
+            }
+            None => rest.push(line),
+        }
+    }
+    (label, rest.join("\n"))
 }
 
 #[cfg(test)]
@@ -789,6 +825,7 @@ fn run_agentscan_preflight_with_timeout(binary: OsString, timeout: Duration) -> 
             version: Some(String::from_utf8_lossy(&output.stdout).trim().to_owned()),
             error: None,
             suggested_binary_path: None,
+            remote_host_label: None,
         },
         Ok(output) => AgentscanPreflight {
             binary: binary_display,
@@ -796,6 +833,7 @@ fn run_agentscan_preflight_with_timeout(binary: OsString, timeout: Duration) -> 
             version: None,
             error: Some(stderr_or_status("agentscan", &output.stderr, output.status)),
             suggested_binary_path: None,
+            remote_host_label: None,
         },
         Err(error) => AgentscanPreflight {
             binary: binary_display,
@@ -803,6 +841,7 @@ fn run_agentscan_preflight_with_timeout(binary: OsString, timeout: Duration) -> 
             version: None,
             error: Some(error.to_string()),
             suggested_binary_path: None,
+            remote_host_label: None,
         },
     }
 }
@@ -1849,17 +1888,49 @@ fn agentscan_command(runner: &AgentscanRunner, args: &[&str]) -> Result<Command,
 }
 
 fn ssh_agentscan_command(settings: &SshRunnerSettings, args: &[&str]) -> Result<Command, String> {
+    ssh_command_for_script(settings, remote_agentscan_script(settings, args)?)
+}
+
+// Single home for the ssh invocation shape: host validation plus the `--`
+// terminator before the destination guard against option injection, so every
+// ssh-backed command (data path and preflight) must route through here.
+fn ssh_command_for_script(settings: &SshRunnerSettings, script: String) -> Result<Command, String> {
     validate_ssh_host(&settings.host)?;
 
     let mut command = Command::new("ssh");
-    command
-        .arg("--")
-        .arg(settings.host.trim())
-        .arg(remote_agentscan_script(settings, args)?);
+    command.arg("--").arg(settings.host.trim()).arg(script);
     Ok(command)
 }
 
+// The preflight's command differs from the shared wrapper only over SSH, where the
+// remote script additionally prints the host-probe marker (one SSH round-trip for
+// version check + hostname). subscribe/focus/hotkeys keep the plain wrapper via
+// agentscan_command so their stdout stays pure agentscan output.
+fn agentscan_preflight_command(runner: &AgentscanRunner) -> Result<Command, String> {
+    match runner {
+        AgentscanRunner::Local(_) => agentscan_command(runner, &["--version"]),
+        AgentscanRunner::Ssh(settings) => {
+            ssh_command_for_script(settings, remote_agentscan_preflight_script(settings)?)
+        }
+    }
+}
+
 fn remote_agentscan_script(settings: &SshRunnerSettings, args: &[&str]) -> Result<String, String> {
+    remote_agentscan_script_with_body(settings, args, &remote_path_sh_script())
+}
+
+// The preflight-only wrapper: the shared PATH script prefixed with the host-probe
+// marker line. Args are pinned to `--version` because the marker may only ever
+// pollute the preflight's stdout, never a data command's.
+fn remote_agentscan_preflight_script(settings: &SshRunnerSettings) -> Result<String, String> {
+    remote_agentscan_script_with_body(settings, &["--version"], &remote_preflight_sh_script())
+}
+
+fn remote_agentscan_script_with_body(
+    settings: &SshRunnerSettings,
+    args: &[&str],
+    sh_body: &str,
+) -> Result<String, String> {
     validate_command_env(&settings.env)?;
 
     // Wrap the invocation in `sh -c` so the PATH augmentation runs with
@@ -1875,7 +1946,7 @@ fn remote_agentscan_script(settings: &SshRunnerSettings, args: &[&str]) -> Resul
     parts.push("exec".to_owned());
     parts.push("sh".to_owned());
     parts.push("-c".to_owned());
-    parts.push(shell_quote(&remote_path_sh_script()));
+    parts.push(shell_quote(sh_body));
     parts.push("sh".to_owned()); // $0 for the inner shell; real args follow as "$@"
     for variable in &settings.env {
         parts.push(format!(
@@ -1921,6 +1992,22 @@ fn remote_path_sh_script() -> String {
     }
     path.push('"');
     format!("{path}; export PATH; exec env \"$@\"")
+}
+
+// Prefix for the single stdout line carrying the remote hostname, emitted by the
+// preflight wrapper and stripped back out by split_remote_host_marker. Unique
+// enough that real `agentscan --version` output can never collide with it.
+const REMOTE_HOST_MARKER: &str = "__AGENTSCAN_REMOTE_HOST__=";
+
+// The preflight's `sh -c` body: print the remote hostname as a marked line, then
+// run the shared PATH wrapper. `hostname` resolves before the PATH augmentation
+// (it lives in /bin or /usr/bin everywhere), and a failure prints an empty value,
+// which the parser maps to None.
+fn remote_preflight_sh_script() -> String {
+    format!(
+        "printf '{REMOTE_HOST_MARKER}%s\\n' \"$(hostname 2>/dev/null)\"; {}",
+        remote_path_sh_script()
+    )
 }
 
 fn validate_ssh_host(host: &str) -> Result<(), String> {
@@ -2986,6 +3073,60 @@ mod tests {
             script.find("$HOME/.cargo/bin").unwrap()
                 < script.find("$HOME/.local/share/mise/shims").unwrap()
         );
+    }
+
+    #[test]
+    fn host_marker_appears_only_in_preflight_script() {
+        let settings = SshRunnerSettings {
+            host: "devbox".to_owned(),
+            client_tty: None,
+            binary_path: None,
+            env: Vec::new(),
+        };
+
+        let preflight = remote_agentscan_preflight_script(&settings).unwrap();
+        assert!(preflight.contains(REMOTE_HOST_MARKER));
+        assert!(preflight.contains("$(hostname 2>/dev/null)"));
+        // The marker prints before the shared wrapper, and the args stay --version.
+        assert!(preflight.contains("export PATH; exec env \"$@\""));
+        assert!(preflight.ends_with("'agentscan' '--version'"));
+
+        // Data commands keep the plain wrapper; their stdout must stay pure
+        // agentscan output.
+        for args in [
+            &["--version"][..],
+            &["subscribe", "--format", "json"][..],
+            &["hotkeys", "--format", "json"][..],
+        ] {
+            assert!(
+                !remote_agentscan_script(&settings, args)
+                    .unwrap()
+                    .contains(REMOTE_HOST_MARKER)
+            );
+        }
+    }
+
+    #[test]
+    fn split_remote_host_marker_extracts_shortens_and_strips() {
+        let (label, rest) = split_remote_host_marker(
+            "__AGENTSCAN_REMOTE_HOST__=koopa.home.arpa\nagentscan 0.7.1\n",
+        );
+        assert_eq!(label.as_deref(), Some("koopa"));
+        assert_eq!(rest, "agentscan 0.7.1");
+    }
+
+    #[test]
+    fn split_remote_host_marker_missing_marker_yields_none() {
+        let (label, rest) = split_remote_host_marker("agentscan 0.7.1\n");
+        assert_eq!(label, None);
+        assert_eq!(rest, "agentscan 0.7.1");
+    }
+
+    #[test]
+    fn split_remote_host_marker_empty_hostname_yields_none() {
+        let (label, rest) = split_remote_host_marker("__AGENTSCAN_REMOTE_HOST__=\nagentscan 0.7.1");
+        assert_eq!(label, None);
+        assert_eq!(rest, "agentscan 0.7.1");
     }
 
     #[test]

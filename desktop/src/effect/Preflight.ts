@@ -133,6 +133,7 @@ export class Preflight extends Effect.Service<Preflight>()("desktop/Preflight", 
                 version: null,
                 error: target.invalid.error,
                 suggestedBinaryPath: null,
+                remoteHostLabel: null,
               },
             }
           : yield* ipc.probe(target.settings).pipe(

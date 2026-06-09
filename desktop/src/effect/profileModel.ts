@@ -17,6 +17,10 @@ export type AgentscanPreflight = {
   // preflight fails because agentscan isn't on the SSH PATH but the user's shell
   // can find it. Null for success, local runners, and unresolvable failures.
   suggestedBinaryPath: string | null;
+  // The remote machine's short hostname, probed in the same SSH exec as the
+  // version check. Null for local runners, failures, and when the remote
+  // hostname is unavailable.
+  remoteHostLabel: string | null;
 };
 
 export type EnvironmentVariable = {
@@ -358,12 +362,30 @@ export function newProfileId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+// A resolved preflight as the label derivation needs it: the probed hostname keyed
+// by the runner it actually probed. Structural so both the dock's PreflightState
+// ("ready" arm) and the settings window's SyncedPreflight satisfy it.
+export type PreflightLabelSource = {
+  runnerKey: string;
+  preflight: Pick<AgentscanPreflight, "remoteHostLabel"> | null;
+};
+
 // Display label for an agentscan source, derived from its connection: the local
 // machine keyed by its hostname, a remote keyed by its SSH host (each falling back
-// to a generic label when its host isn't known).
-export function sourceLabel(profile: DesktopProfileConfig, localHostLabel: string): string {
+// to a generic label when its host isn't known). A remote upgrades to the hostname
+// probed by its preflight, but only when that preflight's runnerKey matches this
+// exact profile — a label must never come from a stale (different-runner) probe.
+export function sourceLabel(
+  profile: DesktopProfileConfig,
+  localHostLabel: string,
+  preflight?: PreflightLabelSource | null,
+): string {
   if (profile.kind === "ssh") {
-    return profile.host.trim() || "Remote";
+    const probed =
+      preflight && preflight.runnerKey === runnerKeyForProfile(profile)
+        ? preflight.preflight?.remoteHostLabel
+        : null;
+    return probed || profile.host.trim() || "Remote";
   }
   return localHostLabel || "agentscan";
 }
