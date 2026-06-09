@@ -2458,6 +2458,11 @@ function App({ mode }: { mode: ShellMode }) {
               // subscription churns, and a user after the previous selection is one
               // card-click away. Await the commit so the window can't load the old
               // selection; open regardless of the outcome (Settings is the goal).
+              // A DIRTY settings window deliberately wins over this deep-link: it
+              // skips inbound syncs to protect unsaved edits, and its Apply/Delete
+              // target the window's own ref (which mirrors the form), so no action
+              // can hit a different source than the one its form displays. The
+              // label/form mismatch resolves on the form's apply or reset.
               if (effectiveOrientation === "horizontal") {
                 void selectProfileSet(triggerProfile.id)
                   .catch(() => {})

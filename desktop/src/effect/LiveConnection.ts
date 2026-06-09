@@ -484,6 +484,17 @@ export class LiveConnection extends Effect.Service<LiveConnection>()(
                 );
                 continue;
               }
+              // A re-added key may inherit the previous supervisor's state entry:
+              // removal interrupts in the background, and once this key is
+              // re-registered the dying fiber's dropKeyState defers to the new
+              // owner. Reset it here so a fast close-then-reopen can't present the
+              // prior session's rows as ready (and clickable) while the fresh
+              // subscription is still connecting. Same-supervisor re-arms
+              // (reconnect) keep their rows — that flicker-avoidance is per
+              // supervisor, not per re-add. Either interleaving with a pending
+              // drop ends clean: drop-after skips (entry owned), drop-before
+              // deletes and the supervisor recreates from INITIAL_STATE.
+              yield* setKeyState(key, INITIAL_STATE);
               const targetRef = yield* SubscriptionRef.make<Target>({
                 gen: 0,
                 enabled: input.enabled,
