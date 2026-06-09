@@ -2252,7 +2252,12 @@ function App({ mode }: { mode: ShellMode }) {
         />
       ) : null}
 
-      {activation.status === "failed" ? (
+      {/* A failed activation is a per-source event: in the vertical strip it renders
+          inside the failing source's folder so healthy folders don't look broken.
+          This global surface covers the horizontal bar (which shows one source) and
+          source-less failures (sourceKey: null). */}
+      {activation.status === "failed" &&
+      (effectiveOrientation === "horizontal" || activation.sourceKey === null) ? (
         <div className="inline-error" role="alert">
           {activation.message}
         </div>
@@ -2371,6 +2376,14 @@ function App({ mode }: { mode: ShellMode }) {
                         </div>
                       ) : (
                         <>
+                          {/* This source's own failed activation; source-less
+                              failures use the global surface above the folders. */}
+                          {activation.status === "failed" &&
+                          activation.sourceKey === view.runnerKey ? (
+                            <div className="inline-error" role="alert">
+                              {activation.message}
+                            </div>
+                          ) : null}
                           {view.live.connection.status !== "online" ? (
                             <LiveStrip
                               status={view.live.connection}
@@ -2433,7 +2446,13 @@ function App({ mode }: { mode: ShellMode }) {
               // The inline menu opens upward and would clip inside the thin
               // horizontal bar, so there the trigger re-docks into settings (which
               // owns the full Sources list) instead of popping a cramped menu.
+              // Pre-select the source this trigger advertises (the owner can differ
+              // from the settings-selected active profile): landing in Settings on a
+              // different source than the label promised would manage the wrong one.
+              // This is a deep-link INTO the settings selection, not a dock-side
+              // quick-switch — the open/close menu below still never selects.
               if (effectiveOrientation === "horizontal") {
+                selectProfile(triggerProfile.id);
                 openSettings();
               } else {
                 setIsSourceMenuOpen((open) => !open);
