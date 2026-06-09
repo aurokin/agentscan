@@ -278,6 +278,21 @@ fn local_profiles() -> Vec<DesktopProfile> {
     }]
 }
 
+/// The text before the first `.` in a hostname — the short, human form users name
+/// their machine by ("koopa" from "koopa.home.arpa"). An empty or dotless host
+/// passes through unchanged.
+fn short_host_label(full: &str) -> &str {
+    full.split('.').next().unwrap_or(full)
+}
+
+/// The local machine's short hostname, used as the label for the local source the
+/// way a remote source is keyed by its SSH host. Returns an empty string if the
+/// hostname can't be read, so the frontend can fall back to a generic label.
+#[tauri::command]
+fn local_host_label() -> String {
+    short_host_label(&gethostname::gethostname().to_string_lossy()).to_string()
+}
+
 #[tauri::command]
 fn preflight_agentscan(settings: Option<DesktopRunnerSettings>) -> AgentscanPreflight {
     let runner = AgentscanRunner::from_settings(settings);
@@ -1888,7 +1903,11 @@ fn remote_agentscan_script(settings: &SshRunnerSettings, args: &[&str]) -> Resul
 // applies it after this.
 fn remote_path_sh_script() -> String {
     let mut path = String::from("PATH=\"${PATH:+$PATH:}");
-    for (index, dir) in AGENTSCAN_BIN_DIRS.iter().chain(AGENTSCAN_SHIM_DIRS).enumerate() {
+    for (index, dir) in AGENTSCAN_BIN_DIRS
+        .iter()
+        .chain(AGENTSCAN_SHIM_DIRS)
+        .enumerate()
+    {
         if index > 0 {
             path.push(':');
         }
@@ -2126,6 +2145,7 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             focus_picker_row,
+            local_host_label,
             local_profiles,
             load_picker_rows,
             place_bar_window,
@@ -2157,6 +2177,13 @@ mod tests {
                 kind: "local"
             }]
         );
+    }
+
+    #[test]
+    fn short_host_label_uses_text_before_first_dot() {
+        assert_eq!(short_host_label("koopa.home.arpa"), "koopa");
+        assert_eq!(short_host_label("koopa"), "koopa");
+        assert_eq!(short_host_label(""), "");
     }
 
     #[test]
@@ -2765,7 +2792,9 @@ mod tests {
 
         assert_eq!(
             resolved,
-            Some(PathBuf::from("/Users/example/.local/share/mise/shims/agentscan"))
+            Some(PathBuf::from(
+                "/Users/example/.local/share/mise/shims/agentscan"
+            ))
         );
     }
 
@@ -2780,7 +2809,9 @@ mod tests {
         let executable = ["/real/bin/agentscan"];
 
         let resolved = resolve_local_agentscan(home, path_var, |path| {
-            executable.iter().any(|candidate| Path::new(candidate) == path)
+            executable
+                .iter()
+                .any(|candidate| Path::new(candidate) == path)
         });
 
         assert_eq!(resolved, Some(PathBuf::from("/real/bin/agentscan")));

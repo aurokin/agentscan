@@ -35,3 +35,62 @@ jobs:
 
       - name: Test
         run: cargo test
+
+  # The desktop crate (desktop/src-tauri) is a standalone crate, not a member of
+  # the root workspace, so the `rust` job's `cargo fmt --all`/clippy/test never
+  # touch it. This job covers it. It runs on macOS because the app is Mac-first:
+  # the glass/vibrancy path is `#[cfg(target_os = "macos")]`, so only macOS lints
+  # and compiles it, and Tauri builds there without extra system packages. The
+  # frontend is built first because `tauri::generate_context!` embeds `../dist`,
+  # which is gitignored and absent on a fresh checkout.
+  desktop:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - name: Format check
+        working-directory: desktop/src-tauri
+        run: cargo fmt --all --check
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: desktop
+        run: npm run build
+
+      - name: Frontend tests
+        working-directory: desktop
+        run: npm test
+
+      - name: Clippy
+        working-directory: desktop/src-tauri
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Complexity checks
+        working-directory: desktop/src-tauri
+        run: cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_arguments
+
+      - name: Test
+        working-directory: desktop/src-tauri
+        run: cargo test
