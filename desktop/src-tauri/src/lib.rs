@@ -987,6 +987,14 @@ fn focus_args_for_runner<'a>(
 // highest epoch already honored for that source key — and past the fence floor,
 // which stands in for evicted keys. Keys gate independently, so one source's
 // stale start can never block — or tear down — another's worker.
+//
+// The floor fallback is gate-equivalent for evicted keys, never weaker: a worker
+// running at epoch E means E was committed as that key's entry (per-key entries
+// are monotone), and an absent entry means it was evicted — eviction takes only
+// the map minimum and raises the floor to at least that value, so floor >= E
+// whenever a running key lacks an entry. `epoch > floor` then admits exactly the
+// strictly-newer starts the entry would have admitted; no superseded start can
+// slip between the floor and a running worker (see commit_start_epoch).
 fn epoch_advances(fence: &StartFence, source_key: &str, epoch: u64) -> bool {
     epoch > fence.floor
         && fence
