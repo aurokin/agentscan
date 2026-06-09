@@ -463,13 +463,23 @@ export type PreflightLabelSource = {
   preflight: Pick<AgentscanPreflight, "remoteHostLabel"> | null;
 };
 
+// The machine part of a configured SSH target, for comparing against a probed
+// short hostname: "alice@box.lan", "bob@box", and "box" all reach machine "box".
+function sshHostMachine(host: string): string {
+  const target = host.trim();
+  const machine = target.slice(target.lastIndexOf("@") + 1);
+  const dot = machine.indexOf(".");
+  return dot === -1 ? machine : machine.slice(0, dot);
+}
+
 // Display label for an agentscan source, derived from its connection: the local
 // machine keyed by its hostname, a remote keyed by its SSH host (each falling back
 // to a generic label when its host isn't known). A remote upgrades to the hostname
 // probed by its preflight, but only when that preflight's runnerKey matches this
 // exact profile — a label must never come from a stale (different-runner) probe —
-// and only when the probed name wouldn't duplicate a sibling source's label (an
-// alias and a direct entry can reach the same machine; the configured connection
+// and only when no sibling source targets the same machine (compared by the
+// machine part of its configured target: "alice@box" and "bob@box" differ only by
+// SSH identity, which the probed "box" would erase; the configured connection
 // string is the honest disambiguator in lists the user picks from).
 export function sourceLabel(
   profile: DesktopProfileConfig,
@@ -489,7 +499,7 @@ export function sourceLabel(
           return false;
         }
         return other.kind === "ssh"
-          ? other.host.trim() === probed
+          ? sshHostMachine(other.host) === probed
           : (localHostLabel || "agentscan") === probed;
       });
     return (ambiguous ? null : probed) || profile.host.trim() || "Remote";

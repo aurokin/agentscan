@@ -52,12 +52,26 @@ const BAR_WINDOW_HEIGHT: f64 = 56.0;
 static LIVE_PICKER: OnceLock<Mutex<HashMap<String, LivePickerSupervisor>>> = OnceLock::new();
 // Serializes whole start operations (stop + spawn + install) so overlapping
 // starts cannot interleave and leave a newer start silently no-op'ing while an
-// older one wins the install race. The guarded map holds, per source key, the
+// older one wins the install race. The guarded fence holds, per source key, the
 // highest subscription epoch we have honored with a start: the frontend issues
 // strictly-increasing epochs (persisted across reload/HMR), so a late start()
 // from a torn-down page carries a lower epoch and is rejected — keeping a stale
 // start from replacing the live page's worker for that key.
-static LIVE_PICKER_START: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+static LIVE_PICKER_START: OnceLock<Mutex<StartFence>> = OnceLock::new();
+
+// Source keys derive from the full runner settings, so every host/binary/env edit
+// mints a fresh key — but a key's fence entry must outlive its stop (deleting on
+// stop would let a stale start install a zombie worker). Bound the map instead:
+// past the cap, evict the lowest-epoch entry and raise `floor` to it. Epochs are
+// globally monotonic across keys (one frontend counter), so anything at or below
+// the floor is globally stale and rejected without needing its per-key entry.
+const LIVE_PICKER_FENCE_CAP: usize = 64;
+
+#[derive(Default)]
+struct StartFence {
+    last_started: HashMap<String, u64>,
+    floor: u64,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -970,12 +984,31 @@ fn focus_args_for_runner<'a>(
 }
 
 // Per-key stale-start gate: honor a start only when its epoch advances past the
-// highest epoch already honored for that source key. Keys gate independently,
-// so one source's stale start can never block — or tear down — another's worker.
-fn epoch_advances(last_started: &HashMap<String, u64>, source_key: &str, epoch: u64) -> bool {
-    last_started
-        .get(source_key)
-        .is_none_or(|last| epoch > *last)
+// highest epoch already honored for that source key — and past the fence floor,
+// which stands in for evicted keys. Keys gate independently, so one source's
+// stale start can never block — or tear down — another's worker.
+fn epoch_advances(fence: &StartFence, source_key: &str, epoch: u64) -> bool {
+    epoch > fence.floor
+        && fence
+            .last_started
+            .get(source_key)
+            .is_none_or(|last| epoch > *last)
+}
+
+// Commit a honored start into the fence, evicting the lowest-epoch entry (and
+// raising the floor to it) once past the cap so edits can't grow it unboundedly.
+fn commit_start_epoch(fence: &mut StartFence, source_key: String, epoch: u64) {
+    fence.last_started.insert(source_key, epoch);
+    if fence.last_started.len() > LIVE_PICKER_FENCE_CAP
+        && let Some((evict_key, evict_epoch)) = fence
+            .last_started
+            .iter()
+            .min_by_key(|(_, last)| **last)
+            .map(|(key, last)| (key.clone(), *last))
+    {
+        fence.last_started.remove(&evict_key);
+        fence.floor = fence.floor.max(evict_epoch);
+    }
 }
 
 fn start_live_picker_with_runner(
@@ -988,7 +1021,7 @@ fn start_live_picker_with_runner(
     // Hold the start lock across the whole stop+spawn+install so overlapping
     // starts can't interleave; the loser would otherwise see a supervisor
     // installed between our stop and re-lock and silently no-op.
-    let mut last_started = live_picker_start_lock()
+    let mut fence = live_picker_start_lock()
         .lock()
         .map_err(|_| "live picker start lock poisoned".to_owned())?;
 
@@ -1000,7 +1033,7 @@ fn start_live_picker_with_runner(
     // *commit* the epoch after the worker is installed (below), so a failed
     // start does not advance the guard and silently reject the frontend's retry
     // of the same epoch.
-    if !epoch_advances(&last_started, &source_key, epoch) {
+    if !epoch_advances(&fence, &source_key, epoch) {
         return Ok(());
     }
 
@@ -1047,7 +1080,7 @@ fn start_live_picker_with_runner(
     drop(supervisors);
 
     // Commit the epoch only now that the worker is installed.
-    last_started.insert(source_key, epoch);
+    commit_start_epoch(&mut fence, source_key, epoch);
 
     Ok(())
 }
@@ -1095,8 +1128,8 @@ fn live_picker_supervisors() -> &'static Mutex<HashMap<String, LivePickerSupervi
     LIVE_PICKER.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn live_picker_start_lock() -> &'static Mutex<HashMap<String, u64>> {
-    LIVE_PICKER_START.get_or_init(|| Mutex::new(HashMap::new()))
+fn live_picker_start_lock() -> &'static Mutex<StartFence> {
+    LIVE_PICKER_START.get_or_init(|| Mutex::new(StartFence::default()))
 }
 
 fn run_live_picker_worker(
@@ -2361,17 +2394,45 @@ mod tests {
 
     #[test]
     fn start_epoch_gate_is_per_key() {
-        let mut last_started = HashMap::new();
-        last_started.insert("source-a".to_owned(), 5);
+        let mut fence = StartFence::default();
+        fence.last_started.insert("source-a".to_owned(), 5);
 
         // Same key: only a strictly newer epoch advances; equal/older is stale.
-        assert!(!epoch_advances(&last_started, "source-a", 4));
-        assert!(!epoch_advances(&last_started, "source-a", 5));
-        assert!(epoch_advances(&last_started, "source-a", 6));
+        assert!(!epoch_advances(&fence, "source-a", 4));
+        assert!(!epoch_advances(&fence, "source-a", 5));
+        assert!(epoch_advances(&fence, "source-a", 6));
 
         // A different key gates independently — its own history starts empty, so
         // source-a's higher watermark cannot reject source-b's first start.
-        assert!(epoch_advances(&last_started, "source-b", 1));
+        assert!(epoch_advances(&fence, "source-b", 1));
+    }
+
+    #[test]
+    fn start_fence_evicts_lowest_epoch_and_holds_the_floor() {
+        let mut fence = StartFence::default();
+        // Fill to the cap, then one more: the lowest-epoch entry is evicted and
+        // its epoch becomes the floor.
+        for n in 1..=(LIVE_PICKER_FENCE_CAP as u64 + 1) {
+            commit_start_epoch(&mut fence, format!("source-{n}"), n);
+        }
+        assert_eq!(fence.last_started.len(), LIVE_PICKER_FENCE_CAP);
+        assert_eq!(fence.floor, 1);
+
+        // The evicted key's stale epoch is still rejected via the floor (epochs
+        // are globally monotonic, so at-or-below-floor means globally stale), and
+        // fresh epochs pass for any key, evicted or new.
+        assert!(!fence.last_started.contains_key("source-1"));
+        assert!(!epoch_advances(&fence, "source-1", 1));
+        assert!(epoch_advances(
+            &fence,
+            "source-1",
+            LIVE_PICKER_FENCE_CAP as u64 + 2
+        ));
+        assert!(epoch_advances(
+            &fence,
+            "source-new",
+            LIVE_PICKER_FENCE_CAP as u64 + 2
+        ));
     }
 
     #[test]

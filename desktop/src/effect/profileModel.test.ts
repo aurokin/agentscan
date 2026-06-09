@@ -282,6 +282,21 @@ describe("sourceLabel", () => {
     );
   });
 
+  it("drops a probed hostname when a sibling targets the same machine via another identity", () => {
+    // "alice@box" and "bob@box" differ only by SSH identity — rewriting one to the
+    // probed "box" would erase the only visible distinction between them.
+    const profile = sshProfile("ssh-1", "alice@box");
+    const preflight: PreflightLabelSource = {
+      runnerKey: runnerKeyForProfile(profile),
+      preflight: { remoteHostLabel: "box" },
+    };
+    const siblings = [profile, sshProfile("ssh-2", "bob@box")];
+    expect(sourceLabel(profile, "mymac", preflight, siblings)).toBe("alice@box");
+    // The machine part also matches across FQDN spellings of the same host.
+    const fqdnSiblings = [profile, sshProfile("ssh-2", "bob@box.home.arpa")];
+    expect(sourceLabel(profile, "mymac", preflight, fqdnSiblings)).toBe("alice@box");
+  });
+
   it("keeps a probed hostname that is unique among sibling sources", () => {
     const profile = sshProfile("ssh-1", "user@box");
     const preflight: PreflightLabelSource = {
