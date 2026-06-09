@@ -26,6 +26,10 @@ export type ApplyRunnerSettingsInput = {
   readonly sshClientTty: string;
 };
 
+// The commit-time outcome, surfaced so the UI can report a refused apply instead
+// of logging it as applied.
+export type ApplyRunnerSettingsResult = "applied" | "duplicate-host";
+
 // Owns the persisted profile/settings state (a SubscriptionRef the dock + settings
 // windows observe via an atom), the persistence + cross-window broadcast on every
 // change, and a value-guarded reload primitive.
@@ -174,7 +178,10 @@ export class Profiles extends Effect.Service<Profiles>()("desktop/Profiles", {
         // deleted) by load-time dedupe. Refusing the write loses the edit, not data.
         const edited = latest.profiles.find((profile) => profile.id === editedId);
         if (edited?.kind === "ssh" && sshHostCollides(latest.profiles, editedId, input.sshHost)) {
-          return;
+          // Adopt the state that won so the form's live validation surfaces the
+          // duplicate inline instead of leaving a silently-unsynced window.
+          yield* reload;
+          return "duplicate-host" as const;
         }
         const next = updateProfileSettingsById(
           latest,
@@ -184,6 +191,7 @@ export class Profiles extends Effect.Service<Profiles>()("desktop/Profiles", {
           input.sshClientTty,
         );
         yield* commit(next);
+        return "applied" as const;
       });
 
     return {

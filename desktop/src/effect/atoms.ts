@@ -90,10 +90,12 @@ export const deleteActiveProfileAtom = runtime.fn(
   }),
 );
 
+// Returns the commit outcome so the settings window (promise-mode setter) can log
+// a refused apply as rejected instead of applied.
 export const applyRunnerSettingsAtom = runtime.fn(
   Effect.fnUntraced(function* (input: ApplyRunnerSettingsInput) {
     const profiles = yield* Profiles;
-    yield* profiles.applyRunnerSettings(input);
+    return yield* profiles.applyRunnerSettings(input);
   }),
 );
 

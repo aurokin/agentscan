@@ -453,18 +453,32 @@ export type PreflightLabelSource = {
 // machine keyed by its hostname, a remote keyed by its SSH host (each falling back
 // to a generic label when its host isn't known). A remote upgrades to the hostname
 // probed by its preflight, but only when that preflight's runnerKey matches this
-// exact profile — a label must never come from a stale (different-runner) probe.
+// exact profile — a label must never come from a stale (different-runner) probe —
+// and only when the probed name wouldn't duplicate a sibling source's label (an
+// alias and a direct entry can reach the same machine; the configured connection
+// string is the honest disambiguator in lists the user picks from).
 export function sourceLabel(
   profile: DesktopProfileConfig,
   localHostLabel: string,
   preflight?: PreflightLabelSource | null,
+  siblings?: ReadonlyArray<DesktopProfileConfig>,
 ): string {
   if (profile.kind === "ssh") {
     const probed =
       preflight && preflight.runnerKey === runnerKeyForProfile(profile)
         ? preflight.preflight?.remoteHostLabel
         : null;
-    return probed || profile.host.trim() || "Remote";
+    const ambiguous =
+      !!probed &&
+      (siblings ?? []).some((other) => {
+        if (other.id === profile.id) {
+          return false;
+        }
+        return other.kind === "ssh"
+          ? other.host.trim() === probed
+          : (localHostLabel || "agentscan") === probed;
+      });
+    return (ambiguous ? null : probed) || profile.host.trim() || "Remote";
   }
   return localHostLabel || "agentscan";
 }

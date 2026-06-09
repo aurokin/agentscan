@@ -247,6 +247,36 @@ describe("sourceLabel", () => {
     expect(sourceLabel(profile, "mymac", stale)).toBe("user@box");
   });
 
+  it("drops a probed hostname that duplicates a sibling source's label", () => {
+    const profile = sshProfile("ssh-1", "alias-box");
+    const preflight: PreflightLabelSource = {
+      runnerKey: runnerKeyForProfile(profile),
+      preflight: { remoteHostLabel: "box" },
+    };
+    // Another source already reaches the same machine by its direct host: showing
+    // the probed "box" twice would make the pick lists ambiguous.
+    const siblings = [profile, sshProfile("ssh-2", "box")];
+    expect(sourceLabel(profile, "mymac", preflight, siblings)).toBe("alias-box");
+    // A probe matching the LOCAL source's hostname is dropped the same way.
+    const localPreflight: PreflightLabelSource = {
+      runnerKey: runnerKeyForProfile(profile),
+      preflight: { remoteHostLabel: "mymac" },
+    };
+    expect(sourceLabel(profile, "mymac", localPreflight, [profile, localProfile])).toBe(
+      "alias-box",
+    );
+  });
+
+  it("keeps a probed hostname that is unique among sibling sources", () => {
+    const profile = sshProfile("ssh-1", "user@box");
+    const preflight: PreflightLabelSource = {
+      runnerKey: runnerKeyForProfile(profile),
+      preflight: { remoteHostLabel: "koopa" },
+    };
+    const siblings = [profile, localProfile, sshProfile("ssh-2", "other")];
+    expect(sourceLabel(profile, "mymac", preflight, siblings)).toBe("koopa");
+  });
+
   it("falls back to the configured host when the matching preflight probed no hostname", () => {
     const profile = sshProfile("ssh-1", "user@box");
     const preflight: PreflightLabelSource = {

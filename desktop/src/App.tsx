@@ -223,7 +223,9 @@ function App({ mode }: { mode: ShellMode }) {
   const selectProfileSet = useAtomSet(selectProfileAtom);
   const addSshProfileSet = useAtomSet(addSshProfileAtom);
   const deleteActiveProfileSet = useAtomSet(deleteActiveProfileAtom);
-  const applyRunnerSettingsSet = useAtomSet(applyRunnerSettingsAtom);
+  // Promise mode: the apply outcome ("applied" | "duplicate-host") drives the
+  // debug-log entry, so a commit-time refusal is never reported as applied.
+  const applyRunnerSettingsSet = useAtomSet(applyRunnerSettingsAtom, { mode: "promise" });
   const toggleProfileOpenSet = useAtomSet(toggleProfileOpenAtom);
   const reorderProfileSet = useAtomSet(reorderProfileAtom);
   const reloadProfiles = useAtomSet(reloadProfilesAtom);
@@ -345,6 +347,11 @@ function App({ mode }: { mode: ShellMode }) {
         ? preflightState
         : null
       : syncedPreflight;
+  // One label rule for every card/menu/header: sourceLabel sees the sibling
+  // sources so a probed hostname that collides with another source's label is
+  // dropped for the configured connection string.
+  const labelFor = (profile: DesktopProfileConfig) =>
+    sourceLabel(profile, localHostLabel, labelPreflight, profileState.profiles);
   // Debug log is a diagnostic panel — collapsed by default to keep Settings calm.
   const [isDebugOpen, setIsDebugOpen] = useState(false);
   // The source card being dragged in the settings rail (HTML5 drag-and-drop);
@@ -1401,7 +1408,7 @@ function App({ mode }: { mode: ShellMode }) {
     if (validation.errors.length > 0) {
       appendDebugEntry({
         kind: "settings",
-        label: `${sourceLabel(activeProfile, localHostLabel, labelPreflight)} settings rejected`,
+        label: `${labelFor(activeProfile)} settings rejected`,
         detail: validation.errors.join(" · "),
       });
       return;
@@ -1412,16 +1419,36 @@ function App({ mode }: { mode: ShellMode }) {
     // broadcasts. Validation + the debug log stay here; persistence is the service's.
     const normalized = normalizeRunnerSettings(settingsDraft);
     setSettingsDraft(normalized);
-    applyRunnerSettingsSet({
+    void applyRunnerSettingsSet({
       runner: normalized,
       sshHost: sshHostDraft,
       sshClientTty: sshClientTtyDraft,
-    });
-    appendDebugEntry({
-      kind: "settings",
-      label: `${sourceLabel(activeProfile, localHostLabel, labelPreflight)} settings applied`,
-      detail: `${runnerSummary(normalized)} · ${normalized.env.length} env ${normalized.env.length === 1 ? "name" : "names"}`,
-    });
+    })
+      .then((outcome) => {
+        if (outcome === "duplicate-host") {
+          // Commit-time refusal: another window claimed this host after the form
+          // validated. The service reloaded the ref, so the inline validation now
+          // shows the duplicate; the log must not claim the edit was applied.
+          appendDebugEntry({
+            kind: "settings",
+            label: `${labelFor(activeProfile)} settings rejected`,
+            detail: "A source for this connection already exists.",
+          });
+          return;
+        }
+        appendDebugEntry({
+          kind: "settings",
+          label: `${labelFor(activeProfile)} settings applied`,
+          detail: `${runnerSummary(normalized)} · ${normalized.env.length} env ${normalized.env.length === 1 ? "name" : "names"}`,
+        });
+      })
+      .catch((error: unknown) => {
+        appendDebugEntry({
+          kind: "settings",
+          label: `${labelFor(activeProfile)} settings apply failed`,
+          detail: errorMessage(error),
+        });
+      });
   }
 
   function resetProfileSettings() {
@@ -1444,7 +1471,7 @@ function App({ mode }: { mode: ShellMode }) {
     });
     appendDebugEntry({
       kind: "settings",
-      label: `${sourceLabel(activeProfile, localHostLabel, labelPreflight)} binary set from probe`,
+      label: `${labelFor(activeProfile)} binary set from probe`,
       detail: path,
     });
   }
@@ -1482,7 +1509,7 @@ function App({ mode }: { mode: ShellMode }) {
     deleteActiveProfileSet();
     appendDebugEntry({
       kind: "settings",
-      label: `${sourceLabel(activeProfile, localHostLabel, labelPreflight)} profile deleted`,
+      label: `${labelFor(activeProfile)} profile deleted`,
       detail: "active profile changed",
     });
   }
@@ -1765,7 +1792,7 @@ function App({ mode }: { mode: ShellMode }) {
                     </span>
                     <span className="source-card-text">
                       <span className="source-card-name">
-                        {sourceLabel(profile, localHostLabel, labelPreflight)}
+                        {labelFor(profile)}
                       </span>
                     </span>
                     <span className={`kind-chip ${profile.kind}`}>
@@ -1796,7 +1823,7 @@ function App({ mode }: { mode: ShellMode }) {
                     <span className={`kind-chip ${activeProfile.kind}`}>
                       {activeProfile.kind === "ssh" ? "remote" : "local"}
                     </span>
-                    <h2>{sourceLabel(activeProfile, localHostLabel, labelPreflight)}</h2>
+                    <h2>{labelFor(activeProfile)}</h2>
                   </div>
                   {detailActions}
                 </div>
@@ -2254,7 +2281,7 @@ function App({ mode }: { mode: ShellMode }) {
                       aria-hidden="true"
                     />
                     <span className="folder-label">
-                      {sourceLabel(view.profile, localHostLabel, labelPreflight)}
+                      {labelFor(view.profile)}
                     </span>
                     {view.isOwner ? (
                       <kbd className="folder-kbd" title="Row hotkeys target this source">
@@ -2361,7 +2388,7 @@ function App({ mode }: { mode: ShellMode }) {
               data-tone={triggerTone}
               aria-hidden="true"
             />
-            <span className="source-label">{sourceLabel(triggerProfile, localHostLabel, labelPreflight)}</span>
+            <span className="source-label">{labelFor(triggerProfile)}</span>
             <span
               className={`source-caret${isSourceMenuOpen ? " open" : ""}`}
               aria-hidden="true"
@@ -2388,7 +2415,7 @@ function App({ mode }: { mode: ShellMode }) {
                   </span>
                   <span className="source-option-text">
                     <span className="source-option-name">
-                      {sourceLabel(profile, localHostLabel, labelPreflight)}
+                      {labelFor(profile)}
                     </span>
                   </span>
                 </button>

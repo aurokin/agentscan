@@ -221,17 +221,23 @@ describe("Profiles", () => {
             ),
           );
 
-          yield* profiles.applyRunnerSettings({
+          const outcome = yield* profiles.applyRunnerSettings({
             runner: { binaryPath: "", env: [] },
             sshHost: "beta",
             sshClientTty: "",
           });
+          expect(outcome).toBe("duplicate-host");
 
           // No write, no broadcast: the persisted state still has both distinct hosts.
           const persisted = JSON.parse(store.get(PROFILES_STORAGE_KEY)!) as ProfileState;
           const hosts = persisted.profiles.map((p) => (p.kind === "ssh" ? p.host : p.id));
           expect(hosts).toEqual(["local", "alpha", "beta"]);
           expect(yield* Queue.size(emitted)).toBe(0);
+
+          // The refusal adopted the winning state, so this window's live validation
+          // can surface the duplicate inline.
+          const state = yield* SubscriptionRef.get(profiles.state);
+          expect(state.profiles.map((p) => p.id)).toEqual(["local", "ssh-1", "ssh-2"]);
         }),
     ));
 
