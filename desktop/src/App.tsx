@@ -482,6 +482,15 @@ function App({ mode }: { mode: ShellMode }) {
   // enabled, so re-running on an unrelated profileState change leaves running
   // keys alone.
   const prevLiveEnabledRef = useRef<ReadonlyMap<string, boolean>>(new Map());
+  // THE invariant probe results live under: a probe gates STARTING a channel; an
+  // ONLINE channel is never killed or masked by probe verdicts. Probes are one-shot
+  // (they re-fire only on a runnerKey change) while the channel is continuous, so a
+  // same-key probe failing — transiently or even resolving CLI-unavailable — after
+  // the source is streaming must not tear down or hide healthy rows: there would be
+  // no recovery probe to undo it. Config edits still tear down via the key change,
+  // and a channel that drops falls back to probe gating. The channel reports its
+  // own failures via LiveStrip.
+  const activeLiveOnline = liveStateFor(liveStates, runnerKey).connection.status === "online";
   const liveTargets = useMemo(
     () =>
       liveSources
@@ -491,12 +500,13 @@ function App({ mode }: { mode: ShellMode }) {
           runnerKey: source.runnerKey,
           enabled:
             source.runnerKey === runnerKey
-              ? preflightState.status === "ready" && preflightState.runnerKey === runnerKey
-                ? preflightState.preflight.ok && activeProfileValid
-                : (prevLiveEnabledRef.current.get(source.runnerKey) ?? false)
+              ? activeLiveOnline ||
+                (preflightState.status === "ready" && preflightState.runnerKey === runnerKey
+                  ? preflightState.preflight.ok && activeProfileValid
+                  : (prevLiveEnabledRef.current.get(source.runnerKey) ?? false))
               : source.valid,
         })),
-    [liveSources, runnerKey, preflightState, activeProfileValid],
+    [liveSources, runnerKey, activeLiveOnline, preflightState, activeProfileValid],
   );
   useEffect(() => {
     if (mode !== "dock") {
@@ -630,25 +640,20 @@ function App({ mode }: { mode: ShellMode }) {
     preflightState.status === "ready" &&
     preflightState.runnerKey === runnerKey &&
     !preflightState.preflight.ok;
-  // A failed PROBE is diagnostics about STARTING, not about a running channel: the
-  // active source's subscription may be online and streaming (its arming carries
-  // across the probe window — killing a healthy live channel over a transient
-  // `--version` hiccup would strand the folder dark with no recovery probe, since
-  // probes only re-fire on a runnerKey change). When the channel is online, the
-  // live stream is the ground truth and keeps rendering; the channel reports its
-  // own failures via LiveStrip.
-  const activeLiveOnline = liveStateFor(liveStates, runnerKey).connection.status === "online";
   // The active source's failure surfaced inside its own folder (or the homeless
   // strip below): its live target is gated off (or left disarmed) on a failed
   // probe, so without this the folder's keyed state would read as a dishonest
   // perpetual "Waiting for a source". Covers a resolved-but-unusable probe, and
   // the probe itself failing ("failed" carries no runnerKey; like the boot screen,
-  // we treat it as the active runner's) — unless the channel is already online.
-  const activePreflightError = dockPreflightUnusable
-    ? (preflightState.preflight.error ?? `${profileKindLabel(activeProfile)} CLI unavailable`)
-    : preflightState.status === "failed" && !activeLiveOnline
-      ? preflightState.message
-      : null;
+  // we treat it as the active runner's) — unless the channel is already online,
+  // per the probes-gate-starting invariant above liveTargets.
+  const activePreflightError = activeLiveOnline
+    ? null
+    : dockPreflightUnusable
+      ? (preflightState.preflight.error ?? `${profileKindLabel(activeProfile)} CLI unavailable`)
+      : preflightState.status === "failed"
+        ? preflightState.message
+        : null;
   // The full-screen boot/recovery takeover is scoped to the states where no OTHER
   // open folder could render anyway: preflight is single-source (only the active
   // profile is probed), so blanking the whole dock for the active source's
@@ -668,11 +673,10 @@ function App({ mode }: { mode: ShellMode }) {
   );
   const dockBootScreenVisible =
     mode === "dock" &&
-    (dockPreflightUnusable ||
-      // A non-ready probe blanks the dock only when the channel isn't already
-      // streaming (failed-probe-while-online must not hide healthy rows; loading
-      // is only reachable on first load, before anything could be online).
-      (preflightState.status !== "ready" && !activeLiveOnline)) &&
+    // No probe verdict blanks the dock over an online channel (probes gate
+    // starting; the stream is ground truth while it runs).
+    !activeLiveOnline &&
+    (preflightState.status !== "ready" || dockPreflightUnusable) &&
     activeFolderOpen &&
     !hasOpenFolderBeyondActive;
   // One view per folder-eligible source: its keyed live state, the picker
@@ -1490,16 +1494,29 @@ function App({ mode }: { mode: ShellMode }) {
   // no need to open settings. Persists straight to the active profile (not the
   // settings form drafts, which the dock never populates).
   function applySuggestedBinaryPath(path: string) {
-    applyRunnerSettingsSet({
+    void applyRunnerSettingsSet({
       runner: normalizeRunnerSettings({ ...activeProfile.runner, binaryPath: path }),
       sshHost: activeProfile.kind === "ssh" ? activeProfile.host : "",
       sshClientTty: activeProfile.kind === "ssh" ? activeProfile.clientTty : "",
-    });
-    appendDebugEntry({
-      kind: "settings",
-      label: `${labelFor(activeProfile)} binary set from probe`,
-      detail: path,
-    });
+    })
+      .then((outcome) => {
+        // Same commit-time refusal as the settings form: another window claimed
+        // this host between probe and click, so nothing was persisted.
+        appendDebugEntry({
+          kind: "settings",
+          label: `${labelFor(activeProfile)} binary ${
+            outcome === "duplicate-host" ? "NOT set (duplicate connection)" : "set from probe"
+          }`,
+          detail: path,
+        });
+      })
+      .catch((error: unknown) => {
+        appendDebugEntry({
+          kind: "settings",
+          label: `${labelFor(activeProfile)} binary apply failed`,
+          detail: errorMessage(error),
+        });
+      });
   }
 
   // The persisted-state mutators live in the Profiles service, which owns the
