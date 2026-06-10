@@ -613,14 +613,14 @@ function App({ mode }: { mode: ShellMode }) {
   // and gating off during that window would bounce (teardown + full reconnect —
   // over SSH a whole remote process respawn) the healthy, already-armed
   // subscription of a source the user merely re-selected in Settings. While
-  // unresolved, the previous armed value is carried; a key with no previous value
-  // (launch, or an in-place edit that moved the runnerKey) stays gated off until
-  // its probe resolves, exactly the old behavior. Other open sources are never
-  // probed, so they arm on their committed-profile validity and surface failures
-  // per folder through their keyed live state. configure diffs on runnerKey +
-  // enabled, so re-running on an unrelated profileState change leaves running
-  // keys alone.
-  const prevLiveEnabledRef = useRef<ReadonlyMap<string, boolean>>(new Map());
+  // unresolved, "carry" tells the service to keep the enabled value it last saw
+  // for the key; a key with no history (launch, or an in-place edit that moved
+  // the runnerKey) stays gated off until its probe resolves. Other open sources
+  // are never probed, so they arm on their committed-profile validity and
+  // surface failures per folder through their keyed live state. configure diffs
+  // on runnerKey + enabled, so re-running on an unrelated profileState change
+  // leaves running keys alone.
+  //
   // THE invariant probe results live under: a probe gates STARTING a channel; an
   // ONLINE channel is never killed or masked by probe verdicts. Probes are one-shot
   // (they re-fire only on a runnerKey change) while the channel is continuous, so a
@@ -642,7 +642,7 @@ function App({ mode }: { mode: ShellMode }) {
               ? activeLiveOnline ||
                 (preflightState.status === "ready" && preflightState.runnerKey === runnerKey
                   ? preflightState.preflight.ok && activeProfileValid
-                  : (prevLiveEnabledRef.current.get(source.runnerKey) ?? false))
+                  : ("carry" as const))
               : source.valid,
         })),
     [liveSources, runnerKey, activeLiveOnline, preflightState, activeProfileValid],
@@ -652,11 +652,6 @@ function App({ mode }: { mode: ShellMode }) {
       return;
     }
     configureLive(liveTargets);
-    // Record what was armed only after configuring, so the carry above always
-    // reads the last value the service actually saw.
-    prevLiveEnabledRef.current = new Map(
-      liveTargets.map((target) => [target.runnerKey, target.enabled]),
-    );
   }, [mode, liveTargets, configureLive]);
 
   // Resolve the local machine's hostname once for the local source label. Both the
