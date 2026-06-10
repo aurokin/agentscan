@@ -5,7 +5,6 @@ import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { Result, useAtomSet, useAtomValue } from "@effect-atom/atom-react";
 import type { LogoTheme } from "./providerLogos";
-import { DebugLog } from "./components/DebugLog";
 import { GroupedPicker } from "./components/GroupedPicker";
 import { LiveStrip } from "./components/LiveStrip";
 import { SourceKindIcon } from "./components/SourceKindIcon";
@@ -14,50 +13,30 @@ import { HOTKEY_MODIFIER_LABEL, IS_MAC } from "./platform";
 import {
   activateAtom,
   activationAtom,
-  addSshProfileAtom,
   appearanceAtom,
   appendDebugEntryAtom,
   applyRunnerSettingsAtom,
-  clearDebugLogAtom,
   configureAtom,
-  debugLogAtom,
   configureHostnameEnrichmentAtom,
   configurePreflightAtom,
   configureSummonHotkeyAtom,
-  deleteActiveProfileAtom,
   liveStatesAtom,
   preflightStateAtom,
   profilesAtom,
   pruneActivationAtom,
   reconnectAtom,
-  reloadAppearanceAtom,
   reloadProfilesAtom,
   reorderProfileAtom,
-  requestPreflightSyncAtom,
   selectProfileAtom,
-  setFramelessAtom,
-  setGlassEnabledAtom,
-  setOrientationAtom,
-  setSurfaceAlphaAtom,
-  setThemeAtom,
   startAtom,
   summonHotkeyAtom,
-  syncedPreflightAtom,
   toggleProfileOpenAtom,
 } from "./effect/atoms";
 import type { LiveState, PickerRow } from "./effect/types";
-// Type-only: the DebugLog service class stays out of this file (the DebugLog
-// component import above would collide with it).
-import type { DebugEntry } from "./effect/DebugLog";
 import { liveStateFor, type LiveStates } from "./effect/LiveConnection";
 import { pickerRowForKeyboardKey } from "./effect/keybinds";
 import type { PreflightState } from "./effect/Preflight";
-import {
-  glassClearFor,
-  loadAppearance,
-  SURFACE_ALPHA_MAX,
-  SURFACE_ALPHA_MIN,
-} from "./effect/appearanceModel";
+import { glassClearFor, loadAppearance } from "./effect/appearanceModel";
 import {
   commandPrefix,
   focusCommandLabel,
@@ -68,22 +47,16 @@ import {
   normalizeRunnerSettings,
   profileKindLabel,
   runnerKeyForProfile,
-  runnerSettingsEqual,
   runnerSettingsForProfile,
-  runnerSummary,
   sourceLabel,
   validateProfileDraft,
   type DesktopProfileConfig,
-  type EnvironmentVariable,
   type PreflightLabelSource,
-  type RunnerSettings,
 } from "./effect/profileModel";
 import {
   PREFS_SYNC_EVENT,
   type Orientation,
-  type OrientationPreference,
   type PrefsSync,
-  type ShellMode,
   type ThemePreference,
 } from "./effect/prefs";
 import {
@@ -117,6 +90,7 @@ import {
   WINDOW_MIN_HEIGHT_VERTICAL,
   WINDOW_MIN_WIDTH,
 } from "./windowOperations";
+import { errorMessage, readLocalStorage } from "./shared";
 
 // Appearance prefs (storage keys, alpha bounds, glassClearFor, the parsers) live in
 // effect/appearanceModel and are owned by the Appearance Effect service; the DOM apply
@@ -137,18 +111,6 @@ const SUMMON_HOTKEY_INACTIVE: SummonHotkeyState = { status: "inactive" };
 
 // First-paint fallback for activationAtom before the runtime resolves it.
 const IDLE_ACTIVATION: PickerActivation = { status: "idle" };
-
-// Synchronous, best-effort localStorage read used only to seed the first paint
-// (active profile / runnerKey / drafts) before the Profiles service atom resolves.
-// All profile WRITES and ongoing reads go through the service; this just matches its
-// initial seed so the first render isn't a flash of default state.
-const readLocalStorage = (key: string): string | null => {
-  try {
-    return window.localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-};
 
 // Collapse a preference to the concrete theme in effect, resolving "system" from
 // the OS appearance. Used to pick per-theme logo variants.
@@ -178,10 +140,11 @@ const INITIAL_PREFLIGHT: PreflightState = { status: "loading" };
 const EMPTY_PICKER_ROWS: PickerRow[] = [];
 const EMPTY_PICKER_GROUPS: PickerGroup[] = [];
 
-// First-paint fallback for debugLogAtom before the runtime resolves it.
-const EMPTY_DEBUG_ENTRIES: ReadonlyArray<DebugEntry> = [];
-
-function App({ mode }: { mode: ShellMode }) {
+// The dock window: boot/recovery screen, the folder strip / horizontal bar
+// picker, and every native window apply (sizing, glass, frameless, the summon
+// hotkey, live subscriptions, the preflight prober). The settings window is
+// SettingsApp.tsx; the two never import each other (see shared.ts).
+function DockApp() {
   // The dock's resolved CLI preflight is owned by the Preflight Effect service. The dock
   // observes preflightStateAtom and drives the probe via configurePreflight; the service
   // also mirrors each result to the settings window over the shared prefs channel.
@@ -190,15 +153,6 @@ function App({ mode }: { mode: ShellMode }) {
     () => INITIAL_PREFLIGHT,
   );
   const configurePreflight = useAtomSet(configurePreflightAtom);
-  // The settings window never runs its own preflight; it reuses the dock's resolved
-  // result, mirrored over the prefs channel into the service's `synced` ref (observed
-  // here). This avoids a second `ssh … --version` for remote profiles (an extra
-  // round-trip and a possible duplicate passphrase prompt) every time Settings is
-  // opened, and keeps the card current even while the window is visible-but-unfocused.
-  // Always null in the dock (which is the producer, not a consumer). requestPreflightSync
-  // asks the dock to re-emit on focus (emitTo has no replay).
-  const syncedPreflight = Result.getOrElse(useAtomValue(syncedPreflightAtom), () => null);
-  const requestPreflightSync = useAtomSet(requestPreflightSyncAtom);
   // Profile/settings persistence + cross-window adoption are owned by the Profiles
   // Effect service; this window observes its state via an atom and drives changes
   // through the action atoms below. The first synchronous render (before the runtime
@@ -208,10 +162,8 @@ function App({ mode }: { mode: ShellMode }) {
   const profileStateResult = useAtomValue(profilesAtom);
   const profileState = Result.getOrElse(profileStateResult, () => initialProfileState);
   // Promise mode so the horizontal footer's settings deep-link can await the
-  // selection commit before opening the window; other callers ignore the promise.
+  // selection commit before opening the window.
   const selectProfileSet = useAtomSet(selectProfileAtom, { mode: "promise" });
-  const addSshProfileSet = useAtomSet(addSshProfileAtom);
-  const deleteActiveProfileSet = useAtomSet(deleteActiveProfileAtom);
   // Promise mode: the apply outcome ("applied" | "duplicate-host") drives the
   // debug-log entry, so a commit-time refusal is never reported as applied.
   const applyRunnerSettingsSet = useAtomSet(applyRunnerSettingsAtom, { mode: "promise" });
@@ -254,24 +206,11 @@ function App({ mode }: { mode: ShellMode }) {
   const ownerSource = useMemo(() => liveSources.find((s) => s.isOwner) ?? null, [liveSources]);
   const ownerProfile = ownerSource?.profile ?? null;
   const ownerRunnerKey = ownerSource?.runnerKey ?? null;
-  const [settingsDraft, setSettingsDraft] = useState<RunnerSettings>(
-    () => getActiveProfile(initialProfileState).runner,
-  );
-  const [sshHostDraft, setSshHostDraft] = useState(() => {
-    const profile = getActiveProfile(initialProfileState);
-    return profile.kind === "ssh" ? profile.host : "";
-  });
-  const [sshClientTtyDraft, setSshClientTtyDraft] = useState(() => {
-    const profile = getActiveProfile(initialProfileState);
-    return profile.kind === "ssh" ? profile.clientTty : "";
-  });
-  // The debug log lives in the DebugLog service (per-window instance; the
-  // settings window renders it, the dock only writes). The append setter is
-  // registry-stable, unlike the old per-render closure, so logging effects can
-  // list it in their dep arrays.
-  const debugEntries = Result.getOrElse(useAtomValue(debugLogAtom), () => EMPTY_DEBUG_ENTRIES);
+  // The dock only WRITES its per-window debug log (command lifecycles, native
+  // apply failures); the settings window renders its own instance. The append
+  // setter is registry-stable, unlike the old per-render closure, so logging
+  // effects can list it in their dep arrays.
   const appendDebugEntry = useAtomSet(appendDebugEntryAtom);
-  const clearDebugLog = useAtomSet(clearDebugLogAtom);
   // Live connection (status + rows) is owned by the LiveConnection service. The dock
   // observes liveStatesAtom — a per-source map — and drives the service via
   // configure/reconnect/start, reading each open folder's entry by runnerKey. The
@@ -306,21 +245,15 @@ function App({ mode }: { mode: ShellMode }) {
   // Layout axis, seeded from the current window shape and kept in sync on resize.
   const [orientation, setOrientation] = useState<Orientation>(orientationForViewport);
   // Appearance prefs (theme + dock-layout orientation + glass) are owned by the
-  // Appearance Effect service; both windows observe its state via an atom and drive
-  // changes through these setters (which persist + cross-window broadcast). The DOM/Tauri
-  // apply (data-theme, set_window_glass, window shaping, CSS vars) stays in the effects
-  // below. The first synchronous render (before the runtime resolves the atom) falls back
-  // to a direct storage read so layout/theme/glass are right on the first paint.
+  // Appearance Effect service; the settings window drives changes (which persist +
+  // cross-window broadcast), the dock observes and applies. The DOM/Tauri apply
+  // (data-theme, set_window_glass, window shaping, CSS vars) lives in the effects
+  // below. The first synchronous render (before the runtime resolves the atom) falls
+  // back to a direct storage read so layout/theme/glass are right on the first paint.
   const initialAppearance = useMemo(() => loadAppearance(readLocalStorage), []);
   const appearance = Result.getOrElse(useAtomValue(appearanceAtom), () => initialAppearance);
   const { themePref, orientationPref, glassEnabled, surfaceAlpha, framelessEnabled } =
     appearance;
-  const setThemePref = useAtomSet(setThemeAtom);
-  const setOrientationPref = useAtomSet(setOrientationAtom);
-  const setGlassEnabled = useAtomSet(setGlassEnabledAtom);
-  const setSurfaceAlpha = useAtomSet(setSurfaceAlphaAtom);
-  const setFrameless = useAtomSet(setFramelessAtom);
-  const reloadAppearance = useAtomSet(reloadAppearanceAtom);
   // Layout preference: "auto" follows the live `orientation`; a pinned value overrides it.
   const effectiveOrientation: Orientation =
     orientationPref === "auto" ? orientation : orientationPref;
@@ -345,25 +278,17 @@ function App({ mode }: { mode: ShellMode }) {
   // local source's label (the way a remote source is keyed by its SSH host). Empty
   // until it resolves; sourceLabel falls back to a generic label in the meantime.
   const [localHostLabel, setLocalHostLabel] = useState("");
-  // The probed remote hostname as a label source: the dock from its own resolved
-  // preflight, settings from the dock's mirror. sourceLabel only honors it for the
-  // profile whose runnerKey matches, so a stale probe can never label a source.
+  // The probed remote hostname as a label source, from this window's own resolved
+  // preflight (the settings window reuses the mirror instead). sourceLabel only
+  // honors it for the profile whose runnerKey matches, so a stale probe can never
+  // label a source.
   const labelPreflight: PreflightLabelSource | null =
-    mode === "dock"
-      ? preflightState.status === "ready"
-        ? preflightState
-        : null
-      : syncedPreflight;
+    preflightState.status === "ready" ? preflightState : null;
   // One label rule for every card/menu/header: sourceLabel sees the sibling
   // sources so a probed hostname that collides with another source's label is
   // dropped for the configured connection string.
   const labelFor = (profile: DesktopProfileConfig) =>
     sourceLabel(profile, localHostLabel, labelPreflight, profileState.profiles);
-  // Debug log is a diagnostic panel — collapsed by default to keep Settings calm.
-  const [isDebugOpen, setIsDebugOpen] = useState(false);
-  // The source card being dragged in the settings rail (HTML5 drag-and-drop);
-  // dropping on another card reorders the sources, which keybind ownership follows.
-  const [draggedSourceId, setDraggedSourceId] = useState<string | null>(null);
   // Concrete theme in effect, kept in sync by the theme effect; drives per-theme
   // logo variant selection. Seeded from the service's initial theme so first paint
   // picks the right logos.
@@ -402,29 +327,6 @@ function App({ mode }: { mode: ShellMode }) {
   const activation = Result.getOrElse(useAtomValue(activationAtom), () => IDLE_ACTIVATION);
   const activate = useAtomSet(activateAtom);
   const pruneActivation = useAtomSet(pruneActivationAtom);
-  const validation = useMemo(
-    () =>
-      validateProfileDraft(
-        activeProfile,
-        settingsDraft,
-        sshHostDraft,
-        sshClientTtyDraft,
-        profileState.profiles,
-      ),
-    [activeProfile, settingsDraft, sshHostDraft, sshClientTtyDraft, profileState.profiles],
-  );
-  const isSettingsDirty = useMemo(
-    () =>
-      sshHostDraft.trim() !== (activeProfile.kind === "ssh" ? activeProfile.host : "") ||
-      sshClientTtyDraft.trim() !==
-        (activeProfile.kind === "ssh" ? activeProfile.clientTty : "") ||
-      !runnerSettingsEqual(settingsDraft, activeProfile.runner),
-    [activeProfile, settingsDraft, sshHostDraft, sshClientTtyDraft],
-  );
-  // Render-synced mirror so the settings focus-reconcile listener can read the latest
-  // dirty state without re-subscribing on every keystroke.
-  const isSettingsDirtyRef = useRef(isSettingsDirty);
-  isSettingsDirtyRef.current = isSettingsDirty;
 
   // The active profile's own validation (its committed values, not the form drafts).
   // Both the live-picker gate and the preflight target read it: a synchronously-invalid
@@ -450,9 +352,6 @@ function App({ mode }: { mode: ShellMode }) {
   // an in-flight probe on the next target the way the old `cancelled` flag did, keeps the
   // previous ready result during a switch, and mirrors each result to settings.
   useEffect(() => {
-    if (mode !== "dock") {
-      return;
-    }
     // Precompute the synchronous validation: an invalid profile short-circuits the probe
     // to a synthetic failed preflight (binary label + joined messages), matching the old
     // loadShellState invalid branch; null means "probe the CLI".
@@ -469,7 +368,7 @@ function App({ mode }: { mode: ShellMode }) {
     // --version / passphrase prompt) for a target that didn't change. activeProfile/
     // runnerSettings/validation are fully determined by runnerKey where this reads them.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runnerKey, mode, configurePreflight]);
+  }, [runnerKey, configurePreflight]);
 
   // Hostname-label enrichment (persisting the driver's probed hostnames and
   // one-shot background probes for never-probed online remotes) is owned by the
@@ -479,13 +378,10 @@ function App({ mode }: { mode: ShellMode }) {
   // supervisor slot (in-flight probes live in the service scope and survive
   // the swap).
   useEffect(() => {
-    if (mode !== "dock") {
-      return;
-    }
     configureHostnameEnrichment({
       onLog: (label, detail) => appendDebugEntry({ kind: "command", label, detail }),
     });
-  }, [mode, configureHostnameEnrichment, appendDebugEntry]);
+  }, [configureHostnameEnrichment, appendDebugEntry]);
 
   // Drive the LiveConnection service to every OPEN folder's source: open folder =
   // live subscription, closed folder = none. The service owns the subscriptions,
@@ -530,14 +426,11 @@ function App({ mode }: { mode: ShellMode }) {
       }));
   }, [liveSources, runnerKey, activeLiveOnline, preflightState, activeProfileValid]);
   useEffect(() => {
-    if (mode !== "dock") {
-      return;
-    }
     configureLive(liveTargets);
-  }, [mode, liveTargets, configureLive]);
+  }, [liveTargets, configureLive]);
 
-  // Resolve the local machine's hostname once for the local source label. Both the
-  // dock and the settings window render it, so this runs ungated; a failure just
+  // Resolve the local machine's hostname once for the local source label. Each
+  // window runs its own fetch (per-webview, as before the split); a failure just
   // leaves the generic fallback in place.
   useEffect(() => {
     let cancelled = false;
@@ -554,21 +447,19 @@ function App({ mode }: { mode: ShellMode }) {
   }, []);
 
   useEffect(() => {
-    // The global summon hotkey belongs to the dock; registering it in both windows
-    // would double-bind the shortcut. Registration, the in-use retry loop, and the
-    // failure banner state live in the SummonHotkey service — this effect only
-    // points it at the summon action. The callback reads summonPlacementRef at
-    // press time, so the one registration always places by the LIVE orientation.
-    if (mode !== "dock") {
-      return;
-    }
+    // The global summon hotkey belongs to the dock alone (the settings window
+    // never configures it — a second registration would double-bind the
+    // shortcut). Registration, the in-use retry loop, and the failure banner
+    // state live in the SummonHotkey service — this effect only points it at
+    // the summon action. The callback reads summonPlacementRef at press time,
+    // so the one registration always places by the LIVE orientation.
     configureSummonHotkey({
       onPress: () => {
         void raisePickerWindow(summonPlacementRef.current);
       },
     });
     return () => configureSummonHotkey({ onPress: null });
-  }, [mode, configureSummonHotkey]);
+  }, [configureSummonHotkey]);
 
   // Footer status line, dot tone, and the per-folder error strip for the active
   // source: all derived in effect/preflightViewModel around its single
@@ -593,7 +484,7 @@ function App({ mode }: { mode: ShellMode }) {
   // The full-screen boot/recovery takeover; the five interacting invariants that
   // scope it (and why) live with dockBootScreenVisible in preflightViewModel.
   const bootScreenVisible = dockBootScreenVisible(preflightState, runnerKey, {
-    isDock: mode === "dock",
+    isDock: true,
     activeLiveOnline,
     activeFolderOpen,
     hasOpenFolderBeyondActive,
@@ -694,21 +585,6 @@ function App({ mode }: { mode: ShellMode }) {
       setSelectedPaneId(focusedVisible ? focusedPaneId! : pickerRows[0].pane_id);
     }
   }, [allPickerRows.length, pickerRows, pickerStatus, selectedPaneId, focusedPaneId]);
-
-  useEffect(() => {
-    // Drafts follow the settings form's target on a switch (id) or an in-place edit
-    // of its committed values (runnerKey). Keyed on those VALUES, not the
-    // activeProfile object: every service commit re-reads storage (all-new object
-    // identities), so an identity key would also fire on commits that don't retarget
-    // the form — drag-reorder, open-toggle — and clobber unsaved edits. The dock
-    // renders no form, so this is inert there. The search filter is cross-folder UI
-    // now and deliberately survives profile changes.
-    setSettingsDraft(activeProfile.runner);
-    setSshHostDraft(activeProfile.kind === "ssh" ? activeProfile.host : "");
-    setSshClientTtyDraft(activeProfile.kind === "ssh" ? activeProfile.clientTty : "");
-    // activeProfile is fully determined by (id, runnerKey) where this reads it.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeProfile.id, runnerKey]);
 
   // The pane selection is scoped to the keybind OWNER (keyboard nav runs over the
   // owner's rows, and tmux pane ids like %1 collide across hosts), so it clears
@@ -813,9 +689,6 @@ function App({ mode }: { mode: ShellMode }) {
   // just follows the user's drag. The settings window is separate, so opening it no
   // longer reshapes anything here.
   useEffect(() => {
-    if (mode !== "dock") {
-      return;
-    }
     const sizingOrientation: Orientation =
       orientationPref === "auto" ? effectiveOrientation : orientationPref;
     // Pinned horizontal locks the bar to BAR_WINDOW_HEIGHT (min == max height) so it can
@@ -860,7 +733,7 @@ function App({ mode }: { mode: ShellMode }) {
         // Best-effort: a failed update leaves the prior constraints/shape in place.
       }
     });
-  }, [mode, orientationPref, effectiveOrientation]);
+  }, [orientationPref, effectiveOrientation]);
 
   // Open the settings window (created hidden at launch, kept warm). The dock no
   // longer renders settings itself.
@@ -889,48 +762,19 @@ function App({ mode }: { mode: ShellMode }) {
       }
     })();
   };
-  // The settings window closes by hiding (kept warm), so a back/Done press just
-  // hides this window. It never probes (it reuses the dock's synced preflight), so
-  // there's no per-window probe to stop on hide.
-  const closeSettings = () => {
-    void getCurrentWindow().hide();
-  };
-
   // Apply the cross-window `profiles` sync. Appearance (theme/orientation/glass) and
   // preflight syncs are consumed by their own Effect services over the same channel
-  // (PrefsBridge installs its own listener), so only the React-synchronously-gated
-  // `profiles` adoption remains here; the handler never re-broadcasts, so A -> B -> A
-  // can't loop.
+  // (PrefsBridge installs its own listener), so only the `profiles` adoption remains
+  // here; the handler never re-broadcasts, so A -> B -> A can't loop. The dock always
+  // adopts so its live picker tracks the current profile config (only the settings
+  // window dirty-gates its adoption, in SettingsApp); the reload is value-guarded, so
+  // an unchanged snapshot is a no-op. The handler closes only over the registry-stable
+  // reloadProfiles setter, so the empty dep array binds it once.
   useEffect(() => {
     let disposed = false;
     let unlisten: UnlistenFn | null = null;
     void listen<PrefsSync>(PREFS_SYNC_EVENT, (event) => {
-      const payload = event.payload;
-      if (payload.kind === "profiles") {
-        // The Profiles service owns persistence + the reload primitive, but the
-        // adopt/skip DECISION stays here because it gates on the settings form's
-        // unsaved-edit flag — React-synchronous state. Reading isSettingsDirtyRef in
-        // the event handler (not a lagged service Ref) preserves the original
-        // guarantee: a dock-side source switch never clobbers an in-progress edit (the
-        // window is hidden, not closed, precisely to preserve it). The dock always
-        // adopts so its live picker tracks the current profile config; the skipped
-        // change is reconciled later via the focus/clean reload paths.
-        //
-        // The reload now applies via an async hop (atom dispatch -> Effect fiber ->
-        // service ref -> re-render) rather than a setProfileState called inline here. Note
-        // that old setProfileState was itself a batched React setState, NOT a synchronous
-        // reconcile, so the same draft-reset-on-active-change window already existed; the
-        // hop only widens it by a few microtasks (sub-millisecond). The trigger stays
-        // synchronously dirty-gated, and the reload is value-guarded (an equal snapshot
-        // leaves the ref untouched, so the [activeProfile] reset effect never fires) —
-        // strictly safer than the old unconditional setProfileState, which reinstalled
-        // state even on a no-op sync. The only residual is that sub-ms window where an edit
-        // begun between this dirty check and a genuine-change reload landing could be
-        // reset; closing it fully would mean keeping ProfileState in React (precisely what
-        // this migration removes). The focus/clean reconcilers recover state on next focus.
-        if (mode === "settings" && isSettingsDirtyRef.current) {
-          return;
-        }
+      if (event.payload.kind === "profiles") {
         reloadProfiles();
       }
     }).then((fn) => {
@@ -946,76 +790,6 @@ function App({ mode }: { mode: ShellMode }) {
     };
   }, []);
 
-  // The service listeners above can miss a change broadcast before they registered, and
-  // emitTo has no replay — so a warm (hidden) settings window could linger on stale
-  // state with no way to recover short of a restart. Reconcile from storage whenever this
-  // window gains focus (i.e. is shown/reopened). Both reconciles are value-guarded, so an
-  // unchanged snapshot is a no-op; the profile is additionally skipped while there are
-  // unsaved edits, so a kept-warm in-progress edit is never clobbered.
-  useEffect(() => {
-    if (mode !== "settings") {
-      return;
-    }
-    const win = getCurrentWindow();
-    let disposed = false;
-    let unlisten: UnlistenFn | null = null;
-    void win
-      .onFocusChanged(({ payload: focused }) => {
-        if (!focused) {
-          return;
-        }
-        reloadAppearance();
-        if (!isSettingsDirtyRef.current) {
-          reloadProfiles();
-        }
-        // Preflight has no localStorage to re-read and emitTo has no replay, so ask the
-        // dock (via the Preflight service) to re-emit its current result. Covers a
-        // preflight broadcast missed while this window was hidden/unfocused (it isn't
-        // subscribed to the live picker, so it can't recompute the result itself) —
-        // fixing a card stuck on "Checking" after a dock-side source switch it didn't see.
-        requestPreflightSync();
-      })
-      .then((fn) => {
-        if (disposed) {
-          fn();
-        } else {
-          unlisten = fn;
-        }
-      });
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, [mode, reloadAppearance, reloadProfiles, requestPreflightSync]);
-
-  // The React listener drops dock-side syncs while this window is dirty, and the focus-
-  // reconcile only runs on a later focus — so a change skipped mid-edit would linger
-  // after Reset/Apply clears the drafts (still focused, no new focus event). Reconcile
-  // from storage whenever the window is clean. The service's reload is value-guarded,
-  // so an unchanged snapshot doesn't churn state or reset the picker selection.
-  useEffect(() => {
-    if (mode !== "settings" || isSettingsDirty) {
-      return;
-    }
-    reloadProfiles();
-  }, [mode, isSettingsDirty, reloadProfiles]);
-
-  // Keep the settings window warm: intercept its close so the red button / Cmd-W
-  // hides it (instant reopen, drafts preserved) rather than destroying it.
-  useEffect(() => {
-    if (mode !== "settings") {
-      return;
-    }
-    const win = getCurrentWindow();
-    const unlistenPromise = win.onCloseRequested((event) => {
-      event.preventDefault();
-      void win.hide();
-    });
-    return () => {
-      void unlistenPromise.then((unlisten) => unlisten());
-    };
-  }, [mode]);
-
   // Closing the dock means quitting. The settings window is kept warm (hidden, never
   // self-destroys), so it must be torn down before the dock goes — otherwise that
   // hidden window keeps the process alive with no visible UI. preventDefault() holds
@@ -1024,9 +798,6 @@ function App({ mode }: { mode: ShellMode }) {
   // hidden window. destroy() forces teardown without firing either hide-handler, and
   // the dock is destroyed even if the settings lookup throws, so the app always exits.
   useEffect(() => {
-    if (mode !== "dock") {
-      return;
-    }
     const win = getCurrentWindow();
     const unlistenPromise = win.onCloseRequested(async (event) => {
       event.preventDefault();
@@ -1041,7 +812,7 @@ function App({ mode }: { mode: ShellMode }) {
     return () => {
       void unlistenPromise.then((unlisten) => unlisten());
     };
-  }, [mode]);
+  }, []);
 
   // Toggle the macOS glass backdrop. Order matters so we never flash the bare
   // desktop through the transparent window: when enabling, raise the blur layer
@@ -1051,7 +822,7 @@ function App({ mode }: { mode: ShellMode }) {
   // effect only applies the native vibrancy, which lives on the dock (the settings
   // window is a solid, normally-chromed window and never frosts itself).
   useEffect(() => {
-    if (!IS_MAC || mode !== "dock") {
+    if (!IS_MAC) {
       return;
     }
 
@@ -1096,7 +867,7 @@ function App({ mode }: { mode: ShellMode }) {
     return () => {
       cancelled = true;
     };
-  }, [glassEnabled, framelessApplied, mode]);
+  }, [glassEnabled, framelessApplied]);
 
   // Drive the tint opacity via a CSS variable; the data-glass rules in styles.css
   // only consume it while glass is on, so this is harmless when glass is off.
@@ -1122,10 +893,6 @@ function App({ mode }: { mode: ShellMode }) {
   // "off" so we don't strip the only chrome without a working replacement. Serialized
   // through a queue so a fast toggle settles on the latest desired state.
   useEffect(() => {
-    if (mode !== "dock") {
-      return;
-    }
-
     let cancelled = false;
     enqueueFramelessOperation(async () => {
       if (cancelled) {
@@ -1158,7 +925,7 @@ function App({ mode }: { mode: ShellMode }) {
     return () => {
       cancelled = true;
     };
-  }, [framelessEnabled, mode]);
+  }, [framelessEnabled]);
 
   // Focus one row against its OWN source's runner settings (rows are tagged with
   // their source by the folder that renders them; keyboard paths pass the keybind
@@ -1255,66 +1022,6 @@ function App({ mode }: { mode: ShellMode }) {
     }
   }
 
-  function applyRunnerSettings() {
-    const validation = validateProfileDraft(
-      activeProfile,
-      settingsDraft,
-      sshHostDraft,
-      sshClientTtyDraft,
-      profileState.profiles,
-    );
-    if (validation.errors.length > 0) {
-      appendDebugEntry({
-        kind: "settings",
-        label: `${labelFor(activeProfile)} settings rejected`,
-        detail: validation.errors.join(" · "),
-      });
-      return;
-    }
-
-    // Normalize the draft (and reflect it in the form), then hand the edit to the
-    // service, which merges it onto the latest persisted state, persists, and
-    // broadcasts. Validation + the debug log stay here; persistence is the service's.
-    const normalized = normalizeRunnerSettings(settingsDraft);
-    setSettingsDraft(normalized);
-    void applyRunnerSettingsSet({
-      runner: normalized,
-      sshHost: sshHostDraft,
-      sshClientTty: sshClientTtyDraft,
-    })
-      .then((outcome) => {
-        if (outcome === "duplicate-host") {
-          // Commit-time refusal: another window claimed this host after the form
-          // validated. The service reloaded the ref, so the inline validation now
-          // shows the duplicate; the log must not claim the edit was applied.
-          appendDebugEntry({
-            kind: "settings",
-            label: `${labelFor(activeProfile)} settings rejected`,
-            detail: "A source for this connection already exists.",
-          });
-          return;
-        }
-        appendDebugEntry({
-          kind: "settings",
-          label: `${labelFor(activeProfile)} settings applied`,
-          detail: `${runnerSummary(normalized)} · ${normalized.env.length} env ${normalized.env.length === 1 ? "name" : "names"}`,
-        });
-      })
-      .catch((error: unknown) => {
-        appendDebugEntry({
-          kind: "settings",
-          label: `${labelFor(activeProfile)} settings apply failed`,
-          detail: errorMessage(error),
-        });
-      });
-  }
-
-  function resetProfileSettings() {
-    setSettingsDraft(activeProfile.runner);
-    setSshHostDraft(activeProfile.kind === "ssh" ? activeProfile.host : "");
-    setSshClientTtyDraft(activeProfile.kind === "ssh" ? activeProfile.clientTty : "");
-  }
-
   // One-click fix for the dock recovery screen: when a remote preflight reports
   // where the user's shell finds agentscan (preflight.suggestedBinaryPath), set
   // this profile's binary to that path and persist it. The Profiles service edits
@@ -1347,79 +1054,15 @@ function App({ mode }: { mode: ShellMode }) {
       });
   }
 
-  // The persisted-state mutators live in the Profiles service, which owns the
-  // merge-onto-latest discipline, the same-active no-op, and the cross-window
-  // broadcast. These thin wrappers just dispatch the intent — and the mutator runs
-  // once in an Effect fiber, so the old StrictMode generate-id-once dance in
-  // addSshProfile is no longer needed.
-  function selectProfile(id: string) {
-    // A dirty settings window may highlight a stale active card (it skips dock-side
-    // profile syncs mid-edit, and the focus/clean reconcilers also skip while dirty),
-    // so the highlighted card (activeProfile.id) can lag the persisted active source.
-    // Re-clicking that already-highlighted card must stay a no-op — otherwise the
-    // service's id !== latest path would rewrite storage to our stale id and flip the
-    // dock off the source it was switched to elsewhere. The dirty flag is React-
-    // synchronous, so this guard belongs here, ahead of the dispatch. Clean windows
-    // and the dock are untouched (their highlight matches the persisted active).
-    if (mode === "settings" && isSettingsDirty && id === activeProfile.id) {
-      return;
-    }
-    void selectProfileSet(id);
-  }
-
-  function addSshProfile() {
-    addSshProfileSet();
-  }
-
-  function deleteActiveProfile() {
-    // Guard here too so the debug entry (and its reference to the about-to-be-deleted
-    // profile's label) only fires for a real deletion; the service also no-ops on local.
-    if (activeProfile.kind === "local") {
-      return;
-    }
-    deleteActiveProfileSet();
-    appendDebugEntry({
-      kind: "settings",
-      label: `${labelFor(activeProfile)} profile deleted`,
-      detail: "active profile changed",
-    });
-  }
-
-  function updateEnvironmentVariable(index: number, patch: Partial<EnvironmentVariable>) {
-    setSettingsDraft((current) => ({
-      ...current,
-      env: current.env.map((variable, variableIndex) =>
-        variableIndex === index ? { ...variable, ...patch } : variable,
-      ),
-    }));
-  }
-
-  function addEnvironmentVariable() {
-    setSettingsDraft((current) => ({
-      ...current,
-      env: [...current.env, { name: "", value: "" }],
-    }));
-  }
-
-  function removeEnvironmentVariable(index: number) {
-    setSettingsDraft((current) => ({
-      ...current,
-      env: current.env.filter((_, variableIndex) => variableIndex !== index),
-    }));
-  }
-
   // Hold the latest handler in a ref so the global listener binds once instead
   // of churning on every render (live row updates re-render frequently).
   const pickerKeyDownRef = useRef(handlePickerKeyDown);
   pickerKeyDownRef.current = handlePickerKeyDown;
   useEffect(() => {
-    if (mode !== "dock") {
-      return;
-    }
     const handler = (event: KeyboardEvent) => pickerKeyDownRef.current(event);
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [mode]);
+  }, []);
 
   // Move focus into the search field the moment it expands (horizontal bar), so a click
   // on the search icon lands the caret without a second click. Only fires on the
@@ -1491,447 +1134,6 @@ function App({ mode }: { mode: ShellMode }) {
             <WindowControls />
           </div>
         ) : null}
-      </main>
-    );
-  }
-
-  if (mode === "settings") {
-    // The profile list comes from profileState (the live source of truth) so
-    // add/delete/switch are reflected immediately. The settings window never runs
-    // its own preflight (which for SSH would be a duplicate `ssh … --version`); it
-    // reuses the dock's, mirrored by the Preflight service into `syncedPreflight`. That
-    // result is only trusted when its runnerKey matches this window's active source;
-    // otherwise it describes the previous one mid-switch and reads as "Checking" until
-    // the dock re-probes and pushes the matching one (or a focus-time replay request
-    // refreshes it). A failed dock status (IPC error) reads as "Unreachable".
-    const syncMatches =
-      syncedPreflight !== null && syncedPreflight.runnerKey === runnerKey;
-    const preflight = syncMatches ? syncedPreflight.preflight : null;
-    const syncFailed = syncMatches && syncedPreflight.status === "failed";
-    const preflightTone = !preflight
-      ? syncFailed
-        ? "error"
-        : "unknown"
-      : preflight.ok
-        ? "idle"
-        : "error";
-    const preflightLabel = !preflight
-      ? syncFailed
-        ? "Unreachable"
-        : "Checking"
-      : preflight.ok
-        ? "Ready"
-        : "Unavailable";
-    const preflightDetail = !preflight
-      ? syncFailed
-        ? "Can’t reach agentscan"
-        : "Probing agentscan…"
-      : preflight.ok
-        ? `${preflight.binary} · ${preflight.version ?? "ready"}`
-        : (preflight.error ?? "agentscan unavailable");
-    // The source rail only earns its space once there's more than the built-in
-    // local source; with a single source it just duplicates the detail card. So
-    // hide it then and offer a quiet "add remote" affordance instead.
-    const hasMultipleSources = profileState.profiles.length > 1;
-    // Shared by both header layouts (see adaptive header below).
-    const activeIsOpen = profileState.openProfileIds.includes(activeProfile.id);
-    const detailActions = (
-      <div className="detail-actions">
-        {/* Open/close must be reachable from Settings too: the horizontal bar has
-            no room for the dock's folder menu (a 56px window clips any popup), so
-            without this a pinned-horizontal user who closed every folder could
-            never arm a subscription again without switching layouts. Only
-            folder-eligible sources can open (a draft has nothing to subscribe). */}
-        {folderProfiles(profileState).some((profile) => profile.id === activeProfile.id) ? (
-          <button
-            className="ghost-button"
-            type="button"
-            aria-pressed={activeIsOpen}
-            onClick={() => toggleProfileOpenSet(activeProfile.id)}
-          >
-            {activeIsOpen ? "Close in dock" : "Open in dock"}
-          </button>
-        ) : null}
-        {activeProfile.kind === "ssh" ? (
-          <button className="ghost-button danger" type="button" onClick={deleteActiveProfile}>
-            Delete
-          </button>
-        ) : null}
-        <button
-          className="ghost-button"
-          type="button"
-          onClick={resetProfileSettings}
-          disabled={!isSettingsDirty}
-        >
-          Reset
-        </button>
-        <button
-          type="button"
-          onClick={applyRunnerSettings}
-          disabled={!isSettingsDirty || validation.errors.length > 0}
-        >
-          Apply
-        </button>
-      </div>
-    );
-
-    return (
-      <main className="sidebar settings-view">
-        <header className="topbar settings-topbar">
-          <button
-            className="icon-button back"
-            type="button"
-            aria-label="Back to picker"
-            onClick={closeSettings}
-          >
-            {"←"}
-          </button>
-          <h1>Settings</h1>
-        </header>
-
-        <div className="settings-scroll">
-          {hasMultipleSources ? (
-          <section className="settings-section" aria-label="Sources">
-            <div className="section-title">
-              <span>Sources</span>
-              <button className="ghost-button add-source" type="button" onClick={addSshProfile}>
-                {"+ Remote"}
-              </button>
-            </div>
-            <div className="source-rail">
-              {profileState.profiles.map((profile) => {
-                const isActive = profile.id === activeProfile.id;
-                return (
-                  <button
-                    aria-pressed={isActive}
-                    className={`source-card${isActive ? " active" : ""}${
-                      draggedSourceId === profile.id ? " dragging" : ""
-                    }`}
-                    key={profile.id}
-                    type="button"
-                    draggable
-                    onClick={() => selectProfile(profile.id)}
-                    onDragStart={(event) => {
-                      event.dataTransfer.effectAllowed = "move";
-                      setDraggedSourceId(profile.id);
-                    }}
-                    onDragEnd={() => setDraggedSourceId(null)}
-                    onDragOver={(event) => {
-                      // preventDefault marks this card as a valid drop target.
-                      if (draggedSourceId && draggedSourceId !== profile.id) {
-                        event.preventDefault();
-                        event.dataTransfer.dropEffect = "move";
-                      }
-                    }}
-                    onDrop={(event) => {
-                      event.preventDefault();
-                      if (draggedSourceId && draggedSourceId !== profile.id) {
-                        reorderProfileSet({ id: draggedSourceId, targetId: profile.id });
-                      }
-                      setDraggedSourceId(null);
-                    }}
-                  >
-                    <span
-                      className="source-card-mark"
-                      data-kind={profile.kind}
-                      aria-hidden="true"
-                    >
-                      <SourceKindIcon kind={profile.kind} />
-                    </span>
-                    <span className="source-card-text">
-                      <span className="source-card-name">
-                        {labelFor(profile)}
-                      </span>
-                    </span>
-                    <span className={`kind-chip ${profile.kind}`}>
-                      {profile.kind === "ssh" ? "remote" : "local"}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </section>
-          ) : null}
-
-          <section className="settings-section" aria-label="Configuration">
-            {/* Adaptive header: with the rail visible the identity already shows
-                there, so use a CONFIGURATION section title (actions on the right,
-                mirroring SOURCES). With the rail hidden, keep the chip + name in
-                the card — it's the only identity on screen. */}
-            {hasMultipleSources ? (
-              <div className="section-title">
-                <span>Configuration</span>
-                {detailActions}
-              </div>
-            ) : null}
-            <div className="source-detail">
-              {!hasMultipleSources ? (
-                <div className="detail-head">
-                  <div className="detail-head-title">
-                    <span className={`kind-chip ${activeProfile.kind}`}>
-                      {activeProfile.kind === "ssh" ? "remote" : "local"}
-                    </span>
-                    <h2>{labelFor(activeProfile)}</h2>
-                  </div>
-                  {detailActions}
-                </div>
-              ) : null}
-
-              <div className="detail-status" data-tone={preflightTone}>
-                <span
-                  className={`status-dot${preflightTone === "unknown" ? " pulsing" : ""}`}
-                  data-tone={preflightTone}
-                  aria-hidden="true"
-                />
-                <span className="detail-status-text">
-                  <strong>{preflightLabel}</strong>
-                  <span className="mono detail-status-detail">{preflightDetail}</span>
-                </span>
-              </div>
-
-              {validation.errors.length > 0 ? (
-                <div className="error-state settings-error" role="alert">
-                  <h3>Invalid settings</h3>
-                  <ul>
-                    {validation.errors.map((error) => (
-                      <li key={error}>{error}</li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
-
-              <div className="field-grid">
-                {activeProfile.kind === "ssh" ? (
-                  <label className="field">
-                    <span className="field-label">SSH host</span>
-                    <input
-                      value={sshHostDraft}
-                      onChange={(event) => setSshHostDraft(event.target.value)}
-                      placeholder="user@host"
-                      spellCheck={false}
-                    />
-                  </label>
-                ) : null}
-                {activeProfile.kind === "ssh" ? (
-                  <label className="field">
-                    <span className="field-label">Remote client tty</span>
-                    <input
-                      value={sshClientTtyDraft}
-                      onChange={(event) => setSshClientTtyDraft(event.target.value)}
-                      placeholder="Best-effort"
-                      spellCheck={false}
-                    />
-                  </label>
-                ) : null}
-                <label className="field">
-                  <span className="field-label">agentscan binary</span>
-                  <input
-                    value={settingsDraft.binaryPath}
-                    onChange={(event) =>
-                      setSettingsDraft((current) => ({
-                        ...current,
-                        binaryPath: event.target.value,
-                      }))
-                    }
-                    placeholder="Auto-detect"
-                    spellCheck={false}
-                  />
-                </label>
-              </div>
-
-              <div className="env-block">
-                <div className="env-head">
-                  <span className="field-label">Environment</span>
-                  <span className="env-count">{settingsDraft.env.length}</span>
-                </div>
-                <div className="env-list">
-                  {settingsDraft.env.length === 0 ? (
-                    <p className="env-empty">No variables — agentscan runs with the inherited env.</p>
-                  ) : (
-                    settingsDraft.env.map((variable, index) => (
-                      <div className="env-row" key={index}>
-                        <input
-                          aria-label="Environment variable name"
-                          value={variable.name}
-                          onChange={(event) =>
-                            updateEnvironmentVariable(index, { name: event.target.value })
-                          }
-                          placeholder="NAME"
-                          spellCheck={false}
-                        />
-                        <span className="env-eq" aria-hidden="true">
-                          =
-                        </span>
-                        <input
-                          aria-label="Environment variable value"
-                          value={variable.value}
-                          onChange={(event) =>
-                            updateEnvironmentVariable(index, { value: event.target.value })
-                          }
-                          placeholder="value"
-                          spellCheck={false}
-                        />
-                        <button
-                          className="env-remove"
-                          type="button"
-                          aria-label="Remove variable"
-                          onClick={() => removeEnvironmentVariable(index)}
-                        >
-                          {"×"}
-                        </button>
-                      </div>
-                    ))
-                  )}
-                </div>
-                <button className="ghost-button env-add" type="button" onClick={addEnvironmentVariable}>
-                  {"+ Add variable"}
-                </button>
-              </div>
-            </div>
-            {!hasMultipleSources ? (
-              <button className="add-remote-cta" type="button" onClick={addSshProfile}>
-                {"+ Add a remote source"}
-              </button>
-            ) : null}
-          </section>
-
-          <section className="settings-section" aria-label="Appearance">
-            <div className="section-title">
-              <span>Appearance</span>
-            </div>
-            <div className="theme-toggle" role="group" aria-label="Theme">
-              {(["dark", "light", "system"] as ThemePreference[]).map((option) => (
-                <button
-                  className={`theme-option${themePref === option ? " active" : ""}`}
-                  key={option}
-                  type="button"
-                  aria-pressed={themePref === option}
-                  onClick={() => setThemePref(option)}
-                >
-                  {option === "system" ? "System" : option === "light" ? "Light" : "Dark"}
-                </button>
-              ))}
-            </div>
-
-            <div className="setting-label dock-layout-label">
-              <span>Dock layout</span>
-              <span className="setting-hint">
-                Auto follows the window shape; pin a strip or bar
-              </span>
-            </div>
-            <div
-              className="theme-toggle layout-toggle"
-              role="group"
-              aria-label="Dock layout"
-            >
-              {(["auto", "vertical", "horizontal"] as OrientationPreference[]).map(
-                (option) => (
-                  <button
-                    className={`theme-option${orientationPref === option ? " active" : ""}`}
-                    key={option}
-                    type="button"
-                    aria-pressed={orientationPref === option}
-                    onClick={() => setOrientationPref(option)}
-                  >
-                    {option === "auto"
-                      ? "Auto"
-                      : option === "vertical"
-                        ? "Vertical"
-                        : "Horizontal"}
-                  </button>
-                ),
-              )}
-            </div>
-
-            <div className="setting-row">
-              <div className="setting-label">
-                <span>Frameless</span>
-                <span className="setting-hint">
-                  Hide the title bar; drag, minimize, and close from the dock itself
-                </span>
-              </div>
-              <button
-                className={`switch${framelessEnabled ? " on" : ""}`}
-                type="button"
-                role="switch"
-                aria-checked={framelessEnabled}
-                aria-label="Frameless window"
-                onClick={() => setFrameless(!framelessEnabled)}
-              >
-                <span className="switch-thumb" />
-              </button>
-            </div>
-
-            {IS_MAC ? (
-              <div className="glass-controls">
-                <div className="setting-row">
-                  <div className="setting-label">
-                    <span>Glass</span>
-                    <span className="setting-hint">Frost the window over your desktop</span>
-                  </div>
-                  <button
-                    className={`switch${glassEnabled ? " on" : ""}`}
-                    type="button"
-                    role="switch"
-                    aria-checked={glassEnabled}
-                    aria-label="Glass effect"
-                    onClick={() => setGlassEnabled(!glassEnabled)}
-                  >
-                    <span className="switch-thumb" />
-                  </button>
-                </div>
-
-                {glassEnabled ? (
-                  <label className="setting-row">
-                    <div className="setting-label">
-                      <span>Transparency</span>
-                      <span className="setting-hint">
-                        {Math.round((1 - surfaceAlpha) * 100)}%
-                      </span>
-                    </div>
-                    {/* Slider reads as transparency (right = clearer); state stores the
-                        inverse as the surface alpha the CSS tint consumes. */}
-                    <input
-                      className="glass-slider"
-                      type="range"
-                      min={0}
-                      max={SURFACE_ALPHA_MAX - SURFACE_ALPHA_MIN}
-                      step={0.02}
-                      value={SURFACE_ALPHA_MAX - surfaceAlpha}
-                      onChange={(event) =>
-                        setSurfaceAlpha(SURFACE_ALPHA_MAX - Number(event.target.value))
-                      }
-                      aria-label="Glass transparency"
-                    />
-                  </label>
-                ) : null}
-              </div>
-            ) : null}
-          </section>
-
-          <section className="settings-section" aria-label="Debug log">
-            <div className="section-title">
-              <button
-                className="collapse-toggle"
-                type="button"
-                aria-expanded={isDebugOpen}
-                onClick={() => setIsDebugOpen((open) => !open)}
-              >
-                <span className={`collapse-caret${isDebugOpen ? " open" : ""}`} aria-hidden="true">
-                  {"›"}
-                </span>
-                <span className="collapse-label">Debug log</span>
-                <span className="env-count">{debugEntries.length}</span>
-              </button>
-              {isDebugOpen ? (
-                <button className="ghost-button" type="button" onClick={() => clearDebugLog()}>
-                  Clear
-                </button>
-              ) : null}
-            </div>
-            {isDebugOpen ? <DebugLog entries={debugEntries} /> : null}
-          </section>
-        </div>
       </main>
     );
   }
@@ -2461,8 +1663,4 @@ function isInteractiveShortcutTarget(target: EventTarget | null) {
   );
 }
 
-function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : String(error);
-}
-
-export default App;
+export default DockApp;
