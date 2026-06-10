@@ -2378,6 +2378,17 @@ fn stderr_or_status(command: &str, stderr: &[u8], status: std::process::ExitStat
 
 pub fn run() {
     tauri::Builder::default()
+        // Registered first, per the plugin's contract, so a second launch is
+        // caught before anything else initializes. macOS grants a global
+        // hotkey to one process, so a competing copy would silently lose
+        // the summon key; surface the instance that already owns it instead.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             focus_picker_row,

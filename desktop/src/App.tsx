@@ -71,6 +71,7 @@ import {
   type ShellMode,
   type ThemePreference,
 } from "./effect/prefs";
+import { summonHotkeyFailureMessage } from "./effect/summonHotkey";
 import logoUrl from "./assets/agentscan-logo.png";
 
 const PICKER_HOTKEY = "CommandOrControl+Shift+A";
@@ -86,6 +87,10 @@ const DEBUG_LOG_LIMIT = 80;
 // short enough that one-shot action feedback doesn't linger as a standing
 // condition (the full error remains in the debug log).
 const ACTIVATION_FAILURE_TTL_MS = 10_000;
+// Re-registration cadence while the summon hotkey is held by someone else
+// (usually a second agentscan instance). Nothing signals the holder quitting,
+// so polling is the only way to reclaim the key without a restart.
+const HOTKEY_RETRY_MS = 5_000;
 // Window min-size floors, applied at runtime per orientation. The vertical pair
 // mirrors the startup floor in tauri.{macos.,}conf.json; horizontal drops the
 // height floor so the bar can shrink to dock height instead of a tall slab.
@@ -680,6 +685,7 @@ function App({ mode }: { mode: ShellMode }) {
 
     let disposed = false;
     let registered = false;
+    let retryTimer: number | undefined;
 
     function enqueueHotkeyOperation(operation: () => Promise<void>) {
       hotkeyOperationQueue = hotkeyOperationQueue.then(operation, operation);
@@ -703,17 +709,41 @@ function App({ mode }: { mode: ShellMode }) {
           if (disposed) {
             await unregister(PICKER_HOTKEY);
             registered = false;
+            return;
           }
+
+          // Reclaiming the key resolves the standing in-use banner. Only the
+          // summon hotkey produces source-less failures, so this never clears
+          // another source's one-shot feedback.
+          setActivation((current) =>
+            current.status === "failed" && current.sourceKey === null
+              ? { status: "idle" }
+              : current,
+          );
         } catch (error) {
           if (disposed) {
             return;
           }
 
-          setActivation({
-            status: "failed",
-            message: `Unable to register ${PICKER_HOTKEY}: ${errorMessage(error)}`,
-            sourceKey: null,
+          // Surface into an idle slot or refresh the existing hotkey banner;
+          // a retry must not clobber a running activation or another source's
+          // mid-TTL failure. Re-asserting the same message keeps the current
+          // object so React skips the re-render.
+          const message = summonHotkeyFailureMessage(error);
+          setActivation((current) => {
+            if (current.status === "failed" && current.sourceKey === null) {
+              return current.message === message
+                ? current
+                : { status: "failed", message, sourceKey: null };
+            }
+            return current.status === "idle"
+              ? { status: "failed", message, sourceKey: null }
+              : current;
           });
+
+          // The holder (often a second agentscan instance) can quit at any
+          // time without any release signal, so poll until the key registers.
+          retryTimer = window.setTimeout(() => void registerPickerHotkey(), HOTKEY_RETRY_MS);
         }
       });
     }
@@ -722,6 +752,7 @@ function App({ mode }: { mode: ShellMode }) {
 
     return () => {
       disposed = true;
+      window.clearTimeout(retryTimer);
       void enqueueHotkeyOperation(async () => {
         if (registered) {
           await unregister(PICKER_HOTKEY);
