@@ -841,6 +841,14 @@ impl RunningTmuxControlModeClient {
         // connection cannot be misattributed to a post-reconnect brokered command.
         // See `drain_control_mode_channel`.
         drain_control_mode_channel(&self.line_rx, &mut self.deferred_lines);
+        // The attach spawn below is a long-lived spawn, not a `run_tmux_output`
+        // call, so it carries no compatible-tmux retry of its own — and needs
+        // none. Recovery only runs from `recover_broker_and_reconcile_if_needed`,
+        // directly after `reconcile_full_snapshot` whose reads (short-lived
+        // fallback while the broker is down) trigger compatible-tmux resolution
+        // on a dropped handshake; `tmux_command()` inside the spawn then execs
+        // the resolved install. With recovery retried every reconcile poll, a
+        // version-split reconnect heals one poll after resolution.
         let started = startup
             .start_tmux_control_mode_client()
             .context("failed to restart tmux control-mode client")?;

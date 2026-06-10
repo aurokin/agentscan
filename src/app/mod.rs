@@ -44,6 +44,9 @@ pub(crate) use provider::*;
 const PANE_DELIM: &str = "\u{001f}";
 const TMUX_FORMAT_DELIM: &str = r"\037";
 const TMUX_SOCKET_ENV_VAR: &str = "AGENTSCAN_TMUX_SOCKET";
+// Explicit tmux binary override. When set, agentscan execs exactly this tmux
+// and never auto-resolves a compatible install (see tmux::command).
+const TMUX_BIN_ENV_VAR: &str = "AGENTSCAN_TMUX_BIN";
 const CACHE_SCHEMA_VERSION: u32 = 5;
 const CLAUDE_SPINNER_GLYPHS: &[char] = &[
     '⠁', '⠂', '⠄', '⡀', '⢀', '⠠', '⠐', '⠈', '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏', '⣾',

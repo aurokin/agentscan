@@ -9,7 +9,7 @@ pub(crate) use command::{
     default_session_target, list_session_ids, tmux_command, tmux_target_is_missing, tmux_version,
 };
 use command::{
-    run_tmux_status, run_tmux_text_output, tmux_pane_target_is_missing,
+    run_tmux_output, run_tmux_status, run_tmux_text_output, tmux_pane_target_is_missing,
     tmux_scope_target_is_missing,
 };
 pub(crate) use focus::{

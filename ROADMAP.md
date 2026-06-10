@@ -248,6 +248,17 @@ Implications:
   they sit behind source analysis, local probing, and plug-and-play detection
   hardening. The core scanner must remain plug-and-play for common agent
   launches.
+- tmux client/server version splits are handled plug-and-play: when a fresh
+  client is dropped mid-handshake ("server exited unexpectedly", "lost server",
+  "protocol version mismatch" — empirically a healthy newer server dropping an
+  older client, e.g. a linuxbrew 3.6b server vs the apt 3.4 tmux that
+  non-interactive SSH resolves), agentscan probes well-known installs
+  (linuxbrew, Homebrew, MacPorts, system) for one that completes a real
+  handshake against the same socket, then reroutes all tmux execs through it
+  for the rest of the process. Validation-by-handshake keeps false positives
+  out; `AGENTSCAN_TMUX_BIN` pins an explicit binary and disables the
+  auto-resolution. A missing-tmux PATH (binary not found at all) is a possible
+  future extension of the same candidate list.
 
 ### TUI Contract
 
