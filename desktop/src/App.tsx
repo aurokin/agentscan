@@ -425,11 +425,17 @@ function App({ mode }: { mode: ShellMode }) {
   surfaceAlphaRef.current = surfaceAlpha;
   // The runnerKeys of the OPEN folders; the activation-prune effect below
   // reconciles the Activation service against them so a pulse/error whose
-  // source closed is dropped.
+  // source closed is dropped. The render-synced ref additionally backs the
+  // isSourceOpen probe activateRow hands the service: it observes a close one
+  // render before the prune effect can, so a focus failure settling in that
+  // window is dropped instead of surfaced (and never re-arms the closed
+  // source's live client).
   const openRunnerKeys = useMemo(
     () => new Set(liveSources.filter((source) => source.isOpen).map((source) => source.runnerKey)),
     [liveSources],
   );
+  const openRunnerKeysRef = useRef(openRunnerKeys);
+  openRunnerKeysRef.current = openRunnerKeys;
   const [selectedPaneId, setSelectedPaneId] = useState<string | null>(null);
   // The focused pane id we last *observed as visible*. We follow focus only when
   // this value changes (a genuine focus move), not when it merely reappears, so a
@@ -1281,10 +1287,12 @@ function App({ mode }: { mode: ShellMode }) {
   // the debug log.
   function activateRow(row: PickerRow, profile: DesktopProfileConfig) {
     const label = focusCommandLabel(profile, row.pane_id);
+    const sourceKey = runnerKeyForProfile(profile);
     activate({
       paneId: row.pane_id,
-      sourceKey: runnerKeyForProfile(profile),
+      sourceKey,
       settings: runnerSettingsForProfile(profile),
+      isSourceOpen: () => openRunnerKeysRef.current.has(sourceKey),
       onLog: (detail) => appendDebugEntry({ kind: "command", label, detail }),
     });
   }

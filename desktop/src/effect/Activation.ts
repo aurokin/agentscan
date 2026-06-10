@@ -49,6 +49,12 @@ export type ActivateInput = {
   // renders them); scopes the running pulse and the failure surface.
   readonly sourceKey: string;
   readonly settings: DesktopRunnerSettings;
+  // Whether the source is still an open folder, probed when the focus SETTLES
+  // (not captured at activate time — the close happens later). The caller backs
+  // this with a render-synced ref, which observes a close one render before the
+  // prune effect can reconcile it; without it a failure settling in that window
+  // would surface (and re-arm a live client) for a folder that no longer exists.
+  readonly isSourceOpen: () => boolean;
   // Command-log sink ("started", then "ok" or the failure detail) — the debug
   // panel is React state, so the caller routes entries, like SummonHotkey's
   // configure-time press callback.
@@ -114,6 +120,15 @@ export class Activation extends Effect.Service<Activation>()("desktop/Activation
           return;
         }
         yield* Effect.sync(() => input.onLog(failure));
+        if (!input.isSourceOpen()) {
+          // The source was closed/edited mid-flight; there is no list left to
+          // recover, so the outcome is dropped instead of surfaced. (Prune
+          // can't cover this window: once it observes the close it interrupts
+          // this fiber before the settle, and before it fires any service-held
+          // open-set would be stale — hence the caller's render-synced probe.)
+          yield* SubscriptionRef.set(stateRef, IDLE);
+          return;
+        }
         yield* SubscriptionRef.set(stateRef, {
           status: "failed",
           message: failure,
@@ -126,16 +141,6 @@ export class Activation extends Effect.Service<Activation>()("desktop/Activation
         // the live client: re-subscribing makes the daemon publish a fresh initial
         // snapshot, which the worker re-derives via load_picker_rows, dropping the dead
         // row. This is the push-model equivalent of the old one-shot refetch.
-        //
-        // Unconditional on purpose — a "skip if the source closed meanwhile"
-        // guard is dead in every interleaving: once prune has observed the
-        // close it has already interrupted this fiber (the reconnect is never
-        // reached), and before prune fires any service-held open-set is stale.
-        // The residual race (the source closes and the failure settles inside
-        // React's state→effect latency) costs one latch-only re-arm that the
-        // targets reconcile immediately tears down; reconnect no-ops entirely
-        // once the key is deconfigured. The old render-synced ref guard had
-        // the same window, merely render- instead of effect-wide.
         yield* lc.reconnect(input.sourceKey);
       });
 

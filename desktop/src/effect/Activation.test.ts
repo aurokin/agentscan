@@ -79,10 +79,16 @@ const makeHarness = (script: ReadonlyArray<Effect.Effect<void, IpcError>>) =>
     };
   });
 
-const input = (paneId: string, sourceKey: string, log?: string[]): ActivateInput => ({
+const input = (
+  paneId: string,
+  sourceKey: string,
+  log?: string[],
+  isSourceOpen: () => boolean = () => true,
+): ActivateInput => ({
   paneId,
   sourceKey,
   settings: SETTINGS,
+  isSourceOpen,
   onLog: (detail) => log?.push(detail),
 });
 
@@ -265,6 +271,32 @@ describe("Activation", () => {
         // (there is no folder list left for it to describe).
         yield* activation.prune([]);
         yield* awaitStatus(activation.state, "idle");
+      }).pipe(Effect.provide(harness.layer), Effect.provide(TestContext.TestContext));
+    }).pipe(Effect.runPromise));
+
+  it("a failure settling after the source closed (before prune) is dropped without a reconnect", () =>
+    Effect.gen(function* () {
+      // The close lands between the activation starting and its failure
+      // settling — the render-synced probe flips before prune gets to run.
+      const gate = yield* Deferred.make<void>();
+      const harness = yield* makeHarness([
+        Deferred.await(gate).pipe(Effect.zipRight(failWith("late failure"))),
+      ]);
+      let open = true;
+
+      yield* Effect.gen(function* () {
+        const activation = yield* Activation;
+        yield* SubscriptionRef.set(harness.liveStates, new Map([["k1", ONLINE]]));
+        yield* activation.prune(["k1"]);
+        yield* activation.activate(input("%1", "k1", undefined, () => open));
+        yield* awaitStatus(activation.state, "running");
+
+        open = false;
+        yield* Deferred.succeed(gate, undefined);
+        yield* awaitStatus(activation.state, "idle");
+        // No failure surfaced for the closed folder, and crucially no re-arm
+        // of its live client (over SSH that would spawn a doomed subscribe).
+        expect(yield* harness.reconnects).toEqual([]);
       }).pipe(Effect.provide(harness.layer), Effect.provide(TestContext.TestContext));
     }).pipe(Effect.runPromise));
 });
