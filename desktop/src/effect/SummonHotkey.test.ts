@@ -1,4 +1,4 @@
-import { Deferred, Duration, Effect, Layer, Option, Ref, Stream, SubscriptionRef } from "effect";
+import { Deferred, Duration, Effect, Layer, Option, Queue, Ref, Stream, SubscriptionRef } from "effect";
 import { describe, expect, it } from "vitest";
 import {
   HotkeyIpc,
@@ -132,28 +132,38 @@ describe("SummonHotkey", () => {
       }).pipe(Effect.provide(harness.layer));
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
 
-  it("retries an in-use failure until the holder frees the key", () =>
+  it("retries an in-use failure until the holder frees the key, without re-publishing the standing banner", () =>
     Effect.gen(function* () {
-      // The second attempt is gated so the test can observe the standing failed
-      // state before letting the retry land (zero backoff would race past it).
+      // TWO in-use failures, then a gated success: the second failure must not
+      // re-emit the (identical) failed state — every emission re-renders the
+      // dock, and the retry loop runs indefinitely while the key is held.
       const freed = yield* Deferred.make<void>();
-      const harness = yield* makeHarness([IN_USE, Deferred.await(freed)]);
+      const harness = yield* makeHarness([IN_USE, IN_USE, Deferred.await(freed)]);
 
       yield* Effect.gen(function* () {
         const hotkey = yield* SummonHotkey;
-        yield* hotkey.configure(() => {});
+        const emissions = yield* Queue.unbounded<SummonHotkeyState>();
+        yield* hotkey.state.changes.pipe(
+          Stream.runForEach((state) => Queue.offer(emissions, state)),
+          Effect.fork,
+        );
+        expect(yield* Queue.take(emissions)).toEqual({ status: "inactive" });
 
-        const failed = yield* awaitStatus(hotkey.state, "failed");
-        expect(failed).toEqual({
+        yield* hotkey.configure(() => {});
+        expect(yield* Queue.take(emissions)).toEqual({
           status: "failed",
           message:
             "⌘⇧A is in use — another agentscan instance may be running. Retrying until it frees up.",
         });
 
         // The holder quits → the gated retry registers and clears the banner.
+        // Both failures ran before it (ops below), yet exactly one failed
+        // emission reached subscribers.
         yield* Deferred.succeed(freed, undefined);
-        yield* awaitStatus(hotkey.state, "registered");
+        expect(yield* Queue.take(emissions)).toEqual({ status: "registered" });
+        expect(yield* Queue.poll(emissions)).toEqual(Option.none());
         expect(yield* harness.ops).toEqual([
+          "register:fail",
           "register:fail",
           "register:CommandOrControl+Shift+A",
         ]);

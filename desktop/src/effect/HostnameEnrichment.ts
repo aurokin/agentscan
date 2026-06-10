@@ -95,6 +95,10 @@ export class HostnameEnrichment extends Effect.Service<HostnameEnrichment>()(
             yield* record(owner.id, probed, state.runnerKey);
             // A failed commit (storage write) must not end enrichment for the
             // session — the old per-call atom effect failed in isolation too.
+            // Defects ARE the complete failure surface here: recordProbedHost's
+            // error channel is `never` (commit wraps the throwing storage write
+            // in Effect.sync, a defect), which the supervisor slot's
+            // RuntimeFiber<void> type enforces at compile time.
           }).pipe(Effect.catchAllDefect(() => Effect.void)),
         ),
       );

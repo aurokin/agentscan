@@ -123,10 +123,16 @@ export class SummonHotkey extends Effect.Service<SummonHotkey>()("desktop/Summon
           ).pipe(Effect.catchAll((error) => Effect.succeed(error)));
 
           // Only a register failure reaches here (the use branch never returns).
-          yield* SubscriptionRef.set(stateRef, {
-            status: "failed",
-            message: summonHotkeyFailureMessage(failure),
-          });
+          // Re-asserting the SAME standing failure must not publish: every set
+          // reaches React through the atom, so the in-use retry loop would
+          // otherwise re-render the whole dock at its cadence while another
+          // instance holds the key (the old App effect kept the current object
+          // for exactly this reason).
+          const message = summonHotkeyFailureMessage(failure);
+          const current = yield* SubscriptionRef.get(stateRef);
+          if (current.status !== "failed" || current.message !== message) {
+            yield* SubscriptionRef.set(stateRef, { status: "failed", message });
+          }
           if (!summonHotkeyInUse(failure)) {
             // Terminal (e.g. a permission or backend error): polling would never
             // reclaim it, so surface once and park until a re-configure.
