@@ -81,6 +81,14 @@ import {
   type PickerGroup,
   type PickerState,
 } from "./effect/pickerViewModel";
+import {
+  activePreflightError,
+  dockBootScreenContent,
+  dockBootScreenVisible,
+  matchedPreflight,
+  preflightSourceTone,
+  preflightStatusText,
+} from "./effect/preflightViewModel";
 import { summonHotkeyFailureMessage, summonHotkeyInUse } from "./effect/summonHotkey";
 import logoUrl from "./assets/agentscan-logo.png";
 
@@ -512,13 +520,13 @@ function App({ mode }: { mode: ShellMode }) {
   // service no-ops unchanged values, and the post-commit re-render sees the
   // stored value.
   useEffect(() => {
-    if (mode !== "dock" || preflightState.status !== "ready") {
+    const matched = matchedPreflight(preflightState, runnerKey);
+    if (mode !== "dock" || matched === null) {
       return;
     }
-    const probed = preflightState.preflight.remoteHostLabel?.trim() ?? "";
+    const probed = matched.preflight.remoteHostLabel?.trim() ?? "";
     if (
       probed === "" ||
-      preflightState.runnerKey !== runnerKey ||
       activeProfile.kind !== "ssh" ||
       activeProfile.probedHost === probed
     ) {
@@ -529,7 +537,7 @@ function App({ mode }: { mode: ShellMode }) {
       probedHost: probed,
       // The service re-verifies this against the LATEST persisted profile, so
       // a probe that raced a host edit is dropped instead of mislabeling it.
-      runnerKey: preflightState.runnerKey,
+      runnerKey: matched.runnerKey,
     });
   }, [mode, preflightState, runnerKey, activeProfile, recordProbedHostSet]);
 
@@ -620,23 +628,22 @@ function App({ mode }: { mode: ShellMode }) {
   // and a channel that drops falls back to probe gating. The channel reports its
   // own failures via LiveStrip.
   const activeLiveOnline = liveStateFor(liveStates, runnerKey).connection.status === "online";
-  const liveTargets = useMemo(
-    () =>
-      liveSources
-        .filter((source) => source.isOpen)
-        .map((source) => ({
-          settings: source.settings,
-          runnerKey: source.runnerKey,
-          enabled:
-            source.runnerKey === runnerKey
-              ? activeLiveOnline ||
-                (preflightState.status === "ready" && preflightState.runnerKey === runnerKey
-                  ? preflightState.preflight.ok && activeProfileValid
-                  : ("carry" as const))
-              : source.valid,
-        })),
-    [liveSources, runnerKey, activeLiveOnline, preflightState, activeProfileValid],
-  );
+  const liveTargets = useMemo(() => {
+    // The highest-stakes consumer of the matchedPreflight staleness rule: an
+    // unmatched probe must resolve to "carry", never to a gate-off bounce.
+    const matched = matchedPreflight(preflightState, runnerKey);
+    return liveSources
+      .filter((source) => source.isOpen)
+      .map((source) => ({
+        settings: source.settings,
+        runnerKey: source.runnerKey,
+        enabled:
+          source.runnerKey === runnerKey
+            ? activeLiveOnline ||
+              (matched ? matched.preflight.ok && activeProfileValid : ("carry" as const))
+            : source.valid,
+      }));
+  }, [liveSources, runnerKey, activeLiveOnline, preflightState, activeProfileValid]);
   useEffect(() => {
     if (mode !== "dock") {
       return;
@@ -752,88 +759,34 @@ function App({ mode }: { mode: ShellMode }) {
     };
   }, [mode]);
 
-  const statusText = useMemo(() => {
-    // Preflight from a not-yet-refreshed previous profile is untrustworthy, so
-    // report "Checking" until the resolved state matches the active profile.
-    if (
-      preflightState.status === "loading" ||
-      (preflightState.status === "ready" && preflightState.runnerKey !== runnerKey)
-    ) {
-      return `Checking ${profileKindLabel(activeProfile)} CLI`;
-    }
-
-    if (preflightState.status === "failed") {
-      return "IPC failed";
-    }
-
-    return preflightState.preflight.ok
-      ? `${profileKindLabel(activeProfile)} CLI ready`
-      : `${profileKindLabel(activeProfile)} CLI unavailable`;
-  }, [activeProfile, preflightState, runnerKey]);
-
-  // `preflightState` lags the active runner by one async cycle after a switch or settings
-  // apply (the service resolves the new probe asynchronously). Until the resolved state's
-  // runnerKey matches the active runner, it belongs to the previous target, so the footer
-  // tone treats that window as unknown.
-  const activeReadyState =
-    preflightState.status === "ready" && preflightState.runnerKey === runnerKey
-      ? preflightState
-      : null;
-  // Tone for the footer status dot when the footer shows the active source, derived
-  // from its resolved preflight (not a stale previous one).
-  const sourceStatusTone = !activeReadyState
-    ? "unknown"
-    : activeReadyState.preflight.ok
-      ? "idle"
-      : "error";
-  // The active runner's preflight is unusable when the probe resolved for the
-  // CURRENT runner but reports the CLI unavailable (bad binary path / SSH target).
-  // A stale ready state from a profile still switching (runnerKey mismatch) is not
-  // an error — the folders keep rendering their keyed live states while the new
-  // probe resolves.
-  const dockPreflightUnusable =
-    preflightState.status === "ready" &&
-    preflightState.runnerKey === runnerKey &&
-    !preflightState.preflight.ok;
-  // The active source's failure surfaced inside its own folder (or the homeless
-  // strip below): its live target is gated off (or left disarmed) on a failed
-  // probe, so without this the folder's keyed state would read as a dishonest
-  // perpetual "Waiting for a source". Covers a resolved-but-unusable probe, and
-  // the probe itself failing ("failed" carries no runnerKey; like the boot screen,
-  // we treat it as the active runner's) — unless the channel is already online,
-  // per the probes-gate-starting invariant above liveTargets.
-  const activePreflightError = activeLiveOnline
-    ? null
-    : dockPreflightUnusable
-      ? (preflightState.preflight.error ?? `${profileKindLabel(activeProfile)} CLI unavailable`)
-      : preflightState.status === "failed"
-        ? preflightState.message
-        : null;
-  // The full-screen boot/recovery takeover is scoped to the states where no OTHER
-  // open folder could render anyway: preflight is single-source (only the active
-  // profile is probed), so blanking the whole dock for the active source's
-  // boot/failure would hide healthy open folders — exactly the independence the
-  // folder model exists for. With another folder open, the active source's failure
-  // stays inside its own folder (status dot + error strip) instead.
+  // Footer status line, dot tone, and the per-folder error strip for the active
+  // source: all derived in effect/preflightViewModel around its single
+  // matchedPreflight staleness rule (and tested there).
+  const statusText = useMemo(
+    () => preflightStatusText(preflightState, runnerKey, profileKindLabel(activeProfile)),
+    [activeProfile, preflightState, runnerKey],
+  );
+  const sourceStatusTone = preflightSourceTone(preflightState, runnerKey);
+  const preflightError = activePreflightError(
+    preflightState,
+    runnerKey,
+    activeLiveOnline,
+    profileKindLabel(activeProfile),
+  );
   const hasOpenFolderBeyondActive = liveSources.some(
     (source) => source.isOpen && source.runnerKey !== runnerKey,
   );
-  // …and it also requires the active source to be PARTICIPATING (its folder open):
-  // a closed folder is header-only with no subscription, so its loading/failing
-  // preflight must not take over a dock the user deliberately quieted — that would
-  // hide the folder list (the only way to reopen anything). A homeless active
-  // source (no folder) surfaces through the error strip above the folders instead.
   const activeFolderOpen = liveSources.some(
     (source) => source.isOpen && source.runnerKey === runnerKey,
   );
-  const dockBootScreenVisible =
-    mode === "dock" &&
-    // No probe verdict blanks the dock over an online channel (probes gate
-    // starting; the stream is ground truth while it runs).
-    !activeLiveOnline &&
-    (preflightState.status !== "ready" || dockPreflightUnusable) &&
-    activeFolderOpen &&
-    !hasOpenFolderBeyondActive;
+  // The full-screen boot/recovery takeover; the five interacting invariants that
+  // scope it (and why) live with dockBootScreenVisible in preflightViewModel.
+  const bootScreenVisible = dockBootScreenVisible(preflightState, runnerKey, {
+    isDock: mode === "dock",
+    activeLiveOnline,
+    activeFolderOpen,
+    hasOpenFolderBeyondActive,
+  });
   // One view per folder-eligible source: its keyed live state, the picker
   // projection of it, and the query-filtered workspace groups. The derivation —
   // including the recovering mask and the per-source focus marker — lives in
@@ -1524,7 +1477,7 @@ function App({ mode }: { mode: ShellMode }) {
     // The boot/recovery screen replaces the folder list entirely, but the owner's
     // keyed live state can still hold rows behind it — gate every picker key while
     // it shows so Ctrl+<key>/Enter can't activate rows the user cannot see.
-    if (dockBootScreenVisible) {
+    if (bootScreenVisible) {
       return;
     }
     // Control + a row's displayed hotkey jumps straight to that pane. Require
@@ -1799,22 +1752,14 @@ function App({ mode }: { mode: ShellMode }) {
 
   // Boot/error screen: still probing, the probe itself failed (IPC error), or the
   // CLI is unavailable for the current runner — and no other open folder could
-  // render (see dockBootScreenVisible). It surfaces the real preflight error and
-  // the Open settings recovery path instead of a perpetual live banner.
-  if (dockBootScreenVisible) {
-    const probing = preflightState.status === "loading";
-    const detail =
-      preflightState.status === "failed"
-        ? preflightState.message
-        : preflightState.status === "ready"
-          ? (preflightState.preflight.error ?? `${profileKindLabel(activeProfile)} CLI unavailable`)
-          : "Waiting for the daemon…";
-    // A remote not-found preflight may carry the path the user's shell resolves,
-    // letting us offer a one-click fix instead of only routing to settings.
-    const suggestedBinaryPath =
-      preflightState.status === "ready" && !preflightState.preflight.ok
-        ? preflightState.preflight.suggestedBinaryPath
-        : null;
+  // render (see dockBootScreenVisible in preflightViewModel). It surfaces the real
+  // preflight error and the Open settings recovery path instead of a perpetual
+  // live banner.
+  if (bootScreenVisible) {
+    const { probing, detail, suggestedBinaryPath } = dockBootScreenContent(
+      preflightState,
+      profileKindLabel(activeProfile),
+    );
     return (
       // Recovery UI renders in the live orientation: a centered column in the vertical
       // strip, and a compact row in the horizontal bar (styles.css) so the heading and
@@ -2467,7 +2412,7 @@ function App({ mode }: { mode: ShellMode }) {
           // enabled source, in the user's order. Open = live subscription + that
           // source's workspace-grouped rows; closed = header only, no subscription.
           <div className="source-folders">
-            {activePreflightError !== null &&
+            {preflightError !== null &&
             !liveSources.some((source) => source.runnerKey === runnerKey) ? (
               // The active source can be folder-INeligible (e.g. a just-added remote
               // with no host yet): it renders no folder, and with another folder open
@@ -2476,7 +2421,7 @@ function App({ mode }: { mode: ShellMode }) {
               <div className="live-strip error" aria-live="polite">
                 <span className="status-dot" data-tone="error" />
                 <span className="live-label">{labelFor(activeProfile)}</span>
-                <span className="live-message">{activePreflightError}</span>
+                <span className="live-message">{preflightError}</span>
                 <button className="live-action" type="button" onClick={openSettings}>
                   Open settings
                 </button>
@@ -2487,8 +2432,8 @@ function App({ mode }: { mode: ShellMode }) {
               // folder: its live target is gated off on a failed probe, so the keyed
               // connection (a perpetual "Waiting for a source") would lie about what
               // broke. Non-active sources are never probed; theirs stays null.
-              const preflightError =
-                view.runnerKey === runnerKey ? activePreflightError : null;
+              const folderPreflightError =
+                view.runnerKey === runnerKey ? preflightError : null;
               return (
                 <section className="source-folder" key={view.profile.id}>
                   <button
@@ -2497,7 +2442,7 @@ function App({ mode }: { mode: ShellMode }) {
                     aria-expanded={view.isOpen}
                     onClick={() => toggleProfileOpenSet(view.profile.id)}
                     title={
-                      preflightError ??
+                      folderPreflightError ??
                       (view.isOpen
                         ? view.live.connection.message
                         : "Closed — no live subscription")
@@ -2505,7 +2450,7 @@ function App({ mode }: { mode: ShellMode }) {
                   >
                     <span
                       className={`status-dot${
-                        preflightError === null &&
+                        folderPreflightError === null &&
                         view.isOpen &&
                         (view.live.connection.status === "connecting" ||
                           view.live.connection.status === "reconnecting")
@@ -2513,7 +2458,7 @@ function App({ mode }: { mode: ShellMode }) {
                           : ""
                       }`}
                       data-tone={
-                        preflightError !== null
+                        folderPreflightError !== null
                           ? "error"
                           : view.isOpen
                             ? connectionTone(view.live.connection)
@@ -2541,7 +2486,7 @@ function App({ mode }: { mode: ShellMode }) {
                   </button>
                   {view.isOpen ? (
                     <div className="folder-body">
-                      {preflightError !== null ? (
+                      {folderPreflightError !== null ? (
                         // The gated-off target's keyed state (connecting, no rows) would
                         // render a perpetual loading skeleton under this, so the strip
                         // replaces the picker body too. Mirrors the boot screen's
@@ -2550,7 +2495,7 @@ function App({ mode }: { mode: ShellMode }) {
                         <div className="live-strip error" aria-live="polite">
                           <span className="status-dot" data-tone="error" />
                           <span className="live-label">Unavailable</span>
-                          <span className="live-message">{preflightError}</span>
+                          <span className="live-message">{folderPreflightError}</span>
                           <button className="live-action" type="button" onClick={openSettings}>
                             Open settings
                           </button>
