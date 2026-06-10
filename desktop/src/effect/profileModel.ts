@@ -124,26 +124,40 @@ export function normalizeProfileState(
     : [];
 
   // A source's identity IS its connection, so a persisted state (possibly written by
-  // an older version that allowed it) keeps only the first profile per trimmed SSH
-  // host. Empty-host drafts collapse to the first too: with connection-derived
-  // labels, several would render as identical cards the user can't tell apart, and
-  // only one draft is ever needed to resume configuring. References to a dropped
+  // an older version that allowed it) keeps only one profile per trimmed SSH host:
+  // the first RUNNABLE one, falling back to the first at all — keeping a disabled
+  // duplicate over an enabled one would make the connection vanish from the dock.
+  // Empty-host drafts collapse the same way: with connection-derived labels,
+  // several would render as identical cards the user can't tell apart, and only
+  // one draft is ever needed to resume configuring. References to a dropped
   // duplicate (the active id, open ids) remap to the surviving profile of the same
   // connection — the user's selection was the connection, not the duplicate row.
-  const survivorByHost = new Map<string, string>();
-  const remap = new Map<string, string>();
-  const profiles = mapped.filter((profile) => {
+  const sshGroups = new Map<string, DesktopProfileConfig[]>();
+  for (const profile of mapped) {
     if (profile.kind !== "ssh") {
-      return true;
+      continue;
     }
-    const survivor = survivorByHost.get(profile.host);
-    if (survivor !== undefined) {
-      remap.set(profile.id, survivor);
-      return false;
+    const group = sshGroups.get(profile.host);
+    if (group) {
+      group.push(profile);
+    } else {
+      sshGroups.set(profile.host, [profile]);
     }
-    survivorByHost.set(profile.host, profile.id);
-    return true;
-  });
+  }
+  const remap = new Map<string, string>();
+  const survivors = new Set<string>();
+  for (const group of sshGroups.values()) {
+    const survivor = group.find(isRunnableProfile) ?? group[0];
+    survivors.add(survivor.id);
+    for (const profile of group) {
+      if (profile.id !== survivor.id) {
+        remap.set(profile.id, survivor.id);
+      }
+    }
+  }
+  const profiles = mapped.filter(
+    (profile) => profile.kind !== "ssh" || survivors.has(profile.id),
+  );
 
   if (!profiles.some((profile) => profile.kind === "local")) {
     profiles.unshift(defaultProfileState(fallbackRunner).profiles[0]);

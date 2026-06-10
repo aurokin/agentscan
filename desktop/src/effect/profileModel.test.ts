@@ -21,13 +21,13 @@ const localProfile: LocalProfileConfig = {
   runner: { binaryPath: "", env: [] },
 };
 
-const sshProfile = (id: string, host: string): SshProfileConfig => ({
+const sshProfile = (id: string, host: string, enabled = true): SshProfileConfig => ({
   id,
   kind: "ssh",
   host,
   clientTty: "",
   runner: { binaryPath: "", env: [] },
-  enabled: true,
+  enabled,
 });
 
 describe("validateProfileDraft", () => {
@@ -66,6 +66,19 @@ describe("normalizeProfileState", () => {
       ],
     });
     expect(state.profiles.map((profile) => profile.id)).toEqual(["local", "ssh-1", "ssh-3"]);
+  });
+
+  it("prefers a runnable survivor when deduplicating a host", () => {
+    // A disabled duplicate sitting first must not win over an enabled one: the
+    // kept profile is what the dock can actually show, and references remap to it.
+    const state = normalizeProfileState({
+      activeProfileId: "ssh-disabled",
+      profiles: [localProfile, sshProfile("ssh-disabled", "box", false), sshProfile("ssh-enabled", "box")],
+      openProfileIds: ["ssh-disabled"],
+    });
+    expect(state.profiles.map((profile) => profile.id)).toEqual(["local", "ssh-enabled"]);
+    expect(state.activeProfileId).toBe("ssh-enabled");
+    expect(state.openProfileIds).toEqual(["ssh-enabled"]);
   });
 
   it("remaps a dropped duplicate's active and open references to the survivor", () => {
