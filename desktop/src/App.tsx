@@ -79,6 +79,11 @@ const setGlassClear = (clear: number) => {
   document.documentElement.style.setProperty("--glass-clear", clear.toFixed(3));
 };
 const DEBUG_LOG_LIMIT = 80;
+
+// How long a failed activation's error strip stays up. Long enough to read,
+// short enough that one-shot action feedback doesn't linger as a standing
+// condition (the full error remains in the debug log).
+const ACTIVATION_FAILURE_TTL_MS = 10_000;
 // Window min-size floors, applied at runtime per orientation. The vertical pair
 // mirrors the startup floor in tauri.{macos.,}conf.json; horizontal drops the
 // height floor so the bar can shrink to dock height instead of a tall slab.
@@ -897,6 +902,24 @@ function App({ mode }: { mode: ShellMode }) {
       setActivation({ status: "idle" });
     }
   }, [activation, openRunnerKeys]);
+
+  // A failed activation is one-shot action feedback, not ongoing state — left
+  // alone it outlives its moment and reads like a standing condition, so it
+  // expires after a beat. Source-less failures (null sourceKey: the
+  // summon-hotkey registration error) DO describe a persistent condition and
+  // stay until resolved.
+  useEffect(() => {
+    if (activation.status !== "failed" || activation.sourceKey === null) {
+      return;
+    }
+    const failed = activation;
+    const timer = window.setTimeout(() => {
+      // Identity guard: clear only the exact failure this timer was armed for
+      // (the dep-change cleanup already covers replacement; this covers races).
+      setActivation((current) => (current === failed ? { status: "idle" } : current));
+    }, ACTIVATION_FAILURE_TTL_MS);
+    return () => window.clearTimeout(timer);
+  }, [activation]);
 
   // A wide drag or pinning to horizontal can strand an already-open source menu in
   // the thin bar (where it clips). Close it whenever the layout goes horizontal.
