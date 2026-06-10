@@ -1820,11 +1820,17 @@ fn classify_desktop_failure(runner: &AgentscanRunner, operation: &str, message: 
     if lower.contains("tmux")
         && (lower.contains("server exited unexpectedly") || lower.contains("lost server"))
     {
+        // The same split happens locally (the desktop app's PATH vs the shell
+        // that started tmux), so name the resolver this runner actually uses.
+        let resolver = match runner {
+            AgentscanRunner::Ssh(_) => "non-interactive SSH",
+            AgentscanRunner::Local(_) => "the desktop app",
+        };
         return format!(
             "The tmux server dropped a fresh client (running sessions are fine). \
              This usually means the server was started from a different tmux \
-             install than the one non-interactive SSH resolves — align them so \
-             both use the same tmux: {trimmed}"
+             install than the one {resolver} resolves — align them so both use \
+             the same tmux: {trimmed}"
         );
     }
 
@@ -3475,7 +3481,21 @@ mod tests {
                 "focus",
                 "tmux switch-client fallback failed: server exited unexpectedly",
             )
-            .starts_with("The tmux server dropped a fresh client")
+            .contains("non-interactive SSH resolves")
+        );
+        // The local variant points at the desktop app's own resolution instead
+        // of SSH guidance that wouldn't apply.
+        let local_runner = AgentscanRunner::Local(LocalRunnerSettings {
+            binary_path: None,
+            env: Vec::new(),
+        });
+        assert!(
+            classify_desktop_failure(
+                &local_runner,
+                "focus",
+                "tmux switch-client fallback failed: server exited unexpectedly",
+            )
+            .contains("the desktop app resolves")
         );
     }
 
