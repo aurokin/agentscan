@@ -549,6 +549,12 @@ export function sourceLabel(
       preflight && preflight.runnerKey === runnerKeyForProfile(profile)
         ? preflight.preflight?.remoteHostLabel
         : null;
+    // A matching probe with NO hostname (a failed preflight, or `hostname`
+    // unavailable on the remote) is absence of evidence, not contradiction:
+    // the stored value still describes this exact unchanged connection, and
+    // deferring to it keeps the label stable across transient probe gaps. A
+    // contradicting probe replaces it here (live wins) and is then
+    // re-recorded; editing the connection clears it (updateProfileSettings).
     const probed = live || profile.probedHost || null;
     const ambiguous =
       !!probed &&
