@@ -4,7 +4,13 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { Result, useAtomSet, useAtomValue } from "@effect-atom/atom-react";
-import { providerLogo, type LogoTheme } from "./providerLogos";
+import type { LogoTheme } from "./providerLogos";
+import { DebugLog } from "./components/DebugLog";
+import { GroupedPicker } from "./components/GroupedPicker";
+import { LiveStrip } from "./components/LiveStrip";
+import { SourceKindIcon } from "./components/SourceKindIcon";
+import { WindowControls } from "./components/WindowControls";
+import { HOTKEY_MODIFIER_LABEL, IS_MAC } from "./platform";
 import {
   activateAtom,
   activationAtom,
@@ -39,9 +45,9 @@ import {
   syncedPreflightAtom,
   toggleProfileOpenAtom,
 } from "./effect/atoms";
-import type { ConnectionStatus, LiveState, PickerRow } from "./effect/types";
-// Type-only: the DebugLog service class stays out of this file (the local
-// DebugLog component below would collide with it).
+import type { LiveState, PickerRow } from "./effect/types";
+// Type-only: the DebugLog service class stays out of this file (the DebugLog
+// component import above would collide with it).
 import type { DebugEntry } from "./effect/DebugLog";
 import { liveStateFor, type LiveStates } from "./effect/LiveConnection";
 import { pickerRowForKeyboardKey } from "./effect/keybinds";
@@ -83,9 +89,6 @@ import {
 import {
   connectionTone,
   deriveSourceViews,
-  liveStateLabel,
-  paneSuffix,
-  statusTone,
   type PickerActivation,
   type PickerGroup,
   type PickerState,
@@ -99,7 +102,6 @@ import {
   preflightStatusText,
 } from "./effect/preflightViewModel";
 import type { SummonHotkeyState } from "./effect/SummonHotkey";
-import logoUrl from "./assets/agentscan-logo.png";
 
 // Appearance prefs (storage keys, alpha bounds, glassClearFor, the parsers) live in
 // effect/appearanceModel and are owned by the Appearance Effect service; the DOM apply
@@ -129,14 +131,6 @@ const WINDOW_MAX_UNBOUNDED = 10000;
 // native frame would otherwise draw. Mirrors --frameless-radius in styles.css and is passed
 // to the native glass backdrop so the vibrancy view rounds to the same curve as the webview.
 const FRAMELESS_CORNER_RADIUS = 12;
-
-// Per-row picker hotkeys are triggered with Control rather than Command. The
-// default key set overlaps macOS ⌘ shortcuts — ⌘Q quits, ⌘C/V/X are clipboard,
-// ⌘F/Z/R are find/undo/refresh — so ⌘ would be hostile. Control has no such
-// collisions (only emacs text-nav in inputs, which we override on a match).
-const IS_MAC =
-  typeof navigator !== "undefined" && /Mac|iP(hone|ad|od)/.test(navigator.platform);
-const HOTKEY_MODIFIER_LABEL = IS_MAC ? "⌃" : "Ctrl ";
 
 let windowOperationQueue = Promise.resolve();
 // Serializes set_window_glass invokes so a fast off→on toggle can't land its
@@ -201,38 +195,6 @@ const EMPTY_PICKER_GROUPS: PickerGroup[] = [];
 
 // First-paint fallback for debugLogAtom before the runtime resolves it.
 const EMPTY_DEBUG_ENTRIES: ReadonlyArray<DebugEntry> = [];
-
-// Source-kind mark: Lucide "house" / "server" outlines (ISC), inlined so the
-// mark renders crisply at small sizes instead of leaning on font glyph
-// coverage. Each context sizes it via font-size (the icon is 1em square).
-function SourceKindIcon({ kind }: { kind: "local" | "ssh" }) {
-  return (
-    <svg
-      className="source-kind-icon"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      {kind === "ssh" ? (
-        <>
-          <rect width="20" height="8" x="2" y="2" rx="2" ry="2" />
-          <rect width="20" height="8" x="2" y="14" rx="2" ry="2" />
-          <path d="M6 6h.01" />
-          <path d="M6 18h.01" />
-        </>
-      ) : (
-        <>
-          <path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8" />
-          <path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-        </>
-      )}
-    </svg>
-  );
-}
 
 function App({ mode }: { mode: ShellMode }) {
   // The dock's resolved CLI preflight is owned by the Preflight Effect service. The dock
@@ -1483,33 +1445,13 @@ function App({ mode }: { mode: ShellMode }) {
     }
   }, [isSearchExpanded]);
 
-  // Custom window chrome for frameless mode, shared by the boot/recovery screen and the
-  // picker below. Callers gate these on framelessApplied so they only appear once the native
-  // frame is actually gone. data-tauri-drag-region="" adds the drag handle; undefined omits
-  // it (the chrome bands only become draggable when frameless).
+  // Custom window-chrome drag handle for frameless mode, shared by the boot/recovery
+  // screen and the picker below (the matching minimize/close controls are the
+  // WindowControls component). Gated on framelessApplied like the controls, so chrome
+  // only appears once the native frame is actually gone. data-tauri-drag-region=""
+  // adds the drag handle; undefined omits it (the chrome bands only become draggable
+  // when frameless).
   const dragRegion = framelessApplied ? "" : undefined;
-  const windowControls = (
-    <>
-      <button
-        className="icon-button"
-        type="button"
-        aria-label="Minimize window"
-        title="Minimize"
-        onClick={() => void getCurrentWindow().minimize()}
-      >
-        {"–"}
-      </button>
-      <button
-        className="icon-button window-close"
-        type="button"
-        aria-label="Close window"
-        title="Close"
-        onClick={() => void getCurrentWindow().hide()}
-      >
-        {"×"}
-      </button>
-    </>
-  );
 
   // Boot/error screen: still probing, the probe itself failed (IPC error), or the
   // CLI is unavailable for the current runner — and no other open folder could
@@ -1560,7 +1502,9 @@ function App({ mode }: { mode: ShellMode }) {
             be a borderless window the user can't move/minimize/dismiss while connecting or
             after a failure. The boot screen has no footer, so float the controls instead. */}
         {framelessApplied ? (
-          <div className="boot-window-controls">{windowControls}</div>
+          <div className="boot-window-controls">
+            <WindowControls />
+          </div>
         ) : null}
       </main>
     );
@@ -2514,74 +2458,10 @@ function App({ mode }: { mode: ShellMode }) {
           >
             {"⚙"}
           </button>
-          {framelessApplied ? windowControls : null}
+          {framelessApplied ? <WindowControls /> : null}
         </div>
       </footer>
     </main>
-  );
-}
-
-// The banner shown for any non-online connection. `noDaemon` (the dock latched but
-// found no daemon to attach to) offers Start agentscan; `fatal` offers both Start
-// agentscan and a latch-only Reconnect (a Start refusal lands here, and Start is the
-// action that actually retries it) — so the dock never wedges with a dead stream and
-// no way out. connecting/reconnecting are transient and self-heal, so they show
-// progress only.
-function LiveStrip({
-  status,
-  onStart,
-  onReconnect,
-}: {
-  status: ConnectionStatus;
-  onStart: () => void;
-  onReconnect: () => void;
-}) {
-  const tone = status.status === "fatal" ? "error" : "warn";
-
-  return (
-    <div className={`live-strip ${tone}`} aria-live="polite">
-      <span className="status-dot" data-tone={tone === "error" ? "error" : "busy"} />
-      <span className="live-label">{liveStateLabel(status)}</span>
-      <span className="live-message">{status.message}</span>
-      {status.status === "noDaemon" ? (
-        <button className="live-action" type="button" onClick={onStart}>
-          Start agentscan
-        </button>
-      ) : status.status === "fatal" ? (
-        // A fatal includes an explicit-Start refusal (e.g. macOS codesign/trust), whose
-        // actual fix is to retry the start once resolved. Reconnect is latch-only and
-        // can't spawn, so it would force a no-daemon round-trip before Start reappears.
-        // Offer Start agentscan (start-or-latch — strictly more capable, recovers every
-        // fatal cause the user fixes) alongside the latch-only Reconnect.
-        <div className="live-actions">
-          <button className="live-action" type="button" onClick={onStart}>
-            Start agentscan
-          </button>
-          <button className="live-action" type="button" onClick={onReconnect}>
-            Reconnect
-          </button>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function DebugLog({ entries }: { entries: ReadonlyArray<DebugEntry> }) {
-  if (entries.length === 0) {
-    return <p className="muted">No debug events yet.</p>;
-  }
-
-  return (
-    <ol className="debug-list">
-      {entries.map((entry) => (
-        <li key={entry.id}>
-          <time>{entry.time}</time>
-          <span>{entry.kind}</span>
-          <strong>{entry.label}</strong>
-          <small>{entry.detail}</small>
-        </li>
-      ))}
-    </ol>
   );
 }
 
@@ -2620,136 +2500,6 @@ async function placeBarWindow() {
   } catch {
     // Placement is best-effort; the layout still follows the pinned orientation.
   }
-}
-
-function GroupedPicker({
-  activation,
-  filterQuery,
-  focusedPaneId,
-  groups,
-  keybindsOwned,
-  logoTheme,
-  selectedPaneId,
-  sourceKey,
-  state,
-  totalRows,
-  onActivate,
-  onClearFilter,
-  onSelect,
-}: {
-  activation: PickerActivation;
-  filterQuery: string;
-  focusedPaneId: string | null;
-  groups: PickerGroup[];
-  // Whether this source owns the row keybinds (Ctrl+<key>). Non-owners render
-  // their <kbd> labels dimmed, as information only.
-  keybindsOwned: boolean;
-  logoTheme: LogoTheme;
-  selectedPaneId: string | null;
-  // This source's runnerKey; scopes the activation pulse (pane ids collide across hosts).
-  sourceKey: string;
-  state: PickerState;
-  totalRows: number;
-  onActivate: (row: PickerRow) => void;
-  onClearFilter: () => void;
-  onSelect: (row: PickerRow) => void;
-}) {
-  const rowCount = groups.reduce((total, group) => total + group.rows.length, 0);
-
-  if (state.status === "loading" && rowCount === 0) {
-    return <p className="empty-note">Loading agents…</p>;
-  }
-
-  if (state.status === "failed") {
-    return (
-      <div className="error-state" role="alert">
-        <h3>Unable to load agents</h3>
-        <p>{state.message}</p>
-      </div>
-    );
-  }
-
-  if (totalRows > 0 && rowCount === 0 && filterQuery.trim()) {
-    return (
-      <div className="empty-filter-state">
-        <p>No agents match “{filterQuery.trim()}”.</p>
-        <button className="ghost-button" type="button" onClick={onClearFilter}>
-          Clear search
-        </button>
-      </div>
-    );
-  }
-
-  if (rowCount === 0) {
-    return (
-      <div className="empty-detected">
-        <img className="empty-logo" src={logoUrl} alt="agentscan" />
-        <p className="empty-note">No agents detected.</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="picker-groups">
-      {groups.map((group) => (
-        <section className="picker-group" key={group.key}>
-          <h2 className="group-header">{group.project}</h2>
-          <ul className="agent-list">
-            {group.rows.map((row) => {
-              const isSelected = row.pane_id === selectedPaneId;
-              // The single live pane the user is in. The selection cursor follows
-              // it, so in the common case the two coincide and the selection ring
-              // sits on the live pane. When they diverge (manual j/k/click away),
-              // a faint "live" ring keeps the live pane discoverable. Derived from
-              // the same resolved id as the cursor so the legacy `is_active`
-              // fallback stays single-row and consistent.
-              const isFocused = row.pane_id === focusedPaneId;
-              const isFocusing =
-                activation.status === "running" &&
-                activation.sourceKey === sourceKey &&
-                activation.paneId === row.pane_id;
-              const logo = providerLogo(row.provider, logoTheme);
-              return (
-                <li
-                  aria-selected={isSelected}
-                  aria-current={isFocused ? "true" : undefined}
-                  className={`agent-row${isSelected ? " selected" : ""}${
-                    isFocused && !isSelected ? " live" : ""
-                  }`}
-                  key={`${row.key}-${row.pane_id}`}
-                  onClick={() => {
-                    // Single-click selects and switches the active tmux pane.
-                    // Enter still activates the keyboard selection; double-click
-                    // is gone (redundant under single-click activation).
-                    onSelect(row);
-                    onActivate(row);
-                  }}
-                  title={`${row.display_label} · ${row.provider ?? "unknown"} · ${row.location_tag}`}
-                >
-                  <span
-                    className={`status-dot${isFocusing ? " pulsing" : ""}`}
-                    data-tone={isFocusing ? "busy" : statusTone(row.status.kind)}
-                    aria-hidden="true"
-                  />
-                  {logo ? (
-                    <img className="provider-logo" src={logo} alt="" aria-hidden="true" />
-                  ) : (
-                    <span className="provider-logo provider-logo-empty" aria-hidden="true" />
-                  )}
-                  <span className="agent-label">{row.display_label}</span>
-                  <span className="agent-suffix">{paneSuffix(row)}</span>
-                  <kbd className={keybindsOwned ? undefined : "dimmed"}>
-                    <span className="kbd-mod">{HOTKEY_MODIFIER_LABEL}</span>
-                    {row.key}
-                  </kbd>
-                </li>
-              );
-            })}
-          </ul>
-        </section>
-      ))}
-    </div>
-  );
 }
 
 function isInteractiveShortcutTarget(target: EventTarget | null) {
