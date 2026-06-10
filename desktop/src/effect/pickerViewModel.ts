@@ -20,12 +20,13 @@ export type PickerState =
 
 // Activations are tagged with the runnerKey of the row's OWN source so the
 // running pulse / failure recovery scope to that source's folder (pane ids like
-// %1 collide across hosts). A null sourceKey marks a source-less failure (the
-// summon-hotkey registration error reuses this banner).
+// %1 collide across hosts). Every activation has a source: the summon-hotkey
+// registration failure, which used to ride here with a null sourceKey, has its
+// own surface (the SummonHotkey service state).
 export type PickerActivation =
   | { status: "idle" }
   | { status: "running"; paneId: string; sourceKey: string }
-  | { status: "failed"; message: string; sourceKey: string | null };
+  | { status: "failed"; message: string; sourceKey: string };
 
 export type SourceView<S> = S & {
   live: LiveState;

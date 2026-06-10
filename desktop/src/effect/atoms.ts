@@ -4,6 +4,7 @@ import { LiveConnection, type ConfigureInput } from "./LiveConnection";
 import { Profiles, type ApplyRunnerSettingsInput } from "./Profiles";
 import { Preflight, type PreflightTarget } from "./Preflight";
 import { Appearance } from "./Appearance";
+import { SummonHotkey } from "./SummonHotkey";
 import type { OrientationPreference, ThemePreference } from "./prefs";
 
 // One runtime per webview window, providing the desktop Effect services. Profiles,
@@ -19,6 +20,7 @@ const runtime = Atom.runtime(
     Profiles.Default,
     Preflight.Default,
     Appearance.Default,
+    SummonHotkey.Default,
   ),
 );
 
@@ -166,6 +168,25 @@ export const requestPreflightSyncAtom = runtime.fn(
   Effect.fnUntraced(function* () {
     const preflight = yield* Preflight;
     yield* preflight.requestSync;
+  }),
+);
+
+// --- Summon hotkey slice ---
+
+// The summon-hotkey registration state the dock renders as its standing banner:
+// Result<SummonHotkeyState>. keepAlive so the registration fiber (and its in-use
+// retry loop) persists across StrictMode remounts instead of churning the OS key.
+export const summonHotkeyAtom = Atom.keepAlive(
+  runtime.subscriptionRef(Effect.map(SummonHotkey, (s) => s.state)),
+);
+
+// Dock-only: arm the summon hotkey with the press action (or release it with
+// null). The callback is captured at configure time, so the dock passes one that
+// reads its placement ref at press time.
+export const configureSummonHotkeyAtom = runtime.fn(
+  Effect.fnUntraced(function* (onPress: (() => void) | null) {
+    const hotkey = yield* SummonHotkey;
+    yield* hotkey.configure(onPress);
   }),
 );
 

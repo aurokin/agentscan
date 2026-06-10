@@ -3,7 +3,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import { Result, useAtomSet, useAtomValue } from "@effect-atom/atom-react";
 import { providerLogo, type LogoTheme } from "./providerLogos";
 import {
@@ -12,6 +11,7 @@ import {
   applyRunnerSettingsAtom,
   configureAtom,
   configurePreflightAtom,
+  configureSummonHotkeyAtom,
   deleteActiveProfileAtom,
   liveStatesAtom,
   preflightStateAtom,
@@ -29,6 +29,7 @@ import {
   setSurfaceAlphaAtom,
   setThemeAtom,
   startAtom,
+  summonHotkeyAtom,
   syncedPreflightAtom,
   toggleProfileOpenAtom,
 } from "./effect/atoms";
@@ -89,10 +90,9 @@ import {
   preflightSourceTone,
   preflightStatusText,
 } from "./effect/preflightViewModel";
-import { summonHotkeyFailureMessage, summonHotkeyInUse } from "./effect/summonHotkey";
+import type { SummonHotkeyState } from "./effect/SummonHotkey";
 import logoUrl from "./assets/agentscan-logo.png";
 
-const PICKER_HOTKEY = "CommandOrControl+Shift+A";
 // Appearance prefs (storage keys, alpha bounds, glassClearFor, the parsers) live in
 // effect/appearanceModel and are owned by the Appearance Effect service; the DOM apply
 // (this setter, the theme/glass/sizing effects) stays here.
@@ -105,10 +105,6 @@ const DEBUG_LOG_LIMIT = 80;
 // short enough that one-shot action feedback doesn't linger as a standing
 // condition (the full error remains in the debug log).
 const ACTIVATION_FAILURE_TTL_MS = 10_000;
-// Re-registration cadence while the summon hotkey is held by someone else
-// (usually a second agentscan instance). Nothing signals the holder quitting,
-// so polling is the only way to reclaim the key without a restart.
-const HOTKEY_RETRY_MS = 5_000;
 // Window min-size floors, applied at runtime per orientation. The vertical pair
 // mirrors the startup floor in tauri.{macos.,}conf.json; horizontal drops the
 // height floor so the bar can shrink to dock height instead of a tall slab.
@@ -140,7 +136,6 @@ const IS_MAC =
   typeof navigator !== "undefined" && /Mac|iP(hone|ad|od)/.test(navigator.platform);
 const HOTKEY_MODIFIER_LABEL = IS_MAC ? "⌃" : "Ctrl ";
 
-let hotkeyOperationQueue = Promise.resolve();
 let windowOperationQueue = Promise.resolve();
 // Serializes set_window_glass invokes so a fast off→on toggle can't land its
 // native calls out of order and leave the blur layer out of sync with the UI.
@@ -155,6 +150,9 @@ let framelessOperationQueue = Promise.resolve();
 // configure/reconnect/start and observes liveStatesAtom, reading the active
 // runner's entry through liveStateFor (which supplies the initial fallback).
 const EMPTY_LIVE_STATES: LiveStates = new Map<string, LiveState>();
+
+// First-paint fallback for summonHotkeyAtom before the runtime resolves it.
+const SUMMON_HOTKEY_INACTIVE: SummonHotkeyState = { status: "inactive" };
 
 // Synchronous, best-effort localStorage read used only to seed the first paint
 // (active profile / runnerKey / drafts) before the Profiles service atom resolves.
@@ -331,6 +329,14 @@ function App({ mode }: { mode: ShellMode }) {
   const configureLive = useAtomSet(configureAtom);
   const startLive = useAtomSet(startAtom);
   const reconnectLive = useAtomSet(reconnectAtom);
+  // The summon hotkey (registration + in-use retry loop) is owned by the
+  // SummonHotkey service; the dock arms it below and renders its standing
+  // failure state as the global banner.
+  const summonHotkey = Result.getOrElse(
+    useAtomValue(summonHotkeyAtom),
+    () => SUMMON_HOTKEY_INACTIVE,
+  );
+  const configureSummonHotkey = useAtomSet(configureSummonHotkeyAtom);
   const [pickerFilter, setPickerFilter] = useState("");
   // Horizontal bar only: search collapses to an icon to save width, expanding to the
   // field on click. The field also stays open whenever a query is active (so a filter
@@ -670,94 +676,18 @@ function App({ mode }: { mode: ShellMode }) {
 
   useEffect(() => {
     // The global summon hotkey belongs to the dock; registering it in both windows
-    // would double-bind the shortcut.
+    // would double-bind the shortcut. Registration, the in-use retry loop, and the
+    // failure banner state live in the SummonHotkey service — this effect only
+    // points it at the summon action. The callback reads summonPlacementRef at
+    // press time, so the one registration always places by the LIVE orientation.
     if (mode !== "dock") {
       return;
     }
-
-    let disposed = false;
-    let registered = false;
-    let retryTimer: number | undefined;
-
-    function enqueueHotkeyOperation(operation: () => Promise<void>) {
-      hotkeyOperationQueue = hotkeyOperationQueue.then(operation, operation);
-      return hotkeyOperationQueue;
-    }
-
-    function registerPickerHotkey() {
-      return enqueueHotkeyOperation(async () => {
-        if (disposed) {
-          return;
-        }
-
-        try {
-          await register(PICKER_HOTKEY, (event) => {
-            if (event.state === "Pressed") {
-              void raisePickerWindow(summonPlacementRef.current);
-            }
-          });
-          registered = true;
-
-          if (disposed) {
-            await unregister(PICKER_HOTKEY);
-            registered = false;
-            return;
-          }
-
-          // Reclaiming the key resolves the standing in-use banner. Only the
-          // summon hotkey produces source-less failures, so this never clears
-          // another source's one-shot feedback.
-          setActivation((current) =>
-            current.status === "failed" && current.sourceKey === null
-              ? { status: "idle" }
-              : current,
-          );
-        } catch (error) {
-          if (disposed) {
-            return;
-          }
-
-          // Surface into an idle slot or refresh the existing hotkey banner;
-          // a retry must not clobber a running activation or another source's
-          // mid-TTL failure. Re-asserting the same message keeps the current
-          // object so React skips the re-render.
-          const message = summonHotkeyFailureMessage(error);
-          setActivation((current) => {
-            if (current.status === "failed" && current.sourceKey === null) {
-              return current.message === message
-                ? current
-                : { status: "failed", message, sourceKey: null };
-            }
-            return current.status === "idle"
-              ? { status: "failed", message, sourceKey: null }
-              : current;
-          });
-
-          // The holder (often a second agentscan instance) can quit at any
-          // time without any release signal, so poll until the key registers.
-          // Only in-use failures are recoverable by waiting; anything else
-          // (e.g. a permission or backend error) would poll forever for
-          // nothing, so it surfaces once and stays.
-          if (summonHotkeyInUse(error)) {
-            retryTimer = window.setTimeout(() => void registerPickerHotkey(), HOTKEY_RETRY_MS);
-          }
-        }
-      });
-    }
-
-    void registerPickerHotkey();
-
-    return () => {
-      disposed = true;
-      window.clearTimeout(retryTimer);
-      void enqueueHotkeyOperation(async () => {
-        if (registered) {
-          await unregister(PICKER_HOTKEY);
-          registered = false;
-        }
-      });
-    };
-  }, [mode]);
+    configureSummonHotkey(() => {
+      void raisePickerWindow(summonPlacementRef.current);
+    });
+    return () => configureSummonHotkey(null);
+  }, [mode, configureSummonHotkey]);
 
   // Footer status line, dot tone, and the per-folder error strip for the active
   // source: all derived in effect/preflightViewModel around its single
@@ -917,10 +847,9 @@ function App({ mode }: { mode: ShellMode }) {
 
   // Drop an activation pulse/error whose source is no longer an open folder
   // (closed, deleted, or retargeted by a settings edit) — there is no list left
-  // for it to describe. Source-less failures (null) are global and stay.
+  // for it to describe.
   useEffect(() => {
-    const sourceKey = activation.status === "idle" ? null : activation.sourceKey;
-    if (sourceKey !== null && !openRunnerKeys.has(sourceKey)) {
+    if (activation.status !== "idle" && !openRunnerKeys.has(activation.sourceKey)) {
       if (activation.status === "running") {
         // A still-running activation's invoke may be wedged until the Rust-side
         // focus timeout; "running" means the guard is held by exactly this
@@ -939,7 +868,7 @@ function App({ mode }: { mode: ShellMode }) {
   // liveStates) keys the TTL effect so unrelated live frames don't reset the
   // timer on every envelope.
   const failedSourceRecovering = useMemo(() => {
-    if (activation.status !== "failed" || activation.sourceKey === null) {
+    if (activation.status !== "failed") {
       return false;
     }
     const status = liveStateFor(liveStates, activation.sourceKey).connection.status;
@@ -948,15 +877,10 @@ function App({ mode }: { mode: ShellMode }) {
 
   // A failed activation is one-shot action feedback, not ongoing state — left
   // alone it outlives its moment and reads like a standing condition, so it
-  // expires after a beat once recovery settles. Source-less failures (null
-  // sourceKey: the summon-hotkey registration error) DO describe a persistent
-  // condition and stay until resolved.
+  // expires after a beat once recovery settles. (The summon hotkey's standing
+  // failure lives in the SummonHotkey service state, not here.)
   useEffect(() => {
-    if (
-      activation.status !== "failed" ||
-      activation.sourceKey === null ||
-      failedSourceRecovering
-    ) {
+    if (activation.status !== "failed" || failedSourceRecovering) {
       return;
     }
     const failed = activation;
@@ -2375,12 +2299,20 @@ function App({ mode }: { mode: ShellMode }) {
         />
       ) : null}
 
+      {/* The summon hotkey's registration failure is a standing condition with its
+          own surface, so it no longer competes with one-shot activation feedback
+          for a single slot (it used to ride PickerActivation with a null sourceKey
+          and could only land when the slot was idle). */}
+      {summonHotkey.status === "failed" ? (
+        <div className="inline-error" role="alert">
+          {summonHotkey.message}
+        </div>
+      ) : null}
+
       {/* A failed activation is a per-source event: in the vertical strip it renders
           inside the failing source's folder so healthy folders don't look broken.
-          This global surface covers the horizontal bar (which shows one source) and
-          source-less failures (sourceKey: null). */}
-      {activation.status === "failed" &&
-      (effectiveOrientation === "horizontal" || activation.sourceKey === null) ? (
+          This global surface covers the horizontal bar (which shows one source). */}
+      {activation.status === "failed" && effectiveOrientation === "horizontal" ? (
         <div className="inline-error" role="alert">
           {activation.message}
         </div>
