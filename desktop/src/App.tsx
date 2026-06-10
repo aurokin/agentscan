@@ -102,6 +102,21 @@ import {
   preflightStatusText,
 } from "./effect/preflightViewModel";
 import type { SummonHotkeyState } from "./effect/SummonHotkey";
+import {
+  BAR_WINDOW_HEIGHT,
+  enqueueFramelessOperation,
+  enqueueGlassOperation,
+  enqueueWindowOperation,
+  FRAMELESS_CORNER_RADIUS,
+  placeBarWindow,
+  placePickerWindow,
+  raisePickerWindow,
+  WINDOW_MAX_UNBOUNDED,
+  WINDOW_MAX_WIDTH_VERTICAL,
+  WINDOW_MIN_HEIGHT_HORIZONTAL,
+  WINDOW_MIN_HEIGHT_VERTICAL,
+  WINDOW_MIN_WIDTH,
+} from "./windowOperations";
 
 // Appearance prefs (storage keys, alpha bounds, glassClearFor, the parsers) live in
 // effect/appearanceModel and are owned by the Appearance Effect service; the DOM apply
@@ -109,36 +124,6 @@ import type { SummonHotkeyState } from "./effect/SummonHotkey";
 const setGlassClear = (clear: number) => {
   document.documentElement.style.setProperty("--glass-clear", clear.toFixed(3));
 };
-// Window min-size floors, applied at runtime per orientation. The vertical pair
-// mirrors the startup floor in tauri.{macos.,}conf.json; horizontal drops the
-// height floor so the bar can shrink to dock height instead of a tall slab.
-const WINDOW_MIN_WIDTH = 220;
-const WINDOW_MIN_HEIGHT_VERTICAL = 520;
-// Auto-mode floor when the window is wider than tall: lets a freely-dragged window get
-// short without collapsing the chip strip. A PINNED horizontal bar ignores this and locks
-// to BAR_WINDOW_HEIGHT (below) instead, so its height isn't resizable at all.
-const WINDOW_MIN_HEIGHT_HORIZONTAL = 44;
-// Locked height for the pinned horizontal bar: min == max == this, so the bar resizes only
-// horizontally (the layout is tuned for this exact height). Mirrors BAR_WINDOW_HEIGHT in
-// src-tauri/src/lib.rs (the snap height place_bar_window applies) — keep the two in sync.
-const BAR_WINDOW_HEIGHT = 56;
-// Max-size caps per pinned orientation: vertical stays a strip (width capped, height free);
-// the pinned horizontal bar locks height at BAR_WINDOW_HEIGHT (above) with free width.
-// "auto" clears the cap. The free axis uses a value larger than any display.
-const WINDOW_MAX_WIDTH_VERTICAL = 520;
-const WINDOW_MAX_UNBOUNDED = 10000;
-// Corner radius (logical px) for frameless mode, matching the macOS window rounding the
-// native frame would otherwise draw. Mirrors --frameless-radius in styles.css and is passed
-// to the native glass backdrop so the vibrancy view rounds to the same curve as the webview.
-const FRAMELESS_CORNER_RADIUS = 12;
-
-let windowOperationQueue = Promise.resolve();
-// Serializes set_window_glass invokes so a fast off→on toggle can't land its
-// native calls out of order and leave the blur layer out of sync with the UI.
-let glassOperationQueue = Promise.resolve();
-// Same discipline for the frameless decorations toggle: serialize the native
-// set_window_decorations calls so a fast toggle settles on the latest desired state.
-let framelessOperationQueue = Promise.resolve();
 
 // Live-picker subscription state (connection status + rows + epoch fencing + the
 // reconnect/latch policy) is owned by the Effect LiveConnection service, as a
@@ -1071,7 +1056,7 @@ function App({ mode }: { mode: ShellMode }) {
     }
 
     let cancelled = false;
-    glassOperationQueue = glassOperationQueue.then(async () => {
+    enqueueGlassOperation(async () => {
       // A newer toggle superseded this one before it ran; skip the native call
       // entirely so the queue settles on the latest desired state.
       if (cancelled) {
@@ -1142,7 +1127,7 @@ function App({ mode }: { mode: ShellMode }) {
     }
 
     let cancelled = false;
-    framelessOperationQueue = framelessOperationQueue.then(async () => {
+    enqueueFramelessOperation(async () => {
       if (cancelled) {
         return;
       }
@@ -2463,43 +2448,6 @@ function App({ mode }: { mode: ShellMode }) {
       </footer>
     </main>
   );
-}
-
-// Persistent-window model: the global hotkey raises/focuses the window; it
-// never toggles it away. The caller passes the placement for the live orientation
-// so summoning a pinned/auto horizontal bar re-docks it as a bar, not a strip.
-async function raisePickerWindow(place: () => Promise<void> = placePickerWindow) {
-  await enqueueWindowOperation(async () => {
-    const appWindow = getCurrentWindow();
-    // Restore first: macOS show() does NOT un-minimize a minimized window, so summoning a
-    // dock the user minimized (now reachable via the frameless minimize button) would
-    // silently no-op without this. Mirrors openSettings's unminimize-before-show order.
-    await appWindow.unminimize();
-    await place();
-    await appWindow.show();
-    await appWindow.setFocus();
-  });
-}
-
-function enqueueWindowOperation(operation: () => Promise<void>) {
-  windowOperationQueue = windowOperationQueue.then(operation, operation);
-  return windowOperationQueue;
-}
-
-async function placePickerWindow() {
-  try {
-    await invoke("place_picker_window");
-  } catch {
-    // Placement is best-effort; showing and focusing the picker is more important.
-  }
-}
-
-async function placeBarWindow() {
-  try {
-    await invoke("place_bar_window");
-  } catch {
-    // Placement is best-effort; the layout still follows the pinned orientation.
-  }
 }
 
 function isInteractiveShortcutTarget(target: EventTarget | null) {
