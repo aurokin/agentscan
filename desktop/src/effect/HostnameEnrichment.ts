@@ -150,8 +150,19 @@ export class HostnameEnrichment extends Effect.Service<HostnameEnrichment>()(
                 }
               }
               for (const candidate of hostnameProbeCandidates(profileState, liveStates, attempted)) {
-                attempted.add(candidate.runnerKey);
-                yield* runProbe(candidate, onLog).pipe(Effect.forkIn(scope));
+                // Mark + fork as one uninterruptible step: a re-arm interrupt
+                // landing between them would strand the key as attempted with
+                // no probe ever launched — skipped for the whole session. The
+                // mark still precedes the fork so a replayed tick can't
+                // double-probe; only the fork op itself is shielded (the probe
+                // fiber lives in the service scope and stays interruptible by
+                // scope close alone).
+                yield* Effect.uninterruptible(
+                  Effect.suspend(() => {
+                    attempted.add(candidate.runnerKey);
+                    return runProbe(candidate, onLog).pipe(Effect.forkIn(scope));
+                  }),
+                );
               }
             }).pipe(Effect.catchAllDefect(() => Effect.void)),
           ),
