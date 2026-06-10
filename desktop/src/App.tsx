@@ -71,6 +71,16 @@ import {
   type ShellMode,
   type ThemePreference,
 } from "./effect/prefs";
+import {
+  connectionTone,
+  deriveSourceViews,
+  liveStateLabel,
+  paneSuffix,
+  statusTone,
+  type PickerActivation,
+  type PickerGroup,
+  type PickerState,
+} from "./effect/pickerViewModel";
 import { summonHotkeyFailureMessage, summonHotkeyInUse } from "./effect/summonHotkey";
 import logoUrl from "./assets/agentscan-logo.png";
 
@@ -177,30 +187,10 @@ function orientationForViewport(): Orientation {
   return window.innerWidth > window.innerHeight ? "horizontal" : "vertical";
 }
 
-type PickerGroup = {
-  key: string;
-  project: string;
-  rows: PickerRow[];
-};
-
 // The dock's resolved preflight is owned by the Preflight Effect service (observed via
 // preflightStateAtom as PreflightState); the picker rows + live connection status live
 // in the LiveConnection service (liveStatesAtom).
 const INITIAL_PREFLIGHT: PreflightState = { status: "loading" };
-
-type PickerState =
-  | { status: "loading" }
-  | { status: "ready"; rows: PickerRow[] }
-  | { status: "failed"; message: string };
-
-// Activations are tagged with the runnerKey of the row's OWN source so the
-// running pulse / failure recovery scope to that source's folder (pane ids like
-// %1 collide across hosts). A null sourceKey marks a source-less failure (the
-// summon-hotkey registration error reuses this banner).
-type PickerActivation =
-  | { status: "idle" }
-  | { status: "running"; paneId: string; sourceKey: string }
-  | { status: "failed"; message: string; sourceKey: string | null };
 
 // Stable empty fallbacks for the no-owner case so effect dep arrays don't churn.
 const EMPTY_PICKER_ROWS: PickerRow[] = [];
@@ -845,46 +835,12 @@ function App({ mode }: { mode: ShellMode }) {
     activeFolderOpen &&
     !hasOpenFolderBeyondActive;
   // One view per folder-eligible source: its keyed live state, the picker
-  // projection of it, and the query-filtered workspace groups. The filter applies
-  // across all open folders. A failed focus re-arms that source's live client
-  // (activateRow's catch) to drop the now-dead pane; until the fresh snapshot
-  // lands the keyed rows still carry it — reconnecting preserves rows to avoid a
-  // flicker on a healthy manual reconnect — so THAT source's list is gated to
-  // "loading" during the recovery (scoped by activation.sourceKey) instead of
-  // leaving the known-dead row clickable and instantly re-triggerable.
+  // projection of it, and the query-filtered workspace groups. The derivation —
+  // including the recovering mask and the per-source focus marker — lives in
+  // effect/pickerViewModel (deriveSourceViews) with its contracts under test;
+  // this wrapper only memoizes it on the same inputs.
   const sourceViews = useMemo(
-    () =>
-      liveSources.map((source) => {
-        const live = liveStateFor(liveStates, source.runnerKey);
-        const recovering =
-          activation.status === "failed" &&
-          activation.sourceKey === source.runnerKey &&
-          (live.connection.status === "connecting" ||
-            live.connection.status === "reconnecting");
-        const state: PickerState = recovering
-          ? { status: "loading" }
-          : pickerStateFromLive(live, source.runnerKey);
-        const allRows = state.status === "ready" ? state.rows : [];
-        const rows = groupRowsByProject(filterPickerRows(allRows, pickerFilter)).flatMap(
-          (group) => group.rows,
-        );
-        // Per-source live-pane marker, derived like the owner-level focusedPaneId
-        // below (see that comment for the is_focused/is_active fallback rationale).
-        const focusedPaneId =
-          allRows.find((row) => row.is_focused)?.pane_id ??
-          (allRows.some((row) => row.is_focused !== undefined)
-            ? null
-            : (allRows.find((row) => row.is_active)?.pane_id ?? null));
-        return {
-          ...source,
-          live,
-          state,
-          allRows,
-          rows,
-          groups: groupRowsByProject(rows),
-          focusedPaneId,
-        };
-      }),
+    () => deriveSourceViews(liveSources, liveStates, pickerFilter, activation),
     [liveSources, liveStates, pickerFilter, activation],
   );
   const ownerView = useMemo(
@@ -913,12 +869,9 @@ function App({ mode }: { mode: ShellMode }) {
   const selectedRow = pickerRows[selectedIndex] ?? null;
   // Derived from the owner's unfiltered rows: the search filter must not change the
   // focus signal, or hiding the focused row would null it and spuriously reset
-  // follow-state, yanking a manual selection when the filter is cleared.
-  //
-  // Prefer the collapsed `is_focused` signal. If no row carries it — an older or
-  // remote `agentscan` (schema < 5) that doesn't emit the field — fall back to
-  // the first `is_active` pane so the picker still defaults to/highlights a live
-  // pane instead of going dark.
+  // follow-state, yanking a manual selection when the filter is cleared. The
+  // is_focused/is_active (schema < 5) fallback lives in focusedPaneIdOf
+  // (pickerViewModel).
   const focusedPaneId = ownerView?.focusedPaneId ?? null;
 
   useEffect(() => {
@@ -2854,31 +2807,6 @@ function App({ mode }: { mode: ShellMode }) {
   );
 }
 
-// Project one source's keyed live state onto the PickerState its folder renders.
-// The service is the single owner of rows + connection status; this just picks the
-// view: keep showing the last rows while (re)connecting so the list doesn't flash
-// a skeleton on a brief blip, show the failure only when a fatal state has
-// actually cleared the rows, and otherwise a loading skeleton.
-//
-// Rows are trusted only when their producing runner (rowsRunnerKey) matches the
-// key being rendered. Within a keyed entry that always holds (frames are routed by
-// sourceKey), so this is a defensive guard kept from the single-target days.
-function pickerStateFromLive(live: LiveState, runnerKey: string): PickerState {
-  const { connection } = live;
-  const rows = live.rowsRunnerKey === runnerKey ? live.rows : [];
-  if (rows.length > 0) {
-    return { status: "ready", rows };
-  }
-  if (connection.status === "fatal") {
-    return { status: "failed", message: connection.message };
-  }
-  if (connection.status === "connecting" || connection.status === "reconnecting") {
-    return { status: "loading" };
-  }
-  // online or noDaemon with no (matching) rows → an empty (but resolved) list.
-  return { status: "ready", rows };
-}
-
 async function runCommand<T>(
   label: string,
   operation: () => Promise<T>,
@@ -2962,129 +2890,6 @@ function DebugLog({ entries }: { entries: DebugEntry[] }) {
       ))}
     </ol>
   );
-}
-
-function projectOf(row: PickerRow): string {
-  const workspaceLabel = row.workspace?.label?.trim();
-  if (workspaceLabel) {
-    return workspaceLabel;
-  }
-
-  const tag = row.location_tag.trim();
-  const session = tag.split(":", 1)[0]?.trim();
-  return session || "ungrouped";
-}
-
-function projectKeyOf(row: PickerRow): string {
-  const workspaceId = row.workspace?.id?.trim();
-  if (workspaceId) {
-    return workspaceId;
-  }
-
-  return projectOf(row);
-}
-
-function paneSuffix(row: PickerRow): string {
-  const tag = row.location_tag.trim();
-  if (row.workspace?.source && row.workspace.source !== "session") {
-    return tag;
-  }
-
-  const colon = tag.indexOf(":");
-  return colon >= 0 ? tag.slice(colon + 1) : "";
-}
-
-// Group rows by backend workspace context, preserving first-seen order both
-// across groups and within each group so keyboard nav matches what's rendered.
-function groupRowsByProject(rows: PickerRow[]): PickerGroup[] {
-  const groups: PickerGroup[] = [];
-  const byProject = new Map<string, PickerGroup>();
-
-  for (const row of rows) {
-    const projectKey = projectKeyOf(row);
-    const project = projectOf(row);
-    let group = byProject.get(projectKey);
-    if (!group) {
-      group = { key: projectKey, project, rows: [] };
-      byProject.set(projectKey, group);
-      groups.push(group);
-    }
-    group.rows.push(row);
-  }
-
-  return groups;
-}
-
-function statusTone(kind: string): string {
-  switch (kind) {
-    case "busy":
-      return "busy";
-    case "idle":
-      return "idle";
-    case "error":
-      return "error";
-    default:
-      return "unknown";
-  }
-}
-
-// Tone for a source's folder/footer status dot, from its keyed live connection.
-function connectionTone(connection: ConnectionStatus): string {
-  switch (connection.status) {
-    case "online":
-      return "idle";
-    case "fatal":
-      return "error";
-    case "noDaemon":
-      return "busy";
-    case "connecting":
-    case "reconnecting":
-      return "unknown";
-  }
-}
-
-function filterPickerRows(rows: PickerRow[], query: string) {
-  const terms = query
-    .trim()
-    .toLowerCase()
-    .split(/\s+/)
-    .filter(Boolean);
-
-  if (terms.length === 0) {
-    return rows;
-  }
-
-  return rows.filter((row) => {
-    const searchable = [
-      row.key,
-      row.pane_id,
-      row.provider ?? "unknown",
-      row.status.kind,
-      row.display_label,
-      row.location_tag,
-      row.workspace?.label ?? "",
-      row.workspace?.source ?? "",
-    ]
-      .join(" ")
-      .toLowerCase();
-
-    return terms.every((term) => searchable.includes(term));
-  });
-}
-
-function liveStateLabel(status: ConnectionStatus) {
-  switch (status.status) {
-    case "online":
-      return "Live";
-    case "reconnecting":
-      return "Reconnecting";
-    case "noDaemon":
-      return "No daemon";
-    case "fatal":
-      return "Live client failed";
-    case "connecting":
-      return "Connecting";
-  }
 }
 
 // Persistent-window model: the global hotkey raises/focuses the window; it
