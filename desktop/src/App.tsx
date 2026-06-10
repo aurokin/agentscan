@@ -12,6 +12,7 @@ import {
   appearanceAtom,
   applyRunnerSettingsAtom,
   configureAtom,
+  configureHostnameEnrichmentAtom,
   configurePreflightAtom,
   configureSummonHotkeyAtom,
   deleteActiveProfileAtom,
@@ -22,7 +23,6 @@ import {
   reconnectAtom,
   reloadAppearanceAtom,
   reloadProfilesAtom,
-  recordProbedHostAtom,
   reorderProfileAtom,
   requestPreflightSyncAtom,
   selectProfileAtom,
@@ -61,7 +61,6 @@ import {
   runnerSummary,
   sourceLabel,
   validateProfileDraft,
-  type AgentscanPreflight,
   type DesktopProfileConfig,
   type EnvironmentVariable,
   type PreflightLabelSource,
@@ -271,7 +270,7 @@ function App({ mode }: { mode: ShellMode }) {
   const applyRunnerSettingsSet = useAtomSet(applyRunnerSettingsAtom, { mode: "promise" });
   const toggleProfileOpenSet = useAtomSet(toggleProfileOpenAtom);
   const reorderProfileSet = useAtomSet(reorderProfileAtom);
-  const recordProbedHostSet = useAtomSet(recordProbedHostAtom);
+  const configureHostnameEnrichment = useAtomSet(configureHostnameEnrichmentAtom);
   const reloadProfiles = useAtomSet(reloadProfilesAtom);
   const activeProfile = useMemo(() => getActiveProfile(profileState), [profileState]);
   const runnerSettings = useMemo(() => runnerSettingsForProfile(activeProfile), [activeProfile]);
@@ -519,94 +518,24 @@ function App({ mode }: { mode: ShellMode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runnerKey, mode, configurePreflight]);
 
-  // Persist a successful probe's hostname onto its profile: the preflight driver
-  // only ever probes the ACTIVE source, so without persistence every non-active
-  // folder (and the next launch) regresses to the raw connection string. The
-  // runnerKey match mirrors sourceLabel's stale-probe guard. This can't loop: the
-  // service no-ops unchanged values, and the post-commit re-render sees the
-  // stored value.
-  useEffect(() => {
-    const matched = matchedPreflight(preflightState, runnerKey);
-    if (mode !== "dock" || matched === null) {
-      return;
-    }
-    const probed = matched.preflight.remoteHostLabel?.trim() ?? "";
-    if (
-      probed === "" ||
-      activeProfile.kind !== "ssh" ||
-      activeProfile.probedHost === probed
-    ) {
-      return;
-    }
-    recordProbedHostSet({
-      id: activeProfile.id,
-      probedHost: probed,
-      // The service re-verifies this against the LATEST persisted profile, so
-      // a probe that raced a host edit is dropped instead of mislabeling it.
-      runnerKey: matched.runnerKey,
-    });
-  }, [mode, preflightState, runnerKey, activeProfile, recordProbedHostSet]);
-
-  // One-shot hostname enrichment for never-probed remotes: without it, a newly
-  // added (or pre-feature) remote keeps its raw connection-string label until
-  // the user happens to select it in Settings (only the active source gets the
-  // driver's preflight). Once such a source's channel is ONLINE — proof its SSH
-  // path works without interactive prompts — run its preflight once in the
-  // background and persist the probed hostname. Attempts are keyed per
-  // runnerKey: a failed or hostname-less probe doesn't retry until a relaunch
-  // or a connection edit (which moves the runnerKey), and a recorded value
-  // stops future runs for good via the probedHost guard.
-  const hostnameProbedRef = useRef<Set<string>>(new Set());
+  // Hostname-label enrichment (persisting the driver's probed hostnames and
+  // one-shot background probes for never-probed online remotes) is owned by the
+  // HostnameEnrichment service; this effect only arms it with the debug-log
+  // sink. Deps deliberately exclude onLog: appendDebugEntry is recreated every
+  // render but closes only over a stable functional setState, so the mount-time
+  // closure stays valid — re-configuring per render would churn the service's
+  // supervisors instead. StrictMode's double configure is absorbed by the
+  // service's mutex'd supervisor slot (in-flight probes live in the service
+  // scope and survive the swap).
   useEffect(() => {
     if (mode !== "dock") {
       return;
     }
-    // Forget attempts for runnerKeys that left the source list (host edit or
-    // delete): a round-trip edit back to the same connection restores the old
-    // runnerKey with probedHost cleared, and holding the stale attempt would
-    // block the re-probe until a relaunch.
-    const liveKeys = new Set(liveSources.map((source) => source.runnerKey));
-    for (const key of hostnameProbedRef.current) {
-      if (!liveKeys.has(key)) {
-        hostnameProbedRef.current.delete(key);
-      }
-    }
-    for (const source of liveSources) {
-      const profile = source.profile;
-      if (
-        profile.kind !== "ssh" ||
-        profile.probedHost ||
-        source.runnerKey === runnerKey ||
-        hostnameProbedRef.current.has(source.runnerKey) ||
-        liveStateFor(liveStates, source.runnerKey).connection.status !== "online"
-      ) {
-        continue;
-      }
-      hostnameProbedRef.current.add(source.runnerKey);
-      const profileId = profile.id;
-      void runCommand(
-        `hostname probe (${profile.host})`,
-        () => invoke<AgentscanPreflight>("preflight_agentscan", { settings: source.settings }),
-        appendDebugEntry,
-      )
-        .then((preflight) => {
-          const probed = preflight.remoteHostLabel?.trim() ?? "";
-          if (probed) {
-            // The probed runnerKey rides along: the service drops the result
-            // if the profile was retargeted while this probe was in flight.
-            recordProbedHostSet({
-              id: profileId,
-              probedHost: probed,
-              runnerKey: source.runnerKey,
-            });
-          }
-        })
-        .catch(() => {
-          // The failure is already in the debug log; the label honestly stays
-          // on the configured connection string.
-        });
-    }
-  }, [mode, liveSources, liveStates, runnerKey, recordProbedHostSet, appendDebugEntry]);
+    configureHostnameEnrichment((label, detail) =>
+      appendDebugEntry({ kind: "command", label, detail }),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, configureHostnameEnrichment]);
 
   // Drive the LiveConnection service to every OPEN folder's source: open folder =
   // live subscription, closed folder = none. The service owns the subscriptions,
@@ -2598,27 +2527,6 @@ function App({ mode }: { mode: ShellMode }) {
       </footer>
     </main>
   );
-}
-
-async function runCommand<T>(
-  label: string,
-  operation: () => Promise<T>,
-  appendDebugEntry: (entry: Omit<DebugEntry, "id" | "time">) => void,
-) {
-  appendDebugEntry({ kind: "command", label, detail: "started" });
-
-  try {
-    const result = await operation();
-    appendDebugEntry({ kind: "command", label, detail: "ok" });
-    return result;
-  } catch (error) {
-    appendDebugEntry({
-      kind: "command",
-      label,
-      detail: errorMessage(error),
-    });
-    throw error;
-  }
 }
 
 // The banner shown for any non-online connection. `noDaemon` (the dock latched but

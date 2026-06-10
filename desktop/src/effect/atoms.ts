@@ -6,6 +6,7 @@ import { Preflight, type PreflightTarget } from "./Preflight";
 import { Appearance } from "./Appearance";
 import { SummonHotkey } from "./SummonHotkey";
 import { Activation, type ActivateInput } from "./Activation";
+import { HostnameEnrichment, type EnrichmentLog } from "./HostnameEnrichment";
 import type { OrientationPreference, ThemePreference } from "./prefs";
 
 // One runtime per webview window, providing the desktop Effect services. Profiles,
@@ -22,9 +23,11 @@ const runtime = Atom.runtime(
     Preflight.Default,
     Appearance.Default,
     SummonHotkey.Default,
-    // Activation also depends on LiveConnection.Default; layer memoization
-    // resolves it to the same instance merged above.
+    // Activation and HostnameEnrichment also depend on services merged above
+    // (LiveConnection; plus Profiles/Preflight for enrichment); layer
+    // memoization resolves each to the same instance.
     Activation.Default,
+    HostnameEnrichment.Default,
   ),
 );
 
@@ -121,19 +124,6 @@ export const reorderProfileAtom = runtime.fn(
   }),
 );
 
-// Persist a probed remote hostname onto its profile (display-label enrichment;
-// the service no-ops unchanged values and drops stale-runner results).
-export const recordProbedHostAtom = runtime.fn(
-  Effect.fnUntraced(function* (input: {
-    readonly id: string;
-    readonly probedHost: string;
-    readonly runnerKey: string;
-  }) {
-    const profiles = yield* Profiles;
-    yield* profiles.recordProbedHost(input.id, input.probedHost, input.runnerKey);
-  }),
-);
-
 // Value-guarded reconcile from storage, driven by React on the cross-window profiles
 // sync and the settings window's focus/clean transitions (emitTo has no replay).
 export const reloadProfilesAtom = runtime.fn(
@@ -199,6 +189,18 @@ export const pruneActivationAtom = runtime.fn(
   Effect.fnUntraced(function* (openKeys: ReadonlyArray<string>) {
     const activation = yield* Activation;
     yield* activation.prune(openKeys);
+  }),
+);
+
+// --- Hostname enrichment slice ---
+
+// Dock-only: arm hostname enrichment (recording the driver's probed hostnames
+// + one-shot background probes for never-probed online remotes) with the
+// debug-log sink. Persistence goes through Profiles inside the service.
+export const configureHostnameEnrichmentAtom = runtime.fn(
+  Effect.fnUntraced(function* (onLog: EnrichmentLog) {
+    const enrichment = yield* HostnameEnrichment;
+    yield* enrichment.configure(onLog);
   }),
 );
 
