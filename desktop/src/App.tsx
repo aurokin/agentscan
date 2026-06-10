@@ -552,6 +552,16 @@ function App({ mode }: { mode: ShellMode }) {
     if (mode !== "dock") {
       return;
     }
+    // Forget attempts for runnerKeys that left the source list (host edit or
+    // delete): a round-trip edit back to the same connection restores the old
+    // runnerKey with probedHost cleared, and holding the stale attempt would
+    // block the re-probe until a relaunch.
+    const liveKeys = new Set(liveSources.map((source) => source.runnerKey));
+    for (const key of hostnameProbedRef.current) {
+      if (!liveKeys.has(key)) {
+        hostnameProbedRef.current.delete(key);
+      }
+    }
     for (const source of liveSources) {
       const profile = source.profile;
       if (
@@ -2695,6 +2705,10 @@ function App({ mode }: { mode: ShellMode }) {
             // set. "Active" now only means the settings-edit selection + the single
             // preflight target, and it changes in Settings.
             <div className="source-menu" role="menu">
+              {/* Draggable rows are safe inside the footer's frameless drag
+                  region: Tauri's data-tauri-drag-region handler only fires
+                  when the mousedown TARGET itself carries the attribute, so
+                  descendants start HTML5 drags, never window drags. */}
               {liveSources.map(({ profile, isOwner }) => (
                 <div
                   className={`source-option draggable${
