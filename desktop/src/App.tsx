@@ -19,6 +19,7 @@ import {
   reconnectAtom,
   reloadAppearanceAtom,
   reloadProfilesAtom,
+  recordProbedHostAtom,
   reorderProfileAtom,
   requestPreflightSyncAtom,
   selectProfileAtom,
@@ -267,6 +268,7 @@ function App({ mode }: { mode: ShellMode }) {
   const applyRunnerSettingsSet = useAtomSet(applyRunnerSettingsAtom, { mode: "promise" });
   const toggleProfileOpenSet = useAtomSet(toggleProfileOpenAtom);
   const reorderProfileSet = useAtomSet(reorderProfileAtom);
+  const recordProbedHostSet = useAtomSet(recordProbedHostAtom);
   const reloadProfiles = useAtomSet(reloadProfilesAtom);
   const activeProfile = useMemo(() => getActiveProfile(profileState), [profileState]);
   const runnerSettings = useMemo(() => runnerSettingsForProfile(activeProfile), [activeProfile]);
@@ -506,6 +508,27 @@ function App({ mode }: { mode: ShellMode }) {
     // runnerSettings/validation are fully determined by runnerKey where this reads them.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runnerKey, mode, configurePreflight]);
+
+  // Persist a successful probe's hostname onto its profile: only the active
+  // source is ever probed, so without persistence every non-active folder (and
+  // the next launch) regresses to the raw connection string. The runnerKey match
+  // mirrors sourceLabel's stale-probe guard. This can't loop: the service no-ops
+  // unchanged values, and the post-commit re-render sees the stored value.
+  useEffect(() => {
+    if (mode !== "dock" || preflightState.status !== "ready") {
+      return;
+    }
+    const probed = preflightState.preflight.remoteHostLabel?.trim() ?? "";
+    if (
+      probed === "" ||
+      preflightState.runnerKey !== runnerKey ||
+      activeProfile.kind !== "ssh" ||
+      activeProfile.probedHost === probed
+    ) {
+      return;
+    }
+    recordProbedHostSet({ id: activeProfile.id, probedHost: probed });
+  }, [mode, preflightState, runnerKey, activeProfile, recordProbedHostSet]);
 
   // Drive the LiveConnection service to every OPEN folder's source: open folder =
   // live subscription, closed folder = none. The service owns the subscriptions,

@@ -63,6 +63,12 @@ export type SshProfileConfig = {
   clientTty: string;
   runner: RunnerSettings;
   enabled: boolean;
+  // Short hostname probed by the last successful preflight of this connection.
+  // Display-only label enrichment (never part of the runner identity): only the
+  // active source is ever probed, so persisting the result is what keeps
+  // non-active folders and the next launch on the short label. Cleared when the
+  // host is edited — the probe described the old machine.
+  probedHost?: string;
 };
 
 export type DraftValidation = {
@@ -210,6 +216,7 @@ export function normalizeProfile(value: unknown): DesktopProfileConfig | null {
   }
 
   if (profile.kind === "ssh") {
+    const probedHost = typeof profile.probedHost === "string" ? profile.probedHost.trim() : "";
     return {
       id: id || `ssh-${Date.now()}`,
       kind: "ssh",
@@ -220,6 +227,7 @@ export function normalizeProfile(value: unknown): DesktopProfileConfig | null {
       // partial profiles missing it) remain selectable; only an explicit false
       // disables a profile.
       enabled: profile.enabled !== false,
+      ...(probedHost ? { probedHost } : {}),
     };
   }
 
@@ -294,6 +302,28 @@ export function reorderProfile(state: ProfileState, id: string, targetId: string
   return { ...state, profiles };
 }
 
+// Record the hostname a successful preflight probed for one SSH source.
+// Returns the SAME state when nothing changes (unknown id, non-ssh profile,
+// empty or already-stored value) so callers can skip a no-op commit.
+export function recordProbedHost(
+  state: ProfileState,
+  id: string,
+  probedHost: string,
+): ProfileState {
+  const trimmed = probedHost.trim();
+  if (!trimmed) {
+    return state;
+  }
+  const index = state.profiles.findIndex((profile) => profile.id === id);
+  const profile = index === -1 ? undefined : state.profiles[index];
+  if (!profile || profile.kind !== "ssh" || profile.probedHost === trimmed) {
+    return state;
+  }
+  const profiles = [...state.profiles];
+  profiles[index] = { ...profile, probedHost: trimmed };
+  return { ...state, profiles };
+}
+
 export function updateProfileSettingsById(
   state: ProfileState,
   id: string,
@@ -320,13 +350,20 @@ export function updateProfileSettings(
   const normalizedRunner = normalizeRunnerSettings(runner);
 
   if (profile.kind === "ssh") {
-    return {
+    const host = sshHost.trim();
+    const next: SshProfileConfig = {
       ...profile,
-      host: sshHost.trim(),
+      host,
       clientTty: sshClientTty.trim(),
       runner: normalizedRunner,
       enabled: true,
     };
+    if (host !== profile.host) {
+      // The stored probe described the old machine; a retargeted host must not
+      // wear it (the next successful preflight re-records one).
+      delete next.probedHost;
+    }
+    return next;
   }
 
   return { ...profile, runner: normalizedRunner };
@@ -488,12 +525,13 @@ function sshHostMachine(host: string): string {
 
 // Display label for an agentscan source, derived from its connection: the local
 // machine keyed by its hostname, a remote keyed by its SSH host (each falling back
-// to a generic label when its host isn't known). A remote upgrades to the hostname
-// probed by its preflight, but only when that preflight's runnerKey matches this
-// exact profile — a label must never come from a stale (different-runner) probe —
-// and only when no sibling source targets the same machine (compared by the
-// machine part of its configured target: "alice@box" and "bob@box" differ only by
-// SSH identity, which the probed "box" would erase; the configured connection
+// to a generic label when its host isn't known). A remote upgrades to a probed
+// hostname — the live preflight's when its runnerKey matches this exact profile (a
+// label must never come from a stale, different-runner probe), else the one
+// persisted from this connection's last successful preflight — and only when no
+// sibling source reaches the same machine (compared by its own stored probe and
+// the machine part of its configured target: "alice@box" and "bob@box" differ only
+// by SSH identity, which the probed "box" would erase; the configured connection
 // string is the honest disambiguator in lists the user picks from).
 export function sourceLabel(
   profile: DesktopProfileConfig,
@@ -502,19 +540,21 @@ export function sourceLabel(
   siblings?: ReadonlyArray<DesktopProfileConfig>,
 ): string {
   if (profile.kind === "ssh") {
-    const probed =
+    const live =
       preflight && preflight.runnerKey === runnerKeyForProfile(profile)
         ? preflight.preflight?.remoteHostLabel
         : null;
+    const probed = live || profile.probedHost || null;
     const ambiguous =
       !!probed &&
       (siblings ?? []).some((other) => {
         if (other.id === profile.id) {
           return false;
         }
-        return other.kind === "ssh"
-          ? sshHostMachine(other.host) === probed
-          : (localHostLabel || "agentscan") === probed;
+        if (other.kind !== "ssh") {
+          return (localHostLabel || "agentscan") === probed;
+        }
+        return other.probedHost === probed || sshHostMachine(other.host) === probed;
       });
     return (ambiguous ? null : probed) || profile.host.trim() || "Remote";
   }

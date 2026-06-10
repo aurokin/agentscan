@@ -8,6 +8,7 @@ import {
   newProfileId,
   normalizeProfileState,
   normalizeRunnerSettings,
+  recordProbedHost as recordProbedHostState,
   reorderProfile as reorderProfileState,
   sshHostCollides,
   storeProfileState,
@@ -194,6 +195,20 @@ export class Profiles extends Effect.Service<Profiles>()("desktop/Profiles", {
         yield* commit(next);
       });
 
+    // Persist the hostname a successful preflight probed for one source, so the
+    // short label outlives the probe (only the active source is ever probed) and
+    // app restarts. Merges onto the LATEST persisted state; an unchanged value,
+    // unknown id, or non-ssh target commits nothing.
+    const recordProbedHost = (id: string, probedHost: string) =>
+      Effect.gen(function* () {
+        const latest = loadProfileState(bridge.loadRaw);
+        const next = recordProbedHostState(latest, id, probedHost);
+        if (next === latest) {
+          return;
+        }
+        yield* commit(next);
+      });
+
     const applyRunnerSettings = (input: ApplyRunnerSettingsInput) =>
       Effect.gen(function* () {
         // Edit the profile this form targets (the ref's active id, which the form
@@ -230,6 +245,7 @@ export class Profiles extends Effect.Service<Profiles>()("desktop/Profiles", {
       applyRunnerSettings,
       toggleProfileOpen,
       reorderProfile,
+      recordProbedHost,
       // Value-guarded reconcile from storage, driven by React on the cross-window
       // profiles sync and the settings focus/clean transitions.
       reload,

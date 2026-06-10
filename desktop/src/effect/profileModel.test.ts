@@ -3,10 +3,12 @@ import {
   defaultProfileState,
   keybindOwnerId,
   normalizeProfileState,
+  recordProbedHost,
   reorderProfile,
   runnerKeyForProfile,
   sourceLabel,
   toggleProfileOpen,
+  updateProfileSettings,
   validateProfileDraft,
   type DesktopProfileConfig,
   type LocalProfileConfig,
@@ -336,5 +338,88 @@ describe("sourceLabel", () => {
       preflight: { remoteHostLabel: "koopa" },
     };
     expect(sourceLabel(localProfile, "mymac", preflight)).toBe("mymac");
+  });
+
+  it("falls back to the stored probed hostname when no live preflight matches", () => {
+    // Only the active source is probed; a non-active folder keeps the short
+    // label through the value persisted from its last successful preflight.
+    const profile = { ...sshProfile("ssh-1", "auro@mander.home.arpa"), probedHost: "mander" };
+    expect(sourceLabel(profile, "mymac")).toBe("mander");
+    const otherRunner: PreflightLabelSource = {
+      runnerKey: runnerKeyForProfile(sshProfile("ssh-2", "other")),
+      preflight: { remoteHostLabel: "koopa" },
+    };
+    expect(sourceLabel(profile, "mymac", otherRunner)).toBe("mander");
+  });
+
+  it("prefers a matching live probe over the stored probed hostname", () => {
+    const profile = { ...sshProfile("ssh-1", "user@box"), probedHost: "old-name" };
+    const preflight: PreflightLabelSource = {
+      runnerKey: runnerKeyForProfile(profile),
+      preflight: { remoteHostLabel: "new-name" },
+    };
+    expect(sourceLabel(profile, "mymac", preflight)).toBe("new-name");
+  });
+
+  it("drops a stored probed hostname that collides with a sibling", () => {
+    // Same machine via the sibling's configured target...
+    const profile = { ...sshProfile("ssh-1", "alice@box"), probedHost: "box" };
+    expect(sourceLabel(profile, "mymac", null, [profile, sshProfile("ssh-2", "bob@box")])).toBe(
+      "alice@box",
+    );
+    // ...or via the sibling's own stored probe (configured host spelled differently).
+    const sibling = { ...sshProfile("ssh-2", "alias-elsewhere"), probedHost: "box" };
+    expect(sourceLabel(profile, "mymac", null, [profile, sibling])).toBe("alice@box");
+  });
+});
+
+describe("recordProbedHost", () => {
+  const state = (profiles: DesktopProfileConfig[]): ProfileState => ({
+    activeProfileId: profiles[0].id,
+    profiles,
+    openProfileIds: [profiles[0].id],
+  });
+
+  it("stores the trimmed probe on the targeted ssh profile", () => {
+    const before = state([localProfile, sshProfile("ssh-1", "user@box")]);
+    const next = recordProbedHost(before, "ssh-1", "  mander  ");
+    expect(next.profiles[1]).toMatchObject({ id: "ssh-1", probedHost: "mander" });
+  });
+
+  it("returns the same state for no-ops", () => {
+    const probed = { ...sshProfile("ssh-1", "user@box"), probedHost: "mander" };
+    const before = state([localProfile, probed]);
+    // Unchanged value, empty value, unknown id, and a local target all skip.
+    expect(recordProbedHost(before, "ssh-1", "mander")).toBe(before);
+    expect(recordProbedHost(before, "ssh-1", "   ")).toBe(before);
+    expect(recordProbedHost(before, "ssh-9", "mander")).toBe(before);
+    expect(recordProbedHost(before, "local", "mander")).toBe(before);
+  });
+});
+
+describe("probedHost persistence", () => {
+  it("survives normalization and drops a blank value", () => {
+    const stored = {
+      activeProfileId: "ssh-1",
+      profiles: [
+        localProfile,
+        { ...sshProfile("ssh-1", "user@box"), probedHost: " mander " },
+        { ...sshProfile("ssh-2", "user@other"), probedHost: "   " },
+      ],
+      openProfileIds: ["ssh-1"],
+    };
+    const normalized = normalizeProfileState(stored);
+    const first = normalized.profiles.find((profile) => profile.id === "ssh-1");
+    const second = normalized.profiles.find((profile) => profile.id === "ssh-2");
+    expect(first).toMatchObject({ probedHost: "mander" });
+    expect(second).not.toHaveProperty("probedHost");
+  });
+
+  it("is cleared by a host edit and kept by a same-host edit", () => {
+    const profile = { ...sshProfile("ssh-1", "user@box"), probedHost: "mander" };
+    const retargeted = updateProfileSettings(profile, profile.runner, "user@other", "");
+    expect(retargeted).not.toHaveProperty("probedHost");
+    const sameHost = updateProfileSettings(profile, profile.runner, " user@box ", "/dev/ttys001");
+    expect(sameHost).toMatchObject({ probedHost: "mander" });
   });
 });
