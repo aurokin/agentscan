@@ -2594,6 +2594,9 @@ function App({ mode }: { mode: ShellMode }) {
                   .catch(() => {})
                   .then(() => openSettings());
               } else {
+                // Vertical: only the order menu toggles — no selection happens
+                // on this branch (the deep-link above is horizontal-exclusive,
+                // where the trigger's label names exactly one source).
                 setIsSourceMenuOpen((open) => !open);
               }
             }}

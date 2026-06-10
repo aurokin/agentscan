@@ -359,8 +359,13 @@ export function updateProfileSettings(
       enabled: true,
     };
     if (host !== profile.host) {
-      // The stored probe described the old machine; a retargeted host must not
-      // wear it (the next successful preflight re-records one).
+      // The stored probe described the old target; a retargeted host must not
+      // wear it. Cleared even when only the SSH identity changed (alice@box ->
+      // bob@box): machine-part equality is a heuristic (ssh config can resolve
+      // equal-looking targets to different machines), and heuristics here only
+      // ever SUPPRESS a probed label, never retain one. The edited profile is
+      // the settings-active one, so its runnerKey change re-fires preflight and
+      // re-records the label one round-trip later.
       delete next.probedHost;
     }
     return next;
