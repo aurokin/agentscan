@@ -194,6 +194,38 @@ type PickerActivation =
 const EMPTY_PICKER_ROWS: PickerRow[] = [];
 const EMPTY_PICKER_GROUPS: PickerGroup[] = [];
 
+// Source-kind mark: Lucide "house" / "server" outlines (ISC), inlined so the
+// mark renders crisply at small sizes instead of leaning on font glyph
+// coverage. Each context sizes it via font-size (the icon is 1em square).
+function SourceKindIcon({ kind }: { kind: "local" | "ssh" }) {
+  return (
+    <svg
+      className="source-kind-icon"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {kind === "ssh" ? (
+        <>
+          <rect width="20" height="8" x="2" y="2" rx="2" ry="2" />
+          <rect width="20" height="8" x="2" y="14" rx="2" ry="2" />
+          <path d="M6 6h.01" />
+          <path d="M6 18h.01" />
+        </>
+      ) : (
+        <>
+          <path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8" />
+          <path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+        </>
+      )}
+    </svg>
+  );
+}
+
 function App({ mode }: { mode: ShellMode }) {
   // The dock's resolved CLI preflight is owned by the Preflight Effect service. The dock
   // observes preflightStateAtom and drives the probe via configurePreflight; the service
@@ -335,6 +367,9 @@ function App({ mode }: { mode: ShellMode }) {
   // Footer source switcher: which agentscan we're listening to (local vs a
   // remote over SSH). Open state for the inline dropdown.
   const [isSourceMenuOpen, setIsSourceMenuOpen] = useState(false);
+  // Mid-drag source id for the footer order menu (the dock-side counterpart of
+  // the settings rail's draggedSourceId).
+  const [draggedMenuSourceId, setDraggedMenuSourceId] = useState<string | null>(null);
   const sourceMenuRef = useRef<HTMLDivElement | null>(null);
   // The local machine's short hostname, fetched once from the backend, shown as the
   // local source's label (the way a remote source is keyed by its SSH host). Empty
@@ -1849,7 +1884,7 @@ function App({ mode }: { mode: ShellMode }) {
                       data-kind={profile.kind}
                       aria-hidden="true"
                     >
-                      {profile.kind === "ssh" ? "⇆" : "⌂"}
+                      <SourceKindIcon kind={profile.kind} />
                     </span>
                     <span className="source-card-text">
                       <span className="source-card-name">
@@ -2159,7 +2194,15 @@ function App({ mode }: { mode: ShellMode }) {
   // is the active source (the common case — and always true right after the open-state
   // migration) the dot keeps today's preflight tone; a non-active owner is never
   // probed, so its tone comes from its keyed live connection instead.
+  //
+  // That single-source presentation only fits when one source is all there is: with
+  // several, every folder header already carries its own label and dot, so the
+  // vertical trigger stops impersonating one host and becomes a generic entry point
+  // to the source order menu. The horizontal bar still displays only the owner, so
+  // it keeps the owner label regardless.
   const triggerProfile = ownerProfile ?? activeProfile;
+  const triggerShowsSource =
+    effectiveOrientation === "horizontal" || liveSources.length <= 1;
   const triggerIsActive = triggerProfile.id === activeProfile.id;
   const triggerTone = triggerIsActive
     ? sourceStatusTone
@@ -2362,7 +2405,7 @@ function App({ mode }: { mode: ShellMode }) {
                       aria-hidden="true"
                     />
                     <span className="folder-mark" aria-hidden="true">
-                      {view.profile.kind === "ssh" ? "⇆" : "⌂"}
+                      <SourceKindIcon kind={view.profile.kind} />
                     </span>
                     <span className="folder-label">
                       {labelFor(view.profile)}
@@ -2471,7 +2514,7 @@ function App({ mode }: { mode: ShellMode }) {
               // from the settings-selected active profile): landing in Settings on a
               // different source than the label promised would manage the wrong one.
               // This is a deep-link INTO the settings selection, not a dock-side
-              // quick-switch — the open/close menu below still never selects. The
+              // quick-switch — the order menu below still never selects. The
               // retarget is deliberate and cheap: the probe moves to the source the
               // bar is DISPLAYING (open, so an online channel stays armed), no
               // subscription churns, and a user after the previous selection is one
@@ -2490,14 +2533,22 @@ function App({ mode }: { mode: ShellMode }) {
                 setIsSourceMenuOpen((open) => !open);
               }
             }}
-            title={triggerTitle}
+            title={
+              triggerShowsSource
+                ? triggerTitle
+                : "Drag to reorder sources — the top open source owns row hotkeys"
+            }
           >
-            <span
-              className="status-dot"
-              data-tone={triggerTone}
-              aria-hidden="true"
-            />
-            <span className="source-label">{labelFor(triggerProfile)}</span>
+            {triggerShowsSource ? (
+              <span
+                className="status-dot"
+                data-tone={triggerTone}
+                aria-hidden="true"
+              />
+            ) : null}
+            <span className="source-label">
+              {triggerShowsSource ? labelFor(triggerProfile) : "Manage sources"}
+            </span>
             <span
               className={`source-caret${isSourceMenuOpen ? " open" : ""}`}
               aria-hidden="true"
@@ -2506,39 +2557,82 @@ function App({ mode }: { mode: ShellMode }) {
             </span>
           </button>
           {isSourceMenuOpen ? (
-            // Open/close toggles, one per source folder: checking opens that folder
-            // (arms its subscription), unchecking closes it. The menu stays open so
-            // several sources can be toggled in one visit.
+            // Pure ordering surface: drag rows to reorder sources. The topmost
+            // OPEN folder owns the row hotkeys, so this is where the dock decides
+            // which source answers them. Nothing else is duplicated here —
+            // open/close lives on the folder headers, and enable/disable/add/
+            // remove live in Settings.
             //
             // Deliberately NOT a quick-switch: the dock never changes the active
             // source. The old single-select footer existed because the dock could
             // show one source at a time; folders replace that gesture with the open
             // set. "Active" now only means the settings-edit selection + the single
-            // preflight target, and it changes in Settings (one click away via
-            // "Manage sources…"). Non-active sources don't need activation to work
-            // here — opening a folder arms it, and its failures surface per-folder.
+            // preflight target, and it changes in Settings.
             <div className="source-menu" role="menu">
-              {liveSources.map(({ profile, isOpen }) => (
-                <button
-                  className={`source-option${isOpen ? " active" : ""}`}
+              {liveSources.map(({ profile, isOwner }) => (
+                <div
+                  className={`source-option draggable${
+                    draggedMenuSourceId === profile.id ? " dragging" : ""
+                  }`}
                   key={profile.id}
-                  role="menuitemcheckbox"
-                  aria-checked={isOpen}
-                  type="button"
-                  onClick={() => toggleProfileOpenSet(profile.id)}
+                  role="menuitem"
+                  draggable
+                  onDragStart={(event) => {
+                    event.dataTransfer.effectAllowed = "move";
+                    setDraggedMenuSourceId(profile.id);
+                  }}
+                  onDragEnd={() => setDraggedMenuSourceId(null)}
+                  onDragOver={(event) => {
+                    // preventDefault marks this row as a valid drop target.
+                    if (draggedMenuSourceId && draggedMenuSourceId !== profile.id) {
+                      event.preventDefault();
+                      event.dataTransfer.dropEffect = "move";
+                    }
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    if (draggedMenuSourceId && draggedMenuSourceId !== profile.id) {
+                      reorderProfileSet({
+                        id: draggedMenuSourceId,
+                        targetId: profile.id,
+                      });
+                    }
+                    setDraggedMenuSourceId(null);
+                  }}
                 >
-                  <span className="source-check" aria-hidden="true">
-                    {isOpen ? "✓" : ""}
-                  </span>
                   <span className="source-option-mark" aria-hidden="true">
-                    {profile.kind === "ssh" ? "⇆" : "⌂"}
+                    <SourceKindIcon kind={profile.kind} />
                   </span>
                   <span className="source-option-text">
                     <span className="source-option-name">
                       {labelFor(profile)}
                     </span>
                   </span>
-                </button>
+                  {isOwner ? (
+                    <kbd
+                      className="folder-kbd"
+                      title="Row hotkeys target this source"
+                    >
+                      {HOTKEY_MODIFIER_LABEL.trim()}
+                    </kbd>
+                  ) : null}
+                  <svg
+                    className="source-grip"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    aria-hidden="true"
+                  >
+                    <circle cx="9" cy="5" r="1" />
+                    <circle cx="9" cy="12" r="1" />
+                    <circle cx="9" cy="19" r="1" />
+                    <circle cx="15" cy="5" r="1" />
+                    <circle cx="15" cy="12" r="1" />
+                    <circle cx="15" cy="19" r="1" />
+                  </svg>
+                </div>
               ))}
               <div className="source-menu-divider" role="separator" />
               <button
@@ -2562,7 +2656,7 @@ function App({ mode }: { mode: ShellMode }) {
                 <span className="source-check" aria-hidden="true">
                   {"⚙"}
                 </span>
-                <span className="source-option-label">Manage sources…</span>
+                <span className="source-option-label">Add or edit sources…</span>
               </button>
             </div>
           ) : null}

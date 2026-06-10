@@ -467,7 +467,7 @@ p {
   border: none;
   border-radius: 8px;
   background: transparent;
-  color: var(--text-dim);
+  color: var(--text);
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.01em;
@@ -477,19 +477,27 @@ p {
 
 .folder-header:hover {
   background: var(--bg-hover);
-  color: var(--text-muted);
 }
 
 .folder-header .status-dot {
   flex: 0 0 auto;
 }
 
-/* Kind glyph (⌂ local / ⇆ ssh): disambiguates folders whose connection-derived
-   labels coincide, e.g. a local hostname matching a configured SSH host. */
+/* Kind icon (house = local / server = ssh): disambiguates folders whose
+   connection-derived labels coincide, e.g. a local hostname matching a
+   configured SSH host. */
 .folder-mark {
   flex: 0 0 auto;
   color: var(--text-muted);
   font-size: 12px;
+}
+
+/* Inline Lucide outline for the source-kind mark; 1em square so each
+   context's font-size keeps controlling the visual size. */
+.source-kind-icon {
+  display: block;
+  width: 1em;
+  height: 1em;
 }
 
 .folder-label {
@@ -1000,8 +1008,20 @@ kbd.dimmed {
   background: var(--bg-hover);
 }
 
-.source-option.active {
-  font-weight: 600;
+/* Drag rows in the footer order menu (mirrors .source-card.dragging). */
+.source-option.draggable {
+  cursor: grab;
+}
+
+.source-option.dragging {
+  opacity: 0.5;
+}
+
+.source-grip {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  color: var(--text-dim);
 }
 
 .source-check {
@@ -1020,11 +1040,12 @@ kbd.dimmed {
   white-space: nowrap;
 }
 
-/* Same kind glyph as .folder-mark / .source-card-mark, menu-row sized. */
+/* Same kind icon as .folder-mark / .source-card-mark, menu-row sized. */
 .source-option-mark {
   flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
   width: 14px;
-  text-align: center;
   font-size: 12px;
   color: var(--text-muted);
 }
