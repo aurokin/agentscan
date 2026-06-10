@@ -1,14 +1,22 @@
 use super::*;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
-// The compatible-tmux resolution result, computed at most once per process the
-// first time a fresh client is dropped mid-handshake (see
-// `tmux_dropped_fresh_client`). `Some` reroutes every later tmux exec —
-// including the daemon's control-mode attach, which always follows a sync
-// command like list-sessions that triggers the resolution — through the
-// install that proved it can talk to the running server.
-static COMPATIBLE_TMUX: OnceLock<Option<PathBuf>> = OnceLock::new();
+// The last compatible tmux install resolved after a fresh client was dropped
+// mid-handshake (see `tmux_dropped_fresh_client`). `Some` reroutes every later
+// tmux exec — including the daemon's control-mode attach, which always follows
+// a sync command like list-sessions that triggers the resolution — through the
+// install that proved it can talk to the running server. Not a once-per-process
+// cache: when the selected install is itself dropped (the server moved to yet
+// another install mid-process), `refresh_compatible_tmux` re-resolves, so a
+// long-lived daemon heals without a restart.
+static COMPATIBLE_TMUX: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+fn compatible_tmux_cache() -> MutexGuard<'static, Option<PathBuf>> {
+    COMPATIBLE_TMUX
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
 
 pub(crate) fn tmux_command() -> Command {
     tmux_command_from_env(|name| env::var_os(name), |name| env::var(name).ok())
@@ -22,12 +30,7 @@ fn tmux_command_from_env(
     // resolved after a dropped handshake, then plain `tmux` from PATH.
     let program = read_os(TMUX_BIN_ENV_VAR)
         .filter(|program| !program.is_empty())
-        .or_else(|| {
-            COMPATIBLE_TMUX
-                .get()
-                .and_then(|resolved| resolved.clone())
-                .map(PathBuf::into_os_string)
-        })
+        .or_else(|| compatible_tmux_cache().clone().map(PathBuf::into_os_string))
         .unwrap_or_else(|| std::ffi::OsString::from("tmux"));
     tmux_command_with_program(program, read_os, read_string)
 }
@@ -74,14 +77,14 @@ pub(super) fn run_tmux_output(args: &[&str], context: &str) -> Result<std::proce
     // A dropped handshake usually means THIS tmux install's version differs
     // from the running server's (verified case: a linuxbrew 3.6b server
     // dropping the apt 3.4 client that non-interactive SSH resolves). Resolve
-    // a compatible install once per process — each candidate must complete a
-    // real handshake against the same socket to win — and retry once. An
-    // explicit AGENTSCAN_TMUX_BIN pin is honored as-is: the user chose it, so
-    // no auto-resolution overrides it.
+    // a compatible install — each candidate must complete a real handshake
+    // against the same socket to win — and retry once. An explicit
+    // AGENTSCAN_TMUX_BIN pin is honored as-is: the user chose it, so no
+    // auto-resolution overrides it.
     if env::var_os(TMUX_BIN_ENV_VAR).is_some_and(|pin| !pin.is_empty()) {
         return Ok(output);
     }
-    let Some(resolved) = compatible_tmux() else {
+    let Some(resolved) = refresh_compatible_tmux(&program_used) else {
         return Ok(output);
     };
     if resolved.as_os_str() == program_used {
@@ -104,12 +107,33 @@ pub(super) fn tmux_dropped_fresh_client(stderr: &str) -> bool {
         || stderr.contains("protocol version mismatch")
 }
 
-fn compatible_tmux() -> Option<PathBuf> {
-    COMPATIBLE_TMUX
-        .get_or_init(|| {
-            resolve_compatible_tmux(&well_known_tmux_installs(), candidate_speaks_to_server)
-        })
-        .clone()
+// Probe candidates only when the dropped install is the one the cache (or
+// PATH) already selected; when another thread just resolved a different
+// install, reuse it without re-probing. Holding the lock across the sweep
+// serializes concurrent failers so each refresh probes once. Re-probing on
+// every dropped command (rather than once per process) is the deliberate
+// cost: it only happens on commands that already failed, the sweep is a
+// handful of spawns at most, and it is what lets a long-lived daemon follow
+// a server that moves between installs.
+fn refresh_compatible_tmux(program_used: &std::ffi::OsStr) -> Option<PathBuf> {
+    let mut cache = compatible_tmux_cache();
+    refresh_compatible_tmux_with(&mut cache, program_used, || {
+        resolve_compatible_tmux(&well_known_tmux_installs(), candidate_speaks_to_server)
+    })
+}
+
+fn refresh_compatible_tmux_with(
+    cache: &mut Option<PathBuf>,
+    program_used: &std::ffi::OsStr,
+    resolve: impl FnOnce() -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    let cached_is_fresh = cache
+        .as_ref()
+        .is_some_and(|cached| cached.as_os_str() != program_used);
+    if !cached_is_fresh {
+        *cache = resolve();
+    }
+    cache.clone()
 }
 
 // First candidate that completes a handshake with the running server wins.
@@ -295,8 +319,8 @@ pub(crate) fn list_session_ids() -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        env_has_utf8_locale, resolve_compatible_tmux, tmux_command_from_env,
-        tmux_dropped_fresh_client, tmux_no_server_running,
+        env_has_utf8_locale, refresh_compatible_tmux_with, resolve_compatible_tmux,
+        tmux_command_from_env, tmux_dropped_fresh_client, tmux_no_server_running,
     };
     use crate::app::{TMUX_BIN_ENV_VAR, TMUX_SOCKET_ENV_VAR};
     use std::ffi::OsString;
@@ -316,6 +340,56 @@ mod tests {
         ));
         assert!(!tmux_dropped_fresh_client("can't find pane: %42"));
         assert!(!tmux_dropped_fresh_client(""));
+    }
+
+    #[test]
+    fn refresh_resolves_when_the_cache_is_empty() {
+        let mut cache = None;
+        let resolved =
+            refresh_compatible_tmux_with(&mut cache, OsString::from("tmux").as_os_str(), || {
+                Some(PathBuf::from("/fake/working/tmux"))
+            });
+        assert_eq!(resolved, Some(PathBuf::from("/fake/working/tmux")));
+        assert_eq!(cache, Some(PathBuf::from("/fake/working/tmux")));
+    }
+
+    #[test]
+    fn refresh_reresolves_when_the_cached_install_is_the_one_that_was_dropped() {
+        // The server moved to yet another install mid-process: the cached
+        // binary itself got dropped, so the cache must not be trusted.
+        let mut cache = Some(PathBuf::from("/fake/stale/tmux"));
+        let resolved = refresh_compatible_tmux_with(
+            &mut cache,
+            OsString::from("/fake/stale/tmux").as_os_str(),
+            || Some(PathBuf::from("/fake/new/tmux")),
+        );
+        assert_eq!(resolved, Some(PathBuf::from("/fake/new/tmux")));
+        assert_eq!(cache, Some(PathBuf::from("/fake/new/tmux")));
+    }
+
+    #[test]
+    fn refresh_clears_the_cache_when_no_candidate_handshakes() {
+        let mut cache = Some(PathBuf::from("/fake/stale/tmux"));
+        let resolved = refresh_compatible_tmux_with(
+            &mut cache,
+            OsString::from("/fake/stale/tmux").as_os_str(),
+            || None,
+        );
+        assert_eq!(resolved, None);
+        assert_eq!(cache, None);
+    }
+
+    #[test]
+    fn refresh_reuses_a_cached_install_that_was_not_the_dropped_one() {
+        // Another thread already resolved a different install; reuse it for
+        // the retry instead of probing again.
+        let mut cache = Some(PathBuf::from("/fake/working/tmux"));
+        let resolved =
+            refresh_compatible_tmux_with(&mut cache, OsString::from("tmux").as_os_str(), || {
+                panic!("a fresh cache entry must be reused without re-probing")
+            });
+        assert_eq!(resolved, Some(PathBuf::from("/fake/working/tmux")));
+        assert_eq!(cache, Some(PathBuf::from("/fake/working/tmux")));
     }
 
     #[test]
