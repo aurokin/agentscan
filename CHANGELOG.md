@@ -2,6 +2,101 @@
 
 ## Unreleased
 
+## 0.7.2 - 2026-06-10
+
+### Added
+
+- Added multi-source desktop dock folders. The vertical dock now renders one
+  collapsible folder per enabled local or SSH source, keeps open/closed folder
+  state across launches, and arms live subscriptions only for open folders.
+  Each open source renders its own picker rows, status dot, and recovery strip.
+- Added a keyed multi-source live pipeline for the desktop app. The Tauri worker
+  now runs one supervised subscription per source key, emits source-keyed live
+  events, fences stale epochs per source, and lets the Effect `LiveConnection`
+  service manage independent per-source connection state.
+- Added source ordering and keybind ownership for the desktop dock. Sources can
+  be drag-reordered in Settings and from the footer order menu; row hotkeys are
+  owned by the topmost open folder, while non-owner folders show their returned
+  row keys as informational labels.
+- Added local and remote hostname labels for desktop sources. The local source
+  uses the machine's short hostname, and SSH preflight now captures the remote's
+  short hostname so folders can show concise host labels instead of only raw SSH
+  aliases.
+- Added persistent probed host labels for SSH sources, including a background
+  one-shot hostname probe for never-probed remotes after they come online.
+- Added macOS CI coverage for the standalone Tauri desktop crate, including
+  desktop Rust format/clippy/test checks plus frontend build and Vitest runs.
+- Added compatible tmux auto-resolution for daemon-backed lists, direct scans,
+  and focus commands. When PATH resolves a tmux client that the running server
+  drops mid-handshake (`server exited unexpectedly`, `lost server`, or
+  `protocol version mismatch`), agentscan probes common tmux install paths
+  against the same socket, caches the first compatible binary, and retries.
+  `AGENTSCAN_TMUX_BIN` pins a binary and disables auto-resolution.
+- Added a release-build desktop single-instance guard. Launching a second
+  packaged app instance now brings the existing window forward before normal
+  initialization can compete for global resources.
+
+### Changed
+
+- Desktop source identity is now derived from connection settings rather than
+  user-editable profile names. Persisted duplicate SSH hosts are deduplicated to
+  one runnable survivor, new duplicate-host saves are refused, and only one
+  unconfigured remote draft is allowed at a time.
+- The desktop footer source switcher is now an order menu rather than a
+  quick-switch. In the vertical dock, folder headers own open/close state; in the
+  horizontal dock, the footer advertises the current keybind owner.
+- Desktop picker activation is now source-scoped. Mouse and keyboard activation
+  run `focus` against the row's own source settings, so pane ids that collide
+  across hosts do not route to the wrong source.
+- Desktop live connection gating now treats preflight as a start gate rather
+  than authority over an already-online channel. A same-source preflight failure
+  no longer kills or masks a live source that is already streaming rows.
+- The desktop settings rail now exposes folder open/close state and source
+  ordering without clobbering unsaved settings form drafts.
+- Documented the multi-source desktop model, including open-folder
+  subscriptions, source ordering, keybind ownership, and the horizontal bar's
+  single-source presentation tradeoff.
+- Documented tmux client/server version split recovery and the
+  `AGENTSCAN_TMUX_BIN` explicit override boundary.
+- Raised the desktop Vite chunk-size warning ceiling to 700 kB. Tauri loads the
+  bundle from disk, so the default 500 kB web payload warning was noisy, while
+  the higher ceiling still catches meaningful dependency growth.
+
+### Fixed
+
+- Fixed stale or cross-source live events by tagging live envelopes with
+  `sourceKey` and epoch, filtering Tauri event queues per source, and stopping
+  only the supervisor for the requested source key.
+- Fixed interrupted live-subscription starts so a worker that finishes starting
+  after a target switch is still stopped for its epoch instead of leaking.
+- Fixed re-added desktop sources inheriting stale rows from a just-removed
+  source with the same runner key.
+- Fixed activation failures and recovery UI so errors are scoped to the source
+  that failed, remain visible while recovery settles, expire after a readable
+  interval, and do not make healthy open folders look broken.
+- Fixed source labels from hostname probes so stale probe results are fenced by
+  runner identity, SSH user/host identities are respected, empty hostname probes
+  keep the configured label, and colliding probed labels fall back to distinct
+  connection labels.
+- Fixed remote source apply flows so duplicate-host refusals surface as refused
+  instead of being logged as successful applies, and reused remote drafts open
+  like newly added sources.
+- Fixed closed or deleted source activations so their pending focus result does
+  not block or overwrite activation state for still-open sources.
+- Fixed frameless boot/recovery drag behavior by applying the Tauri drag region
+  to the full boot-state surface, not only the outer main area.
+- Fixed long-lived daemon and focus recovery across tmux client/server version
+  splits. Compatible-tmux selection is reused for later commands, refreshed if
+  the chosen install starts being dropped too, and `switch-client` focus now
+  routes through the shared retry path.
+- Fixed desktop tmux dropped-client diagnostics so they describe a client/server
+  version split and name the runner's own tmux resolution instead of suggesting
+  the tmux server is wedged.
+- Fixed desktop summon-hotkey recovery when `Cmd+Shift+A` is already owned by
+  another agentscan instance. The app now shows an in-use banner and retries
+  registration until the key is released, while non-recoverable registration
+  failures still surface once.
+
 ## 0.7.1 - 2026-06-09
 
 ### Added
