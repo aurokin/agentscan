@@ -64,10 +64,11 @@ export type SshProfileConfig = {
   runner: RunnerSettings;
   enabled: boolean;
   // Short hostname probed by the last successful preflight of this connection.
-  // Display-only label enrichment (never part of the runner identity): only the
-  // active source is ever probed, so persisting the result is what keeps
-  // non-active folders and the next launch on the short label. Cleared when the
-  // host is edited — the probe described the old machine.
+  // Display-only label enrichment (never part of the runner identity): probes
+  // are event-driven (the active source's preflight, plus a one-shot background
+  // probe when a never-probed source comes online), so persisting the result is
+  // what keeps every folder and the next launch on the short label. Cleared
+  // when the host is edited — the probe described the old machine.
   probedHost?: string;
 };
 

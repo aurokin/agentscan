@@ -57,6 +57,7 @@ import {
   runnerSummary,
   sourceLabel,
   validateProfileDraft,
+  type AgentscanPreflight,
   type DesktopProfileConfig,
   type EnvironmentVariable,
   type PreflightLabelSource,
@@ -509,11 +510,12 @@ function App({ mode }: { mode: ShellMode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runnerKey, mode, configurePreflight]);
 
-  // Persist a successful probe's hostname onto its profile: only the active
-  // source is ever probed, so without persistence every non-active folder (and
-  // the next launch) regresses to the raw connection string. The runnerKey match
-  // mirrors sourceLabel's stale-probe guard. This can't loop: the service no-ops
-  // unchanged values, and the post-commit re-render sees the stored value.
+  // Persist a successful probe's hostname onto its profile: the preflight driver
+  // only ever probes the ACTIVE source, so without persistence every non-active
+  // folder (and the next launch) regresses to the raw connection string. The
+  // runnerKey match mirrors sourceLabel's stale-probe guard. This can't loop: the
+  // service no-ops unchanged values, and the post-commit re-render sees the
+  // stored value.
   useEffect(() => {
     if (mode !== "dock" || preflightState.status !== "ready") {
       return;
@@ -529,6 +531,51 @@ function App({ mode }: { mode: ShellMode }) {
     }
     recordProbedHostSet({ id: activeProfile.id, probedHost: probed });
   }, [mode, preflightState, runnerKey, activeProfile, recordProbedHostSet]);
+
+  // One-shot hostname enrichment for never-probed remotes: without it, a newly
+  // added (or pre-feature) remote keeps its raw connection-string label until
+  // the user happens to select it in Settings (only the active source gets the
+  // driver's preflight). Once such a source's channel is ONLINE — proof its SSH
+  // path works without interactive prompts — run its preflight once in the
+  // background and persist the probed hostname. Attempts are keyed per
+  // runnerKey: a failed or hostname-less probe doesn't retry until a relaunch
+  // or a connection edit (which moves the runnerKey), and a recorded value
+  // stops future runs for good via the probedHost guard.
+  const hostnameProbedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (mode !== "dock") {
+      return;
+    }
+    for (const source of liveSources) {
+      const profile = source.profile;
+      if (
+        profile.kind !== "ssh" ||
+        profile.probedHost ||
+        source.runnerKey === runnerKey ||
+        hostnameProbedRef.current.has(source.runnerKey) ||
+        liveStateFor(liveStates, source.runnerKey).connection.status !== "online"
+      ) {
+        continue;
+      }
+      hostnameProbedRef.current.add(source.runnerKey);
+      const profileId = profile.id;
+      void runCommand(
+        `hostname probe (${profile.host})`,
+        () => invoke<AgentscanPreflight>("preflight_agentscan", { settings: source.settings }),
+        appendDebugEntry,
+      )
+        .then((preflight) => {
+          const probed = preflight.remoteHostLabel?.trim() ?? "";
+          if (probed) {
+            recordProbedHostSet({ id: profileId, probedHost: probed });
+          }
+        })
+        .catch(() => {
+          // The failure is already in the debug log; the label honestly stays
+          // on the configured connection string.
+        });
+    }
+  }, [mode, liveSources, liveStates, runnerKey, recordProbedHostSet, appendDebugEntry]);
 
   // Drive the LiveConnection service to every OPEN folder's source: open folder =
   // live subscription, closed folder = none. The service owns the subscriptions,
