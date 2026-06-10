@@ -10,8 +10,11 @@ import {
   activationAtom,
   addSshProfileAtom,
   appearanceAtom,
+  appendDebugEntryAtom,
   applyRunnerSettingsAtom,
+  clearDebugLogAtom,
   configureAtom,
+  debugLogAtom,
   configureHostnameEnrichmentAtom,
   configurePreflightAtom,
   configureSummonHotkeyAtom,
@@ -37,6 +40,9 @@ import {
   toggleProfileOpenAtom,
 } from "./effect/atoms";
 import type { ConnectionStatus, LiveState, PickerRow } from "./effect/types";
+// Type-only: the DebugLog service class stays out of this file (the local
+// DebugLog component below would collide with it).
+import type { DebugEntry } from "./effect/DebugLog";
 import { liveStateFor, type LiveStates } from "./effect/LiveConnection";
 import { pickerRowForKeyboardKey } from "./effect/keybinds";
 import type { PreflightState } from "./effect/Preflight";
@@ -101,7 +107,6 @@ import logoUrl from "./assets/agentscan-logo.png";
 const setGlassClear = (clear: number) => {
   document.documentElement.style.setProperty("--glass-clear", clear.toFixed(3));
 };
-const DEBUG_LOG_LIMIT = 80;
 // Window min-size floors, applied at runtime per orientation. The vertical pair
 // mirrors the startup floor in tauri.{macos.,}conf.json; horizontal drops the
 // height floor so the bar can shrink to dock height instead of a tall slab.
@@ -166,14 +171,6 @@ const readLocalStorage = (key: string): string | null => {
   }
 };
 
-type DebugEntry = {
-  id: number;
-  time: string;
-  kind: "command" | "stream" | "settings";
-  label: string;
-  detail: string;
-};
-
 // Collapse a preference to the concrete theme in effect, resolving "system" from
 // the OS appearance. Used to pick per-theme logo variants.
 function resolveThemeMode(pref: ThemePreference): LogoTheme {
@@ -201,6 +198,9 @@ const INITIAL_PREFLIGHT: PreflightState = { status: "loading" };
 // Stable empty fallbacks for the no-owner case so effect dep arrays don't churn.
 const EMPTY_PICKER_ROWS: PickerRow[] = [];
 const EMPTY_PICKER_GROUPS: PickerGroup[] = [];
+
+// First-paint fallback for debugLogAtom before the runtime resolves it.
+const EMPTY_DEBUG_ENTRIES: ReadonlyArray<DebugEntry> = [];
 
 // Source-kind mark: Lucide "house" / "server" outlines (ISC), inlined so the
 // mark renders crisply at small sizes instead of leaning on font glyph
@@ -318,7 +318,13 @@ function App({ mode }: { mode: ShellMode }) {
     const profile = getActiveProfile(initialProfileState);
     return profile.kind === "ssh" ? profile.clientTty : "";
   });
-  const [debugEntries, setDebugEntries] = useState<DebugEntry[]>([]);
+  // The debug log lives in the DebugLog service (per-window instance; the
+  // settings window renders it, the dock only writes). The append setter is
+  // registry-stable, unlike the old per-render closure, so logging effects can
+  // list it in their dep arrays.
+  const debugEntries = Result.getOrElse(useAtomValue(debugLogAtom), () => EMPTY_DEBUG_ENTRIES);
+  const appendDebugEntry = useAtomSet(appendDebugEntryAtom);
+  const clearDebugLog = useAtomSet(clearDebugLogAtom);
   // Live connection (status + rows) is owned by the LiveConnection service. The dock
   // observes liveStatesAtom — a per-source map — and drives the service via
   // configure/reconnect/start, reading each open folder's entry by runnerKey. The
@@ -521,12 +527,10 @@ function App({ mode }: { mode: ShellMode }) {
   // Hostname-label enrichment (persisting the driver's probed hostnames and
   // one-shot background probes for never-probed online remotes) is owned by the
   // HostnameEnrichment service; this effect only arms it with the debug-log
-  // sink. Deps deliberately exclude onLog: appendDebugEntry is recreated every
-  // render but closes only over a stable functional setState, so the mount-time
-  // closure stays valid — re-configuring per render would churn the service's
-  // supervisors instead. StrictMode's double configure is absorbed by the
-  // service's mutex'd supervisor slot (in-flight probes live in the service
-  // scope and survive the swap).
+  // sink. All deps are registry-stable setters, so this fires once per dock
+  // boot; StrictMode's double configure is absorbed by the service's mutex'd
+  // supervisor slot (in-flight probes live in the service scope and survive
+  // the swap).
   useEffect(() => {
     if (mode !== "dock") {
       return;
@@ -534,8 +538,7 @@ function App({ mode }: { mode: ShellMode }) {
     configureHostnameEnrichment({
       onLog: (label, detail) => appendDebugEntry({ kind: "command", label, detail }),
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, configureHostnameEnrichment]);
+  }, [mode, configureHostnameEnrichment, appendDebugEntry]);
 
   // Drive the LiveConnection service to every OPEN folder's source: open folder =
   // live subscription, closed folder = none. The service owns the subscriptions,
@@ -1458,19 +1461,6 @@ function App({ mode }: { mode: ShellMode }) {
     }));
   }
 
-  function appendDebugEntry(entry: Omit<DebugEntry, "id" | "time">) {
-    setDebugEntries((current) =>
-      [
-        {
-          ...entry,
-          id: Date.now() + Math.random(),
-          time: new Date().toLocaleTimeString(),
-        },
-        ...current,
-      ].slice(0, DEBUG_LOG_LIMIT),
-    );
-  }
-
   // Hold the latest handler in a ref so the global listener binds once instead
   // of churning on every render (live row updates re-render frequently).
   const pickerKeyDownRef = useRef(handlePickerKeyDown);
@@ -2005,7 +1995,7 @@ function App({ mode }: { mode: ShellMode }) {
                 <span className="env-count">{debugEntries.length}</span>
               </button>
               {isDebugOpen ? (
-                <button className="ghost-button" type="button" onClick={() => setDebugEntries([])}>
+                <button className="ghost-button" type="button" onClick={() => clearDebugLog()}>
                   Clear
                 </button>
               ) : null}
@@ -2576,7 +2566,7 @@ function LiveStrip({
   );
 }
 
-function DebugLog({ entries }: { entries: DebugEntry[] }) {
+function DebugLog({ entries }: { entries: ReadonlyArray<DebugEntry> }) {
   if (entries.length === 0) {
     return <p className="muted">No debug events yet.</p>;
   }

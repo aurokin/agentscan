@@ -6,6 +6,7 @@ import { Preflight, type PreflightTarget } from "./Preflight";
 import { Appearance } from "./Appearance";
 import { SummonHotkey } from "./SummonHotkey";
 import { Activation, type ActivateInput } from "./Activation";
+import { DebugLog, type DebugEntryInput } from "./DebugLog";
 import { HostnameEnrichment, type EnrichmentLog } from "./HostnameEnrichment";
 import type { OrientationPreference, ThemePreference } from "./prefs";
 
@@ -28,6 +29,7 @@ const runtime = Atom.runtime(
     // memoization resolves each to the same instance.
     Activation.Default,
     HostnameEnrichment.Default,
+    DebugLog.Default,
   ),
 );
 
@@ -206,6 +208,38 @@ export const configureHostnameEnrichmentAtom = runtime.fn(
   Effect.fnUntraced(function* (input: { readonly onLog: EnrichmentLog }) {
     const enrichment = yield* HostnameEnrichment;
     yield* enrichment.configure(input.onLog);
+  }),
+);
+
+// --- Debug log slice ---
+
+// The per-window debug log (newest-first, capped): Result<ReadonlyArray<DebugEntry>>.
+// Each webview's runtime holds its own instance, matching the old per-window
+// useState; the settings window renders it, the dock only writes. keepAlive so
+// entries survive StrictMode remounts like the rest of the runtime state.
+export const debugLogAtom = Atom.keepAlive(
+  runtime.subscriptionRef(Effect.map(DebugLog, (d) => d.state)),
+);
+
+// Append one entry (the service stamps id/time). The setter is registry-stable,
+// so effects that log can list it in their dep arrays — the old App.tsx closure
+// was recreated every render and forced dep omissions. Known narrow deviation
+// from the old synchronous setState: appends fired before the runtime layer
+// finishes building are deferred by runtime.fn and collapse to the LATEST one
+// (same replay rule as every fn atom here); only boot-window native-call
+// failures can hit it.
+export const appendDebugEntryAtom = runtime.fn(
+  Effect.fnUntraced(function* (entry: DebugEntryInput) {
+    const log = yield* DebugLog;
+    yield* log.append(entry);
+  }),
+);
+
+// The settings panel's Clear button.
+export const clearDebugLogAtom = runtime.fn(
+  Effect.fnUntraced(function* () {
+    const log = yield* DebugLog;
+    yield* log.clear;
   }),
 );
 
