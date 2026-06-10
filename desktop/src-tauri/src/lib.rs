@@ -1806,19 +1806,25 @@ fn classify_desktop_failure(runner: &AgentscanRunner, operation: &str, message: 
         return format!("tmux is unavailable: {trimmed}");
     }
 
-    // A wedged tmux server: it accepts the connection, then drops the new
-    // client during the handshake ("server exited unexpectedly" / "lost
-    // server" are the tmux client's words for that). Existing clients — the
-    // daemon's control-mode attach, the user's own terminals — keep working,
-    // so rows keep streaming while every NEW client (focus included) fails.
-    // The raw message reads like agentscan crashed the server; it did not,
-    // and only restarting tmux on that host clears the state.
+    // The tmux server dropped a fresh client mid-handshake ("server exited
+    // unexpectedly" / "lost server" are the tmux client's words for that).
+    // Existing clients — the daemon's control-mode attach, the user's own
+    // terminals — keep working, so rows keep streaming while every NEW client
+    // (focus included) fails. The raw message reads like agentscan crashed the
+    // server; it did not. Verified root cause (mander, 2026-06): a tmux
+    // client/server VERSION SPLIT — the server ran linuxbrew tmux 3.6b while
+    // non-interactive SSH resolved /usr/bin/tmux 3.4 (brew's PATH only loads
+    // in interactive shells), and the newer server drops the older client
+    // without even a version reply. Restarting the server does NOT clear it
+    // (a fresh server showed the same symptom); aligning the installs does.
     if lower.contains("tmux")
         && (lower.contains("server exited unexpectedly") || lower.contains("lost server"))
     {
         return format!(
-            "The tmux server is refusing new connections (existing sessions keep \
-             running); restart tmux on that host to recover: {trimmed}"
+            "The tmux server dropped a fresh client (running sessions are fine). \
+             This usually means the server was started from a different tmux \
+             install than the one non-interactive SSH resolves — align them so \
+             both use the same tmux: {trimmed}"
         );
     }
 
@@ -3469,7 +3475,7 @@ mod tests {
                 "focus",
                 "tmux switch-client fallback failed: server exited unexpectedly",
             )
-            .starts_with("The tmux server is refusing new connections")
+            .starts_with("The tmux server dropped a fresh client")
         );
     }
 
