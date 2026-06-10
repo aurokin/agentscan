@@ -1,4 +1,14 @@
 use super::*;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+// The compatible-tmux resolution result, computed at most once per process the
+// first time a fresh client is dropped mid-handshake (see
+// `tmux_dropped_fresh_client`). `Some` reroutes every later tmux exec —
+// including the daemon's control-mode attach, which always follows a sync
+// command like list-sessions that triggers the resolution — through the
+// install that proved it can talk to the running server.
+static COMPATIBLE_TMUX: OnceLock<Option<PathBuf>> = OnceLock::new();
 
 pub(crate) fn tmux_command() -> Command {
     tmux_command_from_env(|name| env::var_os(name), |name| env::var(name).ok())
@@ -8,7 +18,26 @@ fn tmux_command_from_env(
     read_os: impl Fn(&str) -> Option<std::ffi::OsString>,
     read_string: impl Fn(&str) -> Option<String>,
 ) -> Command {
-    let mut command = Command::new("tmux");
+    // Program precedence: the user's explicit pin, then a compatible install
+    // resolved after a dropped handshake, then plain `tmux` from PATH.
+    let program = read_os(TMUX_BIN_ENV_VAR)
+        .filter(|program| !program.is_empty())
+        .or_else(|| {
+            COMPATIBLE_TMUX
+                .get()
+                .and_then(|resolved| resolved.clone())
+                .map(PathBuf::into_os_string)
+        })
+        .unwrap_or_else(|| std::ffi::OsString::from("tmux"));
+    tmux_command_with_program(program, read_os, read_string)
+}
+
+fn tmux_command_with_program(
+    program: std::ffi::OsString,
+    read_os: impl Fn(&str) -> Option<std::ffi::OsString>,
+    read_string: impl Fn(&str) -> Option<String>,
+) -> Command {
+    let mut command = Command::new(program);
     if let Some(socket_path) = read_os(TMUX_SOCKET_ENV_VAR).filter(|path| !path.is_empty()) {
         command.arg("-S").arg(socket_path);
         command.env_remove("TMUX");
@@ -30,10 +59,106 @@ pub(super) fn env_has_utf8_locale(read: impl Fn(&str) -> Option<String>) -> bool
 }
 
 pub(super) fn run_tmux_output(args: &[&str], context: &str) -> Result<std::process::Output> {
+    let mut command = tmux_command();
+    let program_used = command.get_program().to_os_string();
+    let output = command
+        .args(args)
+        .output()
+        .with_context(|| format!("failed to execute {context}"))?;
+    if output.status.success()
+        || !tmux_dropped_fresh_client(&String::from_utf8_lossy(&output.stderr))
+    {
+        return Ok(output);
+    }
+
+    // A dropped handshake usually means THIS tmux install's version differs
+    // from the running server's (verified case: a linuxbrew 3.6b server
+    // dropping the apt 3.4 client that non-interactive SSH resolves). Resolve
+    // a compatible install once per process — each candidate must complete a
+    // real handshake against the same socket to win — and retry once. An
+    // explicit AGENTSCAN_TMUX_BIN pin is honored as-is: the user chose it, so
+    // no auto-resolution overrides it.
+    if env::var_os(TMUX_BIN_ENV_VAR).is_some_and(|pin| !pin.is_empty()) {
+        return Ok(output);
+    }
+    let Some(resolved) = compatible_tmux() else {
+        return Ok(output);
+    };
+    if resolved.as_os_str() == program_used {
+        return Ok(output);
+    }
     tmux_command()
         .args(args)
         .output()
-        .with_context(|| format!("failed to execute {context}"))
+        .with_context(|| format!("failed to execute {context} (compatible-tmux retry)"))
+}
+
+// The tmux client's words for "the server closed my connection during the
+// handshake": a fresh client of a mismatched version gets dropped this way by
+// a healthy server (sometimes without even a version reply), while already-
+// connected clients keep working. Distinct from "no server running" (nothing
+// to talk to) and from missing-target errors (the handshake succeeded).
+pub(super) fn tmux_dropped_fresh_client(stderr: &str) -> bool {
+    stderr.contains("server exited unexpectedly")
+        || stderr.contains("lost server")
+        || stderr.contains("protocol version mismatch")
+}
+
+fn compatible_tmux() -> Option<PathBuf> {
+    COMPATIBLE_TMUX
+        .get_or_init(|| {
+            resolve_compatible_tmux(&well_known_tmux_installs(), candidate_speaks_to_server)
+        })
+        .clone()
+}
+
+// First candidate that completes a handshake with the running server wins.
+// Validation is what keeps false positives out: a candidate only wins by
+// succeeding against the real socket, and the install that just failed simply
+// fails its probe again.
+pub(super) fn resolve_compatible_tmux(
+    candidates: &[PathBuf],
+    speaks_to_server: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    candidates
+        .iter()
+        .find(|candidate| speaks_to_server(candidate))
+        .cloned()
+}
+
+// Where package managers put tmux: linuxbrew (system-wide and per-user
+// prefixes), macOS Homebrew (arm and intel), MacPorts, and the system
+// package manager. Version splits arise when a server was started from one
+// of these while PATH resolves another.
+fn well_known_tmux_installs() -> Vec<PathBuf> {
+    let mut candidates = vec![PathBuf::from("/home/linuxbrew/.linuxbrew/bin/tmux")];
+    if let Some(home) = env::var_os("HOME").filter(|home| !home.is_empty()) {
+        candidates.push(PathBuf::from(home).join(".linuxbrew/bin/tmux"));
+    }
+    candidates.extend([
+        PathBuf::from("/opt/homebrew/bin/tmux"),
+        PathBuf::from("/usr/local/bin/tmux"),
+        PathBuf::from("/opt/local/bin/tmux"),
+        PathBuf::from("/usr/bin/tmux"),
+    ]);
+    candidates.retain(|candidate| candidate.is_file());
+    candidates
+}
+
+// Read-only handshake probe: `display-message -p` completes the client/server
+// handshake and prints to stdout without touching any session, window, or
+// client. Built directly (not via run_tmux_output) so probing can't recurse
+// into resolution.
+fn candidate_speaks_to_server(candidate: &Path) -> bool {
+    tmux_command_with_program(
+        candidate.as_os_str().to_os_string(),
+        |name| env::var_os(name),
+        |name| env::var(name).ok(),
+    )
+    .args(["display-message", "-p", "agentscan-compat-probe"])
+    .output()
+    .map(|output| output.status.success())
+    .unwrap_or(false)
 }
 
 pub(super) fn run_tmux_text_output(
@@ -169,9 +294,65 @@ pub(crate) fn list_session_ids() -> Result<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{env_has_utf8_locale, tmux_command_from_env, tmux_no_server_running};
-    use crate::app::TMUX_SOCKET_ENV_VAR;
+    use super::{
+        env_has_utf8_locale, resolve_compatible_tmux, tmux_command_from_env,
+        tmux_dropped_fresh_client, tmux_no_server_running,
+    };
+    use crate::app::{TMUX_BIN_ENV_VAR, TMUX_SOCKET_ENV_VAR};
     use std::ffi::OsString;
+    use std::path::PathBuf;
+
+    #[test]
+    fn dropped_fresh_client_matches_only_handshake_failures() {
+        assert!(tmux_dropped_fresh_client("server exited unexpectedly"));
+        assert!(tmux_dropped_fresh_client("lost server"));
+        assert!(tmux_dropped_fresh_client(
+            "protocol version mismatch (client 8, server 9)"
+        ));
+        // Not a handshake drop: nothing to talk to, or the handshake succeeded
+        // and the target was simply missing.
+        assert!(!tmux_dropped_fresh_client(
+            "no server running on /tmp/tmux-501/default"
+        ));
+        assert!(!tmux_dropped_fresh_client("can't find pane: %42"));
+        assert!(!tmux_dropped_fresh_client(""));
+    }
+
+    #[test]
+    fn compatible_tmux_resolution_picks_the_first_candidate_that_handshakes() {
+        let candidates = [
+            PathBuf::from("/fake/broken/tmux"),
+            PathBuf::from("/fake/working/tmux"),
+            PathBuf::from("/fake/other/tmux"),
+        ];
+        let resolved = resolve_compatible_tmux(&candidates, |candidate| {
+            candidate == PathBuf::from("/fake/working/tmux").as_path()
+        });
+        assert_eq!(resolved, Some(PathBuf::from("/fake/working/tmux")));
+
+        // No candidate speaks to the server: resolution yields nothing and the
+        // original failure stands.
+        assert_eq!(resolve_compatible_tmux(&candidates, |_| false), None);
+        assert_eq!(resolve_compatible_tmux(&[], |_| true), None);
+    }
+
+    #[test]
+    fn explicit_tmux_bin_pin_overrides_the_program() {
+        let command = tmux_command_from_env(
+            read_os_from(&[(TMUX_BIN_ENV_VAR, "/custom/bin/tmux")]),
+            read_from(&[("LANG", "en_US.UTF-8")]),
+        );
+        assert_eq!(command.get_program(), "/custom/bin/tmux");
+    }
+
+    #[test]
+    fn empty_tmux_bin_pin_falls_back_to_path_resolution() {
+        let command = tmux_command_from_env(
+            read_os_from(&[(TMUX_BIN_ENV_VAR, "")]),
+            read_from(&[("LANG", "en_US.UTF-8")]),
+        );
+        assert_eq!(command.get_program(), "tmux");
+    }
 
     #[test]
     fn no_server_running_matches_only_the_empty_server_case() {

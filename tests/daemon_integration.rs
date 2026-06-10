@@ -185,6 +185,94 @@ fn agentscan_uses_explicit_test_tmux_socket_when_default_tmux_tmpdir_is_poisoned
 }
 
 #[test]
+fn agentscan_falls_back_to_a_compatible_tmux_when_path_tmux_is_dropped() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let pane_id = harness.start_session("compat-fallback", "sleep 300")?;
+
+    // The production fallback only probes well-known install paths, so the
+    // retry can only succeed on machines where the real tmux lives at one of
+    // them. Skip (not fail) elsewhere.
+    if !well_known_tmux_install_can_handshake(&harness) {
+        eprintln!(
+            "skipping compat-fallback test: no well-known tmux install handshakes with the harness server"
+        );
+        return Ok(());
+    }
+
+    // A fake `tmux` first on PATH reproduces the version-split symptom: the
+    // running server drops the fresh client mid-handshake.
+    let fake_bin = tempfile::tempdir().context("failed to create fake tmux bin dir")?;
+    let fake_tmux = fake_bin.path().join("tmux");
+    fs::write(
+        &fake_tmux,
+        "#!/bin/sh\necho 'server exited unexpectedly' >&2\nexit 1\n",
+    )
+    .with_context(|| format!("failed to write {}", fake_tmux.display()))?;
+    fs::set_permissions(&fake_tmux, fs::Permissions::from_mode(0o755))
+        .with_context(|| format!("failed to chmod {}", fake_tmux.display()))?;
+    let poisoned_path = format!(
+        "{}:{}",
+        fake_bin.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let mut command = harness.agentscan_command()?;
+    command.env("PATH", &poisoned_path);
+    command.args(["scan", "--all", "--format", "json"]);
+    let output = command
+        .output()
+        .context("failed to execute agentscan scan")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "agentscan scan did not recover from the dropped PATH tmux: {}",
+            stderr.trim()
+        );
+    }
+    let stdout =
+        String::from_utf8(output.stdout).context("agentscan scan output was not valid UTF-8")?;
+    let snapshot: Value = serde_json::from_str(&stdout).context("scan output was not JSON")?;
+
+    assert!(
+        snapshot["panes"]
+            .as_array()
+            .context("snapshot panes were not an array")?
+            .iter()
+            .any(|pane| pane["pane_id"] == pane_id),
+        "recovered scan did not read from the harness tmux server; scan output was:\n{stdout}"
+    );
+
+    Ok(())
+}
+
+// Mirrors the production well-known install list (src/app/tmux/command.rs).
+// The per-user linuxbrew candidate is omitted because the agentscan subprocess
+// runs with HOME pointed at the harness home directory.
+fn well_known_tmux_install_can_handshake(harness: &TestHarness) -> bool {
+    [
+        "/home/linuxbrew/.linuxbrew/bin/tmux",
+        "/opt/homebrew/bin/tmux",
+        "/usr/local/bin/tmux",
+        "/opt/local/bin/tmux",
+        "/usr/bin/tmux",
+    ]
+    .iter()
+    .map(Path::new)
+    .filter(|candidate| candidate.is_file())
+    .any(|candidate| {
+        Command::new(candidate)
+            .arg("-S")
+            .arg(&harness.tmux_socket_path)
+            .args(["display-message", "-p", "compat-probe"])
+            .env_remove("TMUX")
+            .env("TMUX_TMPDIR", &harness.tmux_tmpdir)
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+    })
+}
+
+#[test]
 fn daemon_serves_snapshot_over_owned_socket_path() -> Result<()> {
     let harness = TestHarness::new()?;
     let pane_id = harness.start_session("socket-snapshot", "sleep 300")?;

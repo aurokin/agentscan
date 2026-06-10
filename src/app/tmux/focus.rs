@@ -221,15 +221,14 @@ fn run_tmux_switch_client(
     client_tty: Option<&str>,
     zoom: bool,
 ) -> Result<std::process::Output> {
-    let mut command = super::command::tmux_command();
-    command.arg("switch-client");
+    let mut args = vec!["switch-client"];
     if zoom {
-        command.arg("-Z");
+        args.push("-Z");
     }
     if let Some(client_tty) = client_tty {
-        command.args(["-c", client_tty]);
+        args.extend(["-c", client_tty]);
     }
-    command.args(["-t", pane_id]);
+    args.extend(["-t", pane_id]);
 
     let context = match (zoom, client_tty.is_some()) {
         (true, true) => "tmux switch-client with client tty",
@@ -238,9 +237,9 @@ fn run_tmux_switch_client(
         (false, false) => "tmux switch-client fallback",
     };
 
-    command
-        .output()
-        .with_context(|| format!("failed to execute {context}"))
+    // Routed through run_tmux_output so a dropped handshake (client/server
+    // version split) gets the compatible-tmux retry like every other command.
+    run_tmux_output(&args, context)
 }
 
 pub(crate) fn switch_tmux_client_to_prefix(client_tty: Option<&str>) -> Result<()> {
