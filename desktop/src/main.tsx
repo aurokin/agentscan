@@ -1,7 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import App from "./App";
+import App from "./DockApp";
 import "./styles.css";
 
 const root = document.getElementById("root");
