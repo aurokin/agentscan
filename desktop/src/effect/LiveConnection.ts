@@ -1,4 +1,4 @@
-import { Duration, Effect, Queue, Ref, Stream, SubscriptionRef } from "effect";
+import { Duration, Effect, Fiber, Queue, Ref, Stream, SubscriptionRef } from "effect";
 import { TauriIpc, type IpcError } from "./TauriIpc";
 import type {
   ConnectionStatus,
@@ -71,19 +71,24 @@ export type ConfigureInput = {
   readonly enabled: boolean;
 };
 
-const INITIAL_TARGET: Target = {
-  gen: 0,
-  enabled: false,
-  settings: null,
-  runnerKey: "",
-  autoStart: false,
-};
+// The per-source live states the UI observes, keyed by runnerKey. Keys exist only
+// for configured sources; read entries through liveStateFor so an absent key
+// resolves to the same initial state a freshly added source starts from.
+export type LiveStates = ReadonlyMap<string, LiveState>;
 
 const INITIAL_STATE: LiveState = {
   connection: { status: "connecting", message: "Starting live client" },
   rows: [],
   rowsRunnerKey: null,
 };
+
+// Selector for one source's slice of the per-key live state map. Consumers that
+// track a single source (the dock's active profile today) read through this so
+// their view is identical to the old single-target state: a not-yet-configured
+// key shows the same "Starting live client" connecting state the service used
+// to seed globally.
+export const liveStateFor = (states: LiveStates, runnerKey: string): LiveState =>
+  states.get(runnerKey) ?? INITIAL_STATE;
 
 const setConnection =
   (connection: ConnectionStatus) =>
@@ -151,10 +156,11 @@ function foldEvent(
   }
 }
 
-// The live-connection lifecycle. It owns a SubscriptionRef of the connection state
-// (the single source the UI observes) and a supervised fiber that subscribes,
-// folds frames, and re-arms per the latch policy. UI/profile changes drive it
-// through configure/reconnect/start — there is no other coupling to App state.
+// The live-connection lifecycle. It owns a SubscriptionRef of the per-key live
+// states (the single map the UI observes) and one supervised fiber per configured
+// source, each subscribing, folding frames, and re-arming per the latch policy
+// independently. UI/profile changes drive it through configure/reconnect/start —
+// there is no other coupling to App state.
 export class LiveConnection extends Effect.Service<LiveConnection>()(
   "desktop/LiveConnection",
   {
@@ -162,9 +168,42 @@ export class LiveConnection extends Effect.Service<LiveConnection>()(
     scoped: Effect.gen(function* () {
       const tauri = yield* TauriIpc;
       const { backoff } = yield* LiveConnectionConfig;
-      const stateRef = yield* SubscriptionRef.make<LiveState>(INITIAL_STATE);
-      const targetRef = yield* SubscriptionRef.make<Target>(INITIAL_TARGET);
+      const statesRef = yield* SubscriptionRef.make<LiveStates>(new Map());
+      // One monotonic epoch counter shared across keys: Rust gates stale starts
+      // per key, so cross-key uniqueness is strictly stronger than required and
+      // keeps the persisted reload/HMR seed a single value.
       const epochRef = yield* Ref.make<number>(seedEpoch());
+      // The service scope: per-key supervisor fibers forked by configure are
+      // owned by it, so they die with the runtime like the old single supervisor.
+      const scope = yield* Effect.scope;
+      // Serializes configure/reconnect/start so a diff and a concurrent retarget
+      // can't interleave their edits of the per-key supervisor map.
+      const mutex = yield* Effect.makeSemaphore(1);
+
+      const updateKeyState = (key: string, update: (state: LiveState) => LiveState) =>
+        SubscriptionRef.update(statesRef, (states) => {
+          const next = new Map(states);
+          next.set(key, update(states.get(key) ?? INITIAL_STATE));
+          return next;
+        });
+      const setKeyState = (key: string, state: LiveState) =>
+        updateKeyState(key, () => state);
+      // Drop a removed key's state entry — unless the key was re-added, in which
+      // case the new supervisor owns it. The `entries.has` re-check runs INSIDE
+      // the update function (under the ref's update semaphore) so check-and-delete
+      // is atomic: a dying supervisor's pending drop can't interleave with a
+      // remove+re-add of the same key and delete the new entry's state. `entries`
+      // is declared below; this closure only runs from configure-installed
+      // finalizers, long after initialization.
+      const dropKeyState = (key: string) =>
+        SubscriptionRef.update(statesRef, (states) => {
+          if (entries.has(key) || !states.has(key)) {
+            return states;
+          }
+          const next = new Map(states);
+          next.delete(key);
+          return next;
+        });
 
       const nextEpoch = Effect.gen(function* () {
         const epoch = yield* Ref.updateAndGet(epochRef, (n) => n + 1);
@@ -179,8 +218,11 @@ export class LiveConnection extends Effect.Service<LiveConnection>()(
       });
 
       // Drain the live queue for one subscription (epoch), reflecting each frame into
-      // the state ref, until a terminal frame is seen. Frames from a superseded epoch
-      // (a late worker after a re-arm/switch) are dropped.
+      // this source's state entry, until a terminal frame is seen. The queue is
+      // already filtered to this source at offer time (tauri.liveEvents); the
+      // sourceKey check here is a redundant guard, while the epoch check drops
+      // frames from a superseded epoch of this source (a late worker after a
+      // re-arm).
       const consumeUntilTerminal = (
         queue: Queue.Dequeue<LivePickerEnvelope>,
         epoch: number,
@@ -190,7 +232,7 @@ export class LiveConnection extends Effect.Service<LiveConnection>()(
           let online = false;
           while (true) {
             const envelope = yield* Queue.take(queue);
-            if (envelope.epoch !== epoch) {
+            if (envelope.sourceKey !== runnerKey || envelope.epoch !== epoch) {
               continue;
             }
             // A rows frame means a daemon answered: latch any later terminal as a
@@ -200,7 +242,7 @@ export class LiveConnection extends Effect.Service<LiveConnection>()(
             }
             const outcome = foldEvent(envelope, runnerKey);
             if (outcome.update) {
-              yield* SubscriptionRef.update(stateRef, outcome.update);
+              yield* updateKeyState(runnerKey, outcome.update);
             }
             if (outcome.terminal) {
               return { terminal: outcome.terminal, online };
@@ -208,16 +250,16 @@ export class LiveConnection extends Effect.Service<LiveConnection>()(
           }
         });
 
-      // Run one target to completion (it loops forever, re-arming) until the
-      // supervisor's `switch` interrupts it for a newer target. Can fail with an
-      // IpcError if the event listener (tauri.liveEvents) cannot be installed;
-      // superviseTarget turns that into a fatal state rather than letting it
-      // propagate and kill the supervisor.
+      // Run one target to completion (it loops forever, re-arming) until its key's
+      // supervisor `switch` interrupts it for a newer target — or the key is removed
+      // by configure. Can fail with an IpcError if the event listener
+      // (tauri.liveEvents) cannot be installed; superviseTarget turns that into a
+      // fatal state rather than letting it propagate and kill the supervisor.
       const runTarget = (target: Target): Effect.Effect<never, IpcError> =>
         Effect.scoped(
           Effect.gen(function* () {
             if (!target.enabled || target.settings === null) {
-              yield* SubscriptionRef.set(stateRef, {
+              yield* setKeyState(target.runnerKey, {
                 connection: { status: "connecting", message: "Waiting for a source" },
                 rows: [],
                 rowsRunnerKey: null,
@@ -226,15 +268,18 @@ export class LiveConnection extends Effect.Service<LiveConnection>()(
             }
             const settings = target.settings;
             // One listener for the whole target; awaited so it is live before we
-            // start the first subscription (no early frame missed).
-            const queue = yield* tauri.liveEvents;
+            // start the first subscription (no early frame missed). Filtered to
+            // this source at offer time, so the queue stays quiet (instead of
+            // buffering sibling sources' frames unboundedly) while this fiber is
+            // parked on fatal or sleeping in the noDaemon poll below.
+            const queue = yield* tauri.liveEvents(target.runnerKey);
 
             let first = true;
             while (true) {
               const epoch = yield* nextEpoch;
               const autoStart = first && target.autoStart;
-              yield* SubscriptionRef.update(
-                stateRef,
+              yield* updateKeyState(
+                target.runnerKey,
                 setConnection(
                   first
                     ? { status: "connecting", message: "Connecting to agentscan" }
@@ -253,10 +298,17 @@ export class LiveConnection extends Effect.Service<LiveConnection>()(
                   // acquire: install the worker. Capture (don't discard) the start error —
                   // a rejection means the worker couldn't be installed at all (an IPC/
                   // command-layer failure, distinct from the daemon-state frames it streams).
-                  tauri.startLivePicker({ settings, epoch, autoStart }).pipe(
-                    Effect.as<string | null>(null),
-                    Effect.catchAll((error) => Effect.succeed<string | null>(error.message)),
-                  ),
+                  tauri
+                    .startLivePicker({
+                      settings,
+                      sourceKey: target.runnerKey,
+                      epoch,
+                      autoStart,
+                    })
+                    .pipe(
+                      Effect.as<string | null>(null),
+                      Effect.catchAll((error) => Effect.succeed<string | null>(error.message)),
+                    ),
                   // use: drain frames until terminal, unless the worker never installed.
                   (startError) =>
                     startError === null
@@ -270,10 +322,13 @@ export class LiveConnection extends Effect.Service<LiveConnection>()(
                           terminal: { _tag: "Fatal", message: startError },
                           online: false,
                         }),
-                  // release: stop this epoch's worker (idempotent/ignored if it never
-                  // installed). Runs after acquire completed, so the interrupted-start race
-                  // can't orphan a subscription.
-                  () => tauri.stopLivePicker(epoch).pipe(Effect.ignore),
+                  // release: stop this key's worker for this epoch (idempotent/ignored if
+                  // it never installed). Runs after acquire completed, so the
+                  // interrupted-start race can't orphan a subscription.
+                  () =>
+                    tauri
+                      .stopLivePicker({ sourceKey: target.runnerKey, epoch })
+                      .pipe(Effect.ignore),
                 );
 
               // An explicit Start (autoStart) whose only outcome is a NoDaemon latch-miss that
@@ -302,7 +357,7 @@ export class LiveConnection extends Effect.Service<LiveConnection>()(
                   : rawTerminal;
 
               if (terminal._tag === "Fatal") {
-                yield* SubscriptionRef.set(stateRef, {
+                yield* setKeyState(target.runnerKey, {
                   connection: { status: "fatal", message: terminal.message },
                   rows: [],
                   rowsRunnerKey: null,
@@ -312,7 +367,7 @@ export class LiveConnection extends Effect.Service<LiveConnection>()(
               }
 
               if (terminal._tag === "NoDaemon") {
-                yield* SubscriptionRef.set(stateRef, {
+                yield* setKeyState(target.runnerKey, {
                   connection: { status: "noDaemon", message: terminal.message },
                   rows: [],
                   rowsRunnerKey: null,
@@ -335,8 +390,8 @@ export class LiveConnection extends Effect.Service<LiveConnection>()(
                   );
                 }
               } else {
-                yield* SubscriptionRef.update(
-                  stateRef,
+                yield* updateKeyState(
+                  target.runnerKey,
                   setConnection({ status: "reconnecting", message: terminal.message }),
                 );
                 yield* Effect.sleep(backoff.recoverable);
@@ -346,13 +401,14 @@ export class LiveConnection extends Effect.Service<LiveConnection>()(
           }),
         );
 
-      // Surface a fatal state and PARK, so an unexpected failure/defect never tears
-      // the supervisor down (a dead supervisor would strand every later configure/
-      // reconnect/start with no consumer, wedging the dock with no recovery). Parking
-      // on Effect.never keeps the fiber alive so the next target switch re-arms us.
-      const parkFatal = (message: string): Effect.Effect<never> =>
+      // Surface a fatal state for one source and PARK, so an unexpected failure/
+      // defect never tears that source's supervisor down (a dead supervisor would
+      // strand every later configure/reconnect/start with no consumer, wedging the
+      // dock with no recovery). Parking on Effect.never keeps the fiber alive so
+      // the key's next target switch re-arms us.
+      const parkFatal = (runnerKey: string, message: string): Effect.Effect<never> =>
         Effect.zipRight(
-          SubscriptionRef.set(stateRef, {
+          setKeyState(runnerKey, {
             connection: { status: "fatal", message },
             rows: [],
             rowsRunnerKey: null,
@@ -367,52 +423,123 @@ export class LiveConnection extends Effect.Service<LiveConnection>()(
       // swallowed and flashed as a spurious fatal.
       const superviseTarget = (target: Target): Effect.Effect<never> =>
         runTarget(target).pipe(
-          Effect.catchAll((error) => parkFatal(error.message)),
-          Effect.catchAllDefect((defect) => parkFatal(defectMessage(defect))),
+          Effect.catchAll((error) => parkFatal(target.runnerKey, error.message)),
+          Effect.catchAllDefect((defect) =>
+            parkFatal(target.runnerKey, defectMessage(defect)),
+          ),
         );
 
-      // Supervisor: each distinct target interrupts and replaces the running one.
-      // Stream.changes dedupes the same-reference target an idempotent configure
-      // returns, so only real changes (configure to a new runner, reconnect, start)
-      // re-arm.
-      yield* targetRef.changes.pipe(
-        Stream.changes,
-        Stream.flatMap((target) => Stream.fromEffect(superviseTarget(target)), {
-          switch: true,
-        }),
-        Stream.runDrain,
-        Effect.forkScoped,
-      );
+      // Per-key supervisor: each distinct target interrupts and replaces that key's
+      // running one. Stream.changes dedupes the same-reference target an idempotent
+      // configure/retarget returns, so only real changes (enabled flip, reconnect,
+      // start) re-arm.
+      const superviseKey = (targetRef: SubscriptionRef.SubscriptionRef<Target>) =>
+        targetRef.changes.pipe(
+          Stream.changes,
+          Stream.flatMap((target) => Stream.fromEffect(superviseTarget(target)), {
+            switch: true,
+          }),
+          Stream.runDrain,
+        );
+
+      type Entry = {
+        readonly targetRef: SubscriptionRef.SubscriptionRef<Target>;
+        readonly fiber: Fiber.RuntimeFiber<void>;
+      };
+      // The running per-key supervisors. Mutated only under `mutex`.
+      const entries = new Map<string, Entry>();
+
+      // Reconcile the running sources to `inputs`, diffing by runnerKey: start
+      // added keys, interrupt removed keys, leave unchanged keys running. An
+      // existing key re-targets only when its enabled flag flips — settings are
+      // part of the runnerKey, so a same-key input carries the same settings.
+      // Removal interrupts in the background (the interrupted run's release stops
+      // its Rust worker), and the key's state entry is dropped once its supervisor
+      // finishes dying — unless the key was re-added meanwhile, in which case the
+      // new entry owns the state.
+      const configure = (inputs: ReadonlyArray<ConfigureInput>) =>
+        mutex.withPermits(1)(
+          Effect.gen(function* () {
+            const next = new Map(inputs.map((input) => [input.runnerKey, input] as const));
+            for (const [key, entry] of [...entries]) {
+              if (next.has(key)) {
+                continue;
+              }
+              entries.delete(key);
+              yield* Fiber.interruptFork(entry.fiber);
+            }
+            for (const [key, input] of next) {
+              const existing = entries.get(key);
+              if (existing) {
+                yield* SubscriptionRef.update(existing.targetRef, (current) =>
+                  current.enabled === input.enabled
+                    ? current
+                    : {
+                        gen: current.gen + 1,
+                        enabled: input.enabled,
+                        settings: input.settings,
+                        runnerKey: key,
+                        autoStart: false,
+                      },
+                );
+                continue;
+              }
+              // A re-added key may inherit the previous supervisor's state entry:
+              // removal interrupts in the background, and once this key is
+              // re-registered the dying fiber's dropKeyState defers to the new
+              // owner. Reset it here so a fast close-then-reopen can't present the
+              // prior session's rows as ready (and clickable) while the fresh
+              // subscription is still connecting. Same-supervisor re-arms
+              // (reconnect) keep their rows — that flicker-avoidance is per
+              // supervisor, not per re-add. Either interleaving with a pending
+              // drop ends clean: drop-after skips (entry owned), drop-before
+              // deletes and the supervisor recreates from INITIAL_STATE.
+              yield* setKeyState(key, INITIAL_STATE);
+              const targetRef = yield* SubscriptionRef.make<Target>({
+                gen: 0,
+                enabled: input.enabled,
+                settings: input.settings,
+                runnerKey: key,
+                autoStart: false,
+              });
+              const fiber = yield* superviseKey(targetRef).pipe(
+                Effect.ensuring(dropKeyState(key)),
+                Effect.forkIn(scope),
+              );
+              entries.set(key, { targetRef, fiber });
+            }
+          }),
+        );
+
+      // Bump one source's target so its supervisor re-arms now. The autoStart latch
+      // applies only to the key it was issued for; an unconfigured key is a no-op
+      // (there is no subscription to re-arm).
+      const retarget = (runnerKey: string, autoStart: boolean) =>
+        mutex.withPermits(1)(
+          Effect.suspend(() => {
+            const entry = entries.get(runnerKey);
+            if (entry === undefined) {
+              return Effect.void;
+            }
+            return SubscriptionRef.update(entry.targetRef, (current) => ({
+              ...current,
+              gen: current.gen + 1,
+              autoStart,
+            }));
+          }),
+        );
 
       return {
-        state: stateRef,
-        // Re-target on a profile/preflight change. Keying on runnerKey + enabled
-        // means an idempotent call returns the same reference and is deduped.
-        configure: (input: ConfigureInput) =>
-          SubscriptionRef.update(targetRef, (current) =>
-            current.runnerKey === input.runnerKey && current.enabled === input.enabled
-              ? current
-              : {
-                  gen: current.gen + 1,
-                  enabled: input.enabled,
-                  settings: input.settings,
-                  runnerKey: input.runnerKey,
-                  autoStart: false,
-                },
-          ),
-        // Re-arm now (latch only) — used by the Refresh button and the fatal-state
-        // Reconnect action.
-        reconnect: SubscriptionRef.update(targetRef, (current) => ({
-          ...current,
-          gen: current.gen + 1,
-          autoStart: false,
-        })),
+        states: statesRef,
+        // Reconcile to the listed targets on a profile/preflight change. Diffing by
+        // runnerKey + enabled means an idempotent call leaves every running key
+        // untouched.
+        configure,
+        // Re-arm one source now (latch only) — used by the Refresh button and the
+        // fatal-state Reconnect action.
+        reconnect: (runnerKey: string) => retarget(runnerKey, false),
         // The only path that may spawn a daemon — the "Start agentscan" action.
-        start: SubscriptionRef.update(targetRef, (current) => ({
-          ...current,
-          gen: current.gen + 1,
-          autoStart: true,
-        })),
+        start: (runnerKey: string) => retarget(runnerKey, true),
       };
     }),
   },

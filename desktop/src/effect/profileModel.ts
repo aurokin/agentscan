@@ -3,16 +3,10 @@
 // the Profiles Effect.Service (and its vitest proof) can drive it over an injected
 // storage boundary while App.tsx keeps using the same derivations for rendering.
 //
-// These types mirror the Rust contracts in src-tauri/src/lib.rs (DesktopRunnerSettings,
-// DesktopProfile) and were previously inlined in App.tsx.
+// These types mirror the Rust contracts in src-tauri/src/lib.rs (DesktopRunnerSettings)
+// and were previously inlined in App.tsx.
 
 export type ProfileKind = "local" | "ssh";
-
-export type DesktopProfile = {
-  id: string;
-  name: string;
-  kind: ProfileKind;
-};
 
 export type AgentscanPreflight = {
   binary: string;
@@ -23,6 +17,10 @@ export type AgentscanPreflight = {
   // preflight fails because agentscan isn't on the SSH PATH but the user's shell
   // can find it. Null for success, local runners, and unresolvable failures.
   suggestedBinaryPath: string | null;
+  // The remote machine's short hostname, probed in the same SSH exec as the
+  // version check. Null for local runners, failures, and when the remote
+  // hostname is unavailable.
+  remoteHostLabel: string | null;
 };
 
 export type EnvironmentVariable = {
@@ -44,20 +42,22 @@ export type DesktopRunnerSettings =
 export type ProfileState = {
   activeProfileId: string;
   profiles: DesktopProfileConfig[];
+  // Folder open state for the dock's vertical strip: a source's folder is open
+  // (live subscription armed) iff its profile id is listed here. Source order is
+  // the profiles array order, which also decides keybind ownership.
+  openProfileIds: string[];
 };
 
 export type DesktopProfileConfig = LocalProfileConfig | SshProfileConfig;
 
 export type LocalProfileConfig = {
   id: string;
-  name: string;
   kind: "local";
   runner: RunnerSettings;
 };
 
 export type SshProfileConfig = {
   id: string;
-  name: string;
   kind: "ssh";
   host: string;
   clientTty: string;
@@ -105,11 +105,11 @@ export function defaultProfileState(runner: RunnerSettings = emptyRunnerSettings
     profiles: [
       {
         id: LOCAL_PROFILE_ID,
-        name: "Default",
         kind: "local",
         runner: normalizeRunnerSettings(runner),
       },
     ],
+    openProfileIds: [LOCAL_PROFILE_ID],
   };
 }
 
@@ -119,22 +119,75 @@ export function normalizeProfileState(
   value: Partial<ProfileState>,
   fallbackRunner: RunnerSettings = emptyRunnerSettings(),
 ): ProfileState {
-  const profiles = Array.isArray(value.profiles)
+  const mapped = Array.isArray(value.profiles)
     ? value.profiles.map(normalizeProfile).filter((profile): profile is DesktopProfileConfig => profile !== null)
     : [];
+
+  // A source's identity IS its connection, so a persisted state (possibly written by
+  // an older version that allowed it) keeps only one profile per trimmed SSH host:
+  // the first RUNNABLE one, falling back to the first at all — keeping a disabled
+  // duplicate over an enabled one would make the connection vanish from the dock.
+  // Empty-host drafts collapse the same way: with connection-derived labels,
+  // several would render as identical cards the user can't tell apart, and only
+  // one draft is ever needed to resume configuring. References to a dropped
+  // duplicate (the active id, open ids) remap to the surviving profile of the same
+  // connection — the user's selection was the connection, not the duplicate row.
+  const sshGroups = new Map<string, DesktopProfileConfig[]>();
+  for (const profile of mapped) {
+    if (profile.kind !== "ssh") {
+      continue;
+    }
+    const group = sshGroups.get(profile.host);
+    if (group) {
+      group.push(profile);
+    } else {
+      sshGroups.set(profile.host, [profile]);
+    }
+  }
+  const remap = new Map<string, string>();
+  const survivors = new Set<string>();
+  for (const group of sshGroups.values()) {
+    const survivor = group.find(isRunnableProfile) ?? group[0];
+    survivors.add(survivor.id);
+    for (const profile of group) {
+      if (profile.id !== survivor.id) {
+        remap.set(profile.id, survivor.id);
+      }
+    }
+  }
+  const profiles = mapped.filter(
+    (profile) => profile.kind !== "ssh" || survivors.has(profile.id),
+  );
 
   if (!profiles.some((profile) => profile.kind === "local")) {
     profiles.unshift(defaultProfileState(fallbackRunner).profiles[0]);
   }
 
   const fallbackProfile = profiles.find(isRunnableProfile) ?? profiles[0];
+  const requestedActiveId =
+    typeof value.activeProfileId === "string"
+      ? (remap.get(value.activeProfileId) ?? value.activeProfileId)
+      : undefined;
   const activeProfileId =
-    typeof value.activeProfileId === "string" &&
-    profiles.some((profile) => profile.id === value.activeProfileId && isRunnableProfile(profile))
-      ? value.activeProfileId
+    requestedActiveId !== undefined &&
+    profiles.some((profile) => profile.id === requestedActiveId && isRunnableProfile(profile))
+      ? requestedActiveId
       : fallbackProfile.id;
 
-  return { activeProfileId, profiles };
+  // Open folders, remapped to dedupe survivors and filtered to surviving profiles.
+  // A state persisted before the folder UI has no openProfileIds: the previously-
+  // active profile starts open so the upgrade keeps exactly the old
+  // one-subscription behavior.
+  const openSource = Array.isArray(value.openProfileIds)
+    ? value.openProfileIds
+        .filter((id): id is string => typeof id === "string")
+        .map((id) => remap.get(id) ?? id)
+    : [activeProfileId];
+  const openProfileIds = [
+    ...new Set(openSource.filter((id) => profiles.some((profile) => profile.id === id))),
+  ];
+
+  return { activeProfileId, profiles, openProfileIds };
 }
 
 export function normalizeProfile(value: unknown): DesktopProfileConfig | null {
@@ -142,15 +195,15 @@ export function normalizeProfile(value: unknown): DesktopProfileConfig | null {
     return null;
   }
 
+  // Rebuilding the profile field-by-field also strips the user-editable `name`
+  // older versions persisted; labels are derived from the connection now.
   const profile = value as Partial<DesktopProfileConfig>;
   const id = typeof profile.id === "string" && profile.id.trim() ? profile.id.trim() : "";
-  const name = typeof profile.name === "string" && profile.name.trim() ? profile.name.trim() : "";
   const runner = normalizeRunnerSettings(profile.runner ?? emptyRunnerSettings());
 
   if (profile.kind === "local") {
     return {
       id: id || LOCAL_PROFILE_ID,
-      name: name || "Default",
       kind: "local",
       runner,
     };
@@ -159,7 +212,6 @@ export function normalizeProfile(value: unknown): DesktopProfileConfig | null {
   if (profile.kind === "ssh") {
     return {
       id: id || `ssh-${Date.now()}`,
-      name: name || "Remote",
       kind: "ssh",
       host: typeof profile.host === "string" ? profile.host.trim() : "",
       clientTty: typeof profile.clientTty === "string" ? profile.clientTty.trim() : "",
@@ -188,10 +240,63 @@ export function isRunnableProfile(profile: DesktopProfileConfig): boolean {
   return profile.kind === "local" || profile.enabled;
 }
 
+// A source the dock can render as a host folder (and subscribe to): the local
+// runner, or an enabled remote with a configured connection. A still-unconfigured
+// (empty-host) remote lives only in Settings until it gets a host.
+export function isFolderProfile(profile: DesktopProfileConfig): boolean {
+  return (
+    isRunnableProfile(profile) && (profile.kind === "local" || profile.host.trim().length > 0)
+  );
+}
+
+export function folderProfiles(state: ProfileState): DesktopProfileConfig[] {
+  return state.profiles.filter(isFolderProfile);
+}
+
+// Row keybinds (Ctrl+<key>) are owned by exactly one source: the FIRST OPEN
+// folder in the user's source order. Null when no folder is open.
+export function keybindOwnerId(state: ProfileState): string | null {
+  return (
+    state.profiles.find(
+      (profile) => isFolderProfile(profile) && state.openProfileIds.includes(profile.id),
+    )?.id ?? null
+  );
+}
+
+// Open/close one source's folder. Returns the SAME state for an unknown id so
+// callers can skip a no-op commit.
+export function toggleProfileOpen(state: ProfileState, id: string): ProfileState {
+  if (!state.profiles.some((profile) => profile.id === id)) {
+    return state;
+  }
+  return {
+    ...state,
+    openProfileIds: state.openProfileIds.includes(id)
+      ? state.openProfileIds.filter((openId) => openId !== id)
+      : [...state.openProfileIds, id],
+  };
+}
+
+// Move the dragged profile onto the target's position (after it when dragging
+// down, before it when dragging up — the usual list-reorder feel). Keybind
+// ownership is derived from this order. Returns the SAME state when nothing moves.
+export function reorderProfile(state: ProfileState, id: string, targetId: string): ProfileState {
+  const fromIndex = state.profiles.findIndex((profile) => profile.id === id);
+  const targetIndex = state.profiles.findIndex((profile) => profile.id === targetId);
+  if (fromIndex < 0 || targetIndex < 0 || fromIndex === targetIndex) {
+    return state;
+  }
+  const moved = state.profiles[fromIndex];
+  const profiles = state.profiles.filter((profile) => profile.id !== id);
+  // Inserting at the target's ORIGINAL index lands after it when dragging down
+  // (the removal shifted it left by one) and before it when dragging up.
+  profiles.splice(targetIndex, 0, moved);
+  return { ...state, profiles };
+}
+
 export function updateProfileSettingsById(
   state: ProfileState,
   id: string,
-  name: string,
   runner: RunnerSettings,
   sshHost: string,
   sshClientTty: string,
@@ -201,27 +306,22 @@ export function updateProfileSettingsById(
   return {
     ...state,
     profiles: state.profiles.map((profile) =>
-      profile.id === id
-        ? updateProfileSettings(profile, name, runner, sshHost, sshClientTty)
-        : profile,
+      profile.id === id ? updateProfileSettings(profile, runner, sshHost, sshClientTty) : profile,
     ),
   };
 }
 
 export function updateProfileSettings(
   profile: DesktopProfileConfig,
-  name: string,
   runner: RunnerSettings,
   sshHost: string,
   sshClientTty: string,
 ): DesktopProfileConfig {
   const normalizedRunner = normalizeRunnerSettings(runner);
-  const normalizedName = name.trim() || profile.name;
 
   if (profile.kind === "ssh") {
     return {
       ...profile,
-      name: normalizedName,
       host: sshHost.trim(),
       clientTty: sshClientTty.trim(),
       runner: normalizedRunner,
@@ -229,15 +329,7 @@ export function updateProfileSettings(
     };
   }
 
-  return { ...profile, name: normalizedName, runner: normalizedRunner };
-}
-
-export function profileSummary(profile: DesktopProfileConfig): DesktopProfile {
-  return {
-    id: profile.id,
-    name: profile.name,
-    kind: profile.kind,
-  };
+  return { ...profile, runner: normalizedRunner };
 }
 
 export function runnerSummary(settings: RunnerSettings): string {
@@ -290,18 +382,29 @@ export function profileKindLabel(profile: DesktopProfileConfig): string {
   return profile.kind === "ssh" ? "SSH" : "Local";
 }
 
+// The connection is the source's identity, so two profiles can't share a host.
+// Shared by form validation and commit-time re-checks: load-time dedupe drops a
+// persisted duplicate, so a commit that lets one through silently deletes a source.
+export function sshHostCollides(
+  profiles: DesktopProfileConfig[],
+  id: string,
+  sshHost: string,
+): boolean {
+  const host = sshHost.trim();
+  return (
+    host.length > 0 &&
+    profiles.some((other) => other.id !== id && other.kind === "ssh" && other.host.trim() === host)
+  );
+}
+
 export function validateProfileDraft(
   profile: DesktopProfileConfig,
-  name: string,
   runner: RunnerSettings,
   sshHost: string,
   sshClientTty: string,
+  profiles: DesktopProfileConfig[],
 ): DraftValidation {
   const errors: string[] = [];
-
-  if (!name.trim()) {
-    errors.push("Profile name is required.");
-  }
 
   if (runner.binaryPath.includes("\0")) {
     errors.push("agentscan binary cannot contain a null byte.");
@@ -313,6 +416,8 @@ export function validateProfileDraft(
       errors.push("SSH host is required.");
     } else if (host.startsWith("-") || /\s/.test(host) || host.includes("\0")) {
       errors.push("SSH host must be a single host alias and cannot start with '-'.");
+    } else if (sshHostCollides(profiles, profile.id, host)) {
+      errors.push("A source for this connection already exists.");
     }
 
     const clientTty = sshClientTty.trim();
@@ -364,9 +469,56 @@ export function newProfileId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-export function nextRemoteProfileName(profiles: DesktopProfileConfig[]): string {
-  const remoteCount = profiles.filter((profile) => profile.kind === "ssh").length;
-  return remoteCount === 0 ? "Remote" : `Remote ${remoteCount + 1}`;
+// A resolved preflight as the label derivation needs it: the probed hostname keyed
+// by the runner it actually probed. Structural so both the dock's PreflightState
+// ("ready" arm) and the settings window's SyncedPreflight satisfy it.
+export type PreflightLabelSource = {
+  runnerKey: string;
+  preflight: Pick<AgentscanPreflight, "remoteHostLabel"> | null;
+};
+
+// The machine part of a configured SSH target, for comparing against a probed
+// short hostname: "alice@box.lan", "bob@box", and "box" all reach machine "box".
+function sshHostMachine(host: string): string {
+  const target = host.trim();
+  const machine = target.slice(target.lastIndexOf("@") + 1);
+  const dot = machine.indexOf(".");
+  return dot === -1 ? machine : machine.slice(0, dot);
+}
+
+// Display label for an agentscan source, derived from its connection: the local
+// machine keyed by its hostname, a remote keyed by its SSH host (each falling back
+// to a generic label when its host isn't known). A remote upgrades to the hostname
+// probed by its preflight, but only when that preflight's runnerKey matches this
+// exact profile — a label must never come from a stale (different-runner) probe —
+// and only when no sibling source targets the same machine (compared by the
+// machine part of its configured target: "alice@box" and "bob@box" differ only by
+// SSH identity, which the probed "box" would erase; the configured connection
+// string is the honest disambiguator in lists the user picks from).
+export function sourceLabel(
+  profile: DesktopProfileConfig,
+  localHostLabel: string,
+  preflight?: PreflightLabelSource | null,
+  siblings?: ReadonlyArray<DesktopProfileConfig>,
+): string {
+  if (profile.kind === "ssh") {
+    const probed =
+      preflight && preflight.runnerKey === runnerKeyForProfile(profile)
+        ? preflight.preflight?.remoteHostLabel
+        : null;
+    const ambiguous =
+      !!probed &&
+      (siblings ?? []).some((other) => {
+        if (other.id === profile.id) {
+          return false;
+        }
+        return other.kind === "ssh"
+          ? sshHostMachine(other.host) === probed
+          : (localHostLabel || "agentscan") === probed;
+      });
+    return (ambiguous ? null : probed) || profile.host.trim() || "Remote";
+  }
+  return localHostLabel || "agentscan";
 }
 
 // Read the local profile's runner settings from storage (the `agentscan.desktop.

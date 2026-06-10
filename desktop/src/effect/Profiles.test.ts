@@ -10,27 +10,30 @@ import type { ShellMode } from "./prefs";
 
 const localProfile = {
   id: "local",
-  name: "Default",
   kind: "local" as const,
   runner: { binaryPath: "", env: [] },
 };
 
-const sshProfile = (id: string, name: string, enabled = true) => ({
+const sshProfile = (id: string, host = "box", enabled = true) => ({
   id,
-  name,
   kind: "ssh" as const,
-  host: "box",
+  host,
   clientTty: "",
   runner: { binaryPath: "", env: [] },
   enabled,
 });
 
-const stateOf = (activeProfileId: string, ...profiles: ProfileState["profiles"]): ProfileState => ({
+// Deliberately the LEGACY persisted shape (no openProfileIds), so seeds exercise
+// the open-state migration; loadProfileState normalizes it to open the active id.
+const stateOf = (
+  activeProfileId: string,
+  ...profiles: ProfileState["profiles"]
+): Partial<ProfileState> => ({
   activeProfileId,
   profiles,
 });
 
-const seed = (state: ProfileState): Record<string, string> => ({
+const seed = (state: Partial<ProfileState>): Record<string, string> => ({
   [PROFILES_STORAGE_KEY]: JSON.stringify(state),
 });
 
@@ -80,7 +83,7 @@ const run = <A>(
 
 describe("Profiles", () => {
   it("seeds initial state from storage", () =>
-    run("dock", seed(stateOf("local", localProfile, sshProfile("ssh-1", "Remote"))), ({ profiles }) =>
+    run("dock", seed(stateOf("local", localProfile, sshProfile("ssh-1"))), ({ profiles }) =>
       Effect.gen(function* () {
         const state = yield* SubscriptionRef.get(profiles.state);
         expect(state.activeProfileId).toBe("local");
@@ -101,7 +104,7 @@ describe("Profiles", () => {
   it("selectProfile switches active, persists, and broadcasts", () =>
     run(
       "dock",
-      seed(stateOf("local", localProfile, sshProfile("ssh-1", "Remote"))),
+      seed(stateOf("local", localProfile, sshProfile("ssh-1"))),
       ({ profiles, store, emitted }) =>
         Effect.gen(function* () {
           yield* profiles.selectProfile("ssh-1");
@@ -119,7 +122,7 @@ describe("Profiles", () => {
   it("selectProfile ignores a non-runnable (disabled) profile", () =>
     run(
       "dock",
-      seed(stateOf("local", localProfile, sshProfile("ssh-1", "Remote", false))),
+      seed(stateOf("local", localProfile, sshProfile("ssh-1", "box", false))),
       ({ profiles, emitted }) =>
         Effect.gen(function* () {
           yield* profiles.selectProfile("ssh-1");
@@ -150,10 +153,47 @@ describe("Profiles", () => {
       }),
     ));
 
+  it("addSshProfile reuses an existing unconfigured draft instead of adding a second", () =>
+    run(
+      "settings",
+      seed(stateOf("local", localProfile, sshProfile("ssh-draft", ""))),
+      ({ profiles }) =>
+        Effect.gen(function* () {
+          yield* profiles.addSshProfile;
+          const state = yield* SubscriptionRef.get(profiles.state);
+          expect(state.profiles.map((p) => p.id)).toEqual(["local", "ssh-draft"]);
+          expect(state.activeProfileId).toBe("ssh-draft");
+          // Reuse matches the fresh-add UX: the draft starts open too (the legacy
+          // migration only opened the previously-active profile).
+          expect(state.openProfileIds).toContain("ssh-draft");
+        }),
+    ));
+
+  it("addSshProfile adopts the latest state when the draft is already the persisted active", () =>
+    run(
+      "settings",
+      seed(stateOf("local", localProfile, sshProfile("ssh-draft", ""))),
+      ({ profiles, store, emitted }) =>
+        Effect.gen(function* () {
+          // Another window already routed to the draft; this window's ref still says
+          // local is active. The click must resync the ref, not visibly do nothing.
+          store.set(
+            PROFILES_STORAGE_KEY,
+            JSON.stringify(stateOf("ssh-draft", localProfile, sshProfile("ssh-draft", ""))),
+          );
+          yield* profiles.addSshProfile;
+          const state = yield* SubscriptionRef.get(profiles.state);
+          expect(state.activeProfileId).toBe("ssh-draft");
+          expect(state.profiles.map((p) => p.id)).toEqual(["local", "ssh-draft"]);
+          // Ref-only adoption: no write, no broadcast.
+          expect(yield* Queue.size(emitted)).toBe(0);
+        }),
+    ));
+
   it("deleteActiveProfile removes an active ssh profile and falls back to local", () =>
     run(
       "settings",
-      seed(stateOf("ssh-1", localProfile, sshProfile("ssh-1", "Remote"))),
+      seed(stateOf("ssh-1", localProfile, sshProfile("ssh-1"))),
       ({ profiles }) =>
         Effect.gen(function* () {
           yield* profiles.deleteActiveProfile;
@@ -180,11 +220,10 @@ describe("Profiles", () => {
         // edits the local profile (its ref still only knows the local profile).
         store.set(
           PROFILES_STORAGE_KEY,
-          JSON.stringify(stateOf("local", localProfile, sshProfile("ssh-9", "Dock Added"))),
+          JSON.stringify(stateOf("local", localProfile, sshProfile("ssh-9", "dock-box"))),
         );
 
         yield* profiles.applyRunnerSettings({
-          name: "Default",
           runner: { binaryPath: "/opt/agentscan", env: [] },
           sshHost: "",
           sshClientTty: "",
@@ -198,16 +237,133 @@ describe("Profiles", () => {
       }),
     ));
 
+  it("applyRunnerSettings refuses a host edit that collides with a concurrent write", () =>
+    run(
+      "settings",
+      seed(stateOf("ssh-1", localProfile, sshProfile("ssh-1", "alpha"))),
+      ({ profiles, store, emitted }) =>
+        Effect.gen(function* () {
+          // Another window adds a source on "beta" after this window's form already
+          // validated; committing "beta" here would persist a duplicate host that
+          // load-time dedupe then silently deletes. The apply must refuse to write.
+          store.set(
+            PROFILES_STORAGE_KEY,
+            JSON.stringify(
+              stateOf(
+                "ssh-1",
+                localProfile,
+                sshProfile("ssh-1", "alpha"),
+                sshProfile("ssh-2", "beta"),
+              ),
+            ),
+          );
+
+          const outcome = yield* profiles.applyRunnerSettings({
+            runner: { binaryPath: "", env: [] },
+            sshHost: "beta",
+            sshClientTty: "",
+          });
+          expect(outcome).toBe("duplicate-host");
+
+          // No write, no broadcast: the persisted state still has both distinct hosts.
+          const persisted = JSON.parse(store.get(PROFILES_STORAGE_KEY)!) as ProfileState;
+          const hosts = persisted.profiles.map((p) => (p.kind === "ssh" ? p.host : p.id));
+          expect(hosts).toEqual(["local", "alpha", "beta"]);
+          expect(yield* Queue.size(emitted)).toBe(0);
+
+          // The refusal adopted the winning state, so this window's live validation
+          // can surface the duplicate inline.
+          const state = yield* SubscriptionRef.get(profiles.state);
+          expect(state.profiles.map((p) => p.id)).toEqual(["local", "ssh-1", "ssh-2"]);
+        }),
+    ));
+
   it("reload reconciles the ref from storage (the dock-adopt + settings focus/clean path)", () =>
     run("settings", seed(stateOf("local", localProfile)), ({ profiles, store }) =>
       Effect.gen(function* () {
         store.set(
           PROFILES_STORAGE_KEY,
-          JSON.stringify(stateOf("ssh-1", localProfile, sshProfile("ssh-1", "Remote"))),
+          JSON.stringify(stateOf("ssh-1", localProfile, sshProfile("ssh-1"))),
         );
         yield* profiles.reload;
         const state = yield* SubscriptionRef.get(profiles.state);
         expect(state.activeProfileId).toBe("ssh-1");
       }),
+    ));
+
+  it("migrates a legacy persisted state (no openProfileIds) to open the active profile", () =>
+    run("dock", seed(stateOf("ssh-1", localProfile, sshProfile("ssh-1"))), ({ profiles }) =>
+      Effect.gen(function* () {
+        const state = yield* SubscriptionRef.get(profiles.state);
+        expect(state.openProfileIds).toEqual(["ssh-1"]);
+      }),
+    ));
+
+  it("toggleProfileOpen persists the open set and broadcasts", () =>
+    run(
+      "dock",
+      seed(stateOf("local", localProfile, sshProfile("ssh-1"))),
+      ({ profiles, store, emitted }) =>
+        Effect.gen(function* () {
+          yield* profiles.toggleProfileOpen("ssh-1");
+          const state = yield* SubscriptionRef.get(profiles.state);
+          expect(state.openProfileIds).toEqual(["local", "ssh-1"]);
+          const persisted = JSON.parse(store.get(PROFILES_STORAGE_KEY)!) as ProfileState;
+          expect(persisted.openProfileIds).toEqual(["local", "ssh-1"]);
+          expect(yield* Queue.take(emitted)).toEqual({ kind: "profiles" });
+
+          yield* profiles.toggleProfileOpen("ssh-1");
+          expect((yield* SubscriptionRef.get(profiles.state)).openProfileIds).toEqual(["local"]);
+        }),
+    ));
+
+  it("toggleProfileOpen with an unknown id is a no-op (no write, no broadcast)", () =>
+    run("dock", seed(stateOf("local", localProfile)), ({ profiles, emitted }) =>
+      Effect.gen(function* () {
+        yield* profiles.toggleProfileOpen("ghost");
+        expect(yield* Queue.size(emitted)).toBe(0);
+      }),
+    ));
+
+  it("reorderProfile persists the new source order", () =>
+    run(
+      "dock",
+      seed(stateOf("local", localProfile, sshProfile("ssh-1"), sshProfile("ssh-2", "other"))),
+      ({ profiles, store, emitted }) =>
+        Effect.gen(function* () {
+          yield* profiles.reorderProfile("ssh-2", "local");
+          const state = yield* SubscriptionRef.get(profiles.state);
+          expect(state.profiles.map((p) => p.id)).toEqual(["ssh-2", "local", "ssh-1"]);
+          const persisted = JSON.parse(store.get(PROFILES_STORAGE_KEY)!) as ProfileState;
+          expect(persisted.profiles.map((p) => p.id)).toEqual(["ssh-2", "local", "ssh-1"]);
+          expect(yield* Queue.take(emitted)).toEqual({ kind: "profiles" });
+        }),
+    ));
+
+  it("addSshProfile starts the new source open", () =>
+    run("settings", seed(stateOf("local", localProfile)), ({ profiles }) =>
+      Effect.gen(function* () {
+        yield* profiles.addSshProfile;
+        const state = yield* SubscriptionRef.get(profiles.state);
+        const added = state.profiles.find((p) => p.kind === "ssh")!;
+        expect(state.openProfileIds).toEqual(["local", added.id]);
+      }),
+    ));
+
+  it("deleteActiveProfile drops the deleted id from the open set, keeping the rest", () =>
+    run(
+      "settings",
+      seed({
+        activeProfileId: "ssh-1",
+        profiles: [localProfile, sshProfile("ssh-1"), sshProfile("ssh-2", "other")],
+        openProfileIds: ["ssh-2", "ssh-1"],
+      }),
+      ({ profiles }) =>
+        Effect.gen(function* () {
+          yield* profiles.deleteActiveProfile;
+          const state = yield* SubscriptionRef.get(profiles.state);
+          expect(state.profiles.map((p) => p.id)).toEqual(["local", "ssh-2"]);
+          expect(state.openProfileIds).toEqual(["ssh-2"]);
+        }),
     ));
 });

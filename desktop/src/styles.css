@@ -441,6 +441,93 @@ p {
   letter-spacing: 0.01em;
 }
 
+/* ---------- Source folders (vertical strip) ---------- */
+
+/* One collapsible section per enabled source. The header echoes the group-header
+   treatment (same type ramp) plus that source's live-status dot, a keyboard badge
+   on the keybind owner, and a chevron; the body is the source's workspace-grouped
+   rows and per-source live strip, rendered only while open. */
+.source-folders {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.source-folder {
+  display: flex;
+  flex-direction: column;
+}
+
+.folder-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  text-align: left;
+}
+
+.folder-header:hover {
+  background: var(--bg-hover);
+  color: var(--text-muted);
+}
+
+.folder-header .status-dot {
+  flex: 0 0 auto;
+}
+
+/* Kind glyph (⌂ local / ⇆ ssh): disambiguates folders whose connection-derived
+   labels coincide, e.g. a local hostname matching a configured SSH host. */
+.folder-mark {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.folder-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Marks the keybind owner: the one open folder whose rows answer Ctrl+<key>. */
+.folder-kbd {
+  flex: 0 0 auto;
+}
+
+.folder-caret {
+  flex: 0 0 auto;
+  font-size: 14px;
+  color: var(--text-dim);
+  transition: transform 0.15s ease;
+}
+
+/* Right-pointing chevron when closed; down when the folder is open. */
+.folder-caret.open {
+  transform: rotate(90deg);
+}
+
+.folder-body {
+  display: flex;
+  flex-direction: column;
+}
+
+/* The per-folder live strip sits inside the padded picker scroll, so trade the
+   strip's window-edge margins for list-aligned ones. */
+.folder-body .live-strip {
+  margin: 2px 0 6px;
+}
+
 .agent-list {
   display: flex;
   flex-direction: column;
@@ -744,6 +831,12 @@ kbd {
   color: var(--text);
 }
 
+/* Non-owner rows keep their <kbd> labels as information only — dimmed so the
+   actionable (keybind-owner) hotkeys read distinct. */
+kbd.dimmed {
+  opacity: 0.45;
+}
+
 /* The Control glyph is a hint, not the payload — keep it quieter than the key. */
 .kbd-mod {
   margin-right: 1px;
@@ -927,26 +1020,23 @@ kbd {
   white-space: nowrap;
 }
 
-/* Two-line source row: name disambiguates sources (incl. remotes sharing a
-   host), with the agentscan identity beneath it. */
+/* Same kind glyph as .folder-mark / .source-card-mark, menu-row sized. */
+.source-option-mark {
+  flex: 0 0 auto;
+  width: 14px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
 .source-option-text {
   display: flex;
   flex-direction: column;
-  gap: 1px;
   flex: 1 1 auto;
   min-width: 0;
 }
 
 .source-option-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.source-option-sub {
-  font-size: 11px;
-  color: var(--text-dim);
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1364,6 +1454,11 @@ button:disabled {
   transform: scale(0.99);
 }
 
+/* Mid-drag ghost while reordering sources (keybind ownership follows the order). */
+.source-card.dragging {
+  opacity: 0.5;
+}
+
 .source-card.active {
   border-color: var(--accent);
   background: rgba(var(--accent-rgb), 0.12);
@@ -1392,7 +1487,6 @@ button:disabled {
 .source-card-text {
   display: flex;
   flex-direction: column;
-  gap: 1px;
   flex: 1 1 auto;
   min-width: 0;
 }
@@ -1400,15 +1494,6 @@ button:disabled {
 .source-card-name {
   font-size: 13px;
   font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.source-card-sub {
-  font-size: 11px;
-  color: var(--text-dim);
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

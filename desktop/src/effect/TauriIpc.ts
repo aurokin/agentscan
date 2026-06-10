@@ -37,16 +37,22 @@ export class TauriIpc extends Effect.Service<TauriIpc>()("desktop/TauriIpc", {
     // Tauri look for a camelCase `autoStart` Rust param and break the invoke.
     startLivePicker: (input: {
       settings: DesktopRunnerSettings;
+      sourceKey: string;
       epoch: number;
       autoStart: boolean;
     }) =>
       invokeEffect<void>("start_live_picker", {
         settings: input.settings,
+        sourceKey: input.sourceKey,
         epoch: input.epoch,
         autoStart: input.autoStart,
       }),
 
-    stopLivePicker: (epoch: number) => invokeEffect<void>("stop_live_picker", { epoch }),
+    stopLivePicker: (input: { sourceKey: string; epoch: number }) =>
+      invokeEffect<void>("stop_live_picker", {
+        sourceKey: input.sourceKey,
+        epoch: input.epoch,
+      }),
 
     loadPickerRows: (settings: DesktopRunnerSettings) =>
       invokeEffect<PickerRow[]>("load_picker_rows", { settings }),
@@ -58,27 +64,34 @@ export class TauriIpc extends Effect.Service<TauriIpc>()("desktop/TauriIpc", {
     pollDaemonStatus: (settings: DesktopRunnerSettings) =>
       invokeEffect<{ reachable: boolean }>("poll_daemon_status", { settings }),
 
-    // A scoped queue of live envelopes. Awaiting this registers the Tauri listener
-    // BEFORE the caller starts a subscription (so no early frame is missed), and
-    // unregisters it when the scope closes.
-    liveEvents: Effect.gen(function* () {
-      const queue = yield* Queue.unbounded<LivePickerEnvelope>();
-      const runFork = Runtime.runFork(yield* Effect.runtime<never>());
-      yield* Effect.acquireRelease(
-        // tryPromise (not promise): a rejected `listen` is a typed IpcError the
-        // LiveConnection supervisor can surface as a fatal connection state, not a
-        // defect that would tear the supervisor fiber down with no UI feedback.
-        Effect.tryPromise({
-          try: () =>
-            listen<LivePickerEnvelope>(LIVE_PICKER_EVENT, (event) => {
-              runFork(Queue.offer(queue, event.payload));
-            }),
-          catch: (error) =>
-            new IpcError({ op: `listen:${LIVE_PICKER_EVENT}`, message: messageOf(error) }),
-        }),
-        (unlisten: UnlistenFn) => Effect.sync(() => unlisten()),
-      );
-      return queue as Queue.Dequeue<LivePickerEnvelope>;
-    }),
+    // A scoped queue of one source's live envelopes. Awaiting this registers the
+    // Tauri listener BEFORE the caller starts a subscription (so no early frame is
+    // missed), and unregisters it when the scope closes. The Tauri event channel
+    // broadcasts every keyed worker's frames; filtering to `sourceKey` at offer
+    // time keeps a source whose consumer is idle (parked on fatal, or in the
+    // noDaemon poll) from buffering sibling sources' frames without bound — its
+    // own worker is stopped before those idle phases, so its queue stays quiet.
+    liveEvents: (sourceKey: string) =>
+      Effect.gen(function* () {
+        const queue = yield* Queue.unbounded<LivePickerEnvelope>();
+        const runFork = Runtime.runFork(yield* Effect.runtime<never>());
+        yield* Effect.acquireRelease(
+          // tryPromise (not promise): a rejected `listen` is a typed IpcError the
+          // LiveConnection supervisor can surface as a fatal connection state, not a
+          // defect that would tear the supervisor fiber down with no UI feedback.
+          Effect.tryPromise({
+            try: () =>
+              listen<LivePickerEnvelope>(LIVE_PICKER_EVENT, (event) => {
+                if (event.payload.sourceKey === sourceKey) {
+                  runFork(Queue.offer(queue, event.payload));
+                }
+              }),
+            catch: (error) =>
+              new IpcError({ op: `listen:${LIVE_PICKER_EVENT}`, message: messageOf(error) }),
+          }),
+          (unlisten: UnlistenFn) => Effect.sync(() => unlisten()),
+        );
+        return queue as Queue.Dequeue<LivePickerEnvelope>;
+      }),
   },
 }) {}

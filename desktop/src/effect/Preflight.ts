@@ -116,9 +116,10 @@ export class Preflight extends Effect.Service<Preflight>()("desktop/Preflight", 
           // configure. Don't touch state or broadcast — just park until a target lands.
           return yield* Effect.never;
         }
-        // Keep an existing ready state through a switch so the dock shows the picker's
-        // "Switching…" view (runnerKey mismatch), not the boot screen. Only a first
-        // load (no ready yet) drops to loading.
+        // Keep an existing ready state through a switch so the dock doesn't drop back
+        // to its boot screen (status leaving "ready") while the new probe resolves —
+        // consumers treat the kept state's runnerKey mismatch as unresolved. Only a
+        // first load (no ready yet) drops to loading.
         const current = yield* SubscriptionRef.get(stateRef);
         if (current.status !== "ready") {
           yield* publish({ status: "loading" }, target.runnerKey);
@@ -133,6 +134,7 @@ export class Preflight extends Effect.Service<Preflight>()("desktop/Preflight", 
                 version: null,
                 error: target.invalid.error,
                 suggestedBinaryPath: null,
+                remoteHostLabel: null,
               },
             }
           : yield* ipc.probe(target.settings).pipe(

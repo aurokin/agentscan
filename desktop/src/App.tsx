@@ -13,12 +13,13 @@ import {
   configureAtom,
   configurePreflightAtom,
   deleteActiveProfileAtom,
-  liveStateAtom,
+  liveStatesAtom,
   preflightStateAtom,
   profilesAtom,
   reconnectAtom,
   reloadAppearanceAtom,
   reloadProfilesAtom,
+  reorderProfileAtom,
   requestPreflightSyncAtom,
   selectProfileAtom,
   setFramelessAtom,
@@ -28,8 +29,11 @@ import {
   setThemeAtom,
   startAtom,
   syncedPreflightAtom,
+  toggleProfileOpenAtom,
 } from "./effect/atoms";
 import type { ConnectionStatus, LiveState, PickerRow } from "./effect/types";
+import { liveStateFor, type LiveStates } from "./effect/LiveConnection";
+import { pickerRowForKeyboardKey } from "./effect/keybinds";
 import type { PreflightState } from "./effect/Preflight";
 import {
   glassClearFor,
@@ -40,8 +44,9 @@ import {
 import {
   commandPrefix,
   focusCommandLabel,
+  folderProfiles,
   getActiveProfile,
-  isRunnableProfile,
+  keybindOwnerId,
   loadProfileState,
   normalizeRunnerSettings,
   profileKindLabel,
@@ -49,9 +54,11 @@ import {
   runnerSettingsEqual,
   runnerSettingsForProfile,
   runnerSummary,
+  sourceLabel,
   validateProfileDraft,
   type DesktopProfileConfig,
   type EnvironmentVariable,
+  type PreflightLabelSource,
   type RunnerSettings,
 } from "./effect/profileModel";
 import {
@@ -113,13 +120,11 @@ let glassOperationQueue = Promise.resolve();
 let framelessOperationQueue = Promise.resolve();
 
 // Live-picker subscription state (connection status + rows + epoch fencing + the
-// reconnect/latch policy) is owned by the Effect LiveConnection service. This
-// component drives it via configure/reconnect/start and observes liveStateAtom.
-const DEFAULT_LIVE_STATE: LiveState = {
-  connection: { status: "connecting", message: "Starting live client" },
-  rows: [],
-  rowsRunnerKey: null,
-};
+// reconnect/latch policy) is owned by the Effect LiveConnection service, as a
+// per-source map keyed by runnerKey. This component drives it via
+// configure/reconnect/start and observes liveStatesAtom, reading the active
+// runner's entry through liveStateFor (which supplies the initial fallback).
+const EMPTY_LIVE_STATES: LiveStates = new Map<string, LiveState>();
 
 // Synchronous, best-effort localStorage read used only to seed the first paint
 // (active profile / runnerKey / drafts) before the Profiles service atom resolves.
@@ -168,7 +173,7 @@ type PickerGroup = {
 
 // The dock's resolved preflight is owned by the Preflight Effect service (observed via
 // preflightStateAtom as PreflightState); the picker rows + live connection status live
-// in the LiveConnection service (liveStateAtom).
+// in the LiveConnection service (liveStatesAtom).
 const INITIAL_PREFLIGHT: PreflightState = { status: "loading" };
 
 type PickerState =
@@ -176,10 +181,18 @@ type PickerState =
   | { status: "ready"; rows: PickerRow[] }
   | { status: "failed"; message: string };
 
+// Activations are tagged with the runnerKey of the row's OWN source so the
+// running pulse / failure recovery scope to that source's folder (pane ids like
+// %1 collide across hosts). A null sourceKey marks a source-less failure (the
+// summon-hotkey registration error reuses this banner).
 type PickerActivation =
   | { status: "idle" }
-  | { status: "running"; paneId: string }
-  | { status: "failed"; message: string };
+  | { status: "running"; paneId: string; sourceKey: string }
+  | { status: "failed"; message: string; sourceKey: string | null };
+
+// Stable empty fallbacks for the no-owner case so effect dep arrays don't churn.
+const EMPTY_PICKER_ROWS: PickerRow[] = [];
+const EMPTY_PICKER_GROUPS: PickerGroup[] = [];
 
 function App({ mode }: { mode: ShellMode }) {
   // The dock's resolved CLI preflight is owned by the Preflight Effect service. The dock
@@ -207,10 +220,16 @@ function App({ mode }: { mode: ShellMode }) {
   const initialProfileState = useMemo(() => loadProfileState(readLocalStorage), []);
   const profileStateResult = useAtomValue(profilesAtom);
   const profileState = Result.getOrElse(profileStateResult, () => initialProfileState);
-  const selectProfileSet = useAtomSet(selectProfileAtom);
+  // Promise mode so the horizontal footer's settings deep-link can await the
+  // selection commit before opening the window; other callers ignore the promise.
+  const selectProfileSet = useAtomSet(selectProfileAtom, { mode: "promise" });
   const addSshProfileSet = useAtomSet(addSshProfileAtom);
   const deleteActiveProfileSet = useAtomSet(deleteActiveProfileAtom);
-  const applyRunnerSettingsSet = useAtomSet(applyRunnerSettingsAtom);
+  // Promise mode: the apply outcome ("applied" | "duplicate-host") drives the
+  // debug-log entry, so a commit-time refusal is never reported as applied.
+  const applyRunnerSettingsSet = useAtomSet(applyRunnerSettingsAtom, { mode: "promise" });
+  const toggleProfileOpenSet = useAtomSet(toggleProfileOpenAtom);
+  const reorderProfileSet = useAtomSet(reorderProfileAtom);
   const reloadProfiles = useAtomSet(reloadProfilesAtom);
   const activeProfile = useMemo(() => getActiveProfile(profileState), [profileState]);
   const runnerSettings = useMemo(() => runnerSettingsForProfile(activeProfile), [activeProfile]);
@@ -219,9 +238,34 @@ function App({ mode }: { mode: ShellMode }) {
   // to the active profile, so resolved preflight/picker data is invalidated
   // whenever the underlying target changes, not just when the profile id does.
   const runnerKey = useMemo(() => runnerKeyForProfile(activeProfile), [activeProfile]);
-  const [profileNameDraft, setProfileNameDraft] = useState(
-    () => getActiveProfile(initialProfileState).name,
+  // Row keybinds are owned by exactly one source: the topmost OPEN folder in the
+  // user's source order (null when every folder is closed).
+  const ownerProfileId = useMemo(() => keybindOwnerId(profileState), [profileState]);
+  // The folder-eligible sources in order, each with its runner identity, open
+  // state, ownership, and committed-profile validity (the arm gate for non-active
+  // sources, whose preflight is never probed).
+  const liveSources = useMemo(
+    () =>
+      folderProfiles(profileState).map((profile) => ({
+        profile,
+        runnerKey: runnerKeyForProfile(profile),
+        settings: runnerSettingsForProfile(profile),
+        isOpen: profileState.openProfileIds.includes(profile.id),
+        isOwner: profile.id === ownerProfileId,
+        valid:
+          validateProfileDraft(
+            profile,
+            profile.runner,
+            profile.kind === "ssh" ? profile.host : "",
+            profile.kind === "ssh" ? profile.clientTty : "",
+            profileState.profiles,
+          ).errors.length === 0,
+      })),
+    [profileState, ownerProfileId],
   );
+  const ownerSource = useMemo(() => liveSources.find((s) => s.isOwner) ?? null, [liveSources]);
+  const ownerProfile = ownerSource?.profile ?? null;
+  const ownerRunnerKey = ownerSource?.runnerKey ?? null;
   const [settingsDraft, setSettingsDraft] = useState<RunnerSettings>(
     () => getActiveProfile(initialProfileState).runner,
   );
@@ -235,11 +279,12 @@ function App({ mode }: { mode: ShellMode }) {
   });
   const [debugEntries, setDebugEntries] = useState<DebugEntry[]>([]);
   // Live connection (status + rows) is owned by the LiveConnection service. The dock
-  // observes liveStateAtom and drives the service via configure/reconnect/start. The
-  // settings window mounts these too (separate webview/runtime) but never enables a
-  // target, so its supervisor stays idle.
-  const liveResult = useAtomValue(liveStateAtom);
-  const live: LiveState = Result.getOrElse(liveResult, () => DEFAULT_LIVE_STATE);
+  // observes liveStatesAtom — a per-source map — and drives the service via
+  // configure/reconnect/start, reading each open folder's entry by runnerKey. The
+  // settings window mounts these too (separate webview/runtime) but never configures
+  // a target, so its supervisors stay idle.
+  const liveResult = useAtomValue(liveStatesAtom);
+  const liveStates = Result.getOrElse(liveResult, () => EMPTY_LIVE_STATES);
   const configureLive = useAtomSet(configureAtom);
   const startLive = useAtomSet(startAtom);
   const reconnectLive = useAtomSet(reconnectAtom);
@@ -295,8 +340,25 @@ function App({ mode }: { mode: ShellMode }) {
   // local source's label (the way a remote source is keyed by its SSH host). Empty
   // until it resolves; sourceLabel falls back to a generic label in the meantime.
   const [localHostLabel, setLocalHostLabel] = useState("");
+  // The probed remote hostname as a label source: the dock from its own resolved
+  // preflight, settings from the dock's mirror. sourceLabel only honors it for the
+  // profile whose runnerKey matches, so a stale probe can never label a source.
+  const labelPreflight: PreflightLabelSource | null =
+    mode === "dock"
+      ? preflightState.status === "ready"
+        ? preflightState
+        : null
+      : syncedPreflight;
+  // One label rule for every card/menu/header: sourceLabel sees the sibling
+  // sources so a probed hostname that collides with another source's label is
+  // dropped for the configured connection string.
+  const labelFor = (profile: DesktopProfileConfig) =>
+    sourceLabel(profile, localHostLabel, labelPreflight, profileState.profiles);
   // Debug log is a diagnostic panel — collapsed by default to keep Settings calm.
   const [isDebugOpen, setIsDebugOpen] = useState(false);
+  // The source card being dragged in the settings rail (HTML5 drag-and-drop);
+  // dropping on another card reorders the sources, which keybind ownership follows.
+  const [draggedSourceId, setDraggedSourceId] = useState<string | null>(null);
   // Concrete theme in effect, kept in sync by the theme effect; drives per-theme
   // logo variant selection. Seeded from the service's initial theme so first paint
   // picks the right logos.
@@ -308,12 +370,15 @@ function App({ mode }: { mode: ShellMode }) {
   // surfaceAlpha's dep list (so a slider tick can't re-fire the native call).
   const surfaceAlphaRef = useRef(surfaceAlpha);
   surfaceAlphaRef.current = surfaceAlpha;
-  // Tracks the active runner config so in-flight refreshes/focus can detect a
-  // profile switch OR a settings change and discard results from the previous
-  // target. Updated synchronously during render (below) so async completions
-  // never observe a stale key through a late-running effect.
-  const activeRunnerKeyRef = useRef(runnerKey);
-  activeRunnerKeyRef.current = runnerKey;
+  // The runnerKeys of the OPEN folders, render-synced so an in-flight activation's
+  // completion can tell whether its source is still open (a closed/edited source
+  // has no list to recover, so its failure is dropped instead of surfaced).
+  const openRunnerKeys = useMemo(
+    () => new Set(liveSources.filter((source) => source.isOpen).map((source) => source.runnerKey)),
+    [liveSources],
+  );
+  const openRunnerKeysRef = useRef(openRunnerKeys);
+  openRunnerKeysRef.current = openRunnerKeys;
   const [selectedPaneId, setSelectedPaneId] = useState<string | null>(null);
   // The focused pane id we last *observed as visible*. We follow focus only when
   // this value changes (a genuine focus move), not when it merely reappears, so a
@@ -327,27 +392,30 @@ function App({ mode }: { mode: ShellMode }) {
   // dispatches both click events before React re-renders, so each handler reads
   // the same stale "idle" activation and a state-based guard lets both through —
   // firing focus_picker_row twice. A ref updates synchronously, so the second
-  // click sees the in-flight activation and bails.
-  const activationInFlightRef = useRef(false);
+  // click sees the in-flight activation and bails. It holds a per-activation
+  // token (not a boolean) because the guard can be freed EARLY — closing the
+  // in-flight source releases it so other sources aren't blocked behind a wedged
+  // invoke — and the stale activation's settle must then leave a newer
+  // activation's guard alone.
+  const activationInFlightRef = useRef<symbol | null>(null);
   const validation = useMemo(
     () =>
       validateProfileDraft(
         activeProfile,
-        profileNameDraft,
         settingsDraft,
         sshHostDraft,
         sshClientTtyDraft,
+        profileState.profiles,
       ),
-    [activeProfile, profileNameDraft, settingsDraft, sshHostDraft, sshClientTtyDraft],
+    [activeProfile, settingsDraft, sshHostDraft, sshClientTtyDraft, profileState.profiles],
   );
   const isSettingsDirty = useMemo(
     () =>
-      profileNameDraft.trim() !== activeProfile.name ||
       sshHostDraft.trim() !== (activeProfile.kind === "ssh" ? activeProfile.host : "") ||
       sshClientTtyDraft.trim() !==
         (activeProfile.kind === "ssh" ? activeProfile.clientTty : "") ||
       !runnerSettingsEqual(settingsDraft, activeProfile.runner),
-    [activeProfile, profileNameDraft, settingsDraft, sshHostDraft, sshClientTtyDraft],
+    [activeProfile, settingsDraft, sshHostDraft, sshClientTtyDraft],
   );
   // Render-synced mirror so the settings focus-reconcile listener can read the latest
   // dirty state without re-subscribing on every keystroke.
@@ -362,12 +430,12 @@ function App({ mode }: { mode: ShellMode }) {
     () =>
       validateProfileDraft(
         activeProfile,
-        activeProfile.name,
         activeProfile.runner,
         activeProfile.kind === "ssh" ? activeProfile.host : "",
         activeProfile.kind === "ssh" ? activeProfile.clientTty : "",
+        profileState.profiles,
       ),
-    [activeProfile],
+    [activeProfile, profileState.profiles],
   );
   const activeProfileValid = activeProfileValidation.errors.length === 0;
 
@@ -399,23 +467,60 @@ function App({ mode }: { mode: ShellMode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runnerKey, mode, configurePreflight]);
 
-  const liveReady =
-    preflightState.status === "ready" &&
-    preflightState.runnerKey === runnerKey &&
-    preflightState.preflight.ok &&
-    activeProfileValid;
-
-  // Drive the LiveConnection service to the active target. The service owns the
-  // subscription, epoch fencing, reconnect/latch backoff, and recovery; this just
-  // tells it WHICH runner to track and WHETHER it's ready (preflight ok + valid
-  // profile + dock). configure dedupes on runnerKey + enabled, so an inactive-profile
-  // edit that leaves the active runner unchanged doesn't re-arm the worker.
+  // Drive the LiveConnection service to every OPEN folder's source: open folder =
+  // live subscription, closed folder = none. The service owns the subscriptions,
+  // epoch fencing, reconnect/latch backoff, and recovery; this just tells it WHICH
+  // runners to track and WHETHER each is ready. The active (settings-selected)
+  // source gates on its resolved preflight, but only once that resolution
+  // describes the CURRENT runnerKey: the probe lags a switch by one async cycle,
+  // and gating off during that window would bounce (teardown + full reconnect —
+  // over SSH a whole remote process respawn) the healthy, already-armed
+  // subscription of a source the user merely re-selected in Settings. While
+  // unresolved, the previous armed value is carried; a key with no previous value
+  // (launch, or an in-place edit that moved the runnerKey) stays gated off until
+  // its probe resolves, exactly the old behavior. Other open sources are never
+  // probed, so they arm on their committed-profile validity and surface failures
+  // per folder through their keyed live state. configure diffs on runnerKey +
+  // enabled, so re-running on an unrelated profileState change leaves running
+  // keys alone.
+  const prevLiveEnabledRef = useRef<ReadonlyMap<string, boolean>>(new Map());
+  // THE invariant probe results live under: a probe gates STARTING a channel; an
+  // ONLINE channel is never killed or masked by probe verdicts. Probes are one-shot
+  // (they re-fire only on a runnerKey change) while the channel is continuous, so a
+  // same-key probe failing — transiently or even resolving CLI-unavailable — after
+  // the source is streaming must not tear down or hide healthy rows: there would be
+  // no recovery probe to undo it. Config edits still tear down via the key change,
+  // and a channel that drops falls back to probe gating. The channel reports its
+  // own failures via LiveStrip.
+  const activeLiveOnline = liveStateFor(liveStates, runnerKey).connection.status === "online";
+  const liveTargets = useMemo(
+    () =>
+      liveSources
+        .filter((source) => source.isOpen)
+        .map((source) => ({
+          settings: source.settings,
+          runnerKey: source.runnerKey,
+          enabled:
+            source.runnerKey === runnerKey
+              ? activeLiveOnline ||
+                (preflightState.status === "ready" && preflightState.runnerKey === runnerKey
+                  ? preflightState.preflight.ok && activeProfileValid
+                  : (prevLiveEnabledRef.current.get(source.runnerKey) ?? false))
+              : source.valid,
+        })),
+    [liveSources, runnerKey, activeLiveOnline, preflightState, activeProfileValid],
+  );
   useEffect(() => {
     if (mode !== "dock") {
       return;
     }
-    configureLive({ settings: runnerSettings, runnerKey, enabled: liveReady });
-  }, [mode, runnerKey, liveReady, runnerSettings, configureLive]);
+    configureLive(liveTargets);
+    // Record what was armed only after configuring, so the carry above always
+    // reads the last value the service actually saw.
+    prevLiveEnabledRef.current = new Map(
+      liveTargets.map((target) => [target.runnerKey, target.enabled]),
+    );
+  }, [mode, liveTargets, configureLive]);
 
   // Resolve the local machine's hostname once for the local source label. Both the
   // dock and the settings window render it, so this runs ungated; a failure just
@@ -475,6 +580,7 @@ function App({ mode }: { mode: ShellMode }) {
           setActivation({
             status: "failed",
             message: `Unable to register ${PICKER_HOTKEY}: ${errorMessage(error)}`,
+            sourceKey: null,
           });
         }
       });
@@ -514,86 +620,143 @@ function App({ mode }: { mode: ShellMode }) {
 
   // `preflightState` lags the active runner by one async cycle after a switch or settings
   // apply (the service resolves the new probe asynchronously). Until the resolved state's
-  // runnerKey matches the active runner, its preflight/picker rows belong to the previous
-  // target, so treat that window as "loading" everywhere ready data is consumed.
+  // runnerKey matches the active runner, it belongs to the previous target, so the footer
+  // tone treats that window as unknown.
   const activeReadyState =
     preflightState.status === "ready" && preflightState.runnerKey === runnerKey
       ? preflightState
       : null;
-  // Sources offered in the footer quick-switch: the built-in local runner plus
-  // enabled SSH profiles. A remote with no host yet can only resolve to a failed
-  // source, so exclude it from quick-switch (it's still listed in Settings, where
-  // it gets configured) — except keep the active one so the trigger's source is
-  // always represented in its own menu.
-  const sourceProfiles = useMemo(
-    () =>
-      profileState.profiles.filter(
-        (profile) =>
-          isRunnableProfile(profile) &&
-          (profile.kind !== "ssh" ||
-            profile.host.trim().length > 0 ||
-            profile.id === activeProfile.id),
-      ),
-    [profileState, activeProfile.id],
-  );
-  // Tone for the footer status dot, derived from the resolved preflight of the
-  // active source (not a stale previous one). Detail lives in the title tooltip.
+  // Tone for the footer status dot when the footer shows the active source, derived
+  // from its resolved preflight (not a stale previous one).
   const sourceStatusTone = !activeReadyState
     ? "unknown"
     : activeReadyState.preflight.ok
       ? "idle"
       : "error";
-  // The picker rows + connection status now come from the LiveConnection service
-  // (live), not from `state`. Both lag the active profile the same way preflight
-  // does, so while the resolved state's runnerKey doesn't match the active runner
-  // (a switch in flight) we show a neutral "loading"/"Switching…" view rather than
-  // the previous profile's stale rows/offline banner.
-  const displayConnection: ConnectionStatus = activeReadyState
-    ? live.connection
-    : { status: "connecting", message: "Switching profile…" };
-  // Spin the reconnect affordance while the live client is (re)connecting.
-  const isReconnecting =
-    displayConnection.status === "connecting" || displayConnection.status === "reconnecting";
-  // A failed focus re-arms the live client (activateSelectedRow's catch) to drop the
-  // now-dead pane. Until the fresh snapshot lands, `live.rows` still carries that stale
-  // row — reconnecting preserves rows to avoid a flicker on a healthy manual reconnect —
-  // so gate the list to "loading" during THIS recovery, matching the old refresh which
-  // set picker→loading, instead of leaving the known-dead row clickable and instantly
-  // re-triggerable. Keyed on activation.status==="failed" so a manual reconnect (idle)
-  // keeps its rows; it self-clears once rows refresh and isReconnecting goes false.
-  const recoveringFromFailedActivation = activation.status === "failed" && isReconnecting;
-  const pickerDataState: PickerState =
-    activeReadyState && !recoveringFromFailedActivation
-      ? pickerStateFromLive(live, runnerKey)
-      : { status: "loading" };
-  const allPickerRows =
-    pickerDataState.status === "ready" ? pickerDataState.rows : [];
+  // The active runner's preflight is unusable when the probe resolved for the
+  // CURRENT runner but reports the CLI unavailable (bad binary path / SSH target).
+  // A stale ready state from a profile still switching (runnerKey mismatch) is not
+  // an error — the folders keep rendering their keyed live states while the new
+  // probe resolves.
+  const dockPreflightUnusable =
+    preflightState.status === "ready" &&
+    preflightState.runnerKey === runnerKey &&
+    !preflightState.preflight.ok;
+  // The active source's failure surfaced inside its own folder (or the homeless
+  // strip below): its live target is gated off (or left disarmed) on a failed
+  // probe, so without this the folder's keyed state would read as a dishonest
+  // perpetual "Waiting for a source". Covers a resolved-but-unusable probe, and
+  // the probe itself failing ("failed" carries no runnerKey; like the boot screen,
+  // we treat it as the active runner's) — unless the channel is already online,
+  // per the probes-gate-starting invariant above liveTargets.
+  const activePreflightError = activeLiveOnline
+    ? null
+    : dockPreflightUnusable
+      ? (preflightState.preflight.error ?? `${profileKindLabel(activeProfile)} CLI unavailable`)
+      : preflightState.status === "failed"
+        ? preflightState.message
+        : null;
+  // The full-screen boot/recovery takeover is scoped to the states where no OTHER
+  // open folder could render anyway: preflight is single-source (only the active
+  // profile is probed), so blanking the whole dock for the active source's
+  // boot/failure would hide healthy open folders — exactly the independence the
+  // folder model exists for. With another folder open, the active source's failure
+  // stays inside its own folder (status dot + error strip) instead.
+  const hasOpenFolderBeyondActive = liveSources.some(
+    (source) => source.isOpen && source.runnerKey !== runnerKey,
+  );
+  // …and it also requires the active source to be PARTICIPATING (its folder open):
+  // a closed folder is header-only with no subscription, so its loading/failing
+  // preflight must not take over a dock the user deliberately quieted — that would
+  // hide the folder list (the only way to reopen anything). A homeless active
+  // source (no folder) surfaces through the error strip above the folders instead.
+  const activeFolderOpen = liveSources.some(
+    (source) => source.isOpen && source.runnerKey === runnerKey,
+  );
+  const dockBootScreenVisible =
+    mode === "dock" &&
+    // No probe verdict blanks the dock over an online channel (probes gate
+    // starting; the stream is ground truth while it runs).
+    !activeLiveOnline &&
+    (preflightState.status !== "ready" || dockPreflightUnusable) &&
+    activeFolderOpen &&
+    !hasOpenFolderBeyondActive;
+  // One view per folder-eligible source: its keyed live state, the picker
+  // projection of it, and the query-filtered workspace groups. The filter applies
+  // across all open folders. A failed focus re-arms that source's live client
+  // (activateRow's catch) to drop the now-dead pane; until the fresh snapshot
+  // lands the keyed rows still carry it — reconnecting preserves rows to avoid a
+  // flicker on a healthy manual reconnect — so THAT source's list is gated to
+  // "loading" during the recovery (scoped by activation.sourceKey) instead of
+  // leaving the known-dead row clickable and instantly re-triggerable.
+  const sourceViews = useMemo(
+    () =>
+      liveSources.map((source) => {
+        const live = liveStateFor(liveStates, source.runnerKey);
+        const recovering =
+          activation.status === "failed" &&
+          activation.sourceKey === source.runnerKey &&
+          (live.connection.status === "connecting" ||
+            live.connection.status === "reconnecting");
+        const state: PickerState = recovering
+          ? { status: "loading" }
+          : pickerStateFromLive(live, source.runnerKey);
+        const allRows = state.status === "ready" ? state.rows : [];
+        const rows = groupRowsByProject(filterPickerRows(allRows, pickerFilter)).flatMap(
+          (group) => group.rows,
+        );
+        // Per-source live-pane marker, derived like the owner-level focusedPaneId
+        // below (see that comment for the is_focused/is_active fallback rationale).
+        const focusedPaneId =
+          allRows.find((row) => row.is_focused)?.pane_id ??
+          (allRows.some((row) => row.is_focused !== undefined)
+            ? null
+            : (allRows.find((row) => row.is_active)?.pane_id ?? null));
+        return {
+          ...source,
+          live,
+          state,
+          allRows,
+          rows,
+          groups: groupRowsByProject(rows),
+          focusedPaneId,
+        };
+      }),
+    [liveSources, liveStates, pickerFilter, activation],
+  );
+  const ownerView = useMemo(
+    () => sourceViews.find((view) => view.isOwner) ?? null,
+    [sourceViews],
+  );
+  // The keybind owner's rows back everything single-source: keyboard nav and
+  // selection, Ctrl+<key> routing, and the horizontal bar's presentation.
+  const allPickerRows = ownerView?.allRows ?? EMPTY_PICKER_ROWS;
+  const pickerRows = ownerView?.rows ?? EMPTY_PICKER_ROWS;
+  const pickerStatus: PickerState["status"] = ownerView?.state.status ?? "ready";
   // Server-level count echoed on every row; >1 means focus-following is
   // best-effort, so we warn that the live-pane highlight may not be reliable.
   const attachedClientCount = allPickerRows[0]?.attached_client_count ?? 0;
-  const pickerRows = useMemo(
-    () => groupRowsByProject(filterPickerRows(allPickerRows, pickerFilter)).flatMap((g) => g.rows),
-    [allPickerRows, pickerFilter],
+  // Spin the reconnect affordance while any open source's live client is
+  // (re)connecting.
+  const isReconnecting = sourceViews.some(
+    (view) =>
+      view.isOpen &&
+      (view.live.connection.status === "connecting" ||
+        view.live.connection.status === "reconnecting"),
   );
-  const pickerGroups = useMemo(() => groupRowsByProject(pickerRows), [pickerRows]);
-  const pickerStatus = pickerDataState.status;
   const selectedIndex = selectedPaneId
     ? Math.max(0, pickerRows.findIndex((row) => row.pane_id === selectedPaneId))
     : 0;
   const selectedRow = pickerRows[selectedIndex] ?? null;
-  // Derive from the unfiltered rows: the search filter must not change the focus
-  // signal, or hiding the focused row would null it and spuriously reset
+  // Derived from the owner's unfiltered rows: the search filter must not change the
+  // focus signal, or hiding the focused row would null it and spuriously reset
   // follow-state, yanking a manual selection when the filter is cleared.
   //
   // Prefer the collapsed `is_focused` signal. If no row carries it — an older or
   // remote `agentscan` (schema < 5) that doesn't emit the field — fall back to
   // the first `is_active` pane so the picker still defaults to/highlights a live
   // pane instead of going dark.
-  const focusedPaneId =
-    allPickerRows.find((row) => row.is_focused)?.pane_id ??
-    (allPickerRows.some((row) => row.is_focused !== undefined)
-      ? null
-      : (allPickerRows.find((row) => row.is_active)?.pane_id ?? null));
+  const focusedPaneId = ownerView?.focusedPaneId ?? null;
 
   useEffect(() => {
     if (pickerStatus === "loading") {
@@ -652,47 +815,53 @@ function App({ mode }: { mode: ShellMode }) {
     }
   }, [allPickerRows.length, pickerRows, pickerStatus, selectedPaneId, focusedPaneId]);
 
-  // The pane selection is TARGET-scoped (tmux pane ids collide across hosts/sessions), so
-  // it's reset by runnerKey; the search filter / source menu are IDENTITY-scoped UI, reset
-  // by the active profile id. Both seeded to the initial values so mount doesn't clobber
-  // the selection the selection-keeper effect just established or wipe an opening search.
-  const lastSelectionResetRunnerKeyRef = useRef(runnerKey);
-  const lastPickerResetProfileIdRef = useRef(profileState.activeProfileId);
-
   useEffect(() => {
-    // Drafts and the transient activation guard reset on any active-profile change
-    // (switch OR in-place edit): activeRunnerKeyRef is updated synchronously during
-    // render, so resolved data from the previous target is already discarded. Freeing
-    // activationInFlightRef lets the new target activate immediately rather than waiting
-    // on a stale focus_picker_row's finally. The live client's reconnect/retry policy is
-    // owned by the LiveConnection service, which re-targets on the runnerKey change.
-    setProfileNameDraft(activeProfile.name);
+    // Drafts follow the settings form's target on a switch (id) or an in-place edit
+    // of its committed values (runnerKey). Keyed on those VALUES, not the
+    // activeProfile object: every service commit re-reads storage (all-new object
+    // identities), so an identity key would also fire on commits that don't retarget
+    // the form — drag-reorder, open-toggle — and clobber unsaved edits. The dock
+    // renders no form, so this is inert there. The search filter is cross-folder UI
+    // now and deliberately survives profile changes.
     setSettingsDraft(activeProfile.runner);
     setSshHostDraft(activeProfile.kind === "ssh" ? activeProfile.host : "");
     setSshClientTtyDraft(activeProfile.kind === "ssh" ? activeProfile.clientTty : "");
-    setActivation({ status: "idle" });
-    activationInFlightRef.current = false;
+    // activeProfile is fully determined by (id, runnerKey) where this reads it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeProfile.id, runnerKey]);
 
-    // The pane selection clears whenever the underlying TARGET changes — a profile switch
-    // OR an in-place runner/host/binary edit (both move runnerKey). tmux pane ids like %1
-    // collide across hosts/sessions, so a carried-over selectedPaneId would otherwise
-    // silently highlight/activate a different agent on the new target.
-    if (lastSelectionResetRunnerKeyRef.current !== runnerKey) {
-      lastSelectionResetRunnerKeyRef.current = runnerKey;
+  // The pane selection is scoped to the keybind OWNER (keyboard nav runs over the
+  // owner's rows, and tmux pane ids like %1 collide across hosts), so it clears
+  // whenever the owner's underlying TARGET changes — an ownership handoff
+  // (open/close/reorder) or an in-place runner/host edit (both move
+  // ownerRunnerKey). Seeded to the initial owner so mount doesn't clobber the
+  // selection the selection-keeper effect just established.
+  const lastSelectionResetRunnerKeyRef = useRef(ownerRunnerKey);
+  useEffect(() => {
+    if (lastSelectionResetRunnerKeyRef.current !== ownerRunnerKey) {
+      lastSelectionResetRunnerKeyRef.current = ownerRunnerKey;
       setSelectedPaneId(null);
-      // Re-arm focus-follow so the new target snaps to its own focused pane.
+      // Re-arm focus-follow so the new owner snaps to its own focused pane.
       prevFocusedPaneIdRef.current = null;
     }
+  }, [ownerRunnerKey]);
 
-    // The search filter and open source menu are identity-scoped UI: clear them only on an
-    // actual source switch, not on an in-place edit — otherwise a settings apply (which
-    // reloads profileState in this dock window) would wipe a concurrent dock search.
-    if (lastPickerResetProfileIdRef.current !== profileState.activeProfileId) {
-      lastPickerResetProfileIdRef.current = profileState.activeProfileId;
-      setPickerFilter("");
-      setIsSourceMenuOpen(false);
+  // Drop an activation pulse/error whose source is no longer an open folder
+  // (closed, deleted, or retargeted by a settings edit) — there is no list left
+  // for it to describe. Source-less failures (null) are global and stay.
+  useEffect(() => {
+    const sourceKey = activation.status === "idle" ? null : activation.sourceKey;
+    if (sourceKey !== null && !openRunnerKeys.has(sourceKey)) {
+      if (activation.status === "running") {
+        // A still-running activation's invoke may be wedged until the Rust-side
+        // focus timeout; "running" means the guard is held by exactly this
+        // activation, so free it with the visible state — otherwise every
+        // source's clicks/keys silently no-op behind an invisible in-flight call.
+        activationInFlightRef.current = null;
+      }
+      setActivation({ status: "idle" });
     }
-  }, [activeProfile]);
+  }, [activation, openRunnerKeys]);
 
   // A wide drag or pinning to horizontal can strand an already-open source menu in
   // the thin bar (where it clips). Close it whenever the layout goes horizontal.
@@ -1120,35 +1289,51 @@ function App({ mode }: { mode: ShellMode }) {
     };
   }, [framelessEnabled, mode]);
 
-  async function activateSelectedRow(row = selectedRow) {
-    if (!row || activationInFlightRef.current) {
+  // Focus one row against its OWN source's runner settings (rows are tagged with
+  // their source by the folder that renders them; keyboard paths pass the keybind
+  // owner). One activation runs at a time across all sources.
+  async function activateRow(row: PickerRow, profile: DesktopProfileConfig) {
+    if (activationInFlightRef.current !== null) {
       return;
     }
-    activationInFlightRef.current = true;
+    const token = Symbol("activation");
+    activationInFlightRef.current = token;
 
-    const requestRunnerKey = runnerKey;
-    setActivation({ status: "running", paneId: row.pane_id });
+    const requestRunnerKey = runnerKeyForProfile(profile);
+    setActivation({ status: "running", paneId: row.pane_id, sourceKey: requestRunnerKey });
 
     try {
       await runCommand(
-        focusCommandLabel(activeProfile, row.pane_id),
-        () => invoke("focus_picker_row", { paneId: row.pane_id, settings: runnerSettings }),
+        focusCommandLabel(profile, row.pane_id),
+        () =>
+          invoke("focus_picker_row", {
+            paneId: row.pane_id,
+            settings: runnerSettingsForProfile(profile),
+          }),
         appendDebugEntry,
       );
-      if (activeRunnerKeyRef.current !== requestRunnerKey) {
-        // Target switched mid-flight (profile or settings). The profile-switch
-        // effect already reset activation; don't touch it here or we could clear
-        // a newer activation the user started. Also skip the post-focus UI.
+      // A superseded activation (guard freed early on source close, possibly
+      // re-acquired by a newer row) must not touch the shared activation state.
+      if (activationInFlightRef.current !== token) {
         return;
       }
       // Persistent-window model: focusing a pane must not hide the desktop.
       // Reset activation to idle and leave the window visible.
       setActivation({ status: "idle" });
     } catch (error) {
-      if (activeRunnerKeyRef.current !== requestRunnerKey) {
+      if (activationInFlightRef.current !== token) {
         return;
       }
-      setActivation({ status: "failed", message: errorMessage(error) });
+      if (!openRunnerKeysRef.current.has(requestRunnerKey)) {
+        // The source was closed/edited mid-flight; there is no list left to recover.
+        setActivation({ status: "idle" });
+        return;
+      }
+      setActivation({
+        status: "failed",
+        message: errorMessage(error),
+        sourceKey: requestRunnerKey,
+      });
       // A failed focus is strong evidence the row is stale (the pane is gone). The
       // daemon is event-driven with periodic reconcile OFF by default, so a missed
       // tmux close notification won't self-correct — agentscan's own design names the
@@ -1156,15 +1341,20 @@ function App({ mode }: { mode: ShellMode }) {
       // the live client: re-subscribing makes the daemon publish a fresh initial
       // snapshot, which the worker re-derives via load_picker_rows, dropping the dead
       // row. This is the push-model equivalent of the old one-shot refetch.
-      reconnectLive();
+      reconnectLive(requestRunnerKey);
     } finally {
-      // Only release the guard if this is still the active target. After a
-      // profile/settings switch the effect already cleared the ref (and a newer
-      // activation may have re-set it), so a stale completion must not clear a
-      // guard that now belongs to a different in-flight activation.
-      if (activeRunnerKeyRef.current === requestRunnerKey) {
-        activationInFlightRef.current = false;
+      // Release only our own token: the activation-drop effect frees a wedged
+      // guard early when this source closes mid-flight, and a newer activation
+      // may already hold it by the time this stale invoke settles.
+      if (activationInFlightRef.current === token) {
+        activationInFlightRef.current = null;
       }
+    }
+  }
+
+  async function activateSelectedRow() {
+    if (selectedRow && ownerProfile) {
+      await activateRow(selectedRow, ownerProfile);
     }
   }
 
@@ -1179,6 +1369,12 @@ function App({ mode }: { mode: ShellMode }) {
   }
 
   function handlePickerKeyDown(event: KeyboardEvent) {
+    // The boot/recovery screen replaces the folder list entirely, but the owner's
+    // keyed live state can still hold rows behind it — gate every picker key while
+    // it shows so Ctrl+<key>/Enter can't activate rows the user cannot see.
+    if (dockBootScreenVisible) {
+      return;
+    }
     // Control + a row's displayed hotkey jumps straight to that pane. Require
     // Control alone so we never shadow ⌘ shortcuts or Ctrl+⌘ combos. On macOS,
     // editing uses ⌘, so Ctrl is free even inside the search box — bypass the
@@ -1189,13 +1385,15 @@ function App({ mode }: { mode: ShellMode }) {
     // label and the CLI's configured char hotkeys; non-US layouts that shift
     // digit keys may no-op on the default number row, which is a silent miss
     // rather than a wrong action.)
+    // Resolves ONLY against the keybind owner's rows (pickerRows); other folders
+    // render their <kbd> labels dimmed, as information.
     const ctrlActivate = event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey;
-    if (ctrlActivate && (IS_MAC || !isInteractiveShortcutTarget(event.target))) {
+    if (ctrlActivate && ownerProfile && (IS_MAC || !isInteractiveShortcutTarget(event.target))) {
       const target = pickerRowForKeyboardKey(pickerRows, event.key);
       if (target) {
         event.preventDefault();
         setSelectedPaneId(target.pane_id);
-        void activateSelectedRow(target);
+        void activateRow(target, ownerProfile);
         return;
       }
     }
@@ -1234,15 +1432,15 @@ function App({ mode }: { mode: ShellMode }) {
   function applyRunnerSettings() {
     const validation = validateProfileDraft(
       activeProfile,
-      profileNameDraft,
       settingsDraft,
       sshHostDraft,
       sshClientTtyDraft,
+      profileState.profiles,
     );
     if (validation.errors.length > 0) {
       appendDebugEntry({
         kind: "settings",
-        label: `${activeProfile.name} settings rejected`,
+        label: `${labelFor(activeProfile)} settings rejected`,
         detail: validation.errors.join(" · "),
       });
       return;
@@ -1253,21 +1451,39 @@ function App({ mode }: { mode: ShellMode }) {
     // broadcasts. Validation + the debug log stay here; persistence is the service's.
     const normalized = normalizeRunnerSettings(settingsDraft);
     setSettingsDraft(normalized);
-    applyRunnerSettingsSet({
-      name: profileNameDraft,
+    void applyRunnerSettingsSet({
       runner: normalized,
       sshHost: sshHostDraft,
       sshClientTty: sshClientTtyDraft,
-    });
-    appendDebugEntry({
-      kind: "settings",
-      label: `${activeProfile.name} settings applied`,
-      detail: `${runnerSummary(normalized)} · ${normalized.env.length} env ${normalized.env.length === 1 ? "name" : "names"}`,
-    });
+    })
+      .then((outcome) => {
+        if (outcome === "duplicate-host") {
+          // Commit-time refusal: another window claimed this host after the form
+          // validated. The service reloaded the ref, so the inline validation now
+          // shows the duplicate; the log must not claim the edit was applied.
+          appendDebugEntry({
+            kind: "settings",
+            label: `${labelFor(activeProfile)} settings rejected`,
+            detail: "A source for this connection already exists.",
+          });
+          return;
+        }
+        appendDebugEntry({
+          kind: "settings",
+          label: `${labelFor(activeProfile)} settings applied`,
+          detail: `${runnerSummary(normalized)} · ${normalized.env.length} env ${normalized.env.length === 1 ? "name" : "names"}`,
+        });
+      })
+      .catch((error: unknown) => {
+        appendDebugEntry({
+          kind: "settings",
+          label: `${labelFor(activeProfile)} settings apply failed`,
+          detail: errorMessage(error),
+        });
+      });
   }
 
   function resetProfileSettings() {
-    setProfileNameDraft(activeProfile.name);
     setSettingsDraft(activeProfile.runner);
     setSshHostDraft(activeProfile.kind === "ssh" ? activeProfile.host : "");
     setSshClientTtyDraft(activeProfile.kind === "ssh" ? activeProfile.clientTty : "");
@@ -1280,17 +1496,29 @@ function App({ mode }: { mode: ShellMode }) {
   // no need to open settings. Persists straight to the active profile (not the
   // settings form drafts, which the dock never populates).
   function applySuggestedBinaryPath(path: string) {
-    applyRunnerSettingsSet({
-      name: activeProfile.name,
+    void applyRunnerSettingsSet({
       runner: normalizeRunnerSettings({ ...activeProfile.runner, binaryPath: path }),
       sshHost: activeProfile.kind === "ssh" ? activeProfile.host : "",
       sshClientTty: activeProfile.kind === "ssh" ? activeProfile.clientTty : "",
-    });
-    appendDebugEntry({
-      kind: "settings",
-      label: `${activeProfile.name} binary set from probe`,
-      detail: path,
-    });
+    })
+      .then((outcome) => {
+        // Same commit-time refusal as the settings form: another window claimed
+        // this host between probe and click, so nothing was persisted.
+        appendDebugEntry({
+          kind: "settings",
+          label: `${labelFor(activeProfile)} binary ${
+            outcome === "duplicate-host" ? "NOT set (duplicate connection)" : "set from probe"
+          }`,
+          detail: path,
+        });
+      })
+      .catch((error: unknown) => {
+        appendDebugEntry({
+          kind: "settings",
+          label: `${labelFor(activeProfile)} binary apply failed`,
+          detail: errorMessage(error),
+        });
+      });
   }
 
   // The persisted-state mutators live in the Profiles service, which owns the
@@ -1310,7 +1538,7 @@ function App({ mode }: { mode: ShellMode }) {
     if (mode === "settings" && isSettingsDirty && id === activeProfile.id) {
       return;
     }
-    selectProfileSet(id);
+    void selectProfileSet(id);
   }
 
   function addSshProfile() {
@@ -1319,14 +1547,14 @@ function App({ mode }: { mode: ShellMode }) {
 
   function deleteActiveProfile() {
     // Guard here too so the debug entry (and its reference to the about-to-be-deleted
-    // profile's name) only fires for a real deletion; the service also no-ops on local.
+    // profile's label) only fires for a real deletion; the service also no-ops on local.
     if (activeProfile.kind === "local") {
       return;
     }
     deleteActiveProfileSet();
     appendDebugEntry({
       kind: "settings",
-      label: `${activeProfile.name} profile deleted`,
+      label: `${labelFor(activeProfile)} profile deleted`,
       detail: "active profile changed",
     });
   }
@@ -1389,18 +1617,6 @@ function App({ mode }: { mode: ShellMode }) {
     }
   }, [isSearchExpanded]);
 
-  // The dock shows its boot/error screen until the active runner has a usable
-  // preflight. That covers three not-ready cases: still probing; the probe failed
-  // (IPC error); or the probe resolved but reports the CLI unavailable (bad binary
-  // path / SSH target) for the CURRENT runner. The last case used to fall through to
-  // a perpetual "Waiting for a source" live banner that never explained what broke —
-  // routing it here surfaces the real preflight error and the Open settings recovery
-  // path. A stale ready state from a profile still switching (runnerKey mismatch) is
-  // left to the picker's "Switching…" view, not treated as an error.
-  const dockPreflightUnusable =
-    preflightState.status === "ready" &&
-    preflightState.runnerKey === runnerKey &&
-    !preflightState.preflight.ok;
   // Custom window chrome for frameless mode, shared by the boot/recovery screen and the
   // picker below. Callers gate these on framelessApplied so they only appear once the native
   // frame is actually gone. data-tauri-drag-region="" adds the drag handle; undefined omits
@@ -1429,7 +1645,11 @@ function App({ mode }: { mode: ShellMode }) {
     </>
   );
 
-  if (mode === "dock" && (preflightState.status !== "ready" || dockPreflightUnusable)) {
+  // Boot/error screen: still probing, the probe itself failed (IPC error), or the
+  // CLI is unavailable for the current runner — and no other open folder could
+  // render (see dockBootScreenVisible). It surfaces the real preflight error and
+  // the Open settings recovery path instead of a perpetual live banner.
+  if (dockBootScreenVisible) {
     const probing = preflightState.status === "loading";
     const detail =
       preflightState.status === "failed"
@@ -1527,8 +1747,24 @@ function App({ mode }: { mode: ShellMode }) {
     // hide it then and offer a quiet "add remote" affordance instead.
     const hasMultipleSources = profileState.profiles.length > 1;
     // Shared by both header layouts (see adaptive header below).
+    const activeIsOpen = profileState.openProfileIds.includes(activeProfile.id);
     const detailActions = (
       <div className="detail-actions">
+        {/* Open/close must be reachable from Settings too: the horizontal bar has
+            no room for the dock's folder menu (a 56px window clips any popup), so
+            without this a pinned-horizontal user who closed every folder could
+            never arm a subscription again without switching layouts. Only
+            folder-eligible sources can open (a draft has nothing to subscribe). */}
+        {folderProfiles(profileState).some((profile) => profile.id === activeProfile.id) ? (
+          <button
+            className="ghost-button"
+            type="button"
+            aria-pressed={activeIsOpen}
+            onClick={() => toggleProfileOpenSet(activeProfile.id)}
+          >
+            {activeIsOpen ? "Close in dock" : "Open in dock"}
+          </button>
+        ) : null}
         {activeProfile.kind === "ssh" ? (
           <button className="ghost-button danger" type="button" onClick={deleteActiveProfile}>
             Delete
@@ -1581,10 +1817,32 @@ function App({ mode }: { mode: ShellMode }) {
                 return (
                   <button
                     aria-pressed={isActive}
-                    className={`source-card${isActive ? " active" : ""}`}
+                    className={`source-card${isActive ? " active" : ""}${
+                      draggedSourceId === profile.id ? " dragging" : ""
+                    }`}
                     key={profile.id}
                     type="button"
+                    draggable
                     onClick={() => selectProfile(profile.id)}
+                    onDragStart={(event) => {
+                      event.dataTransfer.effectAllowed = "move";
+                      setDraggedSourceId(profile.id);
+                    }}
+                    onDragEnd={() => setDraggedSourceId(null)}
+                    onDragOver={(event) => {
+                      // preventDefault marks this card as a valid drop target.
+                      if (draggedSourceId && draggedSourceId !== profile.id) {
+                        event.preventDefault();
+                        event.dataTransfer.dropEffect = "move";
+                      }
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      if (draggedSourceId && draggedSourceId !== profile.id) {
+                        reorderProfileSet({ id: draggedSourceId, targetId: profile.id });
+                      }
+                      setDraggedSourceId(null);
+                    }}
                   >
                     <span
                       className="source-card-mark"
@@ -1594,8 +1852,9 @@ function App({ mode }: { mode: ShellMode }) {
                       {profile.kind === "ssh" ? "⇆" : "⌂"}
                     </span>
                     <span className="source-card-text">
-                      <span className="source-card-name">{profile.name}</span>
-                      <span className="source-card-sub">{sourceLabel(profile, localHostLabel)}</span>
+                      <span className="source-card-name">
+                        {labelFor(profile)}
+                      </span>
                     </span>
                     <span className={`kind-chip ${profile.kind}`}>
                       {profile.kind === "ssh" ? "remote" : "local"}
@@ -1625,7 +1884,7 @@ function App({ mode }: { mode: ShellMode }) {
                     <span className={`kind-chip ${activeProfile.kind}`}>
                       {activeProfile.kind === "ssh" ? "remote" : "local"}
                     </span>
-                    <h2>{activeProfile.name}</h2>
+                    <h2>{labelFor(activeProfile)}</h2>
                   </div>
                   {detailActions}
                 </div>
@@ -1655,13 +1914,6 @@ function App({ mode }: { mode: ShellMode }) {
               ) : null}
 
               <div className="field-grid">
-                <label className="field">
-                  <span className="field-label">Name</span>
-                  <input
-                    value={profileNameDraft}
-                    onChange={(event) => setProfileNameDraft(event.target.value)}
-                  />
-                </label>
                 {activeProfile.kind === "ssh" ? (
                   <label className="field">
                     <span className="field-label">SSH host</span>
@@ -1902,6 +2154,22 @@ function App({ mode }: { mode: ShellMode }) {
   const searchCollapsed =
     effectiveOrientation === "horizontal" && !isSearchExpanded && !pickerFilter.trim();
 
+  // The footer trigger presents the dock's primary source: the keybind owner, falling
+  // back to the settings-selected active profile when every folder is closed. When that
+  // is the active source (the common case — and always true right after the open-state
+  // migration) the dot keeps today's preflight tone; a non-active owner is never
+  // probed, so its tone comes from its keyed live connection instead.
+  const triggerProfile = ownerProfile ?? activeProfile;
+  const triggerIsActive = triggerProfile.id === activeProfile.id;
+  const triggerTone = triggerIsActive
+    ? sourceStatusTone
+    : ownerView
+      ? connectionTone(ownerView.live.connection)
+      : "unknown";
+  const triggerTitle = triggerIsActive
+    ? statusText
+    : (ownerView?.live.connection.message ?? statusText);
+
   return (
     <main className="sidebar" data-orientation={effectiveOrientation}>
       <header className="topbar" data-tauri-drag-region={dragRegion}>
@@ -1976,40 +2244,204 @@ function App({ mode }: { mode: ShellMode }) {
           type="button"
           aria-label="Reconnect"
           title="Reconnect"
-          onClick={() => reconnectLive()}
+          onClick={() => {
+            // Re-arm every open source; closed folders have no subscription.
+            for (const source of liveSources) {
+              if (source.isOpen) {
+                reconnectLive(source.runnerKey);
+              }
+            }
+          }}
         >
           <span className={isReconnecting ? "spin" : undefined}>{"↻"}</span>
         </button>
       </header>
 
-      {displayConnection.status !== "online" ? (
+      {/* The horizontal bar keeps the single-source presentation (the keybind owner);
+          its connection problems surface here. In the vertical strip each folder
+          carries its own strip instead. */}
+      {effectiveOrientation === "horizontal" &&
+      ownerView &&
+      ownerView.live.connection.status !== "online" ? (
         <LiveStrip
-          status={displayConnection}
-          onStart={() => startLive()}
-          onReconnect={() => reconnectLive()}
+          status={ownerView.live.connection}
+          onStart={() => startLive(ownerView.runnerKey)}
+          onReconnect={() => reconnectLive(ownerView.runnerKey)}
         />
       ) : null}
 
-      {activation.status === "failed" ? (
+      {/* A failed activation is a per-source event: in the vertical strip it renders
+          inside the failing source's folder so healthy folders don't look broken.
+          This global surface covers the horizontal bar (which shows one source) and
+          source-less failures (sourceKey: null). */}
+      {activation.status === "failed" &&
+      (effectiveOrientation === "horizontal" || activation.sourceKey === null) ? (
         <div className="inline-error" role="alert">
           {activation.message}
         </div>
       ) : null}
 
       <div className="picker-scroll" aria-label="Agents" tabIndex={-1}>
-        <GroupedPicker
-          activation={activation}
-          filterQuery={pickerFilter}
-          focusedPaneId={focusedPaneId}
-          groups={pickerGroups}
-          logoTheme={resolvedTheme}
-          selectedPaneId={selectedPaneId}
-          state={pickerDataState}
-          totalRows={allPickerRows.length}
-          onActivate={activateSelectedRow}
-          onClearFilter={() => setPickerFilter("")}
-          onSelect={(row) => setSelectedPaneId(row.pane_id)}
-        />
+        {effectiveOrientation === "horizontal" ? (
+          <GroupedPicker
+            activation={activation}
+            filterQuery={pickerFilter}
+            focusedPaneId={focusedPaneId}
+            groups={ownerView?.groups ?? EMPTY_PICKER_GROUPS}
+            keybindsOwned
+            logoTheme={resolvedTheme}
+            selectedPaneId={selectedPaneId}
+            sourceKey={ownerRunnerKey ?? ""}
+            state={ownerView?.state ?? { status: "ready", rows: EMPTY_PICKER_ROWS }}
+            totalRows={allPickerRows.length}
+            onActivate={(row) => {
+              if (ownerProfile) {
+                void activateRow(row, ownerProfile);
+              }
+            }}
+            onClearFilter={() => setPickerFilter("")}
+            onSelect={(row) => setSelectedPaneId(row.pane_id)}
+          />
+        ) : (
+          // The vertical strip is a list of host folders: one collapsible section per
+          // enabled source, in the user's order. Open = live subscription + that
+          // source's workspace-grouped rows; closed = header only, no subscription.
+          <div className="source-folders">
+            {activePreflightError !== null &&
+            !liveSources.some((source) => source.runnerKey === runnerKey) ? (
+              // The active source can be folder-INeligible (e.g. a just-added remote
+              // with no host yet): it renders no folder, and with another folder open
+              // the boot screen is suppressed, so without this strip its failure has
+              // no surface at all. Same recovery shape as the in-folder strip.
+              <div className="live-strip error" aria-live="polite">
+                <span className="status-dot" data-tone="error" />
+                <span className="live-label">{labelFor(activeProfile)}</span>
+                <span className="live-message">{activePreflightError}</span>
+                <button className="live-action" type="button" onClick={openSettings}>
+                  Open settings
+                </button>
+              </div>
+            ) : null}
+            {sourceViews.map((view) => {
+              // The active source's resolved-failing preflight surfaces in its own
+              // folder: its live target is gated off on a failed probe, so the keyed
+              // connection (a perpetual "Waiting for a source") would lie about what
+              // broke. Non-active sources are never probed; theirs stays null.
+              const preflightError =
+                view.runnerKey === runnerKey ? activePreflightError : null;
+              return (
+                <section className="source-folder" key={view.profile.id}>
+                  <button
+                    className="folder-header"
+                    type="button"
+                    aria-expanded={view.isOpen}
+                    onClick={() => toggleProfileOpenSet(view.profile.id)}
+                    title={
+                      preflightError ??
+                      (view.isOpen
+                        ? view.live.connection.message
+                        : "Closed — no live subscription")
+                    }
+                  >
+                    <span
+                      className={`status-dot${
+                        preflightError === null &&
+                        view.isOpen &&
+                        (view.live.connection.status === "connecting" ||
+                          view.live.connection.status === "reconnecting")
+                          ? " pulsing"
+                          : ""
+                      }`}
+                      data-tone={
+                        preflightError !== null
+                          ? "error"
+                          : view.isOpen
+                            ? connectionTone(view.live.connection)
+                            : "unknown"
+                      }
+                      aria-hidden="true"
+                    />
+                    <span className="folder-mark" aria-hidden="true">
+                      {view.profile.kind === "ssh" ? "⇆" : "⌂"}
+                    </span>
+                    <span className="folder-label">
+                      {labelFor(view.profile)}
+                    </span>
+                    {view.isOwner ? (
+                      <kbd className="folder-kbd" title="Row hotkeys target this source">
+                        {HOTKEY_MODIFIER_LABEL.trim()}
+                      </kbd>
+                    ) : null}
+                    <span
+                      className={`folder-caret${view.isOpen ? " open" : ""}`}
+                      aria-hidden="true"
+                    >
+                      {"›"}
+                    </span>
+                  </button>
+                  {view.isOpen ? (
+                    <div className="folder-body">
+                      {preflightError !== null ? (
+                        // The gated-off target's keyed state (connecting, no rows) would
+                        // render a perpetual loading skeleton under this, so the strip
+                        // replaces the picker body too. Mirrors the boot screen's
+                        // recovery path; LiveStrip's Start/Reconnect can't fix a
+                        // preflight failure, so it doesn't render here.
+                        <div className="live-strip error" aria-live="polite">
+                          <span className="status-dot" data-tone="error" />
+                          <span className="live-label">Unavailable</span>
+                          <span className="live-message">{preflightError}</span>
+                          <button className="live-action" type="button" onClick={openSettings}>
+                            Open settings
+                          </button>
+                        </div>
+                      ) : (
+                        <>
+                          {/* This source's own failed activation; source-less
+                              failures use the global surface above the folders. */}
+                          {activation.status === "failed" &&
+                          activation.sourceKey === view.runnerKey ? (
+                            <div className="inline-error" role="alert">
+                              {activation.message}
+                            </div>
+                          ) : null}
+                          {view.live.connection.status !== "online" ? (
+                            <LiveStrip
+                              status={view.live.connection}
+                              onStart={() => startLive(view.runnerKey)}
+                              onReconnect={() => reconnectLive(view.runnerKey)}
+                            />
+                          ) : null}
+                          <GroupedPicker
+                            activation={activation}
+                            filterQuery={pickerFilter}
+                            focusedPaneId={view.focusedPaneId}
+                            groups={view.groups}
+                            keybindsOwned={view.isOwner}
+                            logoTheme={resolvedTheme}
+                            selectedPaneId={view.isOwner ? selectedPaneId : null}
+                            sourceKey={view.runnerKey}
+                            state={view.state}
+                            totalRows={view.allRows.length}
+                            onActivate={(row) => void activateRow(row, view.profile)}
+                            onClearFilter={() => setPickerFilter("")}
+                            onSelect={(row) => {
+                              // Selection (the keyboard cursor) is owner-scoped; clicks on
+                              // other folders activate without moving it.
+                              if (view.isOwner) {
+                                setSelectedPaneId(row.pane_id);
+                              }
+                            }}
+                          />
+                        </>
+                      )}
+                    </div>
+                  ) : null}
+                </section>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {attachedClientCount > 1 ? (
@@ -2035,20 +2467,37 @@ function App({ mode }: { mode: ShellMode }) {
               // The inline menu opens upward and would clip inside the thin
               // horizontal bar, so there the trigger re-docks into settings (which
               // owns the full Sources list) instead of popping a cramped menu.
+              // Pre-select the source this trigger advertises (the owner can differ
+              // from the settings-selected active profile): landing in Settings on a
+              // different source than the label promised would manage the wrong one.
+              // This is a deep-link INTO the settings selection, not a dock-side
+              // quick-switch — the open/close menu below still never selects. The
+              // retarget is deliberate and cheap: the probe moves to the source the
+              // bar is DISPLAYING (open, so an online channel stays armed), no
+              // subscription churns, and a user after the previous selection is one
+              // card-click away. Await the commit so the window can't load the old
+              // selection; open regardless of the outcome (Settings is the goal).
+              // A DIRTY settings window deliberately wins over this deep-link: it
+              // skips inbound syncs to protect unsaved edits, and its Apply/Delete
+              // target the window's own ref (which mirrors the form), so no action
+              // can hit a different source than the one its form displays. The
+              // label/form mismatch resolves on the form's apply or reset.
               if (effectiveOrientation === "horizontal") {
-                openSettings();
+                void selectProfileSet(triggerProfile.id)
+                  .catch(() => {})
+                  .then(() => openSettings());
               } else {
                 setIsSourceMenuOpen((open) => !open);
               }
             }}
-            title={statusText}
+            title={triggerTitle}
           >
             <span
               className="status-dot"
-              data-tone={sourceStatusTone}
+              data-tone={triggerTone}
               aria-hidden="true"
             />
-            <span className="source-label">{sourceLabel(activeProfile, localHostLabel)}</span>
+            <span className="source-label">{labelFor(triggerProfile)}</span>
             <span
               className={`source-caret${isSourceMenuOpen ? " open" : ""}`}
               aria-hidden="true"
@@ -2057,37 +2506,55 @@ function App({ mode }: { mode: ShellMode }) {
             </span>
           </button>
           {isSourceMenuOpen ? (
+            // Open/close toggles, one per source folder: checking opens that folder
+            // (arms its subscription), unchecking closes it. The menu stays open so
+            // several sources can be toggled in one visit.
+            //
+            // Deliberately NOT a quick-switch: the dock never changes the active
+            // source. The old single-select footer existed because the dock could
+            // show one source at a time; folders replace that gesture with the open
+            // set. "Active" now only means the settings-edit selection + the single
+            // preflight target, and it changes in Settings (one click away via
+            // "Manage sources…"). Non-active sources don't need activation to work
+            // here — opening a folder arms it, and its failures surface per-folder.
             <div className="source-menu" role="menu">
-              {sourceProfiles.map((profile) => {
-                const isActive = profile.id === activeProfile.id;
-                return (
-                  <button
-                    className={`source-option${isActive ? " active" : ""}`}
-                    key={profile.id}
-                    role="menuitemradio"
-                    aria-checked={isActive}
-                    type="button"
-                    onClick={() => {
-                      selectProfile(profile.id);
-                      setIsSourceMenuOpen(false);
-                    }}
-                  >
-                    <span className="source-check" aria-hidden="true">
-                      {isActive ? "✓" : ""}
+              {liveSources.map(({ profile, isOpen }) => (
+                <button
+                  className={`source-option${isOpen ? " active" : ""}`}
+                  key={profile.id}
+                  role="menuitemcheckbox"
+                  aria-checked={isOpen}
+                  type="button"
+                  onClick={() => toggleProfileOpenSet(profile.id)}
+                >
+                  <span className="source-check" aria-hidden="true">
+                    {isOpen ? "✓" : ""}
+                  </span>
+                  <span className="source-option-mark" aria-hidden="true">
+                    {profile.kind === "ssh" ? "⇆" : "⌂"}
+                  </span>
+                  <span className="source-option-text">
+                    <span className="source-option-name">
+                      {labelFor(profile)}
                     </span>
-                    <span className="source-option-text">
-                      <span className="source-option-name">{profile.name}</span>
-                      <span className="source-option-sub">{sourceLabel(profile, localHostLabel)}</span>
-                    </span>
-                  </button>
-                );
-              })}
+                  </span>
+                </button>
+              ))}
               <div className="source-menu-divider" role="separator" />
               <button
                 className="source-option manage"
                 role="menuitem"
                 type="button"
                 onClick={() => {
+                  // Deliberately no selectProfileSet deep-link here, unlike the
+                  // horizontal trigger above: that button names exactly one
+                  // source, so it must land Settings on it. This item is plural
+                  // and source-agnostic — it preserves the settings window's own
+                  // edit selection rather than warping it (and the preflight
+                  // probe) to whichever owner the footer happens to advertise.
+                  // Settings shows its selection unambiguously (highlighted rail
+                  // card + the form's fields), so Apply/Delete can't silently
+                  // target a source other than the one displayed.
                   setIsSourceMenuOpen(false);
                   openSettings();
                 }}
@@ -2122,21 +2589,18 @@ function App({ mode }: { mode: ShellMode }) {
   );
 }
 
-// Project the LiveConnection service's state onto the PickerState the GroupedPicker
-// renders. The service is the single owner of rows + connection status; this just
-// picks the view: keep showing the last rows while (re)connecting so the list
-// doesn't flash a skeleton on a brief blip, show the failure only when a fatal
-// state has actually cleared the rows, and otherwise a loading skeleton.
+// Project one source's keyed live state onto the PickerState its folder renders.
+// The service is the single owner of rows + connection status; this just picks the
+// view: keep showing the last rows while (re)connecting so the list doesn't flash
+// a skeleton on a brief blip, show the failure only when a fatal state has
+// actually cleared the rows, and otherwise a loading skeleton.
 //
 // Rows are trusted only when their producing runner (rowsRunnerKey) matches the
-// active one. After a source switch the service preserves the previous runner's rows
-// through the new subscription's connecting window (so a same-runner reconnect won't
-// flicker), and `state`-derived readiness (preflight) can resolve for the new runner
-// before that subscription's first snapshot — without this gate the dock would briefly
-// render the prior source's panes and activate one against the new runner's settings.
-function pickerStateFromLive(live: LiveState, activeRunnerKey: string): PickerState {
+// key being rendered. Within a keyed entry that always holds (frames are routed by
+// sourceKey), so this is a defensive guard kept from the single-target days.
+function pickerStateFromLive(live: LiveState, runnerKey: string): PickerState {
   const { connection } = live;
-  const rows = live.rowsRunnerKey === activeRunnerKey ? live.rows : [];
+  const rows = live.rowsRunnerKey === runnerKey ? live.rows : [];
   if (rows.length > 0) {
     return { status: "ready", rows };
   }
@@ -2299,14 +2763,19 @@ function statusTone(kind: string): string {
   }
 }
 
-// Footer label for an agentscan source: the local machine keyed by its hostname,
-// or a remote keyed by its SSH host (each falling back when its host isn't known).
-function sourceLabel(profile: DesktopProfileConfig, localHostLabel: string): string {
-  if (profile.kind === "ssh") {
-    const host = profile.host.trim();
-    return host ? `agentscan @ ${host}` : profile.name;
+// Tone for a source's folder/footer status dot, from its keyed live connection.
+function connectionTone(connection: ConnectionStatus): string {
+  switch (connection.status) {
+    case "online":
+      return "idle";
+    case "fatal":
+      return "error";
+    case "noDaemon":
+      return "busy";
+    case "connecting":
+    case "reconnecting":
+      return "unknown";
   }
-  return localHostLabel || "agentscan";
 }
 
 function filterPickerRows(rows: PickerRow[], query: string) {
@@ -2353,27 +2822,6 @@ function liveStateLabel(status: ConnectionStatus) {
   }
 }
 
-function pickerRowForKeyboardKey(rows: PickerRow[], key: string) {
-  const normalizedKey = normalizePickerKeyboardKey(key);
-  if (normalizedKey === null) {
-    return undefined;
-  }
-
-  // Match the key returned by `agentscan hotkeys --format json`; this keeps
-  // desktop activation tied to the user's configured picker_keys, not the
-  // built-in default order.
-  return rows.find((row) => normalizePickerKeyboardKey(row.key) === normalizedKey);
-}
-
-function normalizePickerKeyboardKey(key: string) {
-  if (key.length !== 1) {
-    return null;
-  }
-
-  const normalizedKey = key.toUpperCase();
-  return /^[A-Z0-9]$/.test(normalizedKey) ? normalizedKey : null;
-}
-
 // Persistent-window model: the global hotkey raises/focuses the window; it
 // never toggles it away. The caller passes the placement for the live orientation
 // so summoning a pinned/auto horizontal bar re-docks it as a bar, not a strip.
@@ -2416,8 +2864,10 @@ function GroupedPicker({
   filterQuery,
   focusedPaneId,
   groups,
+  keybindsOwned,
   logoTheme,
   selectedPaneId,
+  sourceKey,
   state,
   totalRows,
   onActivate,
@@ -2428,8 +2878,13 @@ function GroupedPicker({
   filterQuery: string;
   focusedPaneId: string | null;
   groups: PickerGroup[];
+  // Whether this source owns the row keybinds (Ctrl+<key>). Non-owners render
+  // their <kbd> labels dimmed, as information only.
+  keybindsOwned: boolean;
   logoTheme: LogoTheme;
   selectedPaneId: string | null;
+  // This source's runnerKey; scopes the activation pulse (pane ids collide across hosts).
+  sourceKey: string;
   state: PickerState;
   totalRows: number;
   onActivate: (row: PickerRow) => void;
@@ -2487,7 +2942,9 @@ function GroupedPicker({
               // fallback stays single-row and consistent.
               const isFocused = row.pane_id === focusedPaneId;
               const isFocusing =
-                activation.status === "running" && activation.paneId === row.pane_id;
+                activation.status === "running" &&
+                activation.sourceKey === sourceKey &&
+                activation.paneId === row.pane_id;
               const logo = providerLogo(row.provider, logoTheme);
               return (
                 <li
@@ -2518,7 +2975,7 @@ function GroupedPicker({
                   )}
                   <span className="agent-label">{row.display_label}</span>
                   <span className="agent-suffix">{paneSuffix(row)}</span>
-                  <kbd>
+                  <kbd className={keybindsOwned ? undefined : "dimmed"}>
                     <span className="kbd-mod">{HOTKEY_MODIFIER_LABEL}</span>
                     {row.key}
                   </kbd>
