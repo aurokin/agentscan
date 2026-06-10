@@ -531,9 +531,9 @@ function App({ mode }: { mode: ShellMode }) {
     if (mode !== "dock") {
       return;
     }
-    configureHostnameEnrichment((label, detail) =>
-      appendDebugEntry({ kind: "command", label, detail }),
-    );
+    configureHostnameEnrichment({
+      onLog: (label, detail) => appendDebugEntry({ kind: "command", label, detail }),
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, configureHostnameEnrichment]);
 
@@ -612,10 +612,12 @@ function App({ mode }: { mode: ShellMode }) {
     if (mode !== "dock") {
       return;
     }
-    configureSummonHotkey(() => {
-      void raisePickerWindow(summonPlacementRef.current);
+    configureSummonHotkey({
+      onPress: () => {
+        void raisePickerWindow(summonPlacementRef.current);
+      },
     });
-    return () => configureSummonHotkey(null);
+    return () => configureSummonHotkey({ onPress: null });
   }, [mode, configureSummonHotkey]);
 
   // Footer status line, dot tone, and the per-folder error strip for the active

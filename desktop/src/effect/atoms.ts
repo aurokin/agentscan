@@ -197,10 +197,15 @@ export const pruneActivationAtom = runtime.fn(
 // Dock-only: arm hostname enrichment (recording the driver's probed hostnames
 // + one-shot background probes for never-probed online remotes) with the
 // debug-log sink. Persistence goes through Profiles inside the service.
+//
+// The callback rides inside an object on purpose: useAtomSet invokes a BARE
+// function argument as an updater (value(registry.get(atom))) instead of
+// passing it through, which would run the callback once at configure time and
+// hand the service `undefined`. Same convention as configureSummonHotkeyAtom.
 export const configureHostnameEnrichmentAtom = runtime.fn(
-  Effect.fnUntraced(function* (onLog: EnrichmentLog) {
+  Effect.fnUntraced(function* (input: { readonly onLog: EnrichmentLog }) {
     const enrichment = yield* HostnameEnrichment;
-    yield* enrichment.configure(onLog);
+    yield* enrichment.configure(input.onLog);
   }),
 );
 
@@ -216,10 +221,15 @@ export const summonHotkeyAtom = Atom.keepAlive(
 // Dock-only: arm the summon hotkey with the press action (or release it with
 // null). The callback is captured at configure time, so the dock passes one that
 // reads its placement ref at press time.
+//
+// The callback rides inside an object on purpose: useAtomSet invokes a BARE
+// function argument as an updater (value(registry.get(atom))) instead of
+// passing it through — a raw `configure(fn)` call would fire the press action
+// once at mount and register the hotkey with `undefined`, making ⌘⇧A defect.
 export const configureSummonHotkeyAtom = runtime.fn(
-  Effect.fnUntraced(function* (onPress: (() => void) | null) {
+  Effect.fnUntraced(function* (input: { readonly onPress: (() => void) | null }) {
     const hotkey = yield* SummonHotkey;
-    yield* hotkey.configure(onPress);
+    yield* hotkey.configure(input.onPress);
   }),
 );
 
