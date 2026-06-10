@@ -381,19 +381,33 @@ describe("recordProbedHost", () => {
   });
 
   it("stores the trimmed probe on the targeted ssh profile", () => {
-    const before = state([localProfile, sshProfile("ssh-1", "user@box")]);
-    const next = recordProbedHost(before, "ssh-1", "  mander  ");
+    const target = sshProfile("ssh-1", "user@box");
+    const before = state([localProfile, target]);
+    const next = recordProbedHost(before, "ssh-1", "  mander  ", runnerKeyForProfile(target));
     expect(next.profiles[1]).toMatchObject({ id: "ssh-1", probedHost: "mander" });
   });
 
   it("returns the same state for no-ops", () => {
     const probed = { ...sshProfile("ssh-1", "user@box"), probedHost: "mander" };
+    const key = runnerKeyForProfile(probed);
     const before = state([localProfile, probed]);
     // Unchanged value, empty value, unknown id, and a local target all skip.
-    expect(recordProbedHost(before, "ssh-1", "mander")).toBe(before);
-    expect(recordProbedHost(before, "ssh-1", "   ")).toBe(before);
-    expect(recordProbedHost(before, "ssh-9", "mander")).toBe(before);
-    expect(recordProbedHost(before, "local", "mander")).toBe(before);
+    expect(recordProbedHost(before, "ssh-1", "mander", key)).toBe(before);
+    expect(recordProbedHost(before, "ssh-1", "   ", key)).toBe(before);
+    expect(recordProbedHost(before, "ssh-9", "mander", key)).toBe(before);
+    expect(recordProbedHost(before, "local", "mander", runnerKeyForProfile(localProfile))).toBe(
+      before,
+    );
+  });
+
+  it("drops a probe whose runner no longer matches the profile", () => {
+    // The probe raced a host edit: recording would label the NEW connection
+    // with the OLD machine's hostname.
+    const original = sshProfile("ssh-1", "user@box");
+    const retargeted = state([localProfile, sshProfile("ssh-1", "user@other")]);
+    expect(
+      recordProbedHost(retargeted, "ssh-1", "box", runnerKeyForProfile(original)),
+    ).toBe(retargeted);
   });
 });
 

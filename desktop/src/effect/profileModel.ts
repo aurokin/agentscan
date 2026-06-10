@@ -304,12 +304,18 @@ export function reorderProfile(state: ProfileState, id: string, targetId: string
 }
 
 // Record the hostname a successful preflight probed for one SSH source.
-// Returns the SAME state when nothing changes (unknown id, non-ssh profile,
-// empty or already-stored value) so callers can skip a no-op commit.
+// `runnerKey` is the identity of the runner that was actually probed: a probe
+// is async, and the profile may have been retargeted while it was in flight —
+// recording then would write the OLD machine's hostname onto the NEW
+// connection (updateProfileSettings just cleared it for exactly that reason),
+// so a key mismatch drops the stale result. Returns the SAME state when
+// nothing changes (unknown id, non-ssh profile, stale runner, empty or
+// already-stored value) so callers can skip a no-op commit.
 export function recordProbedHost(
   state: ProfileState,
   id: string,
   probedHost: string,
+  runnerKey: string,
 ): ProfileState {
   const trimmed = probedHost.trim();
   if (!trimmed) {
@@ -317,7 +323,12 @@ export function recordProbedHost(
   }
   const index = state.profiles.findIndex((profile) => profile.id === id);
   const profile = index === -1 ? undefined : state.profiles[index];
-  if (!profile || profile.kind !== "ssh" || profile.probedHost === trimmed) {
+  if (
+    !profile ||
+    profile.kind !== "ssh" ||
+    runnerKeyForProfile(profile) !== runnerKey ||
+    profile.probedHost === trimmed
+  ) {
     return state;
   }
   const profiles = [...state.profiles];

@@ -196,13 +196,14 @@ export class Profiles extends Effect.Service<Profiles>()("desktop/Profiles", {
       });
 
     // Persist the hostname a successful preflight probed for one source, so the
-    // short label outlives the probe (only the active source is ever probed) and
-    // app restarts. Merges onto the LATEST persisted state; an unchanged value,
-    // unknown id, or non-ssh target commits nothing.
-    const recordProbedHost = (id: string, probedHost: string) =>
+    // short label outlives the probe and app restarts. Merges onto the LATEST
+    // persisted state; an unchanged value, unknown id, non-ssh target, or a
+    // profile whose runner no longer matches the probed runnerKey (it was
+    // retargeted while the async probe was in flight) commits nothing.
+    const recordProbedHost = (id: string, probedHost: string, runnerKey: string) =>
       Effect.gen(function* () {
         const latest = loadProfileState(bridge.loadRaw);
-        const next = recordProbedHostState(latest, id, probedHost);
+        const next = recordProbedHostState(latest, id, probedHost, runnerKey);
         if (next === latest) {
           return;
         }

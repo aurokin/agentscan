@@ -529,7 +529,13 @@ function App({ mode }: { mode: ShellMode }) {
     ) {
       return;
     }
-    recordProbedHostSet({ id: activeProfile.id, probedHost: probed });
+    recordProbedHostSet({
+      id: activeProfile.id,
+      probedHost: probed,
+      // The service re-verifies this against the LATEST persisted profile, so
+      // a probe that raced a host edit is dropped instead of mislabeling it.
+      runnerKey: preflightState.runnerKey,
+    });
   }, [mode, preflightState, runnerKey, activeProfile, recordProbedHostSet]);
 
   // One-shot hostname enrichment for never-probed remotes: without it, a newly
@@ -567,7 +573,13 @@ function App({ mode }: { mode: ShellMode }) {
         .then((preflight) => {
           const probed = preflight.remoteHostLabel?.trim() ?? "";
           if (probed) {
-            recordProbedHostSet({ id: profileId, probedHost: probed });
+            // The probed runnerKey rides along: the service drops the result
+            // if the profile was retargeted while this probe was in flight.
+            recordProbedHostSet({
+              id: profileId,
+              probedHost: probed,
+              runnerKey: source.runnerKey,
+            });
           }
         })
         .catch(() => {

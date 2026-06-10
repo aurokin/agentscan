@@ -116,11 +116,15 @@ export const reorderProfileAtom = runtime.fn(
 );
 
 // Persist a probed remote hostname onto its profile (display-label enrichment;
-// the service no-ops unchanged values).
+// the service no-ops unchanged values and drops stale-runner results).
 export const recordProbedHostAtom = runtime.fn(
-  Effect.fnUntraced(function* (input: { readonly id: string; readonly probedHost: string }) {
+  Effect.fnUntraced(function* (input: {
+    readonly id: string;
+    readonly probedHost: string;
+    readonly runnerKey: string;
+  }) {
     const profiles = yield* Profiles;
-    yield* profiles.recordProbedHost(input.id, input.probedHost);
+    yield* profiles.recordProbedHost(input.id, input.probedHost, input.runnerKey);
   }),
 );
 
