@@ -90,6 +90,15 @@ export class Activation extends Effect.Service<Activation>()("desktop/Activation
 
     // One focus attempt: log the command, reflect the outcome into the shared
     // state, and on failure re-arm the source's live client.
+    //
+    // No settle-time ownership check is needed here (the old App.tsx token
+    // guard): this fiber holds the slot for its whole life. A successor can
+    // start only after the ensuring in activate frees the slot (this fiber is
+    // done — its writes already landed) or after prune interrupts it (a fiber
+    // with a pending interrupt resumes only to run finalizers, never this
+    // continuation). Either way a superseded activation cannot write here. The
+    // old code needed the token because a settled JS promise's continuation
+    // always runs; an interrupted fiber's does not.
     const runActivation = (input: ActivateInput): Effect.Effect<void> =>
       Effect.gen(function* () {
         yield* Effect.sync(() => input.onLog("started"));
@@ -117,6 +126,16 @@ export class Activation extends Effect.Service<Activation>()("desktop/Activation
         // the live client: re-subscribing makes the daemon publish a fresh initial
         // snapshot, which the worker re-derives via load_picker_rows, dropping the dead
         // row. This is the push-model equivalent of the old one-shot refetch.
+        //
+        // Unconditional on purpose — a "skip if the source closed meanwhile"
+        // guard is dead in every interleaving: once prune has observed the
+        // close it has already interrupted this fiber (the reconnect is never
+        // reached), and before prune fires any service-held open-set is stale.
+        // The residual race (the source closes and the failure settles inside
+        // React's state→effect latency) costs one latch-only re-arm that the
+        // targets reconcile immediately tears down; reconnect no-ops entirely
+        // once the key is deconfigured. The old render-synced ref guard had
+        // the same window, merely render- instead of effect-wide.
         yield* lc.reconnect(input.sourceKey);
       });
 
