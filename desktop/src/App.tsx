@@ -903,13 +903,31 @@ function App({ mode }: { mode: ShellMode }) {
     }
   }, [activation, openRunnerKeys]);
 
+  // While the post-failure reconnect re-derives the failed source's rows, the
+  // failed activation doubles as that source's stale-row mask (sourceViews'
+  // `recovering`); expiring it mid-reconnect would re-expose the known-dead
+  // pane and make it instantly re-clickable. A memoized boolean (not raw
+  // liveStates) keys the TTL effect so unrelated live frames don't reset the
+  // timer on every envelope.
+  const failedSourceRecovering = useMemo(() => {
+    if (activation.status !== "failed" || activation.sourceKey === null) {
+      return false;
+    }
+    const status = liveStateFor(liveStates, activation.sourceKey).connection.status;
+    return status === "connecting" || status === "reconnecting";
+  }, [activation, liveStates]);
+
   // A failed activation is one-shot action feedback, not ongoing state — left
   // alone it outlives its moment and reads like a standing condition, so it
-  // expires after a beat. Source-less failures (null sourceKey: the
-  // summon-hotkey registration error) DO describe a persistent condition and
-  // stay until resolved.
+  // expires after a beat once recovery settles. Source-less failures (null
+  // sourceKey: the summon-hotkey registration error) DO describe a persistent
+  // condition and stay until resolved.
   useEffect(() => {
-    if (activation.status !== "failed" || activation.sourceKey === null) {
+    if (
+      activation.status !== "failed" ||
+      activation.sourceKey === null ||
+      failedSourceRecovering
+    ) {
       return;
     }
     const failed = activation;
@@ -919,7 +937,7 @@ function App({ mode }: { mode: ShellMode }) {
       setActivation((current) => (current === failed ? { status: "idle" } : current));
     }, ACTIVATION_FAILURE_TTL_MS);
     return () => window.clearTimeout(timer);
-  }, [activation]);
+  }, [activation, failedSourceRecovering]);
 
   // A wide drag or pinning to horizontal can strand an already-open source menu in
   // the thin bar (where it clips). Close it whenever the layout goes horizontal.
