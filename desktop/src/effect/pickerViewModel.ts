@@ -40,7 +40,7 @@ export type SourceView<S> = S & {
 // Per-source folder views: each source's keyed live state, the PickerState
 // projection of it, and the query-filtered workspace groups. The filter applies
 // across all open folders. A failed focus re-arms that source's live client
-// (activateRow's catch) to drop the now-dead pane; until the fresh snapshot
+// (the Activation service's failure path) to drop the now-dead pane; until the fresh snapshot
 // lands the keyed rows still carry it — reconnecting preserves rows to avoid a
 // flicker on a healthy manual reconnect — so THAT source's list is gated to
 // "loading" during the recovery (scoped by activation.sourceKey) instead of

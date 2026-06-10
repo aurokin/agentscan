@@ -6,6 +6,8 @@ import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { Result, useAtomSet, useAtomValue } from "@effect-atom/atom-react";
 import { providerLogo, type LogoTheme } from "./providerLogos";
 import {
+  activateAtom,
+  activationAtom,
   addSshProfileAtom,
   appearanceAtom,
   applyRunnerSettingsAtom,
@@ -16,6 +18,7 @@ import {
   liveStatesAtom,
   preflightStateAtom,
   profilesAtom,
+  pruneActivationAtom,
   reconnectAtom,
   reloadAppearanceAtom,
   reloadProfilesAtom,
@@ -100,11 +103,6 @@ const setGlassClear = (clear: number) => {
   document.documentElement.style.setProperty("--glass-clear", clear.toFixed(3));
 };
 const DEBUG_LOG_LIMIT = 80;
-
-// How long a failed activation's error strip stays up. Long enough to read,
-// short enough that one-shot action feedback doesn't linger as a standing
-// condition (the full error remains in the debug log).
-const ACTIVATION_FAILURE_TTL_MS = 10_000;
 // Window min-size floors, applied at runtime per orientation. The vertical pair
 // mirrors the startup floor in tauri.{macos.,}conf.json; horizontal drops the
 // height floor so the bar can shrink to dock height instead of a tall slab.
@@ -153,6 +151,9 @@ const EMPTY_LIVE_STATES: LiveStates = new Map<string, LiveState>();
 
 // First-paint fallback for summonHotkeyAtom before the runtime resolves it.
 const SUMMON_HOTKEY_INACTIVE: SummonHotkeyState = { status: "inactive" };
+
+// First-paint fallback for activationAtom before the runtime resolves it.
+const IDLE_ACTIVATION: PickerActivation = { status: "idle" };
 
 // Synchronous, best-effort localStorage read used only to seed the first paint
 // (active profile / runnerKey / drafts) before the Profiles service atom resolves.
@@ -422,15 +423,13 @@ function App({ mode }: { mode: ShellMode }) {
   // surfaceAlpha's dep list (so a slider tick can't re-fire the native call).
   const surfaceAlphaRef = useRef(surfaceAlpha);
   surfaceAlphaRef.current = surfaceAlpha;
-  // The runnerKeys of the OPEN folders, render-synced so an in-flight activation's
-  // completion can tell whether its source is still open (a closed/edited source
-  // has no list to recover, so its failure is dropped instead of surfaced).
+  // The runnerKeys of the OPEN folders; the activation-prune effect below
+  // reconciles the Activation service against them so a pulse/error whose
+  // source closed is dropped.
   const openRunnerKeys = useMemo(
     () => new Set(liveSources.filter((source) => source.isOpen).map((source) => source.runnerKey)),
     [liveSources],
   );
-  const openRunnerKeysRef = useRef(openRunnerKeys);
-  openRunnerKeysRef.current = openRunnerKeys;
   const [selectedPaneId, setSelectedPaneId] = useState<string | null>(null);
   // The focused pane id we last *observed as visible*. We follow focus only when
   // this value changes (a genuine focus move), not when it merely reappears, so a
@@ -438,18 +437,13 @@ function App({ mode }: { mode: ShellMode }) {
   // a focus move to a hidden pane is still followed once that pane becomes
   // visible again.
   const prevFocusedPaneIdRef = useRef<string | null>(null);
-  const [activation, setActivation] = useState<PickerActivation>({ status: "idle" });
-  // Synchronous in-flight guard for activation. The `activation` state alone
-  // can't gate concurrent activations: a double-click (or two rapid clicks)
-  // dispatches both click events before React re-renders, so each handler reads
-  // the same stale "idle" activation and a state-based guard lets both through —
-  // firing focus_picker_row twice. A ref updates synchronously, so the second
-  // click sees the in-flight activation and bails. It holds a per-activation
-  // token (not a boolean) because the guard can be freed EARLY — closing the
-  // in-flight source releases it so other sources aren't blocked behind a wedged
-  // invoke — and the stale activation's settle must then leave a newer
-  // activation's guard alone.
-  const activationInFlightRef = useRef<symbol | null>(null);
+  // The pane-activation lifecycle (the one-at-a-time in-flight guard, the
+  // failure surface + TTL, and its interplay with the failed source's recovery)
+  // is owned by the Activation Effect service; this window renders its state
+  // and drives it via activateRow/the prune effect.
+  const activation = Result.getOrElse(useAtomValue(activationAtom), () => IDLE_ACTIVATION);
+  const activate = useAtomSet(activateAtom);
+  const pruneActivation = useAtomSet(pruneActivationAtom);
   const validation = useMemo(
     () =>
       validateProfileDraft(
@@ -845,52 +839,13 @@ function App({ mode }: { mode: ShellMode }) {
     }
   }, [ownerRunnerKey]);
 
-  // Drop an activation pulse/error whose source is no longer an open folder
-  // (closed, deleted, or retargeted by a settings edit) — there is no list left
-  // for it to describe.
+  // Reconcile the Activation service against the open folders: it drops a
+  // pulse/error whose source is no longer open (closed, deleted, or retargeted
+  // by a settings edit) and frees a wedged in-flight guard. The failure TTL and
+  // its hold-while-recovering interplay live in the service too.
   useEffect(() => {
-    if (activation.status !== "idle" && !openRunnerKeys.has(activation.sourceKey)) {
-      if (activation.status === "running") {
-        // A still-running activation's invoke may be wedged until the Rust-side
-        // focus timeout; "running" means the guard is held by exactly this
-        // activation, so free it with the visible state — otherwise every
-        // source's clicks/keys silently no-op behind an invisible in-flight call.
-        activationInFlightRef.current = null;
-      }
-      setActivation({ status: "idle" });
-    }
-  }, [activation, openRunnerKeys]);
-
-  // While the post-failure reconnect re-derives the failed source's rows, the
-  // failed activation doubles as that source's stale-row mask (sourceViews'
-  // `recovering`); expiring it mid-reconnect would re-expose the known-dead
-  // pane and make it instantly re-clickable. A memoized boolean (not raw
-  // liveStates) keys the TTL effect so unrelated live frames don't reset the
-  // timer on every envelope.
-  const failedSourceRecovering = useMemo(() => {
-    if (activation.status !== "failed") {
-      return false;
-    }
-    const status = liveStateFor(liveStates, activation.sourceKey).connection.status;
-    return status === "connecting" || status === "reconnecting";
-  }, [activation, liveStates]);
-
-  // A failed activation is one-shot action feedback, not ongoing state — left
-  // alone it outlives its moment and reads like a standing condition, so it
-  // expires after a beat once recovery settles. (The summon hotkey's standing
-  // failure lives in the SummonHotkey service state, not here.)
-  useEffect(() => {
-    if (activation.status !== "failed" || failedSourceRecovering) {
-      return;
-    }
-    const failed = activation;
-    const timer = window.setTimeout(() => {
-      // Identity guard: clear only the exact failure this timer was armed for
-      // (the dep-change cleanup already covers replacement; this covers races).
-      setActivation((current) => (current === failed ? { status: "idle" } : current));
-    }, ACTIVATION_FAILURE_TTL_MS);
-    return () => window.clearTimeout(timer);
-  }, [activation, failedSourceRecovering]);
+    pruneActivation(Array.from(openRunnerKeys));
+  }, [openRunnerKeys, pruneActivation]);
 
   // A wide drag or pinning to horizontal can strand an already-open source menu in
   // the thin bar (where it clips). Close it whenever the layout goes horizontal.
@@ -1320,70 +1275,23 @@ function App({ mode }: { mode: ShellMode }) {
 
   // Focus one row against its OWN source's runner settings (rows are tagged with
   // their source by the folder that renders them; keyboard paths pass the keybind
-  // owner). One activation runs at a time across all sources.
-  async function activateRow(row: PickerRow, profile: DesktopProfileConfig) {
-    if (activationInFlightRef.current !== null) {
-      return;
-    }
-    const token = Symbol("activation");
-    activationInFlightRef.current = token;
-
-    const requestRunnerKey = runnerKeyForProfile(profile);
-    setActivation({ status: "running", paneId: row.pane_id, sourceKey: requestRunnerKey });
-
-    try {
-      await runCommand(
-        focusCommandLabel(profile, row.pane_id),
-        () =>
-          invoke("focus_picker_row", {
-            paneId: row.pane_id,
-            settings: runnerSettingsForProfile(profile),
-          }),
-        appendDebugEntry,
-      );
-      // A superseded activation (guard freed early on source close, possibly
-      // re-acquired by a newer row) must not touch the shared activation state.
-      if (activationInFlightRef.current !== token) {
-        return;
-      }
-      // Persistent-window model: focusing a pane must not hide the desktop.
-      // Reset activation to idle and leave the window visible.
-      setActivation({ status: "idle" });
-    } catch (error) {
-      if (activationInFlightRef.current !== token) {
-        return;
-      }
-      if (!openRunnerKeysRef.current.has(requestRunnerKey)) {
-        // The source was closed/edited mid-flight; there is no list left to recover.
-        setActivation({ status: "idle" });
-        return;
-      }
-      setActivation({
-        status: "failed",
-        message: errorMessage(error),
-        sourceKey: requestRunnerKey,
-      });
-      // A failed focus is strong evidence the row is stale (the pane is gone). The
-      // daemon is event-driven with periodic reconcile OFF by default, so a missed
-      // tmux close notification won't self-correct — agentscan's own design names the
-      // connect/reconnect bootstrap as the ground-truth recovery (config.rs). Re-arm
-      // the live client: re-subscribing makes the daemon publish a fresh initial
-      // snapshot, which the worker re-derives via load_picker_rows, dropping the dead
-      // row. This is the push-model equivalent of the old one-shot refetch.
-      reconnectLive(requestRunnerKey);
-    } finally {
-      // Release only our own token: the activation-drop effect frees a wedged
-      // guard early when this source closes mid-flight, and a newer activation
-      // may already hold it by the time this stale invoke settles.
-      if (activationInFlightRef.current === token) {
-        activationInFlightRef.current = null;
-      }
-    }
+  // owner). The Activation service runs one activation at a time across all
+  // sources, owns the failure surface/TTL, and re-arms the failed source's live
+  // client; this just shapes the request and routes the command lifecycle into
+  // the debug log.
+  function activateRow(row: PickerRow, profile: DesktopProfileConfig) {
+    const label = focusCommandLabel(profile, row.pane_id);
+    activate({
+      paneId: row.pane_id,
+      sourceKey: runnerKeyForProfile(profile),
+      settings: runnerSettingsForProfile(profile),
+      onLog: (detail) => appendDebugEntry({ kind: "command", label, detail }),
+    });
   }
 
-  async function activateSelectedRow() {
+  function activateSelectedRow() {
     if (selectedRow && ownerProfile) {
-      await activateRow(selectedRow, ownerProfile);
+      activateRow(selectedRow, ownerProfile);
     }
   }
 
@@ -1422,7 +1330,7 @@ function App({ mode }: { mode: ShellMode }) {
       if (target) {
         event.preventDefault();
         setSelectedPaneId(target.pane_id);
-        void activateRow(target, ownerProfile);
+        activateRow(target, ownerProfile);
         return;
       }
     }
@@ -1445,7 +1353,7 @@ function App({ mode }: { mode: ShellMode }) {
       setSelectedPaneId(pickerRows[pickerRows.length - 1]?.pane_id ?? null);
     } else if (event.key === "Enter") {
       event.preventDefault();
-      void activateSelectedRow();
+      activateSelectedRow();
     } else if (event.key === "Escape") {
       // Persistent-window model: Escape never hides the window. Clear the search
       // filter if one is active; otherwise it's a no-op. In the horizontal bar it also
@@ -2333,7 +2241,7 @@ function App({ mode }: { mode: ShellMode }) {
             totalRows={allPickerRows.length}
             onActivate={(row) => {
               if (ownerProfile) {
-                void activateRow(row, ownerProfile);
+                activateRow(row, ownerProfile);
               }
             }}
             onClearFilter={() => setPickerFilter("")}
@@ -2460,7 +2368,7 @@ function App({ mode }: { mode: ShellMode }) {
                             sourceKey={view.runnerKey}
                             state={view.state}
                             totalRows={view.allRows.length}
-                            onActivate={(row) => void activateRow(row, view.profile)}
+                            onActivate={(row) => activateRow(row, view.profile)}
                             onClearFilter={() => setPickerFilter("")}
                             onSelect={(row) => {
                               // Selection (the keyboard cursor) is owner-scoped; clicks on

@@ -5,6 +5,7 @@ import { Profiles, type ApplyRunnerSettingsInput } from "./Profiles";
 import { Preflight, type PreflightTarget } from "./Preflight";
 import { Appearance } from "./Appearance";
 import { SummonHotkey } from "./SummonHotkey";
+import { Activation, type ActivateInput } from "./Activation";
 import type { OrientationPreference, ThemePreference } from "./prefs";
 
 // One runtime per webview window, providing the desktop Effect services. Profiles,
@@ -21,6 +22,9 @@ const runtime = Atom.runtime(
     Preflight.Default,
     Appearance.Default,
     SummonHotkey.Default,
+    // Activation also depends on LiveConnection.Default; layer memoization
+    // resolves it to the same instance merged above.
+    Activation.Default,
   ),
 );
 
@@ -168,6 +172,33 @@ export const requestPreflightSyncAtom = runtime.fn(
   Effect.fnUntraced(function* () {
     const preflight = yield* Preflight;
     yield* preflight.requestSync;
+  }),
+);
+
+// --- Activation slice ---
+
+// The pane-activation state the picker renders (idle / running pulse / failed
+// strip): Result<PickerActivation>. keepAlive so the TTL supervisor and any
+// in-flight activation fiber persist across StrictMode remounts.
+export const activationAtom = Atom.keepAlive(
+  runtime.subscriptionRef(Effect.map(Activation, (a) => a.state)),
+);
+
+// Focus one row against its own source. The service holds the one-at-a-time
+// guard and forks the work, so this returns immediately.
+export const activateAtom = runtime.fn(
+  Effect.fnUntraced(function* (input: ActivateInput) {
+    const activation = yield* Activation;
+    yield* activation.activate(input);
+  }),
+);
+
+// Reconcile the activation against the open folders' runnerKeys (drop a
+// pulse/error whose source closed). Driven by React on every open-set change.
+export const pruneActivationAtom = runtime.fn(
+  Effect.fnUntraced(function* (openKeys: ReadonlyArray<string>) {
+    const activation = yield* Activation;
+    yield* activation.prune(openKeys);
   }),
 );
 
