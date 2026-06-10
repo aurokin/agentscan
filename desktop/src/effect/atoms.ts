@@ -115,6 +115,19 @@ export const reorderProfileAtom = runtime.fn(
   }),
 );
 
+// Persist a probed remote hostname onto its profile (display-label enrichment;
+// the service no-ops unchanged values and drops stale-runner results).
+export const recordProbedHostAtom = runtime.fn(
+  Effect.fnUntraced(function* (input: {
+    readonly id: string;
+    readonly probedHost: string;
+    readonly runnerKey: string;
+  }) {
+    const profiles = yield* Profiles;
+    yield* profiles.recordProbedHost(input.id, input.probedHost, input.runnerKey);
+  }),
+);
+
 // Value-guarded reconcile from storage, driven by React on the cross-window profiles
 // sync and the settings window's focus/clean transitions (emitTo has no replay).
 export const reloadProfilesAtom = runtime.fn(

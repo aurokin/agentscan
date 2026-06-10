@@ -1806,6 +1806,22 @@ fn classify_desktop_failure(runner: &AgentscanRunner, operation: &str, message: 
         return format!("tmux is unavailable: {trimmed}");
     }
 
+    // A wedged tmux server: it accepts the connection, then drops the new
+    // client during the handshake ("server exited unexpectedly" / "lost
+    // server" are the tmux client's words for that). Existing clients — the
+    // daemon's control-mode attach, the user's own terminals — keep working,
+    // so rows keep streaming while every NEW client (focus included) fails.
+    // The raw message reads like agentscan crashed the server; it did not,
+    // and only restarting tmux on that host clears the state.
+    if lower.contains("tmux")
+        && (lower.contains("server exited unexpectedly") || lower.contains("lost server"))
+    {
+        return format!(
+            "The tmux server is refusing new connections (existing sessions keep \
+             running); restart tmux on that host to recover: {trimmed}"
+        );
+    }
+
     // Match the binary's *configured* name, so an SSH profile with a custom name
     // (e.g. `scanctl`) is still recognized as not-found. The remote `env` error
     // echoes that name. Local keeps the literal "agentscan" — a local spawn error
@@ -3446,6 +3462,14 @@ mod tests {
         assert!(
             classify_desktop_failure(&runner, "focus", "can't find pane: %42")
                 .starts_with("Focus target is stale")
+        );
+        assert!(
+            classify_desktop_failure(
+                &runner,
+                "focus",
+                "tmux switch-client fallback failed: server exited unexpectedly",
+            )
+            .starts_with("The tmux server is refusing new connections")
         );
     }
 

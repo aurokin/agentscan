@@ -19,6 +19,7 @@ import {
   reconnectAtom,
   reloadAppearanceAtom,
   reloadProfilesAtom,
+  recordProbedHostAtom,
   reorderProfileAtom,
   requestPreflightSyncAtom,
   selectProfileAtom,
@@ -56,6 +57,7 @@ import {
   runnerSummary,
   sourceLabel,
   validateProfileDraft,
+  type AgentscanPreflight,
   type DesktopProfileConfig,
   type EnvironmentVariable,
   type PreflightLabelSource,
@@ -79,6 +81,11 @@ const setGlassClear = (clear: number) => {
   document.documentElement.style.setProperty("--glass-clear", clear.toFixed(3));
 };
 const DEBUG_LOG_LIMIT = 80;
+
+// How long a failed activation's error strip stays up. Long enough to read,
+// short enough that one-shot action feedback doesn't linger as a standing
+// condition (the full error remains in the debug log).
+const ACTIVATION_FAILURE_TTL_MS = 10_000;
 // Window min-size floors, applied at runtime per orientation. The vertical pair
 // mirrors the startup floor in tauri.{macos.,}conf.json; horizontal drops the
 // height floor so the bar can shrink to dock height instead of a tall slab.
@@ -194,6 +201,38 @@ type PickerActivation =
 const EMPTY_PICKER_ROWS: PickerRow[] = [];
 const EMPTY_PICKER_GROUPS: PickerGroup[] = [];
 
+// Source-kind mark: Lucide "house" / "server" outlines (ISC), inlined so the
+// mark renders crisply at small sizes instead of leaning on font glyph
+// coverage. Each context sizes it via font-size (the icon is 1em square).
+function SourceKindIcon({ kind }: { kind: "local" | "ssh" }) {
+  return (
+    <svg
+      className="source-kind-icon"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {kind === "ssh" ? (
+        <>
+          <rect width="20" height="8" x="2" y="2" rx="2" ry="2" />
+          <rect width="20" height="8" x="2" y="14" rx="2" ry="2" />
+          <path d="M6 6h.01" />
+          <path d="M6 18h.01" />
+        </>
+      ) : (
+        <>
+          <path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8" />
+          <path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+        </>
+      )}
+    </svg>
+  );
+}
+
 function App({ mode }: { mode: ShellMode }) {
   // The dock's resolved CLI preflight is owned by the Preflight Effect service. The dock
   // observes preflightStateAtom and drives the probe via configurePreflight; the service
@@ -230,6 +269,7 @@ function App({ mode }: { mode: ShellMode }) {
   const applyRunnerSettingsSet = useAtomSet(applyRunnerSettingsAtom, { mode: "promise" });
   const toggleProfileOpenSet = useAtomSet(toggleProfileOpenAtom);
   const reorderProfileSet = useAtomSet(reorderProfileAtom);
+  const recordProbedHostSet = useAtomSet(recordProbedHostAtom);
   const reloadProfiles = useAtomSet(reloadProfilesAtom);
   const activeProfile = useMemo(() => getActiveProfile(profileState), [profileState]);
   const runnerSettings = useMemo(() => runnerSettingsForProfile(activeProfile), [activeProfile]);
@@ -335,6 +375,9 @@ function App({ mode }: { mode: ShellMode }) {
   // Footer source switcher: which agentscan we're listening to (local vs a
   // remote over SSH). Open state for the inline dropdown.
   const [isSourceMenuOpen, setIsSourceMenuOpen] = useState(false);
+  // Mid-drag source id for the footer order menu (the dock-side counterpart of
+  // the settings rail's draggedSourceId).
+  const [draggedMenuSourceId, setDraggedMenuSourceId] = useState<string | null>(null);
   const sourceMenuRef = useRef<HTMLDivElement | null>(null);
   // The local machine's short hostname, fetched once from the backend, shown as the
   // local source's label (the way a remote source is keyed by its SSH host). Empty
@@ -466,6 +509,95 @@ function App({ mode }: { mode: ShellMode }) {
     // runnerSettings/validation are fully determined by runnerKey where this reads them.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runnerKey, mode, configurePreflight]);
+
+  // Persist a successful probe's hostname onto its profile: the preflight driver
+  // only ever probes the ACTIVE source, so without persistence every non-active
+  // folder (and the next launch) regresses to the raw connection string. The
+  // runnerKey match mirrors sourceLabel's stale-probe guard. This can't loop: the
+  // service no-ops unchanged values, and the post-commit re-render sees the
+  // stored value.
+  useEffect(() => {
+    if (mode !== "dock" || preflightState.status !== "ready") {
+      return;
+    }
+    const probed = preflightState.preflight.remoteHostLabel?.trim() ?? "";
+    if (
+      probed === "" ||
+      preflightState.runnerKey !== runnerKey ||
+      activeProfile.kind !== "ssh" ||
+      activeProfile.probedHost === probed
+    ) {
+      return;
+    }
+    recordProbedHostSet({
+      id: activeProfile.id,
+      probedHost: probed,
+      // The service re-verifies this against the LATEST persisted profile, so
+      // a probe that raced a host edit is dropped instead of mislabeling it.
+      runnerKey: preflightState.runnerKey,
+    });
+  }, [mode, preflightState, runnerKey, activeProfile, recordProbedHostSet]);
+
+  // One-shot hostname enrichment for never-probed remotes: without it, a newly
+  // added (or pre-feature) remote keeps its raw connection-string label until
+  // the user happens to select it in Settings (only the active source gets the
+  // driver's preflight). Once such a source's channel is ONLINE — proof its SSH
+  // path works without interactive prompts — run its preflight once in the
+  // background and persist the probed hostname. Attempts are keyed per
+  // runnerKey: a failed or hostname-less probe doesn't retry until a relaunch
+  // or a connection edit (which moves the runnerKey), and a recorded value
+  // stops future runs for good via the probedHost guard.
+  const hostnameProbedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (mode !== "dock") {
+      return;
+    }
+    // Forget attempts for runnerKeys that left the source list (host edit or
+    // delete): a round-trip edit back to the same connection restores the old
+    // runnerKey with probedHost cleared, and holding the stale attempt would
+    // block the re-probe until a relaunch.
+    const liveKeys = new Set(liveSources.map((source) => source.runnerKey));
+    for (const key of hostnameProbedRef.current) {
+      if (!liveKeys.has(key)) {
+        hostnameProbedRef.current.delete(key);
+      }
+    }
+    for (const source of liveSources) {
+      const profile = source.profile;
+      if (
+        profile.kind !== "ssh" ||
+        profile.probedHost ||
+        source.runnerKey === runnerKey ||
+        hostnameProbedRef.current.has(source.runnerKey) ||
+        liveStateFor(liveStates, source.runnerKey).connection.status !== "online"
+      ) {
+        continue;
+      }
+      hostnameProbedRef.current.add(source.runnerKey);
+      const profileId = profile.id;
+      void runCommand(
+        `hostname probe (${profile.host})`,
+        () => invoke<AgentscanPreflight>("preflight_agentscan", { settings: source.settings }),
+        appendDebugEntry,
+      )
+        .then((preflight) => {
+          const probed = preflight.remoteHostLabel?.trim() ?? "";
+          if (probed) {
+            // The probed runnerKey rides along: the service drops the result
+            // if the profile was retargeted while this probe was in flight.
+            recordProbedHostSet({
+              id: profileId,
+              probedHost: probed,
+              runnerKey: source.runnerKey,
+            });
+          }
+        })
+        .catch(() => {
+          // The failure is already in the debug log; the label honestly stays
+          // on the configured connection string.
+        });
+    }
+  }, [mode, liveSources, liveStates, runnerKey, recordProbedHostSet, appendDebugEntry]);
 
   // Drive the LiveConnection service to every OPEN folder's source: open folder =
   // live subscription, closed folder = none. The service owns the subscriptions,
@@ -862,6 +994,42 @@ function App({ mode }: { mode: ShellMode }) {
       setActivation({ status: "idle" });
     }
   }, [activation, openRunnerKeys]);
+
+  // While the post-failure reconnect re-derives the failed source's rows, the
+  // failed activation doubles as that source's stale-row mask (sourceViews'
+  // `recovering`); expiring it mid-reconnect would re-expose the known-dead
+  // pane and make it instantly re-clickable. A memoized boolean (not raw
+  // liveStates) keys the TTL effect so unrelated live frames don't reset the
+  // timer on every envelope.
+  const failedSourceRecovering = useMemo(() => {
+    if (activation.status !== "failed" || activation.sourceKey === null) {
+      return false;
+    }
+    const status = liveStateFor(liveStates, activation.sourceKey).connection.status;
+    return status === "connecting" || status === "reconnecting";
+  }, [activation, liveStates]);
+
+  // A failed activation is one-shot action feedback, not ongoing state — left
+  // alone it outlives its moment and reads like a standing condition, so it
+  // expires after a beat once recovery settles. Source-less failures (null
+  // sourceKey: the summon-hotkey registration error) DO describe a persistent
+  // condition and stay until resolved.
+  useEffect(() => {
+    if (
+      activation.status !== "failed" ||
+      activation.sourceKey === null ||
+      failedSourceRecovering
+    ) {
+      return;
+    }
+    const failed = activation;
+    const timer = window.setTimeout(() => {
+      // Identity guard: clear only the exact failure this timer was armed for
+      // (the dep-change cleanup already covers replacement; this covers races).
+      setActivation((current) => (current === failed ? { status: "idle" } : current));
+    }, ACTIVATION_FAILURE_TTL_MS);
+    return () => window.clearTimeout(timer);
+  }, [activation, failedSourceRecovering]);
 
   // A wide drag or pinning to horizontal can strand an already-open source menu in
   // the thin bar (where it clips). Close it whenever the layout goes horizontal.
@@ -1849,7 +2017,7 @@ function App({ mode }: { mode: ShellMode }) {
                       data-kind={profile.kind}
                       aria-hidden="true"
                     >
-                      {profile.kind === "ssh" ? "⇆" : "⌂"}
+                      <SourceKindIcon kind={profile.kind} />
                     </span>
                     <span className="source-card-text">
                       <span className="source-card-name">
@@ -2159,7 +2327,15 @@ function App({ mode }: { mode: ShellMode }) {
   // is the active source (the common case — and always true right after the open-state
   // migration) the dot keeps today's preflight tone; a non-active owner is never
   // probed, so its tone comes from its keyed live connection instead.
+  //
+  // That single-source presentation only fits when one source is all there is: with
+  // several, every folder header already carries its own label and dot, so the
+  // vertical trigger stops impersonating one host and becomes a generic entry point
+  // to the source order menu. The horizontal bar still displays only the owner, so
+  // it keeps the owner label regardless.
   const triggerProfile = ownerProfile ?? activeProfile;
+  const triggerShowsSource =
+    effectiveOrientation === "horizontal" || liveSources.length <= 1;
   const triggerIsActive = triggerProfile.id === activeProfile.id;
   const triggerTone = triggerIsActive
     ? sourceStatusTone
@@ -2362,7 +2538,7 @@ function App({ mode }: { mode: ShellMode }) {
                       aria-hidden="true"
                     />
                     <span className="folder-mark" aria-hidden="true">
-                      {view.profile.kind === "ssh" ? "⇆" : "⌂"}
+                      <SourceKindIcon kind={view.profile.kind} />
                     </span>
                     <span className="folder-label">
                       {labelFor(view.profile)}
@@ -2471,7 +2647,7 @@ function App({ mode }: { mode: ShellMode }) {
               // from the settings-selected active profile): landing in Settings on a
               // different source than the label promised would manage the wrong one.
               // This is a deep-link INTO the settings selection, not a dock-side
-              // quick-switch — the open/close menu below still never selects. The
+              // quick-switch — the order menu below still never selects. The
               // retarget is deliberate and cheap: the probe moves to the source the
               // bar is DISPLAYING (open, so an online channel stays armed), no
               // subscription churns, and a user after the previous selection is one
@@ -2487,17 +2663,28 @@ function App({ mode }: { mode: ShellMode }) {
                   .catch(() => {})
                   .then(() => openSettings());
               } else {
+                // Vertical: only the order menu toggles — no selection happens
+                // on this branch (the deep-link above is horizontal-exclusive,
+                // where the trigger's label names exactly one source).
                 setIsSourceMenuOpen((open) => !open);
               }
             }}
-            title={triggerTitle}
+            title={
+              triggerShowsSource
+                ? triggerTitle
+                : "Drag to reorder sources — the top open source owns row hotkeys"
+            }
           >
-            <span
-              className="status-dot"
-              data-tone={triggerTone}
-              aria-hidden="true"
-            />
-            <span className="source-label">{labelFor(triggerProfile)}</span>
+            {triggerShowsSource ? (
+              <span
+                className="status-dot"
+                data-tone={triggerTone}
+                aria-hidden="true"
+              />
+            ) : null}
+            <span className="source-label">
+              {triggerShowsSource ? labelFor(triggerProfile) : "Manage sources"}
+            </span>
             <span
               className={`source-caret${isSourceMenuOpen ? " open" : ""}`}
               aria-hidden="true"
@@ -2506,39 +2693,86 @@ function App({ mode }: { mode: ShellMode }) {
             </span>
           </button>
           {isSourceMenuOpen ? (
-            // Open/close toggles, one per source folder: checking opens that folder
-            // (arms its subscription), unchecking closes it. The menu stays open so
-            // several sources can be toggled in one visit.
+            // Pure ordering surface: drag rows to reorder sources. The topmost
+            // OPEN folder owns the row hotkeys, so this is where the dock decides
+            // which source answers them. Nothing else is duplicated here —
+            // open/close lives on the folder headers, and enable/disable/add/
+            // remove live in Settings.
             //
             // Deliberately NOT a quick-switch: the dock never changes the active
             // source. The old single-select footer existed because the dock could
             // show one source at a time; folders replace that gesture with the open
             // set. "Active" now only means the settings-edit selection + the single
-            // preflight target, and it changes in Settings (one click away via
-            // "Manage sources…"). Non-active sources don't need activation to work
-            // here — opening a folder arms it, and its failures surface per-folder.
+            // preflight target, and it changes in Settings.
             <div className="source-menu" role="menu">
-              {liveSources.map(({ profile, isOpen }) => (
-                <button
-                  className={`source-option${isOpen ? " active" : ""}`}
+              {/* Draggable rows are safe inside the footer's frameless drag
+                  region: Tauri's data-tauri-drag-region handler only fires
+                  when the mousedown TARGET itself carries the attribute, so
+                  descendants start HTML5 drags, never window drags. */}
+              {liveSources.map(({ profile, isOwner }) => (
+                <div
+                  className={`source-option draggable${
+                    draggedMenuSourceId === profile.id ? " dragging" : ""
+                  }`}
                   key={profile.id}
-                  role="menuitemcheckbox"
-                  aria-checked={isOpen}
-                  type="button"
-                  onClick={() => toggleProfileOpenSet(profile.id)}
+                  role="menuitem"
+                  draggable
+                  onDragStart={(event) => {
+                    event.dataTransfer.effectAllowed = "move";
+                    setDraggedMenuSourceId(profile.id);
+                  }}
+                  onDragEnd={() => setDraggedMenuSourceId(null)}
+                  onDragOver={(event) => {
+                    // preventDefault marks this row as a valid drop target.
+                    if (draggedMenuSourceId && draggedMenuSourceId !== profile.id) {
+                      event.preventDefault();
+                      event.dataTransfer.dropEffect = "move";
+                    }
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    if (draggedMenuSourceId && draggedMenuSourceId !== profile.id) {
+                      reorderProfileSet({
+                        id: draggedMenuSourceId,
+                        targetId: profile.id,
+                      });
+                    }
+                    setDraggedMenuSourceId(null);
+                  }}
                 >
-                  <span className="source-check" aria-hidden="true">
-                    {isOpen ? "✓" : ""}
-                  </span>
                   <span className="source-option-mark" aria-hidden="true">
-                    {profile.kind === "ssh" ? "⇆" : "⌂"}
+                    <SourceKindIcon kind={profile.kind} />
                   </span>
                   <span className="source-option-text">
                     <span className="source-option-name">
                       {labelFor(profile)}
                     </span>
                   </span>
-                </button>
+                  {isOwner ? (
+                    <kbd
+                      className="folder-kbd"
+                      title="Row hotkeys target this source"
+                    >
+                      {HOTKEY_MODIFIER_LABEL.trim()}
+                    </kbd>
+                  ) : null}
+                  <svg
+                    className="source-grip"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    aria-hidden="true"
+                  >
+                    <circle cx="9" cy="5" r="1" />
+                    <circle cx="9" cy="12" r="1" />
+                    <circle cx="9" cy="19" r="1" />
+                    <circle cx="15" cy="5" r="1" />
+                    <circle cx="15" cy="12" r="1" />
+                    <circle cx="15" cy="19" r="1" />
+                  </svg>
+                </div>
               ))}
               <div className="source-menu-divider" role="separator" />
               <button
@@ -2562,7 +2796,7 @@ function App({ mode }: { mode: ShellMode }) {
                 <span className="source-check" aria-hidden="true">
                   {"⚙"}
                 </span>
-                <span className="source-option-label">Manage sources…</span>
+                <span className="source-option-label">Add or edit sources…</span>
               </button>
             </div>
           ) : null}
