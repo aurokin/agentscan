@@ -2361,6 +2361,9 @@ function App({ mode }: { mode: ShellMode }) {
                       }
                       aria-hidden="true"
                     />
+                    <span className="folder-mark" aria-hidden="true">
+                      {view.profile.kind === "ssh" ? "⇆" : "⌂"}
+                    </span>
                     <span className="folder-label">
                       {labelFor(view.profile)}
                     </span>
@@ -2526,6 +2529,9 @@ function App({ mode }: { mode: ShellMode }) {
                 >
                   <span className="source-check" aria-hidden="true">
                     {isOpen ? "✓" : ""}
+                  </span>
+                  <span className="source-option-mark" aria-hidden="true">
+                    {profile.kind === "ssh" ? "⇆" : "⌂"}
                   </span>
                   <span className="source-option-text">
                     <span className="source-option-name">
