@@ -2546,6 +2546,15 @@ function App({ mode }: { mode: ShellMode }) {
                 role="menuitem"
                 type="button"
                 onClick={() => {
+                  // Deliberately no selectProfileSet deep-link here, unlike the
+                  // horizontal trigger above: that button names exactly one
+                  // source, so it must land Settings on it. This item is plural
+                  // and source-agnostic — it preserves the settings window's own
+                  // edit selection rather than warping it (and the preflight
+                  // probe) to whichever owner the footer happens to advertise.
+                  // Settings shows its selection unambiguously (highlighted rail
+                  // card + the form's fields), so Apply/Delete can't silently
+                  // target a source other than the one displayed.
                   setIsSourceMenuOpen(false);
                   openSettings();
                 }}
