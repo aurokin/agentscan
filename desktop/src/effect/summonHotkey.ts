@@ -11,10 +11,19 @@ const HOTKEY_IN_USE_PATTERN = /RegisterEventHotKey failed|already registered/i;
 // Mac-first display form of PICKER_HOTKEY (CommandOrControl+Shift+A).
 const SUMMON_HOTKEY_LABEL = "⌘⇧A";
 
+// In-use failures are the only ones recoverable by waiting (the holder can
+// quit at any time), so they alone justify a registration retry loop.
+export function summonHotkeyInUse(error: unknown): boolean {
+  return HOTKEY_IN_USE_PATTERN.test(failureDetail(error));
+}
+
 export function summonHotkeyFailureMessage(error: unknown): string {
-  const detail = error instanceof Error ? error.message : String(error);
-  if (HOTKEY_IN_USE_PATTERN.test(detail)) {
+  if (summonHotkeyInUse(error)) {
     return `${SUMMON_HOTKEY_LABEL} is in use — another agentscan instance may be running. Retrying until it frees up.`;
   }
-  return `Unable to register ${SUMMON_HOTKEY_LABEL}: ${detail}`;
+  return `Unable to register ${SUMMON_HOTKEY_LABEL}: ${failureDetail(error)}`;
+}
+
+function failureDetail(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

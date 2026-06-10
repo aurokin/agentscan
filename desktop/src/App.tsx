@@ -71,7 +71,7 @@ import {
   type ShellMode,
   type ThemePreference,
 } from "./effect/prefs";
-import { summonHotkeyFailureMessage } from "./effect/summonHotkey";
+import { summonHotkeyFailureMessage, summonHotkeyInUse } from "./effect/summonHotkey";
 import logoUrl from "./assets/agentscan-logo.png";
 
 const PICKER_HOTKEY = "CommandOrControl+Shift+A";
@@ -743,7 +743,12 @@ function App({ mode }: { mode: ShellMode }) {
 
           // The holder (often a second agentscan instance) can quit at any
           // time without any release signal, so poll until the key registers.
-          retryTimer = window.setTimeout(() => void registerPickerHotkey(), HOTKEY_RETRY_MS);
+          // Only in-use failures are recoverable by waiting; anything else
+          // (e.g. a permission or backend error) would poll forever for
+          // nothing, so it surfaces once and stays.
+          if (summonHotkeyInUse(error)) {
+            retryTimer = window.setTimeout(() => void registerPickerHotkey(), HOTKEY_RETRY_MS);
+          }
         }
       });
     }

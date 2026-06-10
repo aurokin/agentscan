@@ -1,5 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { summonHotkeyFailureMessage } from "./summonHotkey";
+import { summonHotkeyFailureMessage, summonHotkeyInUse } from "./summonHotkey";
+
+describe("summonHotkeyInUse", () => {
+  it("recognizes the macOS in-use failure and the plugin duplicate error", () => {
+    expect(
+      summonHotkeyInUse(new Error("Unable to register hotkey: RegisterEventHotKey failed for KeyA")),
+    ).toBe(true);
+    expect(summonHotkeyInUse(new Error("HotKey already registered"))).toBe(true);
+  });
+
+  it("treats other failures as terminal so the retry loop never arms", () => {
+    expect(summonHotkeyInUse(new Error("permission denied"))).toBe(false);
+    expect(summonHotkeyInUse("boom")).toBe(false);
+  });
+});
 
 describe("summonHotkeyFailureMessage", () => {
   it("explains an in-use key from the macOS RegisterEventHotKey failure", () => {
