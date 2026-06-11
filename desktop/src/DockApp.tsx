@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { Result, useAtomSet, useAtomValue } from "@effect-atom/atom-react";
 import type { LogoTheme } from "./providerLogos";
@@ -79,7 +79,9 @@ import {
 } from "./effect/preflightViewModel";
 import type { SummonHotkeyState } from "./effect/SummonHotkey";
 import {
-  BAR_WINDOW_HEIGHT,
+  applyFrameless,
+  applyGlass,
+  applyWindowShape,
   enqueueFramelessOperation,
   enqueueGlassOperation,
   enqueueWindowOperation,
@@ -87,12 +89,8 @@ import {
   placeBarWindow,
   placePickerWindow,
   raisePickerWindow,
-  WINDOW_MAX_UNBOUNDED,
-  WINDOW_MAX_WIDTH_VERTICAL,
-  WINDOW_MIN_HEIGHT_HORIZONTAL,
-  WINDOW_MIN_HEIGHT_VERTICAL,
-  WINDOW_MIN_WIDTH,
 } from "./windowOperations";
+import { sizePlanFor } from "./effect/windowChromeModel";
 import { errorMessage, readLocalStorage } from "./shared";
 
 // Appearance prefs (storage keys, alpha bounds, glassClearFor, the parsers) live in
@@ -553,50 +551,19 @@ function DockApp() {
   // just follows the user's drag. The settings window is separate, so opening it no
   // longer reshapes anything here.
   useEffect(() => {
-    const sizingOrientation: Orientation =
-      orientationPref === "auto" ? effectiveOrientation : orientationPref;
-    // Pinned horizontal locks the bar to BAR_WINDOW_HEIGHT (min == max height) so it can
-    // only be resized horizontally — the layout is tuned for that exact height. Pinned
-    // vertical caps width into a strip. "auto" stays free on both axes (just a min floor
-    // matched to the live shape).
-    const minSize =
-      orientationPref === "horizontal"
-        ? new LogicalSize(WINDOW_MIN_WIDTH, BAR_WINDOW_HEIGHT)
-        : new LogicalSize(
-            WINDOW_MIN_WIDTH,
-            sizingOrientation === "horizontal"
-              ? WINDOW_MIN_HEIGHT_HORIZONTAL
-              : WINDOW_MIN_HEIGHT_VERTICAL,
-          );
-    const maxSize =
-      orientationPref === "vertical"
-        ? new LogicalSize(WINDOW_MAX_WIDTH_VERTICAL, WINDOW_MAX_UNBOUNDED)
-        : orientationPref === "horizontal"
-          ? new LogicalSize(WINDOW_MAX_UNBOUNDED, BAR_WINDOW_HEIGHT)
-          : null;
-    // Place on the first dock mount (so a saved layout opens correctly) and on every
-    // pinned reshape, but not on a later "auto" drag — which must not be fought. The
-    // placement runs in THIS operation, after the matching min-size is applied, so a bar
-    // can actually shrink to its short height instead of fighting the tall startup min
-    // (a separate, earlier-queued placement would race and leave a horizontal layout in a
-    // tall window). placePickerWindow/placeBarWindow follow the live orientation.
-    const shouldPlace = orientationPref !== "auto" || !didInitialPlaceRef.current;
+    // The plan (pinned-bar min==max lock, the vertical strip cap, the
+    // place-on-first-mount-or-pinned-reshape rule) is sizePlanFor
+    // (windowChromeModel); the queued native sequence is applyWindowShape
+    // (windowOperations) — both tested there. The placement thunk reads
+    // summonPlacementRef at op-run time so it follows the live orientation.
+    const plan = sizePlanFor(orientationPref, effectiveOrientation, didInitialPlaceRef.current);
+    // Set synchronously, never inside the queued op: StrictMode runs this
+    // effect twice on mount, and only the first run may see shouldPlace=true
+    // in auto mode — an op-time ref-set would double-place.
     didInitialPlaceRef.current = true;
-    void enqueueWindowOperation(async () => {
-      try {
-        const win = getCurrentWindow();
-        // Fully unbind first (null is Tauri's unset) so a larger min can't clash
-        // with a stale max, then re-apply the real cap below.
-        await win.setMaxSize(null);
-        await win.setMinSize(minSize);
-        await win.setMaxSize(maxSize);
-        if (shouldPlace) {
-          await summonPlacementRef.current();
-        }
-      } catch {
-        // Best-effort: a failed update leaves the prior constraints/shape in place.
-      }
-    });
+    void enqueueWindowOperation(() =>
+      applyWindowShape({ plan, place: () => summonPlacementRef.current() }),
+    );
   }, [orientationPref, effectiveOrientation]);
 
   // Open the settings window (created hidden at launch, kept warm). The dock no
@@ -692,42 +659,32 @@ function DockApp() {
     }
 
     let cancelled = false;
-    enqueueGlassOperation(async () => {
-      // A newer toggle superseded this one before it ran; skip the native call
-      // entirely so the queue settles on the latest desired state.
-      if (cancelled) {
-        return;
-      }
-      // Round the vibrancy backdrop to match the frameless CSS corners; null lets a framed
-      // window's native rounding apply. Keyed on the APPLIED frameless state (like the CSS
-      // rounding via data-frameless), not the bare preference, so the frost only rounds once
-      // the frame is actually gone. Re-applied whenever that state changes (dep below).
-      const radius = framelessApplied ? FRAMELESS_CORNER_RADIUS : null;
-      try {
-        if (glassEnabled) {
-          await invoke("set_window_glass", { enabled: true, radius });
-          if (!cancelled) {
-            // Flip the surface translucent and arm the adaptive tokens together,
-            // so `--glass-clear` is only nonzero once the blur is actually live.
-            document.documentElement.setAttribute("data-glass", "on");
-            setGlassClear(glassClearFor(surfaceAlphaRef.current));
-          }
-        } else {
-          document.documentElement.setAttribute("data-glass", "off");
-          setGlassClear(0);
-          await invoke("set_window_glass", { enabled: false, radius });
-        }
-      } catch (error) {
-        // Native call failed: keep the surface opaque AND the tokens un-adapted.
-        document.documentElement.setAttribute("data-glass", "off");
-        setGlassClear(0);
-        appendDebugEntry({
-          kind: "command",
-          label: "Glass effect",
-          detail: errorMessage(error),
-        });
-      }
-    });
+    // Round the vibrancy backdrop to match the frameless CSS corners; null lets a framed
+    // window's native rounding apply. Keyed on the APPLIED frameless state (like the CSS
+    // rounding via data-frameless), not the bare preference, so the frost only rounds once
+    // the frame is actually gone. Re-applied whenever that state changes (dep below).
+    const radius = framelessApplied ? FRAMELESS_CORNER_RADIUS : null;
+    // The ordering/cancellation/failure sequence is applyGlass (windowOperations,
+    // tested there); this effect provides the sinks. currentClear is a thunk so a
+    // slider move while the op is queued still lands the fresh value. The debug
+    // appender is registry-stable and deliberately NOT a dep — adding it would
+    // re-fire native calls on log-identity churn.
+    enqueueGlassOperation(() =>
+      applyGlass({
+        enabled: glassEnabled,
+        radius,
+        isCancelled: () => cancelled,
+        currentClear: () => glassClearFor(surfaceAlphaRef.current),
+        setAttr: (value) => document.documentElement.setAttribute("data-glass", value),
+        setClear: setGlassClear,
+        onError: (error) =>
+          appendDebugEntry({
+            kind: "command",
+            label: "Glass effect",
+            detail: errorMessage(error),
+          }),
+      }),
+    );
 
     return () => {
       cancelled = true;
@@ -759,33 +716,23 @@ function DockApp() {
   // through a queue so a fast toggle settles on the latest desired state.
   useEffect(() => {
     let cancelled = false;
-    enqueueFramelessOperation(async () => {
-      if (cancelled) {
-        return;
-      }
-      try {
-        await invoke("set_window_decorations", { decorations: !framelessEnabled });
-        if (!cancelled) {
-          document.documentElement.setAttribute(
-            "data-frameless",
-            framelessEnabled ? "on" : "off",
-          );
-          // Reveal/hide the custom chrome only now that the native frame change landed, so
-          // it tracks the real window state rather than the pending preference.
-          setFramelessApplied(framelessEnabled);
-        }
-      } catch (error) {
-        // The native call failed: assume the frame is still present and hide the custom
-        // chrome, so we never stack our controls on top of a native titlebar.
-        document.documentElement.setAttribute("data-frameless", "off");
-        setFramelessApplied(false);
-        appendDebugEntry({
-          kind: "command",
-          label: "Frameless window",
-          detail: errorMessage(error),
-        });
-      }
-    });
+    // The sequence (flip the attribute/applied state only after the native call
+    // lands; failure forces both off) is applyFrameless (windowOperations,
+    // tested there); this effect provides the sinks.
+    enqueueFramelessOperation(() =>
+      applyFrameless({
+        enabled: framelessEnabled,
+        isCancelled: () => cancelled,
+        setAttr: (value) => document.documentElement.setAttribute("data-frameless", value),
+        setApplied: setFramelessApplied,
+        onError: (error) =>
+          appendDebugEntry({
+            kind: "command",
+            label: "Frameless window",
+            detail: errorMessage(error),
+          }),
+      }),
+    );
 
     return () => {
       cancelled = true;
