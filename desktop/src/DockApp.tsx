@@ -34,7 +34,7 @@ import {
 } from "./effect/atoms";
 import type { LiveState, PickerRow } from "./effect/types";
 import { liveStateFor, type LiveStates } from "./effect/LiveConnection";
-import { pickerRowForKeyboardKey } from "./effect/keybinds";
+import { pickerKeyIntent } from "./effect/keybinds";
 import type { PreflightState } from "./effect/Preflight";
 import { glassClearFor, loadAppearance } from "./effect/appearanceModel";
 import {
@@ -884,63 +884,49 @@ function DockApp() {
   }
 
   function handlePickerKeyDown(event: KeyboardEvent) {
-    // The boot/recovery screen replaces the folder list entirely, but the owner's
-    // keyed live state can still hold rows behind it — gate every picker key while
-    // it shows so Ctrl+<key>/Enter can't activate rows the user cannot see.
-    if (bootScreenVisible) {
+    // The event→intent interpretation (boot gate, Ctrl+<key> routing with its
+    // platform rules and fall-through, movement/Home/End/Enter/Escape) lives in
+    // pickerKeyIntent (effect/keybinds, tested there); this applies the intent.
+    const intent = pickerKeyIntent(event, {
+      bootScreenVisible,
+      hasOwner: ownerProfile !== null,
+      isInteractiveTarget: isInteractiveShortcutTarget(event.target),
+      isMac: IS_MAC,
+      rows: pickerRows,
+      filterActive: Boolean(pickerFilter),
+    });
+    if (intent === null) {
       return;
     }
-    // Control + a row's displayed hotkey jumps straight to that pane. Require
-    // Control alone so we never shadow ⌘ shortcuts or Ctrl+⌘ combos. On macOS,
-    // editing uses ⌘, so Ctrl is free even inside the search box — bypass the
-    // interactive-target gate so you can filter then jump in one motion. On
-    // Windows/Linux, Ctrl *is* the editing modifier (Ctrl+C/V/X/Z/F), so only
-    // honor the hotkey when no input/button is focused; otherwise native
-    // clipboard/find/undo wins. (Key match is character-based to mirror the kbd
-    // label and the CLI's configured char hotkeys; non-US layouts that shift
-    // digit keys may no-op on the default number row, which is a silent miss
-    // rather than a wrong action.)
-    // Resolves ONLY against the keybind owner's rows (pickerRows); other folders
-    // render their <kbd> labels dimmed, as information.
-    const ctrlActivate = event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey;
-    if (ctrlActivate && ownerProfile && (IS_MAC || !isInteractiveShortcutTarget(event.target))) {
-      const target = pickerRowForKeyboardKey(pickerRows, event.key);
-      if (target) {
-        event.preventDefault();
-        setSelectedPaneId(target.pane_id);
-        activateRow(target, ownerProfile);
-        return;
-      }
+    // Every intent claims the key except an escape with nothing to clear (its
+    // collapse-search side effect below still runs).
+    if (intent.kind !== "escape" || intent.clearFilter) {
+      event.preventDefault();
     }
-
-    if (isInteractiveShortcutTarget(event.target)) {
-      return;
-    }
-
-    if (event.key === "ArrowDown" || event.key === "j") {
-      event.preventDefault();
-      moveSelection(1);
-    } else if (event.key === "ArrowUp" || event.key === "k") {
-      event.preventDefault();
-      moveSelection(-1);
-    } else if (event.key === "Home") {
-      event.preventDefault();
-      setSelectedPaneId(pickerRows[0]?.pane_id ?? null);
-    } else if (event.key === "End") {
-      event.preventDefault();
-      setSelectedPaneId(pickerRows[pickerRows.length - 1]?.pane_id ?? null);
-    } else if (event.key === "Enter") {
-      event.preventDefault();
-      activateSelectedRow();
-    } else if (event.key === "Escape") {
-      // Persistent-window model: Escape never hides the window. Clear the search
-      // filter if one is active; otherwise it's a no-op. In the horizontal bar it also
-      // collapses search back to its icon (inert in the always-expanded vertical strip).
-      if (pickerFilter) {
-        event.preventDefault();
-        setPickerFilter("");
-      }
-      setIsSearchExpanded(false);
+    switch (intent.kind) {
+      case "activate":
+        if (ownerProfile) {
+          setSelectedPaneId(intent.row.pane_id);
+          activateRow(intent.row, ownerProfile);
+        }
+        break;
+      case "move":
+        moveSelection(intent.delta);
+        break;
+      case "select":
+        setSelectedPaneId(intent.paneId);
+        break;
+      case "activateSelection":
+        activateSelectedRow();
+        break;
+      case "escape":
+        if (intent.clearFilter) {
+          setPickerFilter("");
+        }
+        // In the horizontal bar this collapses search back to its icon (inert
+        // in the always-expanded vertical strip).
+        setIsSearchExpanded(false);
+        break;
     }
   }
 
