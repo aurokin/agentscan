@@ -48,7 +48,7 @@ first and replace this check with an explicit compatibility matrix.
 Install the normal project toolchains:
 
 - Rust stable
-- Node/npm
+- Node 20.19+ (or 22.13+/24+; jsdom's engine floor for the frontend tests) and npm
 - Tauri prerequisites for macOS
 - Xcode command line tools
 - Apple Developer ID Application certificate in the login keychain
