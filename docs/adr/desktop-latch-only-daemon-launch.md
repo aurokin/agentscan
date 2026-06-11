@@ -18,8 +18,8 @@ The desktop app consumes the live picker by running `agentscan subscribe
 --format json` through a runner (`LocalRunner` / `SshRunner`) and folding the
 JSON-Lines events into connection state. Like the other daemon-backed consumers,
 `subscribe` will **auto-start a daemon** when none is reachable unless it is
-passed `--no-auto-start` (the flag is defined at `src/app/cli.rs:294` and
-honored by `subscribe` at `src/app/commands.rs:363`; the env opt-out is
+passed `--no-auto-start` (the flag is defined in `src/app/cli.rs` and
+honored by `subscribe` in `src/app/commands.rs`; the env opt-out is
 `AGENTSCAN_NO_AUTO_START=1`).
 
 The earlier desktop spike leaned on that implicit auto-start: launching the app
@@ -65,9 +65,9 @@ Concretely, in the desktop client:
 
 ### Implementation
 
-- `start_live_picker(.., auto_start: bool)` (`desktop/src-tauri/src/lib.rs:270`)
+- `start_live_picker(.., auto_start: bool)` (`desktop/src-tauri/src/lib.rs`)
   threads an explicit `auto_start` flag from the frontend.
-- `subscribe_args(auto_start)` (`lib.rs:936`) appends `--no-auto-start` whenever
+- `subscribe_args(auto_start)` (`lib.rs`) appends `--no-auto-start` whenever
   `auto_start` is `false`.
 - The live worker is **single-shot**: it runs one `subscribe` per epoch with the
   `auto_start` it was handed, and never retries internally (AUR-517 removed the
@@ -80,7 +80,7 @@ Concretely, in the desktop client:
   *first* subscribe of an explicit "Start agentscan" can auto-start; every reconnect
   latches. The latch-on-retry invariant therefore now lives in the TypeScript service,
   not a Rust guard inside a worker loop the service could not observe.
-- The companion picker-row fetch latches too: `hotkeys_args()` (`lib.rs:659`)
+- The companion picker-row fetch latches too: `hotkeys_args()` (`lib.rs`)
   **always** includes `--no-auto-start`. The worker re-derives rows by running
   `agentscan hotkeys` on every subscribe snapshot; because `hotkeys` is itself a
   daemon-backed consumer that would auto-start by default, omitting the flag would

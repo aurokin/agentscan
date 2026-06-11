@@ -174,7 +174,7 @@ Local profile:
 - The desktop live connection banner transitions out of connecting/offline
   state after the daemon is ready.
 - `CommandOrControl+Shift+A` shows and focuses the picker window.
-- Keyboard selection and a mouse double-click both trigger
+- Keyboard selection (Enter) and a single mouse click on a row both trigger
   `agentscan focus <pane-id>` through the local profile.
 
 SSH profile basics:

@@ -91,7 +91,8 @@ tests:
 - Copilot and Cursor pane-output status fallback lives in
   `src/app/classify/pane_output.rs`
 - regression coverage lives in `src/app/tests/classification.rs`,
-  `src/app/tests/tmux_cache.rs`, and `src/app/tests/support.rs`
+  `src/app/tests/title_status_display.rs`,
+  `src/app/tests/provider_classification.rs`, and `src/app/tests/support.rs`
 
 Relevant commits:
 
