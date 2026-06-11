@@ -3,6 +3,7 @@ import {
   activePreflightError,
   dockBootScreenContent,
   dockBootScreenVisible,
+  liveTargetsFor,
   matchedPreflight,
   preflightSourceTone,
   preflightStatusText,
@@ -98,6 +99,70 @@ describe("activePreflightError", () => {
     expect(activePreflightError(ready("other", { ok: false }), "k1", false, "L")).toBeNull();
     expect(activePreflightError(ready("k1"), "k1", false, "L")).toBeNull();
     expect(activePreflightError(LOADING, "k1", false, "L")).toBeNull();
+  });
+});
+
+describe("liveTargetsFor", () => {
+  const source = (
+    runnerKey: string,
+    overrides: Partial<{ isOpen: boolean; valid: boolean }> = {},
+  ) => ({
+    runnerKey,
+    settings: null,
+    isOpen: true,
+    valid: true,
+    ...overrides,
+  });
+
+  const enabledOf = (
+    sources: ReturnType<typeof source>[],
+    runnerKey: string,
+    online: boolean,
+    state: PreflightState,
+    activeValid = true,
+  ) => liveTargetsFor(sources, runnerKey, online, state, activeValid).map((t) => t.enabled);
+
+  it("filters closed sources out entirely", () => {
+    const targets = liveTargetsFor(
+      [source("k1"), source("k2", { isOpen: false })],
+      "k1",
+      false,
+      ready("k1"),
+      true,
+    );
+    expect(targets.map((t) => t.runnerKey)).toEqual(["k1"]);
+  });
+
+  it("resolves an unmatched probe for the active key to carry, never a gate-off", () => {
+    // The probe lags a switch by one async cycle; bouncing here would tear
+    // down a healthy subscription the user merely re-selected.
+    expect(enabledOf([source("k1")], "k1", false, ready("other"))).toEqual(["carry"]);
+    expect(enabledOf([source("k1")], "k1", false, LOADING)).toEqual(["carry"]);
+    expect(enabledOf([source("k1")], "k1", false, FAILED)).toEqual(["carry"]);
+  });
+
+  it("lets the online latch win over a failed matched probe", () => {
+    // Probes gate STARTING; an online channel is never killed by a verdict.
+    expect(enabledOf([source("k1")], "k1", true, ready("k1", { ok: false }))).toEqual([true]);
+  });
+
+  it("gates the active key on the matched verdict and committed validity", () => {
+    expect(enabledOf([source("k1")], "k1", false, ready("k1"))).toEqual([true]);
+    expect(enabledOf([source("k1")], "k1", false, ready("k1", { ok: false }))).toEqual([false]);
+    expect(enabledOf([source("k1")], "k1", false, ready("k1"), false)).toEqual([false]);
+  });
+
+  it("arms non-active sources on their committed validity verbatim", () => {
+    // Never probed: their enabled is the valid flag, regardless of the active
+    // runner's preflight.
+    expect(
+      enabledOf(
+        [source("k1"), source("k2"), source("k3", { valid: false })],
+        "k1",
+        false,
+        ready("k1", { ok: false }),
+      ),
+    ).toEqual([false, true, false]);
   });
 });
 

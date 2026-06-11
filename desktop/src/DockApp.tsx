@@ -69,7 +69,7 @@ import {
   activePreflightError,
   dockBootScreenContent,
   dockBootScreenVisible,
-  matchedPreflight,
+  liveTargetsFor,
   preflightSourceTone,
   preflightStatusText,
 } from "./effect/preflightViewModel";
@@ -355,6 +355,16 @@ function DockApp() {
     });
   }, [configureHostnameEnrichment, appendDebugEntry]);
 
+  const activeLiveOnline = liveStateFor(liveStates, runnerKey).connection.status === "online";
+  // The configure inputs are derived + tested in effect/preflightViewModel
+  // (which carries THE probes-gate-starting invariant). liveTargetsFor must be
+  // called inside this memo: a bare per-render call would mint a new array
+  // identity every frame and re-fire configureLive on every rows update.
+  const liveTargets = useMemo(
+    () =>
+      liveTargetsFor(liveSources, runnerKey, activeLiveOnline, preflightState, activeProfileValid),
+    [liveSources, runnerKey, activeLiveOnline, preflightState, activeProfileValid],
+  );
   // Drive the LiveConnection service to every OPEN folder's source: open folder =
   // live subscription, closed folder = none. The service owns the subscriptions,
   // epoch fencing, reconnect/latch backoff, and recovery; this just tells it WHICH
@@ -371,32 +381,6 @@ function DockApp() {
   // surface failures per folder through their keyed live state. configure diffs
   // on runnerKey + enabled, so re-running on an unrelated profileState change
   // leaves running keys alone.
-  //
-  // THE invariant probe results live under: a probe gates STARTING a channel; an
-  // ONLINE channel is never killed or masked by probe verdicts. Probes are one-shot
-  // (they re-fire only on a runnerKey change) while the channel is continuous, so a
-  // same-key probe failing — transiently or even resolving CLI-unavailable — after
-  // the source is streaming must not tear down or hide healthy rows: there would be
-  // no recovery probe to undo it. Config edits still tear down via the key change,
-  // and a channel that drops falls back to probe gating. The channel reports its
-  // own failures via LiveStrip.
-  const activeLiveOnline = liveStateFor(liveStates, runnerKey).connection.status === "online";
-  const liveTargets = useMemo(() => {
-    // The highest-stakes consumer of the matchedPreflight staleness rule: an
-    // unmatched probe must resolve to "carry", never to a gate-off bounce.
-    const matched = matchedPreflight(preflightState, runnerKey);
-    return liveSources
-      .filter((source) => source.isOpen)
-      .map((source) => ({
-        settings: source.settings,
-        runnerKey: source.runnerKey,
-        enabled:
-          source.runnerKey === runnerKey
-            ? activeLiveOnline ||
-              (matched ? matched.preflight.ok && activeProfileValid : ("carry" as const))
-            : source.valid,
-      }));
-  }, [liveSources, runnerKey, activeLiveOnline, preflightState, activeProfileValid]);
   useEffect(() => {
     configureLive(liveTargets);
   }, [liveTargets, configureLive]);

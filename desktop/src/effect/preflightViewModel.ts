@@ -1,9 +1,10 @@
 // The dock's preflight presentation rules, extracted from App.tsx so the one
 // staleness rule they all share — and the boot-screen predicate that can blank
 // the entire dock — are unit-testable. Everything here is pure over
-// PreflightState; the settings card is deliberately NOT routed through this
-// module (it derives from SyncedPreflight, a different wire shape with its own
-// runnerKey guard).
+// PreflightState (liveTargetsFor additionally takes the open sources it
+// gates); the settings card is deliberately NOT routed through this module (it
+// derives from SyncedPreflight, a different wire shape with its own runnerKey
+// guard).
 //
 // The asymmetry to know about: a "ready" state names the runner it probed
 // (runnerKey), but "failed" (the probe IPC itself broke) and "loading" carry no
@@ -11,6 +12,7 @@
 // why matchedPreflight returns null for them while statusText/
 // activePreflightError still surface them.
 
+import type { ConfigureInput } from "./LiveConnection";
 import type { PreflightState } from "./Preflight";
 
 // THE staleness rule. `preflightState` lags the active runner by one async
@@ -89,6 +91,51 @@ export function activePreflightError(
     return matched.preflight.error ?? `${kindLabel} CLI unavailable`;
   }
   return state.status === "failed" ? state.message : null;
+}
+
+// One source as the live-target derivation needs it. Structural: the dock's
+// fuller liveSources shape satisfies it.
+export type LiveTargetSource = {
+  readonly runnerKey: string;
+  readonly settings: ConfigureInput["settings"];
+  readonly isOpen: boolean;
+  readonly valid: boolean;
+};
+
+// The LiveConnection configure inputs for every OPEN source: open folder =
+// live subscription, closed folder = none. The active (settings-selected)
+// source gates on its resolved preflight; other open sources are never probed,
+// so they arm on their committed-profile validity.
+//
+// THE invariant probe results live under: a probe gates STARTING a channel; an
+// ONLINE channel is never killed or masked by probe verdicts. Probes are one-shot
+// (they re-fire only on a runnerKey change) while the channel is continuous, so a
+// same-key probe failing — transiently or even resolving CLI-unavailable — after
+// the source is streaming must not tear down or hide healthy rows: there would be
+// no recovery probe to undo it. Config edits still tear down via the key change,
+// and a channel that drops falls back to probe gating. The channel reports its
+// own failures via LiveStrip.
+export function liveTargetsFor(
+  sources: ReadonlyArray<LiveTargetSource>,
+  runnerKey: string,
+  activeLiveOnline: boolean,
+  state: PreflightState,
+  activeProfileValid: boolean,
+): ReadonlyArray<ConfigureInput> {
+  // The highest-stakes consumer of the matchedPreflight staleness rule: an
+  // unmatched probe must resolve to "carry", never to a gate-off bounce.
+  const matched = matchedPreflight(state, runnerKey);
+  return sources
+    .filter((source) => source.isOpen)
+    .map((source) => ({
+      settings: source.settings,
+      runnerKey: source.runnerKey,
+      enabled:
+        source.runnerKey === runnerKey
+          ? activeLiveOnline ||
+            (matched ? matched.preflight.ok && activeProfileValid : ("carry" as const))
+          : source.valid,
+    }));
 }
 
 // The full-screen boot/recovery takeover. Scoped to the states where no OTHER
