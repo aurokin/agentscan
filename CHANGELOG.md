@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+## 0.7.3 - 2026-06-11
+
+### Added
+
+- Added desktop smoke and unit coverage for the split dock/settings windows and
+  extracted view-model/effect services, including activation, summon hotkey
+  registration, hostname enrichment, preflight, picker, settings, window chrome,
+  and window operations.
+- Documented the desktop test harness, CI baseline, and Node 20.19+ frontend
+  toolchain floor.
+
+### Changed
+
+- Split the desktop UI into `DockApp` and `SettingsApp`, moved repeated UI into
+  focused components, and moved stateful side effects into Effect services and
+  view models. The user-facing dock/settings behavior is preserved while the
+  release surface is easier to test.
+- Resolved local desktop hostname labeling through the Tauri host IPC boundary,
+  so tests and runtime exercise the same enrichment path.
+
+### Fixed
+
+- Fixed a desktop atom setter edge case where function-valued inputs could be
+  treated as updater functions instead of persisted values.
+- Fixed duplicate in-use summon-hotkey failure publishing during retry loops.
+- Fixed hostname enrichment races by marking attempts and forking probe work
+  atomically.
+- Restored a render-synchronized closed-source activation guard for desktop row
+  selection settle time.
+- Fixed stale desktop and test-layout documentation claims.
+
 ## 0.7.2 - 2026-06-10
 
 ### Added
