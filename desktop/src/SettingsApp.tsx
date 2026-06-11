@@ -41,8 +41,8 @@ import {
   getActiveProfile,
   loadProfileState,
   normalizeRunnerSettings,
+  profileDraftDirty,
   runnerKeyForProfile,
-  runnerSettingsEqual,
   runnerSummary,
   sourceLabel,
   validateProfileDraft,
@@ -172,11 +172,7 @@ function SettingsApp() {
     [activeProfile, settingsDraft, sshHostDraft, sshClientTtyDraft, profileState.profiles],
   );
   const isSettingsDirty = useMemo(
-    () =>
-      sshHostDraft.trim() !== (activeProfile.kind === "ssh" ? activeProfile.host : "") ||
-      sshClientTtyDraft.trim() !==
-        (activeProfile.kind === "ssh" ? activeProfile.clientTty : "") ||
-      !runnerSettingsEqual(settingsDraft, activeProfile.runner),
+    () => profileDraftDirty(activeProfile, settingsDraft, sshHostDraft, sshClientTtyDraft),
     [activeProfile, settingsDraft, sshHostDraft, sshClientTtyDraft],
   );
   // Render-synced mirror so the focus-reconcile listener can read the latest

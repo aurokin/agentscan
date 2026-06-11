@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  committedProfileValidation,
   defaultProfileState,
   keybindOwnerId,
+  liveSourcesFor,
   normalizeProfileState,
+  profileDraftDirty,
   recordProbedHost,
   reorderProfile,
   runnerKeyForProfile,
@@ -201,6 +204,99 @@ describe("keybindOwnerId", () => {
 
     state = toggleProfileOpen(state, "ssh-1");
     expect(keybindOwnerId(state)).toBe("local");
+  });
+});
+
+describe("liveSourcesFor", () => {
+  it("marks exactly the FIRST open folder in user order as owner", () => {
+    const state = stateOf(
+      ["ssh-1", "local"],
+      localProfile,
+      sshProfile("ssh-1", "box"),
+      sshProfile("ssh-2", "other"),
+    );
+    const sources = liveSourcesFor(state);
+    expect(sources.map((source) => source.profile.id)).toEqual(["local", "ssh-1", "ssh-2"]);
+    expect(sources.map((source) => source.isOwner)).toEqual([true, false, false]);
+    expect(sources.map((source) => source.isOpen)).toEqual([true, true, false]);
+  });
+
+  it("marks no owner when every folder is closed", () => {
+    const state = stateOf([], localProfile, sshProfile("ssh-1", "box"));
+    expect(liveSourcesFor(state).every((source) => !source.isOwner)).toBe(true);
+  });
+
+  it("judges validity on committed values", () => {
+    // A null byte in the committed binary path fails committedProfileValidation;
+    // the sibling stays valid.
+    const broken: SshProfileConfig = {
+      ...sshProfile("ssh-1", "box"),
+      runner: { binaryPath: "agent\0scan", env: [] },
+    };
+    const state = stateOf(["local"], localProfile, broken);
+    const sources = liveSourcesFor(state);
+    expect(sources.find((source) => source.profile.id === "local")?.valid).toBe(true);
+    expect(sources.find((source) => source.profile.id === "ssh-1")?.valid).toBe(false);
+  });
+
+  it("carries each source's runner identity and settings", () => {
+    const state = stateOf(["local"], localProfile, sshProfile("ssh-1", "box"));
+    for (const source of liveSourcesFor(state)) {
+      expect(source.runnerKey).toBe(runnerKeyForProfile(source.profile));
+    }
+  });
+});
+
+describe("committedProfileValidation", () => {
+  it("validates committed host/tty, ignoring any notion of drafts", () => {
+    const profiles: DesktopProfileConfig[] = [localProfile, sshProfile("ssh-1", "")];
+    const validation = committedProfileValidation(profiles[1], profiles);
+    expect(validation.errors).toContain("SSH host is required.");
+    expect(committedProfileValidation(localProfile, profiles).errors).toEqual([]);
+  });
+});
+
+describe("profileDraftDirty", () => {
+  const committed: SshProfileConfig = {
+    ...sshProfile("ssh-1", "box"),
+    clientTty: "/dev/ttys001",
+    runner: { binaryPath: "agentscan", env: [] },
+  };
+
+  it("ignores surrounding whitespace on host and tty (commits always trim)", () => {
+    expect(profileDraftDirty(committed, committed.runner, "  box  ", " /dev/ttys001 ")).toBe(
+      false,
+    );
+  });
+
+  it("treats a whitespace-only binary path change as dirty (runner fields compare verbatim)", () => {
+    expect(
+      profileDraftDirty(
+        committed,
+        { binaryPath: " agentscan ", env: [] },
+        "box",
+        "/dev/ttys001",
+      ),
+    ).toBe(true);
+  });
+
+  it("flags host, tty, and env edits", () => {
+    expect(profileDraftDirty(committed, committed.runner, "elsewhere", "/dev/ttys001")).toBe(
+      true,
+    );
+    expect(profileDraftDirty(committed, committed.runner, "box", "/dev/ttys002")).toBe(true);
+    expect(
+      profileDraftDirty(
+        committed,
+        { binaryPath: "agentscan", env: [{ name: "A", value: "1" }] },
+        "box",
+        "/dev/ttys001",
+      ),
+    ).toBe(true);
+  });
+
+  it("compares an empty draft against a local profile's empty host/tty", () => {
+    expect(profileDraftDirty(localProfile, localProfile.runner, "", "")).toBe(false);
   });
 });
 

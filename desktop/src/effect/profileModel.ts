@@ -272,6 +272,34 @@ export function keybindOwnerId(state: ProfileState): string | null {
   );
 }
 
+// One folder-eligible source as the dock consumes it: the profile plus its
+// runner identity, open state, keybind ownership, and committed-profile
+// validity (the arm gate for non-active sources, whose preflight is never
+// probed).
+export type LiveSource = {
+  profile: DesktopProfileConfig;
+  runnerKey: string;
+  settings: DesktopRunnerSettings;
+  isOpen: boolean;
+  isOwner: boolean;
+  valid: boolean;
+};
+
+// The folder-eligible sources in user order. isOwner marks exactly the first
+// OPEN folder (keybindOwnerId's rule); valid judges each profile's COMMITTED
+// values, never form drafts.
+export function liveSourcesFor(state: ProfileState): LiveSource[] {
+  const ownerId = keybindOwnerId(state);
+  return folderProfiles(state).map((profile) => ({
+    profile,
+    runnerKey: runnerKeyForProfile(profile),
+    settings: runnerSettingsForProfile(profile),
+    isOpen: state.openProfileIds.includes(profile.id),
+    isOwner: profile.id === ownerId,
+    valid: committedProfileValidation(profile, state.profiles).errors.length === 0,
+  }));
+}
+
 // Open/close one source's folder. Returns the SAME state for an unknown id so
 // callers can skip a no-op commit.
 export function toggleProfileOpen(state: ProfileState, id: string): ProfileState {
@@ -504,6 +532,22 @@ export function validateProfileDraft(
   return { errors };
 }
 
+// Validation of a profile's COMMITTED values (never form drafts): the draft
+// validator fed with what's already stored, so the picker gate and the
+// preflight short-circuit judge the profile as persisted.
+export function committedProfileValidation(
+  profile: DesktopProfileConfig,
+  profiles: DesktopProfileConfig[],
+): DraftValidation {
+  return validateProfileDraft(
+    profile,
+    profile.runner,
+    profile.kind === "ssh" ? profile.host : "",
+    profile.kind === "ssh" ? profile.clientTty : "",
+    profiles,
+  );
+}
+
 export function runnerSettingsEqual(left: RunnerSettings, right: RunnerSettings): boolean {
   if (left.binaryPath !== right.binaryPath || left.env.length !== right.env.length) {
     return false;
@@ -512,6 +556,23 @@ export function runnerSettingsEqual(left: RunnerSettings, right: RunnerSettings)
   return left.env.every(
     (variable, index) =>
       variable.name === right.env[index]?.name && variable.value === right.env[index]?.value,
+  );
+}
+
+// Whether the settings form drafts differ from the active profile's committed
+// values. Host/tty compare TRIMMED — commits always trim them, so a draft
+// differing only by surrounding whitespace is not a real change — while runner
+// fields (binary path, env) compare verbatim.
+export function profileDraftDirty(
+  activeProfile: DesktopProfileConfig,
+  settingsDraft: RunnerSettings,
+  sshHostDraft: string,
+  sshClientTtyDraft: string,
+): boolean {
+  return (
+    sshHostDraft.trim() !== (activeProfile.kind === "ssh" ? activeProfile.host : "") ||
+    sshClientTtyDraft.trim() !== (activeProfile.kind === "ssh" ? activeProfile.clientTty : "") ||
+    !runnerSettingsEqual(settingsDraft, activeProfile.runner)
   );
 }
 

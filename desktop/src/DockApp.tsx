@@ -39,17 +39,16 @@ import type { PreflightState } from "./effect/Preflight";
 import { glassClearFor, loadAppearance } from "./effect/appearanceModel";
 import {
   commandPrefix,
+  committedProfileValidation,
   focusCommandLabel,
-  folderProfiles,
   getActiveProfile,
-  keybindOwnerId,
+  liveSourcesFor,
   loadProfileState,
   normalizeRunnerSettings,
   profileKindLabel,
   runnerKeyForProfile,
   runnerSettingsForProfile,
   sourceLabel,
-  validateProfileDraft,
   type DesktopProfileConfig,
   type PreflightLabelSource,
 } from "./effect/profileModel";
@@ -178,31 +177,11 @@ function DockApp() {
   // to the active profile, so resolved preflight/picker data is invalidated
   // whenever the underlying target changes, not just when the profile id does.
   const runnerKey = useMemo(() => runnerKeyForProfile(activeProfile), [activeProfile]);
-  // Row keybinds are owned by exactly one source: the topmost OPEN folder in the
-  // user's source order (null when every folder is closed).
-  const ownerProfileId = useMemo(() => keybindOwnerId(profileState), [profileState]);
   // The folder-eligible sources in order, each with its runner identity, open
-  // state, ownership, and committed-profile validity (the arm gate for non-active
-  // sources, whose preflight is never probed).
-  const liveSources = useMemo(
-    () =>
-      folderProfiles(profileState).map((profile) => ({
-        profile,
-        runnerKey: runnerKeyForProfile(profile),
-        settings: runnerSettingsForProfile(profile),
-        isOpen: profileState.openProfileIds.includes(profile.id),
-        isOwner: profile.id === ownerProfileId,
-        valid:
-          validateProfileDraft(
-            profile,
-            profile.runner,
-            profile.kind === "ssh" ? profile.host : "",
-            profile.kind === "ssh" ? profile.clientTty : "",
-            profileState.profiles,
-          ).errors.length === 0,
-      })),
-    [profileState, ownerProfileId],
-  );
+  // state, keybind ownership, and committed-profile validity (the arm gate for
+  // non-active sources, whose preflight is never probed). Derived + tested in
+  // effect/profileModel.
+  const liveSources = useMemo(() => liveSourcesFor(profileState), [profileState]);
   const ownerSource = useMemo(() => liveSources.find((s) => s.isOwner) ?? null, [liveSources]);
   const ownerProfile = ownerSource?.profile ?? null;
   const ownerRunnerKey = ownerSource?.runnerKey ?? null;
@@ -333,14 +312,7 @@ function DockApp() {
   // profile is gated off the picker in the same render (no flash of the bad target) and
   // resolves to a synthetic failed preflight without an IPC probe.
   const activeProfileValidation = useMemo(
-    () =>
-      validateProfileDraft(
-        activeProfile,
-        activeProfile.runner,
-        activeProfile.kind === "ssh" ? activeProfile.host : "",
-        activeProfile.kind === "ssh" ? activeProfile.clientTty : "",
-        profileState.profiles,
-      ),
+    () => committedProfileValidation(activeProfile, profileState.profiles),
     [activeProfile, profileState.profiles],
   );
   const activeProfileValid = activeProfileValidation.errors.length === 0;
