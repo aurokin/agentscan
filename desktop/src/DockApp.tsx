@@ -21,6 +21,7 @@ import {
   configurePreflightAtom,
   configureSummonHotkeyAtom,
   liveStatesAtom,
+  localHostLabelAtom,
   preflightStateAtom,
   profilesAtom,
   pruneActivationAtom,
@@ -255,10 +256,11 @@ function DockApp() {
   // the settings rail's draggedSourceId).
   const [draggedMenuSourceId, setDraggedMenuSourceId] = useState<string | null>(null);
   const sourceMenuRef = useRef<HTMLDivElement | null>(null);
-  // The local machine's short hostname, fetched once from the backend, shown as the
-  // local source's label (the way a remote source is keyed by its SSH host). Empty
-  // until it resolves; sourceLabel falls back to a generic label in the meantime.
-  const [localHostLabel, setLocalHostLabel] = useState("");
+  // The local machine's short hostname, resolved once per webview runtime by
+  // the HostIpc-backed atom, shown as the local source's label (the way a
+  // remote source is keyed by its SSH host). Empty while unresolved AND on
+  // failure; sourceLabel falls back to a generic label for "".
+  const localHostLabel = Result.getOrElse(useAtomValue(localHostLabelAtom), () => "");
   // The probed remote hostname as a label source, from this window's own resolved
   // preflight (the settings window reuses the mirror instead). sourceLabel only
   // honors it for the profile whose runnerKey matches, so a stale probe can never
@@ -386,23 +388,6 @@ function DockApp() {
   useEffect(() => {
     configureLive(liveTargets);
   }, [liveTargets, configureLive]);
-
-  // Resolve the local machine's hostname once for the local source label. Each
-  // window runs its own fetch (per-webview, as before the split); a failure just
-  // leaves the generic fallback in place.
-  useEffect(() => {
-    let cancelled = false;
-    void invoke<string>("local_host_label")
-      .then((label) => {
-        if (!cancelled) {
-          setLocalHostLabel(label);
-        }
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   useEffect(() => {
     // The global summon hotkey belongs to the dock alone (the settings window

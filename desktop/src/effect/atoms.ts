@@ -7,6 +7,7 @@ import { Appearance } from "./Appearance";
 import { SummonHotkey } from "./SummonHotkey";
 import { Activation, type ActivateInput } from "./Activation";
 import { DebugLog, type DebugEntryInput } from "./DebugLog";
+import { HostIpc } from "./HostIpc";
 import { HostnameEnrichment, type EnrichmentLog } from "./HostnameEnrichment";
 import type { OrientationPreference, ThemePreference } from "./prefs";
 
@@ -30,7 +31,17 @@ const runtime = Atom.runtime(
     Activation.Default,
     HostnameEnrichment.Default,
     DebugLog.Default,
+    HostIpc.Default,
   ),
+);
+
+// The local machine's short hostname, fetched once per webview runtime and
+// shown as the local source's label (the way a remote source is keyed by its
+// SSH host). Read it with Result.getOrElse(..., () => ""): Initial AND Failure
+// both fall back to "", matching the old per-window fetch whose failure just
+// left the generic label in place (sourceLabel handles "").
+export const localHostLabelAtom = Atom.keepAlive(
+  runtime.atom(Effect.flatMap(HostIpc, (ipc) => ipc.localHostLabel)),
 );
 
 // --- Live connection slice ---

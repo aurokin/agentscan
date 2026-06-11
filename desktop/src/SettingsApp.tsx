@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Result, useAtomSet, useAtomValue } from "@effect-atom/atom-react";
@@ -14,6 +13,7 @@ import {
   clearDebugLogAtom,
   debugLogAtom,
   deleteActiveProfileAtom,
+  localHostLabelAtom,
   profilesAtom,
   reloadAppearanceAtom,
   reloadProfilesAtom,
@@ -127,10 +127,11 @@ function SettingsApp() {
   const debugEntries = Result.getOrElse(useAtomValue(debugLogAtom), () => EMPTY_DEBUG_ENTRIES);
   const appendDebugEntry = useAtomSet(appendDebugEntryAtom);
   const clearDebugLog = useAtomSet(clearDebugLogAtom);
-  // The local machine's short hostname, fetched once from the backend, shown as the
-  // local source's label (the way a remote source is keyed by its SSH host). Empty
-  // until it resolves; sourceLabel falls back to a generic label in the meantime.
-  const [localHostLabel, setLocalHostLabel] = useState("");
+  // The local machine's short hostname, resolved once per webview runtime by
+  // the HostIpc-backed atom, shown as the local source's label (the way a
+  // remote source is keyed by its SSH host). Empty while unresolved AND on
+  // failure; sourceLabel falls back to a generic label for "".
+  const localHostLabel = Result.getOrElse(useAtomValue(localHostLabelAtom), () => "");
   // The probed remote hostname as a label source: this window reuses the dock's
   // mirror. sourceLabel only honors it for the profile whose runnerKey matches,
   // so a stale probe can never label a source.
@@ -180,23 +181,6 @@ function SettingsApp() {
   // dirty state without re-subscribing on every keystroke.
   const isSettingsDirtyRef = useRef(isSettingsDirty);
   isSettingsDirtyRef.current = isSettingsDirty;
-
-  // Resolve the local machine's hostname once for the local source label. Each
-  // window runs its own fetch (per-webview, as before the split); a failure just
-  // leaves the generic fallback in place.
-  useEffect(() => {
-    let cancelled = false;
-    void invoke<string>("local_host_label")
-      .then((label) => {
-        if (!cancelled) {
-          setLocalHostLabel(label);
-        }
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   useEffect(() => {
     // Drafts follow the settings form's target on a switch (id) or an in-place edit

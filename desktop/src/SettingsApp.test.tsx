@@ -94,6 +94,13 @@ it("boots settings: renders the form and registers only settings-side listeners"
   // The dock's UI must not exist here.
   expect(screen.queryByLabelText("Search agents")).toBeNull();
 
+  // The mocked local_host_label resolves through HostIpc → localHostLabelAtom →
+  // sourceLabel and lands as the active source's heading. This pins the whole
+  // atom path end-to-end. (Depends on the single-profile default of a fresh
+  // jsdom localStorage: with extra profiles the label moves to the source-rail
+  // card and this heading query would break.)
+  await screen.findByRole("heading", { name: "testhost" });
+
   // Settings-only window listeners bind (focus reconcile + close-to-hide).
   await vi.waitFor(() => {
     expect(mocks.winStub.onFocusChanged).toHaveBeenCalled();
