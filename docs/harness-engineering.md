@@ -39,6 +39,13 @@ The repo already uses multiple harnesses to validate behavior:
 - TUI and focus interaction harnesses for real tmux client behavior
 - snapshot validation harnesses for schema and daemon health behavior
 - benchmark harnesses for hot-path regressions
+- frontend vitest harnesses for the desktop app: node-environment view-model and
+  transcript tests (Effect services against a mock Tauri IPC layer, queued-op
+  bodies against recorded fake sinks), plus per-window jsdom mount smoke tests
+  for the dock and settings windows (node is the vitest default; the mount
+  suites opt into jsdom per file via `// @vitest-environment jsdom`)
+- Rust unit harnesses inside the standalone desktop crate
+  (`desktop/src-tauri`), which the root cargo commands never touch
 
 These harnesses should be documented in terms of the contract they protect, not
 as checklists for an active milestone.
@@ -125,6 +132,14 @@ The current baseline remains:
 - `cargo clippy --all-targets --all-features -- -D warnings`
 - `cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_arguments`
 - `cargo test`
+
+Desktop changes carry their own half of the CI baseline. The same four cargo
+commands run inside `desktop/src-tauri` (a standalone crate the root commands
+never touch), plus, in `desktop/`:
+
+- `npm run build` (the Tauri crate embeds `../dist` via `tauri::generate_context!`,
+  so the frontend must build before the crate compiles)
+- `npm test` (the vitest suite)
 
 Performance spot checks currently use:
 

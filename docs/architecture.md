@@ -224,9 +224,9 @@ The scanner contract remains on the machine that owns tmux:
 
 On macOS, the desktop shell also owns app-global shortcut registration for
 summoning the picker window. The initial fixed shortcut is
-`CommandOrControl+Shift+A`; customization, multi-monitor positioning, and
-tmux-prefix-originated launch are separate product slices. The shortcut only
-controls desktop window lifecycle. Picker data and focus actions still flow
+`CommandOrControl+Shift+A`; summon placement follows the monitor under the
+cursor, while shortcut customization and tmux-prefix-originated launch are
+separate product slices. The shortcut only controls desktop window lifecycle. Picker data and focus actions still flow
 through `agentscan` command surfaces.
 
 The primary remote design is command execution over SSH, not socket forwarding.

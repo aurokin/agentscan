@@ -1,9 +1,9 @@
 # Ambiguity Corpus
 
 This note records the ambiguous pane evidence introduced for AUR-36. The
-fixture lives in `tests/fixtures/tmux_snapshot_ambiguous.txt`; tests in
-`src/app/tests.rs` lock both the tmux-only unresolved behavior and the targeted
-fallback behavior for AUR-39.
+fixture lives in `tests/fixtures/tmux_snapshot_ambiguous.txt`; tests under
+`src/app/tests/` (chiefly `classification.rs`) lock both the tmux-only
+unresolved behavior and the targeted fallback behavior for AUR-39.
 
 The purpose is to identify where the current metadata, command, and title
 classification path runs out of trustworthy evidence. Snapshot construction may

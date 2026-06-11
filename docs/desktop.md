@@ -17,8 +17,11 @@ It preflights the configured binary with:
 agentscan --version
 ```
 
-The default binary path is `agentscan`. If the GUI environment cannot find the
-intended CLI, set the local profile binary path in desktop settings.
+With no binary path configured, the app auto-detects `agentscan` in common
+install locations (cargo, Homebrew, `/usr/local/bin`, `~/.local/bin`), then
+PATH, then version-manager shims, falling back to the literal `agentscan`. If
+auto-detection cannot find the intended CLI, set the local profile binary path
+in desktop settings.
 
 Local profile commands use the shared CLI contract:
 
@@ -30,9 +33,9 @@ agentscan focus <pane-id>
 ```
 
 The desktop app keeps one supervised `agentscan subscribe --format json`
-process for live state. Snapshot frames trigger a picker-row refresh through
-`agentscan hotkeys --format json` so key assignment and row shaping remain
-owned by the CLI.
+process per open source folder for live state. Snapshot frames trigger a
+picker-row refresh through `agentscan hotkeys --format json` so key assignment
+and row shaping remain owned by the CLI.
 
 ## SSH Profiles
 
@@ -93,9 +96,10 @@ client fallback.
 The macOS desktop app registers `CommandOrControl+Shift+A` as an app-global
 shortcut through Tauri's global shortcut plugin.
 
-On summon, the picker is sized as a narrow sidebar and placed on the work area
-of the display containing the cursor. If cursor or monitor lookup fails, it
-falls back to the primary display and still shows/focuses the picker.
+On summon, the dock is placed on the work area of the display containing the
+cursor, sized as a narrow sidebar (vertical layout) or a bottom bar (horizontal
+layout). If cursor or monitor lookup fails, it falls back to the primary
+display and still shows/focuses the picker.
 
 This is desktop window lifecycle behavior. Picker data and focus actions still
 flow through `agentscan` command surfaces.

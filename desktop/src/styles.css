@@ -17,7 +17,7 @@
   --glass-clear: 0;
   /* Corner radius for frameless mode, matching the macOS window rounding the native
      titlebar would otherwise provide. Kept in sync with the FRAMELESS_CORNER_RADIUS
-     passed to the native glass backdrop in App.tsx / set_window_glass. */
+     (windowOperations.ts) passed to the native glass backdrop via set_window_glass. */
   --frameless-radius: 12px;
   --bg-elevated: #232325;
   --bg-hover: rgba(255, 255, 255, 0.05);

@@ -49,8 +49,9 @@ keeps those groups distinct without changing what users see.
 ## macOS Window Lifecycle
 
 The macOS desktop app registers an app-global `CommandOrControl+Shift+A`
-shortcut through Tauri's global shortcut plugin. This toggles the desktop
-picker window, then the picker consumes the command contract above.
+shortcut through Tauri's global shortcut plugin. This summons (raises and
+focuses) the desktop picker window — the window is persistent and the shortcut
+never hides it — then the picker consumes the command contract above.
 
 Tmux-prefix-originated launch remains a separate future integration path for
 terminal workflows and should not be conflated with the app-global shortcut.
@@ -58,15 +59,18 @@ If macOS privacy behavior changes around global keyboard shortcuts, treat
 Accessibility/Input Monitoring prompts as desktop packaging and signing
 concerns; do not move shortcut handling into tmux or scanner code.
 
-On summon, the macOS desktop picker is sized as a narrow sidebar and placed on
-the work area of the display containing the cursor. If cursor or monitor lookup
-fails, the app falls back to the primary display and still shows/focuses the
-picker.
+On summon, the macOS desktop picker is snapped to its current orientation — a
+narrow sidebar by default, or a full-width bottom bar when the layout is
+horizontal — and placed on the work area of the display containing the cursor.
+If cursor or monitor lookup fails, the app falls back to the primary display
+and still shows/focuses the picker.
 
 ## Live State
 
-The local desktop app keeps one supervised `agentscan subscribe --format json`
-process for live state. Snapshot frames trigger a picker-row refresh through
+The desktop app keeps one supervised `agentscan subscribe --format json`
+process per configured (open) source for live state, local and remote
+subscriptions streaming concurrently (the keyed multi-source model recorded in
+`ROADMAP.md`). Snapshot frames trigger a picker-row refresh through
 `agentscan hotkeys --format json`, preserving the shared CLI picker contract
 instead of reimplementing key assignment or display shaping in desktop code.
 
@@ -217,7 +221,10 @@ surface as a `fatal` frame or non-zero command failure.
 
 When a scripted or preview-only flow must not start a daemon, pass
 `--no-auto-start` or set `AGENTSCAN_NO_AUTO_START=1` inside the remote command
-environment.
+environment. The desktop app itself runs latch-only: it passes
+`--no-auto-start` on every supervised subscribe re-arm and every hotkeys
+invocation, and only the explicit user "Start agentscan" action auto-starts a
+daemon (see `docs/adr/desktop-latch-only-daemon-launch.md`).
 
 ## Expected Failures
 

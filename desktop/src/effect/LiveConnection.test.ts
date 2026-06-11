@@ -559,6 +559,115 @@ describe("LiveConnection", () => {
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
 
+  it("carry keeps an armed key running without a re-arm", () =>
+    Effect.gen(function* () {
+      // The dock sends enabled:"carry" while the active source's preflight has
+      // not resolved for the current runnerKey. For a key the service already
+      // armed, carry must resolve to the value it last saw — a no-op that does
+      // not bounce the running subscription.
+      const startCalls = yield* Queue.unbounded<{ epoch: number; autoStart: boolean }>();
+      const events = yield* Queue.unbounded<LivePickerEnvelope>();
+      const MockTauri = Layer.succeed(TauriIpc, {
+        startLivePicker: ({ epoch, autoStart }) =>
+          Queue.offer(startCalls, { epoch, autoStart }).pipe(Effect.asVoid),
+        stopLivePicker: () => Effect.void,
+        loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
+        pollDaemonStatus: () => Effect.succeed({ reachable: true }),
+        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+      });
+
+      const program = Effect.gen(function* () {
+        const lc = yield* LiveConnection;
+        const emit = (epoch: number, event: LivePickerEvent) =>
+          Queue.offer(events, envelope("k1", epoch, event));
+
+        // Arm and come online.
+        yield* lc.configure([{ settings: SETTINGS, runnerKey: "k1", enabled: true }]);
+        const first = yield* Queue.take(startCalls);
+        yield* emit(first.epoch, { kind: "rows", rows: [ROW], snapshot: SNAPSHOT });
+        yield* awaitKeyStatus(lc.states, "k1", "online");
+
+        // Carry: must leave the running target untouched (same supervisor, no
+        // start queued, subscription still consuming the SAME epoch).
+        yield* lc.configure([{ settings: SETTINGS, runnerKey: "k1", enabled: "carry" }]);
+
+        // Sequencing probe: a shutdown on the ORIGINAL epoch must still be
+        // consumed (proving the carry neither disabled nor re-armed the key —
+        // either would have superseded that epoch) and re-arm latch-only with
+        // the key's rows preserved.
+        yield* emit(first.epoch, {
+          kind: "shutdown",
+          message: "daemon socket server is closing",
+        });
+        const reconnecting = yield* awaitKeyStatus(lc.states, "k1", "reconnecting");
+        expect(reconnecting.rows.map((r) => r.pane_id)).toEqual(["%1"]);
+        const second = yield* Queue.take(startCalls);
+        expect(second.autoStart).toBe(false);
+        expect(second.epoch).toBeGreaterThan(first.epoch);
+        // Exactly one re-arm: the carry itself started nothing.
+        expect(yield* Queue.size(startCalls)).toBe(0);
+      });
+
+      yield* program.pipe(
+        Effect.provide(
+          LiveConnection.DefaultWithoutDependencies.pipe(
+            Layer.provide(Layer.merge(MockTauri, StableBackoff)),
+          ),
+        ),
+      );
+    }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
+
+  it("carry with no history gates a new key off until a real verdict arms it", () =>
+    Effect.gen(function* () {
+      // Launch (or an in-place edit that moves the runnerKey): the service has
+      // never seen the key, so "carry" must behave as gated off — no
+      // subscription — until the preflight resolves into a real enabled:true.
+      const startCalls = yield* Queue.unbounded<{ epoch: number; autoStart: boolean }>();
+      const events = yield* Queue.unbounded<LivePickerEnvelope>();
+      const MockTauri = Layer.succeed(TauriIpc, {
+        startLivePicker: ({ epoch, autoStart }) =>
+          Queue.offer(startCalls, { epoch, autoStart }).pipe(Effect.asVoid),
+        stopLivePicker: () => Effect.void,
+        loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
+        pollDaemonStatus: () => Effect.succeed({ reachable: true }),
+        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+      });
+
+      const program = Effect.gen(function* () {
+        const lc = yield* LiveConnection;
+
+        yield* lc.configure([{ settings: SETTINGS, runnerKey: "k1", enabled: "carry" }]);
+        // The disabled-target state, not merely the INITIAL_STATE seed (both are
+        // "connecting", so filter on the message).
+        yield* lc.states.changes.pipe(
+          Stream.filter(
+            (map) => map.get("k1")?.connection.message === "Waiting for a source",
+          ),
+          Stream.runHead,
+          Effect.flatMap(
+            Option.match({
+              onNone: () => Effect.die("state stream ended early"),
+              onSome: Effect.succeed,
+            }),
+          ),
+        );
+        expect(yield* Queue.size(startCalls)).toBe(0);
+
+        // The probe resolves: a real verdict arms the key (latch-only).
+        yield* lc.configure([{ settings: SETTINGS, runnerKey: "k1", enabled: true }]);
+        const first = yield* Queue.take(startCalls);
+        expect(first.autoStart).toBe(false);
+      });
+
+      yield* program.pipe(
+        Effect.provide(
+          LiveConnection.DefaultWithoutDependencies.pipe(
+            Layer.provide(Layer.merge(MockTauri, StableBackoff)),
+          ),
+        ),
+      );
+    }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
+
   it("runs multiple sources concurrently, routing frames per key and stopping only removed keys", () =>
     Effect.gen(function* () {
       const startCalls = yield* Queue.unbounded<{ sourceKey: string; epoch: number }>();

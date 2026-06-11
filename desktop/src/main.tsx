@@ -1,7 +1,8 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import App from "./App";
+import DockApp from "./DockApp";
+import SettingsApp from "./SettingsApp";
 import "./styles.css";
 
 const root = document.getElementById("root");
@@ -10,13 +11,13 @@ if (!root) {
   throw new Error("missing root element");
 }
 
-// One Vite entry serves both windows; the window label decides which UI to render.
-// The "settings" window (declared hidden in tauri.conf.json) shows the settings
-// panel; everything else is the dock.
-const mode = getCurrentWebviewWindow().label === "settings" ? "settings" : "dock";
+// One Vite entry serves both windows; the window label routes to the right app.
+// The "settings" window (declared hidden in tauri.conf.json) gets SettingsApp;
+// ANYTHING else is the dock (label "main") — keep else-is-dock rather than
+// tightening to label === "main", mirroring PrefsBridge.resolveMode, which the
+// Effect services use to resolve the same rule per window.
+const isSettings = getCurrentWebviewWindow().label === "settings";
 
 createRoot(root).render(
-  <StrictMode>
-    <App mode={mode} />
-  </StrictMode>,
+  <StrictMode>{isSettings ? <SettingsApp /> : <DockApp />}</StrictMode>,
 );

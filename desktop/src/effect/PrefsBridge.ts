@@ -25,11 +25,12 @@ function resolveMode(): ShellMode {
 //
 // `events` carries every inbound sync kind to every subscriber (each service ignores
 // the kinds it doesn't own). The Preflight service consumes it for the dock<->settings
-// preflight protocol. App.tsx still runs its OWN listener for the kinds not yet
-// migrated (theme/orientation/glass, and the React-synchronously-gated `profiles`
-// adoption); the two listeners coexist because Tauri delivers each event to every
-// registered listener. As those concerns migrate, App's listener retires and they move
-// onto this stream.
+// preflight protocol and Appearance for theme/orientation/glass. App.tsx keeps one
+// DELIBERATE listener of its own — the `profiles` adoption — because that decision
+// gates on the settings form's unsaved-edit flag, React-synchronous state a service
+// Ref would observe with a lag (see the comment on that listener). It is a designed
+// residual, not a pending migration; the two listeners coexist because Tauri delivers
+// each event to every registered listener.
 export class PrefsBridge extends Effect.Service<PrefsBridge>()("desktop/PrefsBridge", {
   scoped: Effect.gen(function* () {
     // resolveMode wraps getCurrentWebviewWindow() in try/catch (see above), so this never

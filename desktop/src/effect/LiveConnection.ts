@@ -68,7 +68,12 @@ type Target = {
 export type ConfigureInput = {
   readonly settings: DesktopRunnerSettings | null;
   readonly runnerKey: string;
-  readonly enabled: boolean;
+  // "carry" keeps the enabled value this service last saw for the key (a new
+  // key starts gated off). It exists for the active source's preflight lag: a
+  // probe that hasn't resolved for the CURRENT runnerKey yet must not bounce
+  // an already-armed subscription, and the service's own target is the
+  // authoritative "last armed" record — no caller-side mirror needed.
+  readonly enabled: boolean | "carry";
 };
 
 // The per-source live states the UI observes, keyed by runnerKey. Keys exist only
@@ -471,17 +476,23 @@ export class LiveConnection extends Effect.Service<LiveConnection>()(
             for (const [key, input] of next) {
               const existing = entries.get(key);
               if (existing) {
-                yield* SubscriptionRef.update(existing.targetRef, (current) =>
-                  current.enabled === input.enabled
+                // "carry" resolves against the same current.enabled the diff
+                // below compares, inside this mutex, so the carried value is
+                // exactly what the service last armed — by construction a
+                // no-op update that re-arms nothing.
+                yield* SubscriptionRef.update(existing.targetRef, (current) => {
+                  const enabled =
+                    input.enabled === "carry" ? current.enabled : input.enabled;
+                  return current.enabled === enabled
                     ? current
                     : {
                         gen: current.gen + 1,
-                        enabled: input.enabled,
+                        enabled,
                         settings: input.settings,
                         runnerKey: key,
                         autoStart: false,
-                      },
-                );
+                      };
+                });
                 continue;
               }
               // A re-added key may inherit the previous supervisor's state entry:
@@ -497,7 +508,10 @@ export class LiveConnection extends Effect.Service<LiveConnection>()(
               yield* setKeyState(key, INITIAL_STATE);
               const targetRef = yield* SubscriptionRef.make<Target>({
                 gen: 0,
-                enabled: input.enabled,
+                // A new key has no history to carry, so "carry" gates it off
+                // until a real verdict arrives (launch, or an in-place edit
+                // that moved the runnerKey).
+                enabled: input.enabled === "carry" ? false : input.enabled,
                 settings: input.settings,
                 runnerKey: key,
                 autoStart: false,

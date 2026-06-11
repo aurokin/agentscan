@@ -42,8 +42,8 @@ const PICKER_WINDOW_MAX_HEIGHT: f64 = 960.0;
 // sized to the stacked session-label + chip strip (the chrome centers within it) rather
 // than a tall slab. This is the inner/content height; a native titlebar (when not in
 // frameless mode) sits above it. The frontend locks a PINNED bar to this exact height
-// (min == max == BAR_WINDOW_HEIGHT in App.tsx) so it only resizes horizontally — keep
-// the two values in sync.
+// (min == max == BAR_WINDOW_HEIGHT in src/windowOperations.ts) so it only resizes
+// horizontally — keep the two values in sync.
 const BAR_WINDOW_HEIGHT: f64 = 56.0;
 
 // One live supervisor per source key (the frontend's runnerKey), so multiple

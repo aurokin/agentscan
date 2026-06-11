@@ -4,6 +4,11 @@ import { LiveConnection, type ConfigureInput } from "./LiveConnection";
 import { Profiles, type ApplyRunnerSettingsInput } from "./Profiles";
 import { Preflight, type PreflightTarget } from "./Preflight";
 import { Appearance } from "./Appearance";
+import { SummonHotkey } from "./SummonHotkey";
+import { Activation, type ActivateInput } from "./Activation";
+import { DebugLog, type DebugEntryInput } from "./DebugLog";
+import { HostIpc } from "./HostIpc";
+import { HostnameEnrichment, type EnrichmentLog } from "./HostnameEnrichment";
 import type { OrientationPreference, ThemePreference } from "./prefs";
 
 // One runtime per webview window, providing the desktop Effect services. Profiles,
@@ -19,7 +24,24 @@ const runtime = Atom.runtime(
     Profiles.Default,
     Preflight.Default,
     Appearance.Default,
+    SummonHotkey.Default,
+    // Activation and HostnameEnrichment also depend on services merged above
+    // (LiveConnection; plus Profiles/Preflight for enrichment); layer
+    // memoization resolves each to the same instance.
+    Activation.Default,
+    HostnameEnrichment.Default,
+    DebugLog.Default,
+    HostIpc.Default,
   ),
+);
+
+// The local machine's short hostname, fetched once per webview runtime and
+// shown as the local source's label (the way a remote source is keyed by its
+// SSH host). Read it with Result.getOrElse(..., () => ""): Initial AND Failure
+// both fall back to "", matching the old per-window fetch whose failure just
+// left the generic label in place (sourceLabel handles "").
+export const localHostLabelAtom = Atom.keepAlive(
+  runtime.atom(Effect.flatMap(HostIpc, (ipc) => ipc.localHostLabel)),
 );
 
 // --- Live connection slice ---
@@ -115,19 +137,6 @@ export const reorderProfileAtom = runtime.fn(
   }),
 );
 
-// Persist a probed remote hostname onto its profile (display-label enrichment;
-// the service no-ops unchanged values and drops stale-runner results).
-export const recordProbedHostAtom = runtime.fn(
-  Effect.fnUntraced(function* (input: {
-    readonly id: string;
-    readonly probedHost: string;
-    readonly runnerKey: string;
-  }) {
-    const profiles = yield* Profiles;
-    yield* profiles.recordProbedHost(input.id, input.probedHost, input.runnerKey);
-  }),
-);
-
 // Value-guarded reconcile from storage, driven by React on the cross-window profiles
 // sync and the settings window's focus/clean transitions (emitTo has no replay).
 export const reloadProfilesAtom = runtime.fn(
@@ -166,6 +175,106 @@ export const requestPreflightSyncAtom = runtime.fn(
   Effect.fnUntraced(function* () {
     const preflight = yield* Preflight;
     yield* preflight.requestSync;
+  }),
+);
+
+// --- Activation slice ---
+
+// The pane-activation state the picker renders (idle / running pulse / failed
+// strip): Result<PickerActivation>. keepAlive so the TTL supervisor and any
+// in-flight activation fiber persist across StrictMode remounts.
+export const activationAtom = Atom.keepAlive(
+  runtime.subscriptionRef(Effect.map(Activation, (a) => a.state)),
+);
+
+// Focus one row against its own source. The service holds the one-at-a-time
+// guard and forks the work, so this returns immediately.
+export const activateAtom = runtime.fn(
+  Effect.fnUntraced(function* (input: ActivateInput) {
+    const activation = yield* Activation;
+    yield* activation.activate(input);
+  }),
+);
+
+// Reconcile the activation against the open folders' runnerKeys (drop a
+// pulse/error whose source closed). Driven by React on every open-set change.
+export const pruneActivationAtom = runtime.fn(
+  Effect.fnUntraced(function* (openKeys: ReadonlyArray<string>) {
+    const activation = yield* Activation;
+    yield* activation.prune(openKeys);
+  }),
+);
+
+// --- Hostname enrichment slice ---
+
+// Dock-only: arm hostname enrichment (recording the driver's probed hostnames
+// + one-shot background probes for never-probed online remotes) with the
+// debug-log sink. Persistence goes through Profiles inside the service.
+//
+// The callback rides inside an object on purpose: useAtomSet invokes a BARE
+// function argument as an updater (value(registry.get(atom))) instead of
+// passing it through, which would run the callback once at configure time and
+// hand the service `undefined`. Same convention as configureSummonHotkeyAtom.
+export const configureHostnameEnrichmentAtom = runtime.fn(
+  Effect.fnUntraced(function* (input: { readonly onLog: EnrichmentLog }) {
+    const enrichment = yield* HostnameEnrichment;
+    yield* enrichment.configure(input.onLog);
+  }),
+);
+
+// --- Debug log slice ---
+
+// The per-window debug log (newest-first, capped): Result<ReadonlyArray<DebugEntry>>.
+// Each webview's runtime holds its own instance, matching the old per-window
+// useState; the settings window renders it, the dock only writes. keepAlive so
+// entries survive StrictMode remounts like the rest of the runtime state.
+export const debugLogAtom = Atom.keepAlive(
+  runtime.subscriptionRef(Effect.map(DebugLog, (d) => d.state)),
+);
+
+// Append one entry (the service stamps id/time). The setter is registry-stable,
+// so effects that log can list it in their dep arrays — the old App.tsx closure
+// was recreated every render and forced dep omissions. Known narrow deviation
+// from the old synchronous setState: appends fired before the runtime layer
+// finishes building are deferred by runtime.fn and collapse to the LATEST one
+// (same replay rule as every fn atom here); only boot-window native-call
+// failures can hit it.
+export const appendDebugEntryAtom = runtime.fn(
+  Effect.fnUntraced(function* (entry: DebugEntryInput) {
+    const log = yield* DebugLog;
+    yield* log.append(entry);
+  }),
+);
+
+// The settings panel's Clear button.
+export const clearDebugLogAtom = runtime.fn(
+  Effect.fnUntraced(function* () {
+    const log = yield* DebugLog;
+    yield* log.clear;
+  }),
+);
+
+// --- Summon hotkey slice ---
+
+// The summon-hotkey registration state the dock renders as its standing banner:
+// Result<SummonHotkeyState>. keepAlive so the registration fiber (and its in-use
+// retry loop) persists across StrictMode remounts instead of churning the OS key.
+export const summonHotkeyAtom = Atom.keepAlive(
+  runtime.subscriptionRef(Effect.map(SummonHotkey, (s) => s.state)),
+);
+
+// Dock-only: arm the summon hotkey with the press action (or release it with
+// null). The callback is captured at configure time, so the dock passes one that
+// reads its placement ref at press time.
+//
+// The callback rides inside an object on purpose: useAtomSet invokes a BARE
+// function argument as an updater (value(registry.get(atom))) instead of
+// passing it through — a raw `configure(fn)` call would fire the press action
+// once at mount and register the hotkey with `undefined`, making ⌘⇧A defect.
+export const configureSummonHotkeyAtom = runtime.fn(
+  Effect.fnUntraced(function* (input: { readonly onPress: (() => void) | null }) {
+    const hotkey = yield* SummonHotkey;
+    yield* hotkey.configure(input.onPress);
   }),
 );
 

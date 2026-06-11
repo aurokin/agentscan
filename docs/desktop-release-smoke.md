@@ -48,7 +48,7 @@ first and replace this check with an explicit compatibility matrix.
 Install the normal project toolchains:
 
 - Rust stable
-- Node/npm
+- Node 20.19+ (or 22.13+/24+; jsdom's engine floor for the frontend tests) and npm
 - Tauri prerequisites for macOS
 - Xcode command line tools
 - Apple Developer ID Application certificate in the login keychain
@@ -174,7 +174,7 @@ Local profile:
 - The desktop live connection banner transitions out of connecting/offline
   state after the daemon is ready.
 - `CommandOrControl+Shift+A` shows and focuses the picker window.
-- Keyboard selection and a mouse double-click both trigger
+- Keyboard selection (Enter) and a single mouse click on a row both trigger
   `agentscan focus <pane-id>` through the local profile.
 
 SSH profile basics:
