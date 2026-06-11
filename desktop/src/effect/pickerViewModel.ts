@@ -93,6 +93,84 @@ export function focusedPaneIdOf(rows: readonly PickerRow[]): string | null {
   );
 }
 
+// One step of the selection keeper. Fields are PRESENT only when the keeper
+// should act: an absent field means leave that piece of state untouched, while
+// an explicit null means clear it. The applier must therefore check
+// `!== undefined`, never truthiness.
+export type SelectionStep = {
+  selectedPaneId?: string | null;
+  prevFocusedPaneId?: string | null;
+};
+
+// The selection-keeper decision: given the owner's rows and the current
+// selection/focus-follow state, what (if anything) changes. The dock applies
+// the result to selectedPaneId state and the prevFocusedPaneId render ref.
+export function reconcileSelection(input: {
+  readonly status: PickerState["status"];
+  readonly allRowsCount: number;
+  readonly rows: readonly PickerRow[];
+  readonly selectedPaneId: string | null;
+  readonly focusedPaneId: string | null;
+  readonly prevFocusedPaneId: string | null;
+}): SelectionStep {
+  const { status, allRowsCount, rows, selectedPaneId, focusedPaneId, prevFocusedPaneId } = input;
+  if (status === "loading") {
+    return {};
+  }
+
+  // No data at all → clear selection and focus-follow state. The selection
+  // clear is conditional so an already-null selection emits no key (the
+  // applier would schedule a redundant state set).
+  if (allRowsCount === 0) {
+    const step: SelectionStep = { prevFocusedPaneId: null };
+    if (selectedPaneId !== null) {
+      step.selectedPaneId = null;
+    }
+    return step;
+  }
+
+  // Filter matched nothing: leave selection and follow-state untouched so
+  // clearing the filter restores them. There's no visible row to target now.
+  if (rows.length === 0) {
+    return {};
+  }
+
+  const focusedVisible =
+    focusedPaneId !== null && rows.some((row) => row.pane_id === focusedPaneId);
+
+  // Follow a genuine focus *move*: we have a prior observed focus value and it
+  // changed to a different, now-visible pane. Comparing focus to its own
+  // previous value — not to the current selection — is the key to surviving the
+  // search filter: applying then clearing a filter doesn't change the focus
+  // value, so it never re-snaps over a manual pick. A `null` previous value is
+  // first observation / re-init, *not* a move: it must fall through to the
+  // selection-validity branch so an already-made manual pick isn't clobbered.
+  if (focusedVisible && prevFocusedPaneId !== null && focusedPaneId !== prevFocusedPaneId) {
+    return { prevFocusedPaneId: focusedPaneId, selectedPaneId: focusedPaneId };
+  }
+
+  const step: SelectionStep = {};
+
+  // Record the focus value once the focused pane is visible: initializing the
+  // marker on first observation, or confirming an unchanged value. While it's
+  // hidden (filtered) or unknown (null), leave the marker so a pending move is
+  // still followed when the pane reappears.
+  if (focusedVisible) {
+    step.prevFocusedPaneId = focusedPaneId;
+  }
+
+  // Keep a valid, visible selection (initial mount with no pick yet, or the
+  // selected row was filtered out / vanished). Prefer the focused pane when
+  // visible, else the first row. A still-valid selection — including a manual
+  // pick made before the keeper first ran — is left untouched. (Truthiness on
+  // purpose: it matches the pre-extraction guard.)
+  if (!selectedPaneId || !rows.some((row) => row.pane_id === selectedPaneId)) {
+    step.selectedPaneId = focusedVisible ? focusedPaneId : rows[0].pane_id;
+  }
+
+  return step;
+}
+
 // Project one source's keyed live state onto the PickerState its folder renders.
 // The service is the single owner of rows + connection status; this just picks the
 // view: keep showing the last rows while (re)connecting so the list doesn't flash

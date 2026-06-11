@@ -5,6 +5,7 @@ import {
   focusedPaneIdOf,
   groupRowsByProject,
   pickerStateFromLive,
+  reconcileSelection,
   type PickerActivation,
 } from "./pickerViewModel";
 import type { LiveStates } from "./LiveConnection";
@@ -90,6 +91,100 @@ describe("focusedPaneIdOf", () => {
       row({ pane_id: "%2", is_focused: false }),
     ];
     expect(focusedPaneIdOf(rows)).toBeNull();
+  });
+});
+
+describe("reconcileSelection", () => {
+  const rows = (...paneIds: string[]) => paneIds.map((pane_id) => row({ pane_id }));
+  const base = {
+    status: "ready" as const,
+    allRowsCount: 2,
+    rows: rows("%1", "%2"),
+    selectedPaneId: null,
+    focusedPaneId: null,
+    prevFocusedPaneId: null,
+  };
+
+  it("does nothing while loading", () => {
+    expect(reconcileSelection({ ...base, status: "loading" })).toEqual({});
+  });
+
+  it("clears selection and the follow marker when no data exists", () => {
+    expect(
+      reconcileSelection({ ...base, allRowsCount: 0, rows: [], selectedPaneId: "%1" }),
+    ).toEqual({ selectedPaneId: null, prevFocusedPaneId: null });
+  });
+
+  it("omits the selection key when no-data finds it already null", () => {
+    const step = reconcileSelection({ ...base, allRowsCount: 0, rows: [] });
+    expect(step).toEqual({ prevFocusedPaneId: null });
+    expect("selectedPaneId" in step).toBe(false);
+  });
+
+  it("leaves everything untouched when the filter matched nothing", () => {
+    // Clearing the filter must restore the prior selection.
+    expect(reconcileSelection({ ...base, rows: [], selectedPaneId: "%1" })).toEqual({});
+  });
+
+  it("follows a genuine focus move to a visible pane", () => {
+    expect(
+      reconcileSelection({
+        ...base,
+        selectedPaneId: "%1",
+        focusedPaneId: "%2",
+        prevFocusedPaneId: "%1",
+      }),
+    ).toEqual({ prevFocusedPaneId: "%2", selectedPaneId: "%2" });
+  });
+
+  it("initializes the follow marker on first observation without clobbering a manual pick", () => {
+    // prev null is first observation / re-init, NOT a move.
+    const step = reconcileSelection({
+      ...base,
+      selectedPaneId: "%1",
+      focusedPaneId: "%2",
+    });
+    expect(step).toEqual({ prevFocusedPaneId: "%2" });
+    expect("selectedPaneId" in step).toBe(false);
+  });
+
+  it("repairs an invalid selection to the visible focused pane", () => {
+    expect(
+      reconcileSelection({
+        ...base,
+        selectedPaneId: "%gone",
+        focusedPaneId: "%2",
+        prevFocusedPaneId: "%2",
+      }),
+    ).toEqual({ prevFocusedPaneId: "%2", selectedPaneId: "%2" });
+  });
+
+  it("repairs an invalid selection to the first row when focus is hidden or unknown", () => {
+    const step = reconcileSelection({ ...base, selectedPaneId: "%gone" });
+    expect(step).toEqual({ selectedPaneId: "%1" });
+    // The marker is left alone so a pending move is still followed when the
+    // focused pane reappears.
+    expect("prevFocusedPaneId" in step).toBe(false);
+
+    const hidden = reconcileSelection({
+      ...base,
+      selectedPaneId: "%gone",
+      focusedPaneId: "%hidden",
+      prevFocusedPaneId: "%hidden",
+    });
+    expect(hidden).toEqual({ selectedPaneId: "%1" });
+  });
+
+  it("keeps a valid selection and the marker while the focused pane is filtered out", () => {
+    // Focus moved while hidden: nothing happens until the pane is visible again.
+    expect(
+      reconcileSelection({
+        ...base,
+        selectedPaneId: "%1",
+        focusedPaneId: "%hidden",
+        prevFocusedPaneId: "%other",
+      }),
+    ).toEqual({});
   });
 });
 

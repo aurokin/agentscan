@@ -61,6 +61,7 @@ import {
 import {
   connectionTone,
   deriveSourceViews,
+  reconcileSelection,
   type PickerActivation,
   type PickerGroup,
   type PickerState,
@@ -485,60 +486,25 @@ function DockApp() {
   // (pickerViewModel).
   const focusedPaneId = ownerView?.focusedPaneId ?? null;
 
+  // Selection keeper: the decision (focus-follow vs manual-pick survival vs
+  // validity repair) lives in reconcileSelection (pickerViewModel, tested
+  // there); this effect just feeds it the current state and applies the step.
+  // An absent field means leave untouched; null means clear — so both applies
+  // check !== undefined, never truthiness.
   useEffect(() => {
-    if (pickerStatus === "loading") {
-      return;
+    const step = reconcileSelection({
+      status: pickerStatus,
+      allRowsCount: allPickerRows.length,
+      rows: pickerRows,
+      selectedPaneId,
+      focusedPaneId,
+      prevFocusedPaneId: prevFocusedPaneIdRef.current,
+    });
+    if (step.prevFocusedPaneId !== undefined) {
+      prevFocusedPaneIdRef.current = step.prevFocusedPaneId;
     }
-
-    // No data at all → clear selection and focus-follow state.
-    if (allPickerRows.length === 0) {
-      if (selectedPaneId !== null) {
-        setSelectedPaneId(null);
-      }
-      prevFocusedPaneIdRef.current = null;
-      return;
-    }
-
-    // Filter matched nothing: leave selection and follow-state untouched so
-    // clearing the filter restores them. There's no visible row to target now.
-    if (pickerRows.length === 0) {
-      return;
-    }
-
-    const focusedVisible =
-      focusedPaneId !== null && pickerRows.some((row) => row.pane_id === focusedPaneId);
-
-    // Follow a genuine focus *move*: we have a prior observed focus value and it
-    // changed to a different, now-visible pane. Comparing focus to its own
-    // previous value — not to the current selection — is the key to surviving the
-    // search filter: applying then clearing a filter doesn't change the focus
-    // value, so it never re-snaps over a manual pick. A `null` previous value is
-    // first observation / re-init, *not* a move: it must fall through to the
-    // selection-validity branch so an already-made manual pick isn't clobbered.
-    if (
-      focusedVisible &&
-      prevFocusedPaneIdRef.current !== null &&
-      focusedPaneId !== prevFocusedPaneIdRef.current
-    ) {
-      prevFocusedPaneIdRef.current = focusedPaneId;
-      setSelectedPaneId(focusedPaneId);
-      return;
-    }
-
-    // Record the focus value once the focused pane is visible: initializing the
-    // marker on first observation, or confirming an unchanged value. While it's
-    // hidden (filtered) or unknown (null), leave the marker so a pending move is
-    // still followed when the pane reappears.
-    if (focusedVisible) {
-      prevFocusedPaneIdRef.current = focusedPaneId;
-    }
-
-    // Keep a valid, visible selection (initial mount with no pick yet, or the
-    // selected row was filtered out / vanished). Prefer the focused pane when
-    // visible, else the first row. A still-valid selection — including a manual
-    // pick made before this effect first ran — is left untouched.
-    if (!selectedPaneId || !pickerRows.some((row) => row.pane_id === selectedPaneId)) {
-      setSelectedPaneId(focusedVisible ? focusedPaneId! : pickerRows[0].pane_id);
+    if (step.selectedPaneId !== undefined) {
+      setSelectedPaneId(step.selectedPaneId);
     }
   }, [allPickerRows.length, pickerRows, pickerStatus, selectedPaneId, focusedPaneId]);
 
