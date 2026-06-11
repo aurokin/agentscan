@@ -72,6 +72,7 @@ Current local baseline:
 Desktop shell checks:
 
 - `cd desktop && npm run build`
+- `cd desktop && npm test`
 - `cargo test --manifest-path desktop/src-tauri/Cargo.toml`
 - `cd desktop && npm run tauri dev`
 - `scripts/check-desktop-version.sh`
