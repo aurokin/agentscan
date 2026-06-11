@@ -5,11 +5,13 @@ import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { Result, useAtomSet, useAtomValue } from "@effect-atom/atom-react";
 import type { LogoTheme } from "./providerLogos";
+import { BootScreen } from "./components/BootScreen";
 import { GroupedPicker } from "./components/GroupedPicker";
 import { LiveStrip } from "./components/LiveStrip";
-import { SourceKindIcon } from "./components/SourceKindIcon";
+import { SourceFolders } from "./components/SourceFolders";
+import { SourceSwitcher } from "./components/SourceSwitcher";
 import { WindowControls } from "./components/WindowControls";
-import { HOTKEY_MODIFIER_LABEL, IS_MAC } from "./platform";
+import { IS_MAC } from "./platform";
 import {
   activateAtom,
   activationAtom,
@@ -60,7 +62,6 @@ import {
   type ThemePreference,
 } from "./effect/prefs";
 import {
-  connectionTone,
   deriveSourceViews,
   footerTriggerView,
   reconcileSelection,
@@ -249,13 +250,6 @@ function DockApp() {
   // it places on first mount (and every pinned reshape) but never re-snaps an "auto"
   // window on a later drag.
   const didInitialPlaceRef = useRef(false);
-  // Footer source switcher: which agentscan we're listening to (local vs a
-  // remote over SSH). Open state for the inline dropdown.
-  const [isSourceMenuOpen, setIsSourceMenuOpen] = useState(false);
-  // Mid-drag source id for the footer order menu (the dock-side counterpart of
-  // the settings rail's draggedSourceId).
-  const [draggedMenuSourceId, setDraggedMenuSourceId] = useState<string | null>(null);
-  const sourceMenuRef = useRef<HTMLDivElement | null>(null);
   // The local machine's short hostname, resolved once per webview runtime by
   // the HostIpc-backed atom, shown as the local source's label (the way a
   // remote source is keyed by its SSH host). Empty while unresolved AND on
@@ -518,44 +512,6 @@ function DockApp() {
     pruneActivation(Array.from(openRunnerKeys));
   }, [openRunnerKeys, pruneActivation]);
 
-  // A wide drag or pinning to horizontal can strand an already-open source menu in
-  // the thin bar (where it clips). Close it whenever the layout goes horizontal.
-  useEffect(() => {
-    if (effectiveOrientation === "horizontal") {
-      setIsSourceMenuOpen(false);
-    }
-  }, [effectiveOrientation]);
-
-  // Dismiss the source dropdown on an outside click or Escape. The keydown is
-  // captured so it closes the menu before the picker's global Escape handler
-  // hides the whole window.
-  useEffect(() => {
-    if (!isSourceMenuOpen) {
-      return;
-    }
-
-    function onPointerDown(event: MouseEvent) {
-      if (sourceMenuRef.current && !sourceMenuRef.current.contains(event.target as Node)) {
-        setIsSourceMenuOpen(false);
-      }
-    }
-
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        event.preventDefault();
-        setIsSourceMenuOpen(false);
-      }
-    }
-
-    window.addEventListener("mousedown", onPointerDown);
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => {
-      window.removeEventListener("mousedown", onPointerDown);
-      window.removeEventListener("keydown", onKeyDown, true);
-    };
-  }, [isSourceMenuOpen]);
-
   // Apply the theme to <html data-theme>. "system" resolves from prefers-color-scheme
   // and re-resolves live when the OS appearance changes. Persistence + the cross-window
   // broadcast are owned by the Appearance service (driven by the setter); this effect
@@ -644,9 +600,10 @@ function DockApp() {
   }, [orientationPref, effectiveOrientation]);
 
   // Open the settings window (created hidden at launch, kept warm). The dock no
-  // longer renders settings itself.
+  // longer renders settings itself. (Closing the source menu is no longer this
+  // function's job: the menu state lives in SourceSwitcher, whose own dismiss
+  // paths cover every call site that can coexist with an open menu.)
   const openSettings = () => {
-    setIsSourceMenuOpen(false);
     void (async () => {
       try {
         const settingsWindow = await WebviewWindow.getByLabel("settings");
@@ -986,49 +943,16 @@ function DockApp() {
       profileKindLabel(activeProfile),
     );
     return (
-      // Recovery UI renders in the live orientation: a centered column in the vertical
-      // strip, and a compact row in the horizontal bar (styles.css) so the heading and
-      // the only "Open settings" path stay visible without clipping in the short bar.
-      <main
-        className="sidebar"
-        data-orientation={effectiveOrientation}
-        data-tauri-drag-region={dragRegion}
-      >
-        {/* The drag region must sit on boot-state too, not just <main>: boot-state fills the
-            window (height:100% / flex:1), so Tauri — which starts a drag only when the click
-            target itself carries the attribute — would otherwise see every click land on this
-            covering child and never drag. Clicks on the spinner/copy/button target those
-            elements (no attribute), so they stay non-draggable. */}
-        <div className="boot-state" aria-live="polite" data-tauri-drag-region={dragRegion}>
-          <span className="boot-spinner" aria-hidden="true" />
-          <div className="boot-copy">
-            <h1>{probing ? "Connecting" : "Can’t reach agentscan"}</h1>
-            <p>{detail}</p>
-          </div>
-          {/* Always offer a path into settings: a hung "loading" (e.g. a stalled
-              profile/SSH preflight) or a CLI-unavailable runner otherwise traps the
-              user with no way to fix the binary path or host. When the remote probe
-              resolved an absolute path, also offer to apply it in one click. */}
-          <div className="boot-actions">
-            {suggestedBinaryPath ? (
-              <button type="button" onClick={() => applySuggestedBinaryPath(suggestedBinaryPath)}>
-                Use this path
-              </button>
-            ) : null}
-            <button type="button" onClick={openSettings}>
-              Open settings
-            </button>
-          </div>
-        </div>
-        {/* Frameless mode strips the native frame, so the recovery screen would otherwise
-            be a borderless window the user can't move/minimize/dismiss while connecting or
-            after a failure. The boot screen has no footer, so float the controls instead. */}
-        {framelessApplied ? (
-          <div className="boot-window-controls">
-            <WindowControls />
-          </div>
-        ) : null}
-      </main>
+      <BootScreen
+        probing={probing}
+        detail={detail}
+        suggestedBinaryPath={suggestedBinaryPath}
+        orientation={effectiveOrientation}
+        dragRegion={dragRegion}
+        framelessApplied={framelessApplied}
+        onApplySuggestedBinaryPath={applySuggestedBinaryPath}
+        onOpenSettings={openSettings}
+      />
     );
   }
 
@@ -1196,144 +1120,24 @@ function DockApp() {
             onSelect={(row) => setSelectedPaneId(row.pane_id)}
           />
         ) : (
-          // The vertical strip is a list of host folders: one collapsible section per
-          // enabled source, in the user's order. Open = live subscription + that
-          // source's workspace-grouped rows; closed = header only, no subscription.
-          <div className="source-folders">
-            {preflightError !== null &&
-            !liveSources.some((source) => source.runnerKey === runnerKey) ? (
-              // The active source can be folder-INeligible (e.g. a just-added remote
-              // with no host yet): it renders no folder, and with another folder open
-              // the boot screen is suppressed, so without this strip its failure has
-              // no surface at all. Same recovery shape as the in-folder strip.
-              <div className="live-strip error" aria-live="polite">
-                <span className="status-dot" data-tone="error" />
-                <span className="live-label">{labelFor(activeProfile)}</span>
-                <span className="live-message">{preflightError}</span>
-                <button className="live-action" type="button" onClick={openSettings}>
-                  Open settings
-                </button>
-              </div>
-            ) : null}
-            {sourceViews.map((view) => {
-              // The active source's resolved-failing preflight surfaces in its own
-              // folder: its live target is gated off on a failed probe, so the keyed
-              // connection (a perpetual "Waiting for a source") would lie about what
-              // broke. Non-active sources are never probed; theirs stays null.
-              const folderPreflightError =
-                view.runnerKey === runnerKey ? preflightError : null;
-              return (
-                <section className="source-folder" key={view.profile.id}>
-                  <button
-                    className="folder-header"
-                    type="button"
-                    aria-expanded={view.isOpen}
-                    onClick={() => toggleProfileOpenSet(view.profile.id)}
-                    title={
-                      folderPreflightError ??
-                      (view.isOpen
-                        ? view.live.connection.message
-                        : "Closed — no live subscription")
-                    }
-                  >
-                    <span
-                      className={`status-dot${
-                        folderPreflightError === null &&
-                        view.isOpen &&
-                        (view.live.connection.status === "connecting" ||
-                          view.live.connection.status === "reconnecting")
-                          ? " pulsing"
-                          : ""
-                      }`}
-                      data-tone={
-                        folderPreflightError !== null
-                          ? "error"
-                          : view.isOpen
-                            ? connectionTone(view.live.connection)
-                            : "unknown"
-                      }
-                      aria-hidden="true"
-                    />
-                    <span className="folder-mark" aria-hidden="true">
-                      <SourceKindIcon kind={view.profile.kind} />
-                    </span>
-                    <span className="folder-label">
-                      {labelFor(view.profile)}
-                    </span>
-                    {view.isOwner ? (
-                      <kbd className="folder-kbd" title="Row hotkeys target this source">
-                        {HOTKEY_MODIFIER_LABEL.trim()}
-                      </kbd>
-                    ) : null}
-                    <span
-                      className={`folder-caret${view.isOpen ? " open" : ""}`}
-                      aria-hidden="true"
-                    >
-                      {"›"}
-                    </span>
-                  </button>
-                  {view.isOpen ? (
-                    <div className="folder-body">
-                      {folderPreflightError !== null ? (
-                        // The gated-off target's keyed state (connecting, no rows) would
-                        // render a perpetual loading skeleton under this, so the strip
-                        // replaces the picker body too. Mirrors the boot screen's
-                        // recovery path; LiveStrip's Start/Reconnect can't fix a
-                        // preflight failure, so it doesn't render here.
-                        <div className="live-strip error" aria-live="polite">
-                          <span className="status-dot" data-tone="error" />
-                          <span className="live-label">Unavailable</span>
-                          <span className="live-message">{folderPreflightError}</span>
-                          <button className="live-action" type="button" onClick={openSettings}>
-                            Open settings
-                          </button>
-                        </div>
-                      ) : (
-                        <>
-                          {/* This source's own failed activation; source-less
-                              failures use the global surface above the folders. */}
-                          {activation.status === "failed" &&
-                          activation.sourceKey === view.runnerKey ? (
-                            <div className="inline-error" role="alert">
-                              {activation.message}
-                            </div>
-                          ) : null}
-                          {view.live.connection.status !== "online" ? (
-                            <LiveStrip
-                              status={view.live.connection}
-                              onStart={() => startLive(view.runnerKey)}
-                              onReconnect={() => reconnectLive(view.runnerKey)}
-                            />
-                          ) : null}
-                          <GroupedPicker
-                            activation={activation}
-                            filterQuery={pickerFilter}
-                            focusedPaneId={view.focusedPaneId}
-                            groups={view.groups}
-                            keybindsOwned={view.isOwner}
-                            logoTheme={resolvedTheme}
-                            selectedPaneId={view.isOwner ? selectedPaneId : null}
-                            sourceKey={view.runnerKey}
-                            state={view.state}
-                            totalRows={view.allRows.length}
-                            onActivate={(row) => activateRow(row, view.profile)}
-                            onClearFilter={() => setPickerFilter("")}
-                            onSelect={(row) => {
-                              // Selection (the keyboard cursor) is owner-scoped; clicks on
-                              // other folders activate without moving it.
-                              if (view.isOwner) {
-                                setSelectedPaneId(row.pane_id);
-                              }
-                            }}
-                          />
-                        </>
-                      )}
-                    </div>
-                  ) : null}
-                </section>
-              );
-            })}
-          </div>
+          <SourceFolders
+            sourceViews={sourceViews}
+            activation={activation}
+            pickerFilter={pickerFilter}
+            selectedPaneId={selectedPaneId}
+            resolvedTheme={resolvedTheme}
+            runnerKey={runnerKey}
+            preflightError={preflightError}
+            activeProfile={activeProfile}
+            labelFor={labelFor}
+            onOpenSettings={openSettings}
+            onToggleFolder={(profileId) => toggleProfileOpenSet(profileId)}
+            onActivate={(row, profile) => activateRow(row, profile)}
+            onSelect={(row) => setSelectedPaneId(row.pane_id)}
+            onStart={(key) => startLive(key)}
+            onReconnect={(key) => reconnectLive(key)}
+            onClearFilter={() => setPickerFilter("")}
+          />
         )}
       </div>
 
@@ -1350,174 +1154,18 @@ function DockApp() {
       ) : null}
 
       <footer className="bottombar" data-tauri-drag-region={dragRegion}>
-        <div className="source-switcher" ref={sourceMenuRef}>
-          <button
-            className="source-trigger"
-            type="button"
-            aria-haspopup="menu"
-            aria-expanded={isSourceMenuOpen}
-            onClick={() => {
-              // The inline menu opens upward and would clip inside the thin
-              // horizontal bar, so there the trigger re-docks into settings (which
-              // owns the full Sources list) instead of popping a cramped menu.
-              // Pre-select the source this trigger advertises (the owner can differ
-              // from the settings-selected active profile): landing in Settings on a
-              // different source than the label promised would manage the wrong one.
-              // This is a deep-link INTO the settings selection, not a dock-side
-              // quick-switch — the order menu below still never selects. The
-              // retarget is deliberate and cheap: the probe moves to the source the
-              // bar is DISPLAYING (open, so an online channel stays armed), no
-              // subscription churns, and a user after the previous selection is one
-              // card-click away. Await the commit so the window can't load the old
-              // selection; open regardless of the outcome (Settings is the goal).
-              // A DIRTY settings window deliberately wins over this deep-link: it
-              // skips inbound syncs to protect unsaved edits, and its Apply/Delete
-              // target the window's own ref (which mirrors the form), so no action
-              // can hit a different source than the one its form displays. The
-              // label/form mismatch resolves on the form's apply or reset.
-              if (effectiveOrientation === "horizontal") {
-                void selectProfileSet(triggerProfile.id)
-                  .catch(() => {})
-                  .then(() => openSettings());
-              } else {
-                // Vertical: only the order menu toggles — no selection happens
-                // on this branch (the deep-link above is horizontal-exclusive,
-                // where the trigger's label names exactly one source).
-                setIsSourceMenuOpen((open) => !open);
-              }
-            }}
-            title={
-              triggerShowsSource
-                ? triggerTitle
-                : "Drag to reorder sources — the top open source owns row hotkeys"
-            }
-          >
-            {triggerShowsSource ? (
-              <span
-                className="status-dot"
-                data-tone={triggerTone}
-                aria-hidden="true"
-              />
-            ) : null}
-            <span className="source-label">
-              {triggerShowsSource ? labelFor(triggerProfile) : "Manage sources"}
-            </span>
-            <span
-              className={`source-caret${isSourceMenuOpen ? " open" : ""}`}
-              aria-hidden="true"
-            >
-              {"›"}
-            </span>
-          </button>
-          {isSourceMenuOpen ? (
-            // Pure ordering surface: drag rows to reorder sources. The topmost
-            // OPEN folder owns the row hotkeys, so this is where the dock decides
-            // which source answers them. Nothing else is duplicated here —
-            // open/close lives on the folder headers, and enable/disable/add/
-            // remove live in Settings.
-            //
-            // Deliberately NOT a quick-switch: the dock never changes the active
-            // source. The old single-select footer existed because the dock could
-            // show one source at a time; folders replace that gesture with the open
-            // set. "Active" now only means the settings-edit selection + the single
-            // preflight target, and it changes in Settings.
-            <div className="source-menu" role="menu">
-              {/* Draggable rows are safe inside the footer's frameless drag
-                  region: Tauri's data-tauri-drag-region handler only fires
-                  when the mousedown TARGET itself carries the attribute, so
-                  descendants start HTML5 drags, never window drags. */}
-              {liveSources.map(({ profile, isOwner }) => (
-                <div
-                  className={`source-option draggable${
-                    draggedMenuSourceId === profile.id ? " dragging" : ""
-                  }`}
-                  key={profile.id}
-                  role="menuitem"
-                  draggable
-                  onDragStart={(event) => {
-                    event.dataTransfer.effectAllowed = "move";
-                    setDraggedMenuSourceId(profile.id);
-                  }}
-                  onDragEnd={() => setDraggedMenuSourceId(null)}
-                  onDragOver={(event) => {
-                    // preventDefault marks this row as a valid drop target.
-                    if (draggedMenuSourceId && draggedMenuSourceId !== profile.id) {
-                      event.preventDefault();
-                      event.dataTransfer.dropEffect = "move";
-                    }
-                  }}
-                  onDrop={(event) => {
-                    event.preventDefault();
-                    if (draggedMenuSourceId && draggedMenuSourceId !== profile.id) {
-                      reorderProfileSet({
-                        id: draggedMenuSourceId,
-                        targetId: profile.id,
-                      });
-                    }
-                    setDraggedMenuSourceId(null);
-                  }}
-                >
-                  <span className="source-option-mark" aria-hidden="true">
-                    <SourceKindIcon kind={profile.kind} />
-                  </span>
-                  <span className="source-option-text">
-                    <span className="source-option-name">
-                      {labelFor(profile)}
-                    </span>
-                  </span>
-                  {isOwner ? (
-                    <kbd
-                      className="folder-kbd"
-                      title="Row hotkeys target this source"
-                    >
-                      {HOTKEY_MODIFIER_LABEL.trim()}
-                    </kbd>
-                  ) : null}
-                  <svg
-                    className="source-grip"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    aria-hidden="true"
-                  >
-                    <circle cx="9" cy="5" r="1" />
-                    <circle cx="9" cy="12" r="1" />
-                    <circle cx="9" cy="19" r="1" />
-                    <circle cx="15" cy="5" r="1" />
-                    <circle cx="15" cy="12" r="1" />
-                    <circle cx="15" cy="19" r="1" />
-                  </svg>
-                </div>
-              ))}
-              <div className="source-menu-divider" role="separator" />
-              <button
-                className="source-option manage"
-                role="menuitem"
-                type="button"
-                onClick={() => {
-                  // Deliberately no selectProfileSet deep-link here, unlike the
-                  // horizontal trigger above: that button names exactly one
-                  // source, so it must land Settings on it. This item is plural
-                  // and source-agnostic — it preserves the settings window's own
-                  // edit selection rather than warping it (and the preflight
-                  // probe) to whichever owner the footer happens to advertise.
-                  // Settings shows its selection unambiguously (highlighted rail
-                  // card + the form's fields), so Apply/Delete can't silently
-                  // target a source other than the one displayed.
-                  setIsSourceMenuOpen(false);
-                  openSettings();
-                }}
-              >
-                <span className="source-check" aria-hidden="true">
-                  {"⚙"}
-                </span>
-                <span className="source-option-label">Add or edit sources…</span>
-              </button>
-            </div>
-          ) : null}
-        </div>
+        <SourceSwitcher
+          liveSources={liveSources}
+          triggerProfile={triggerProfile}
+          triggerShowsSource={triggerShowsSource}
+          triggerTone={triggerTone}
+          triggerTitle={triggerTitle}
+          orientation={effectiveOrientation}
+          labelFor={labelFor}
+          selectProfile={(id) => selectProfileSet(id)}
+          reorderProfile={(input) => reorderProfileSet(input)}
+          onOpenSettings={openSettings}
+        />
         {/* Settings and (when frameless) the window controls are one trailing group with a
             single even gap, so the spacing reads as ⚙ − × rather than settings floating off
             from a tight min/close pair. The controls are gated on framelessApplied (the
