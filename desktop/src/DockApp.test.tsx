@@ -121,6 +121,16 @@ it("boots the dock: clears the recovery screen and arms only dock-side paths", a
   expect(mocks.register).toHaveBeenCalledWith("CommandOrControl+Shift+A", expect.any(Function));
   expect(mocks.invoke).toHaveBeenCalledWith("preflight_agentscan", expect.anything());
   expect(mocks.winStub.setMinSize).toHaveBeenCalled();
+
+  // The useWindowChrome applies, observed through the DOM/IPC they drive.
+  // jsdom's default viewport is 1024x768 (wider than tall), so the "auto"
+  // orientation preference resolves to the horizontal bar.
+  expect(screen.getByRole("main").getAttribute("data-orientation")).toBe("horizontal");
+  // The surface-alpha effect writes the default tint opacity as a CSS var.
+  expect(document.documentElement.style.getPropertyValue("--surface-alpha")).toBe("0.5");
+  // The frameless effect applies the default (framed) decoration state. The
+  // glass effect is NOT asserted: IS_MAC is false under jsdom, so it's inert.
+  expect(mocks.invoke).toHaveBeenCalledWith("set_window_decorations", { decorations: true });
   // The live subscription listener arms only after the preflight enables the
   // active target, so settle on it.
   await vi.waitFor(() => {
