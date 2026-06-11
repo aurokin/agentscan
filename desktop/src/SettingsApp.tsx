@@ -57,6 +57,7 @@ import {
   type PrefsSync,
   type ThemePreference,
 } from "./effect/prefs";
+import { settingsPreflightCard } from "./effect/settingsViewModel";
 import { errorMessage, readLocalStorage } from "./shared";
 
 // First-paint fallback for debugLogAtom before the runtime resolves it.
@@ -468,38 +469,10 @@ function SettingsApp() {
   }
 
   // The profile list comes from profileState (the live source of truth) so
-  // add/delete/switch are reflected immediately. This window never runs its own
-  // preflight (which for SSH would be a duplicate `ssh … --version`); it reuses
-  // the dock's, mirrored by the Preflight service into `syncedPreflight`. That
-  // result is only trusted when its runnerKey matches this window's active source;
-  // otherwise it describes the previous one mid-switch and reads as "Checking" until
-  // the dock re-probes and pushes the matching one (or a focus-time replay request
-  // refreshes it). A failed dock status (IPC error) reads as "Unreachable".
-  const syncMatches =
-    syncedPreflight !== null && syncedPreflight.runnerKey === runnerKey;
-  const preflight = syncMatches ? syncedPreflight.preflight : null;
-  const syncFailed = syncMatches && syncedPreflight.status === "failed";
-  const preflightTone = !preflight
-    ? syncFailed
-      ? "error"
-      : "unknown"
-    : preflight.ok
-      ? "idle"
-      : "error";
-  const preflightLabel = !preflight
-    ? syncFailed
-      ? "Unreachable"
-      : "Checking"
-    : preflight.ok
-      ? "Ready"
-      : "Unavailable";
-  const preflightDetail = !preflight
-    ? syncFailed
-      ? "Can’t reach agentscan"
-      : "Probing agentscan…"
-    : preflight.ok
-      ? `${preflight.binary} · ${preflight.version ?? "ready"}`
-      : (preflight.error ?? "agentscan unavailable");
+  // add/delete/switch are reflected immediately. The status card's trust rule
+  // (the mirror counts only when its runnerKey matches this window's active
+  // source) lives in settingsPreflightCard, tested in effect/settingsViewModel.
+  const preflightCard = settingsPreflightCard(syncedPreflight, runnerKey);
   // The source rail only earns its space once there's more than the built-in
   // local source; with a single source it just duplicates the detail card. So
   // hide it then and offer a quiet "add remote" affordance instead.
@@ -648,15 +621,15 @@ function SettingsApp() {
               </div>
             ) : null}
 
-            <div className="detail-status" data-tone={preflightTone}>
+            <div className="detail-status" data-tone={preflightCard.tone}>
               <span
-                className={`status-dot${preflightTone === "unknown" ? " pulsing" : ""}`}
-                data-tone={preflightTone}
+                className={`status-dot${preflightCard.tone === "unknown" ? " pulsing" : ""}`}
+                data-tone={preflightCard.tone}
                 aria-hidden="true"
               />
               <span className="detail-status-text">
-                <strong>{preflightLabel}</strong>
-                <span className="mono detail-status-detail">{preflightDetail}</span>
+                <strong>{preflightCard.label}</strong>
+                <span className="mono detail-status-detail">{preflightCard.detail}</span>
               </span>
             </div>
 

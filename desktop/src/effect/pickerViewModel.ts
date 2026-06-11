@@ -5,6 +5,7 @@
 // list) and all rendering; everything here is pure.
 
 import { liveStateFor, type LiveStates } from "./LiveConnection";
+import type { Orientation } from "./prefs";
 import type { ConnectionStatus, LiveState, PickerRow } from "./types";
 
 export type PickerGroup = {
@@ -273,6 +274,43 @@ export function connectionTone(connection: ConnectionStatus): string {
     case "reconnecting":
       return "unknown";
   }
+}
+
+// The footer trigger presents the dock's primary source: the keybind owner,
+// falling back to the settings-selected active profile when every folder is
+// closed. When that is the active source (the common case) the dot keeps the
+// preflight tone; a non-active owner is never probed, so its tone comes from
+// its keyed live connection instead.
+//
+// That single-source presentation only fits when one source is all there is:
+// with several, every folder header already carries its own label and dot, so
+// the vertical trigger stops impersonating one host and becomes a generic
+// entry point to the source order menu. The horizontal bar still displays only
+// the owner, so it keeps the owner label regardless.
+//
+// Generic over the profile shape: this only needs ids to compare.
+export function footerTriggerView<P extends { readonly id: string }>(input: {
+  readonly ownerProfile: P | null;
+  readonly activeProfile: P;
+  readonly ownerConnection: ConnectionStatus | null;
+  readonly sourceStatusTone: string;
+  readonly statusText: string;
+  readonly orientation: Orientation;
+  readonly sourceCount: number;
+}): { profile: P; showsSource: boolean; tone: string; title: string } {
+  const profile = input.ownerProfile ?? input.activeProfile;
+  const showsSource = input.orientation === "horizontal" || input.sourceCount <= 1;
+  const isActive = profile.id === input.activeProfile.id;
+  return {
+    profile,
+    showsSource,
+    tone: isActive
+      ? input.sourceStatusTone
+      : input.ownerConnection
+        ? connectionTone(input.ownerConnection)
+        : "unknown",
+    title: isActive ? input.statusText : (input.ownerConnection?.message ?? input.statusText),
+  };
 }
 
 export function filterPickerRows(rows: PickerRow[], query: string) {

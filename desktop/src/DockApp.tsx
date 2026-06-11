@@ -61,6 +61,7 @@ import {
 import {
   connectionTone,
   deriveSourceViews,
+  footerTriggerView,
   reconcileSelection,
   type PickerActivation,
   type PickerGroup,
@@ -1051,29 +1052,23 @@ function DockApp() {
   const searchCollapsed =
     effectiveOrientation === "horizontal" && !isSearchExpanded && !pickerFilter.trim();
 
-  // The footer trigger presents the dock's primary source: the keybind owner, falling
-  // back to the settings-selected active profile when every folder is closed. When that
-  // is the active source (the common case — and always true right after the open-state
-  // migration) the dot keeps today's preflight tone; a non-active owner is never
-  // probed, so its tone comes from its keyed live connection instead.
-  //
-  // That single-source presentation only fits when one source is all there is: with
-  // several, every folder header already carries its own label and dot, so the
-  // vertical trigger stops impersonating one host and becomes a generic entry point
-  // to the source order menu. The horizontal bar still displays only the owner, so
-  // it keeps the owner label regardless.
-  const triggerProfile = ownerProfile ?? activeProfile;
-  const triggerShowsSource =
-    effectiveOrientation === "horizontal" || liveSources.length <= 1;
-  const triggerIsActive = triggerProfile.id === activeProfile.id;
-  const triggerTone = triggerIsActive
-    ? sourceStatusTone
-    : ownerView
-      ? connectionTone(ownerView.live.connection)
-      : "unknown";
-  const triggerTitle = triggerIsActive
-    ? statusText
-    : (ownerView?.live.connection.message ?? statusText);
+  // Footer trigger presentation (owner-or-active profile, when the label shows
+  // a source vs the generic menu entry, dot tone, hover title): derived +
+  // tested in effect/pickerViewModel.
+  const {
+    profile: triggerProfile,
+    showsSource: triggerShowsSource,
+    tone: triggerTone,
+    title: triggerTitle,
+  } = footerTriggerView({
+    ownerProfile,
+    activeProfile,
+    ownerConnection: ownerView?.live.connection ?? null,
+    sourceStatusTone,
+    statusText,
+    orientation: effectiveOrientation,
+    sourceCount: liveSources.length,
+  });
 
   return (
     <main className="sidebar" data-orientation={effectiveOrientation}>

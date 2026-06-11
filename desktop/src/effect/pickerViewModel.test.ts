@@ -3,6 +3,7 @@ import {
   deriveSourceViews,
   filterPickerRows,
   focusedPaneIdOf,
+  footerTriggerView,
   groupRowsByProject,
   pickerStateFromLive,
   reconcileSelection,
@@ -91,6 +92,55 @@ describe("focusedPaneIdOf", () => {
       row({ pane_id: "%2", is_focused: false }),
     ];
     expect(focusedPaneIdOf(rows)).toBeNull();
+  });
+});
+
+describe("footerTriggerView", () => {
+  const owner = { id: "ssh-1" };
+  const active = { id: "local" };
+  const base = {
+    ownerProfile: owner,
+    activeProfile: active,
+    ownerConnection: { status: "fatal", message: "Live client exited" } as const,
+    sourceStatusTone: "idle",
+    statusText: "Local CLI ready",
+    orientation: "vertical" as const,
+    sourceCount: 1,
+  };
+
+  it("presents the active profile with its preflight tone when it is the owner (or no owner)", () => {
+    const view = footerTriggerView({ ...base, ownerProfile: null, ownerConnection: null });
+    expect(view).toEqual({
+      profile: active,
+      showsSource: true,
+      tone: "idle",
+      title: "Local CLI ready",
+    });
+    expect(
+      footerTriggerView({ ...base, ownerProfile: active, ownerConnection: null }).tone,
+    ).toBe("idle");
+  });
+
+  it("presents a non-active owner by its keyed live connection, never the preflight", () => {
+    // A non-active owner is never probed.
+    const view = footerTriggerView(base);
+    expect(view.profile).toBe(owner);
+    expect(view.tone).toBe("error");
+    expect(view.title).toBe("Live client exited");
+  });
+
+  it("falls back to unknown/statusText when the owner has no connection state yet", () => {
+    const view = footerTriggerView({ ...base, ownerConnection: null });
+    expect(view.tone).toBe("unknown");
+    expect(view.title).toBe("Local CLI ready");
+  });
+
+  it("shows the source label only horizontally or with a single source", () => {
+    expect(footerTriggerView(base).showsSource).toBe(true);
+    expect(footerTriggerView({ ...base, sourceCount: 2 }).showsSource).toBe(false);
+    expect(
+      footerTriggerView({ ...base, sourceCount: 2, orientation: "horizontal" }).showsSource,
+    ).toBe(true);
   });
 });
 
