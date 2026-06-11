@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Result, useAtomSet, useAtomValue } from "@effect-atom/atom-react";
@@ -40,16 +40,10 @@ import {
   folderProfiles,
   getActiveProfile,
   loadProfileState,
-  normalizeRunnerSettings,
-  profileDraftDirty,
   runnerKeyForProfile,
-  runnerSummary,
   sourceLabel,
-  validateProfileDraft,
   type DesktopProfileConfig,
-  type EnvironmentVariable,
   type PreflightLabelSource,
-  type RunnerSettings,
 } from "./effect/profileModel";
 import {
   PREFS_SYNC_EVENT,
@@ -58,7 +52,8 @@ import {
   type ThemePreference,
 } from "./effect/prefs";
 import { settingsPreflightCard } from "./effect/settingsViewModel";
-import { errorMessage, readLocalStorage } from "./shared";
+import { readLocalStorage } from "./shared";
+import { useSettingsForm } from "./useSettingsForm";
 
 // First-paint fallback for debugLogAtom before the runtime resolves it.
 const EMPTY_DEBUG_ENTRIES: ReadonlyArray<DebugEntry> = [];
@@ -109,17 +104,6 @@ function SettingsApp() {
   // to the active profile; the synced-preflight card only trusts a mirror whose
   // runnerKey matches it.
   const runnerKey = useMemo(() => runnerKeyForProfile(activeProfile), [activeProfile]);
-  const [settingsDraft, setSettingsDraft] = useState<RunnerSettings>(
-    () => getActiveProfile(initialProfileState).runner,
-  );
-  const [sshHostDraft, setSshHostDraft] = useState(() => {
-    const profile = getActiveProfile(initialProfileState);
-    return profile.kind === "ssh" ? profile.host : "";
-  });
-  const [sshClientTtyDraft, setSshClientTtyDraft] = useState(() => {
-    const profile = getActiveProfile(initialProfileState);
-    return profile.kind === "ssh" ? profile.clientTty : "";
-  });
   // The debug log lives in the DebugLog service (per-window instance: this
   // window renders and clears its own log; the dock writes to its own). The
   // append setter is registry-stable, unlike the old per-render closure, so
@@ -141,6 +125,36 @@ function SettingsApp() {
   // dropped for the configured connection string.
   const labelFor = (profile: DesktopProfileConfig) =>
     sourceLabel(profile, localHostLabel, labelPreflight, profileState.profiles);
+  // The form's drafts, validation/dirty derivations, draft-reset +
+  // clean-reconcile effects, and apply/reset/env handlers live in
+  // useSettingsForm (tested with renderHook). The PREFS listener and the
+  // focus reconciler below stay here and read the returned ref. Must be
+  // called after labelFor/appendDebugEntry exist.
+  const {
+    settingsDraft,
+    setSettingsDraft,
+    sshHostDraft,
+    setSshHostDraft,
+    sshClientTtyDraft,
+    setSshClientTtyDraft,
+    validation,
+    isSettingsDirty,
+    isSettingsDirtyRef,
+    applyRunnerSettings,
+    resetProfileSettings,
+    updateEnvironmentVariable,
+    addEnvironmentVariable,
+    removeEnvironmentVariable,
+  } = useSettingsForm({
+    initialProfile: getActiveProfile(initialProfileState),
+    activeProfile,
+    profiles: profileState.profiles,
+    runnerKey,
+    labelFor,
+    appendDebugEntry,
+    applyRunnerSettingsSet,
+    reloadProfiles,
+  });
   // Debug log is a diagnostic panel — collapsed by default to keep Settings calm.
   const [isDebugOpen, setIsDebugOpen] = useState(false);
   // The source card being dragged in the settings rail (HTML5 drag-and-drop);
@@ -162,39 +176,6 @@ function SettingsApp() {
   const setSurfaceAlpha = useAtomSet(setSurfaceAlphaAtom);
   const setFrameless = useAtomSet(setFramelessAtom);
   const reloadAppearance = useAtomSet(reloadAppearanceAtom);
-  const validation = useMemo(
-    () =>
-      validateProfileDraft(
-        activeProfile,
-        settingsDraft,
-        sshHostDraft,
-        sshClientTtyDraft,
-        profileState.profiles,
-      ),
-    [activeProfile, settingsDraft, sshHostDraft, sshClientTtyDraft, profileState.profiles],
-  );
-  const isSettingsDirty = useMemo(
-    () => profileDraftDirty(activeProfile, settingsDraft, sshHostDraft, sshClientTtyDraft),
-    [activeProfile, settingsDraft, sshHostDraft, sshClientTtyDraft],
-  );
-  // Render-synced mirror so the focus-reconcile listener can read the latest
-  // dirty state without re-subscribing on every keystroke.
-  const isSettingsDirtyRef = useRef(isSettingsDirty);
-  isSettingsDirtyRef.current = isSettingsDirty;
-
-  useEffect(() => {
-    // Drafts follow the settings form's target on a switch (id) or an in-place edit
-    // of its committed values (runnerKey). Keyed on those VALUES, not the
-    // activeProfile object: every service commit re-reads storage (all-new object
-    // identities), so an identity key would also fire on commits that don't retarget
-    // the form — drag-reorder, open-toggle — and clobber unsaved edits.
-    setSettingsDraft(activeProfile.runner);
-    setSshHostDraft(activeProfile.kind === "ssh" ? activeProfile.host : "");
-    setSshClientTtyDraft(activeProfile.kind === "ssh" ? activeProfile.clientTty : "");
-    // activeProfile is fully determined by (id, runnerKey) where this reads it.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeProfile.id, runnerKey]);
-
   // Apply the theme to <html data-theme>. "system" resolves from prefers-color-scheme
   // and re-resolves live when the OS appearance changes. Persistence + the cross-window
   // broadcast are owned by the Appearance service (driven by the setter); this effect
@@ -306,18 +287,6 @@ function SettingsApp() {
     };
   }, [reloadAppearance, reloadProfiles, requestPreflightSync]);
 
-  // The React listener drops dock-side syncs while this window is dirty, and the focus-
-  // reconcile only runs on a later focus — so a change skipped mid-edit would linger
-  // after Reset/Apply clears the drafts (still focused, no new focus event). Reconcile
-  // from storage whenever the window is clean. The service's reload is value-guarded,
-  // so an unchanged snapshot doesn't churn state or reset the picker selection.
-  useEffect(() => {
-    if (isSettingsDirty) {
-      return;
-    }
-    reloadProfiles();
-  }, [isSettingsDirty, reloadProfiles]);
-
   // Keep the settings window warm: intercept its close so the red button / Cmd-W
   // hides it (instant reopen, drafts preserved) rather than destroying it.
   useEffect(() => {
@@ -330,66 +299,6 @@ function SettingsApp() {
       void unlistenPromise.then((unlisten) => unlisten());
     };
   }, []);
-
-  function applyRunnerSettings() {
-    const validation = validateProfileDraft(
-      activeProfile,
-      settingsDraft,
-      sshHostDraft,
-      sshClientTtyDraft,
-      profileState.profiles,
-    );
-    if (validation.errors.length > 0) {
-      appendDebugEntry({
-        kind: "settings",
-        label: `${labelFor(activeProfile)} settings rejected`,
-        detail: validation.errors.join(" · "),
-      });
-      return;
-    }
-
-    // Normalize the draft (and reflect it in the form), then hand the edit to the
-    // service, which merges it onto the latest persisted state, persists, and
-    // broadcasts. Validation + the debug log stay here; persistence is the service's.
-    const normalized = normalizeRunnerSettings(settingsDraft);
-    setSettingsDraft(normalized);
-    void applyRunnerSettingsSet({
-      runner: normalized,
-      sshHost: sshHostDraft,
-      sshClientTty: sshClientTtyDraft,
-    })
-      .then((outcome) => {
-        if (outcome === "duplicate-host") {
-          // Commit-time refusal: another window claimed this host after the form
-          // validated. The service reloaded the ref, so the inline validation now
-          // shows the duplicate; the log must not claim the edit was applied.
-          appendDebugEntry({
-            kind: "settings",
-            label: `${labelFor(activeProfile)} settings rejected`,
-            detail: "A source for this connection already exists.",
-          });
-          return;
-        }
-        appendDebugEntry({
-          kind: "settings",
-          label: `${labelFor(activeProfile)} settings applied`,
-          detail: `${runnerSummary(normalized)} · ${normalized.env.length} env ${normalized.env.length === 1 ? "name" : "names"}`,
-        });
-      })
-      .catch((error: unknown) => {
-        appendDebugEntry({
-          kind: "settings",
-          label: `${labelFor(activeProfile)} settings apply failed`,
-          detail: errorMessage(error),
-        });
-      });
-  }
-
-  function resetProfileSettings() {
-    setSettingsDraft(activeProfile.runner);
-    setSshHostDraft(activeProfile.kind === "ssh" ? activeProfile.host : "");
-    setSshClientTtyDraft(activeProfile.kind === "ssh" ? activeProfile.clientTty : "");
-  }
 
   // The persisted-state mutators live in the Profiles service, which owns the
   // merge-onto-latest discipline, the same-active no-op, and the cross-window
@@ -427,29 +336,6 @@ function SettingsApp() {
       label: `${labelFor(activeProfile)} profile deleted`,
       detail: "active profile changed",
     });
-  }
-
-  function updateEnvironmentVariable(index: number, patch: Partial<EnvironmentVariable>) {
-    setSettingsDraft((current) => ({
-      ...current,
-      env: current.env.map((variable, variableIndex) =>
-        variableIndex === index ? { ...variable, ...patch } : variable,
-      ),
-    }));
-  }
-
-  function addEnvironmentVariable() {
-    setSettingsDraft((current) => ({
-      ...current,
-      env: [...current.env, { name: "", value: "" }],
-    }));
-  }
-
-  function removeEnvironmentVariable(index: number) {
-    setSettingsDraft((current) => ({
-      ...current,
-      env: current.env.filter((_, variableIndex) => variableIndex !== index),
-    }));
   }
 
   // The profile list comes from profileState (the live source of truth) so
