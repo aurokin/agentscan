@@ -11,6 +11,7 @@ pub(super) fn status(output: &str) -> Option<StatusKind> {
 
 fn copilot_pane_output_indicates_busy(frame: &PaneOutputFrame<'_>) -> bool {
     copilot_current_status_line(frame).is_some_and(|line| line.contains("Thinking (Esc to cancel"))
+        || copilot_current_working_footer_visible(frame)
         || copilot_current_trust_prompt_visible(frame)
 }
 
@@ -49,6 +50,31 @@ fn copilot_current_prompt_visible(frame: &PaneOutputFrame<'_>) -> bool {
     }) && frame
         .range(context_index, prompt_index)
         .is_some_and(|lines| lines.iter().any(|line| copilot_separator_line(line)))
+}
+
+fn copilot_current_working_footer_visible(frame: &PaneOutputFrame<'_>) -> bool {
+    let Some(prompt_index) = frame.rposition(|line| line.trim() == "❯") else {
+        return false;
+    };
+    let Some(context_index) = frame.lines_before(prompt_index).and_then(|lines| {
+        lines
+            .iter()
+            .rposition(|line| copilot_prompt_context_line(line))
+    }) else {
+        return false;
+    };
+
+    frame
+        .range(context_index, prompt_index)
+        .is_some_and(|lines| lines.iter().any(|line| copilot_separator_line(line)))
+        && frame
+            .lines_from(prompt_index)
+            .is_some_and(|lines| lines.iter().any(|line| copilot_working_footer_line(line)))
+}
+
+fn copilot_working_footer_line(line: &str) -> bool {
+    let line = line.trim();
+    line.contains("Working") && line.contains("esc") && line.contains("cancel")
 }
 
 fn copilot_separator_line(line: &str) -> bool {

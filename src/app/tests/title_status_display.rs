@@ -338,6 +338,36 @@ fn copilot_and_cursor_cli_status_use_title_prefixes_when_present() {
 }
 
 #[test]
+fn copilot_status_uses_title_working_indicator_after_provider_identity() {
+    let copilot_busy = classify::infer_title_status(
+        Some(Provider::Copilot),
+        Some(super::ClassificationMatchKind::ProcProcessTree),
+        "🤖 Running pwd command",
+    );
+    let copilot_busy_with_padding = classify::infer_title_status(
+        Some(Provider::Copilot),
+        Some(super::ClassificationMatchKind::PaneCurrentCommand),
+        "  🤖 Running shell command",
+    );
+    let non_copilot = classify::infer_title_status(
+        Some(Provider::Codex),
+        Some(super::ClassificationMatchKind::PaneCurrentCommand),
+        "🤖 Running pwd command",
+    );
+    let unknown_provider =
+        classify::infer_title_status(None, None, "🤖 Running pwd command");
+
+    assert_eq!(copilot_busy.kind, StatusKind::Busy);
+    assert_eq!(copilot_busy.source, super::StatusSource::TmuxTitle);
+    assert_eq!(copilot_busy_with_padding.kind, StatusKind::Busy);
+    assert_eq!(copilot_busy_with_padding.source, super::StatusSource::TmuxTitle);
+    assert_eq!(non_copilot.kind, StatusKind::Unknown);
+    assert_eq!(non_copilot.source, super::StatusSource::NotChecked);
+    assert_eq!(unknown_provider.kind, StatusKind::Unknown);
+    assert_eq!(unknown_provider.source, super::StatusSource::NotChecked);
+}
+
+#[test]
 fn command_first_status_ignores_stale_prefixed_titles_from_other_providers() {
     let stale_claude = classify::infer_title_status(
         Some(Provider::Codex),

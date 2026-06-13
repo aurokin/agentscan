@@ -1902,6 +1902,25 @@ fn copilot_pane_output_marks_busy_only_after_provider_is_known() {
 }
 
 #[test]
+fn copilot_pane_output_marks_current_working_footer_busy() {
+    let output = "~/code/agentscan [⎇ aur-550]\n\
+         ──────────────────────────────────────────────────────────────────────────\n\
+         ❯\n\
+         ──────────────────────────────────────────────────────────────────────────\n\
+         ◉ Working esc cancel                                      GPT-5 mini\n";
+
+    assert_pane_output_status(
+        817,
+        Provider::Copilot,
+        "GitHub Copilot",
+        output,
+        StatusKind::Busy,
+        super::StatusSource::PaneOutput,
+    );
+    assert_unprovidered_pane_output_unchanged(818, "node", "custom title", output);
+}
+
+#[test]
 fn pane_output_status_fallback_requires_a_resolved_provider() {
     // Pane output is a provider-scoped status fallback: a pane with no resolved provider
     // must never be probed, even when its output looks agent-shaped.
@@ -2846,6 +2865,30 @@ fn copilot_pane_output_uses_current_prompt_over_stale_thinking() {
          ❯\n\
          ──────────────────────────────────────────────────────────────────────────\n\
           / commands · ? help                                      Claude Haiku 4.5\n",
+    );
+
+    assert_eq!(copilot.status.kind, StatusKind::Idle);
+    assert_eq!(copilot.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn copilot_pane_output_uses_current_prompt_over_stale_working_footer() {
+    let mut copilot = pane_output_status_pane(819, Provider::Copilot, "GitHub Copilot");
+
+    classify::apply_pane_output_status_fallback(
+        &mut copilot,
+        "~/code/agentscan [⎇ aur-550]\n\
+         ──────────────────────────────────────────────────────────────────────────\n\
+         ❯\n\
+         ──────────────────────────────────────────────────────────────────────────\n\
+         ◉ Working esc cancel                                      GPT-5 mini\n\
+         ● Finished running command.\n\
+         \n\
+         ~/code/agentscan [⎇ aur-550]\n\
+         ──────────────────────────────────────────────────────────────────────────\n\
+         ❯\n\
+         ──────────────────────────────────────────────────────────────────────────\n\
+         / commands · ? help · tab next tab                         GPT-5 mini\n",
     );
 
     assert_eq!(copilot.status.kind, StatusKind::Idle);

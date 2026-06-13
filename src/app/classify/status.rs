@@ -58,11 +58,15 @@ pub(super) fn infer_title_status_from_analysis(
         return PaneStatus::title(status);
     }
 
-    if matches!(provider, Some(Provider::Copilot))
-        && let Some(rest) = title_analysis.copilot_label
-        && let Some(status) = status_from_ready_working_prefix(rest)
-    {
-        return PaneStatus::title(status);
+    if matches!(provider, Some(Provider::Copilot)) {
+        if copilot_title_has_working_indicator(title_analysis.raw) {
+            return PaneStatus::title(StatusKind::Busy);
+        }
+        if let Some(rest) = title_analysis.copilot_label
+            && let Some(status) = status_from_ready_working_prefix(rest)
+        {
+            return PaneStatus::title(status);
+        }
     }
 
     if matches!(provider, Some(Provider::CursorCli))
@@ -84,6 +88,10 @@ pub(super) fn infer_title_status_from_analysis(
     }
 
     PaneStatus::not_checked()
+}
+
+fn copilot_title_has_working_indicator(title: &str) -> bool {
+    title.trim_start().starts_with("🤖")
 }
 
 pub(crate) fn infer_status(title_status: PaneStatus, published_state: Option<&str>) -> PaneStatus {

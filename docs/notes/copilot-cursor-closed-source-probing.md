@@ -50,7 +50,9 @@ For `agentscan` subprocess checks against the isolated tmux server, pass
 | GitHub Copilot | Foreground argv path under `@github/copilot` or platform package `@github/copilot-*/copilot` | Strong | Provider identity when tmux reports `node` | Requires known package path, not arbitrary `copilot` text |
 | GitHub Copilot | Default tmux title `GitHub Copilot` | Supporting only | Generic display label after provider identity | Live probing showed the default title, but title branding alone should not establish provider identity |
 | GitHub Copilot | Custom `--name` tmux title | Supporting only | Display label after provider identity | Never establishes provider by itself |
+| GitHub Copilot | Current title beginning with `🤖` | Strong after identity | Primary busy status via `status.source="tmux_title"` | Scoped to known Copilot panes; the title glyph must not establish provider identity by itself |
 | GitHub Copilot | `Thinking (Esc to cancel)` near the current prompt | Strong after identity | `status.source="pane_output"` busy fallback | Scoped to known Copilot panes and current prompt context |
+| GitHub Copilot | Current prompt footer containing `Working` plus `esc cancel` | Strong after identity | `status.source="pane_output"` busy fallback | Scoped to known Copilot panes and anchored below the current prompt/footer |
 | GitHub Copilot | Folder trust modal text | Strong after identity | Busy fallback | Ignored after a normal prompt appears below the modal |
 | GitHub Copilot | Current `❯` prompt plus `/ commands · ? help` footer | Strong after identity | Idle fallback | Requires current prompt/footer anchoring so stale scrollback does not win |
 | GitHub Copilot | `COPILOT_HOME`, `COPILOT_MODEL`, similar env | Supporting only | Research context | Never establishes provider alone |
@@ -66,12 +68,44 @@ For `agentscan` subprocess checks against the isolated tmux server, pass
 
 ## Captured Baseline
 
-GitHub Copilot CLI probing used version 1.0.39 in an isolated tmux session.
-tmux reported `pane_current_command=node`, the default title was
+Initial GitHub Copilot CLI probing used version 1.0.39 in an isolated tmux
+session. tmux reported `pane_current_command=node`, the default title was
 `GitHub Copilot`, and foreground process evidence resolved the native Copilot
 package binary. The npm loader path delegated through `@github/copilot` into a
 platform package such as `@github/copilot-darwin-arm64/copilot`. During work,
 the pane rendered `Thinking (Esc to cancel)` while the tmux title stayed stable.
+
+AUR-550 re-probed GitHub Copilot CLI on June 13, 2026 after the June 2026 UI
+refresh. The latest public release was 1.0.61 from June 9, 2026, and local
+`copilot version` reported:
+
+```text
+GitHub Copilot CLI 1.0.61
+
+You are running the latest version.
+```
+
+The local npm package directory still resolved through a `1.0.60` mise install
+path, but the runtime banner and version command both reported 1.0.61. The
+stable provider identity signals did not change: tmux still reported
+`pane_current_command=node`, the default pane title was `GitHub Copilot`, and
+foreground process evidence still resolved the `copilot` native package binary.
+
+The normal idle session and `/experimental` session tab both kept the current
+`❯` prompt with `/ commands · ? help`, so the existing idle fallback remained
+valid. The experimental Issues, Pull requests, and Gists tabs deliberately
+stayed status-unknown because they do not expose the current session prompt and
+footer. The `/after` schedule manager modal also stayed status-unknown. A
+submitted command turn set the tmux title to `🤖 Running pwd command` while work
+was active, then settled to a plain task title after completion. That `🤖` title
+prefix is now the primary busy signal after Copilot provider identity is already
+established. The same active turn rendered a live footer shaped like
+`◉ Working ... esc cancel`; this replaced the older `Thinking (Esc to cancel)`
+busy evidence for that state and is retained as a pane-output fallback. The
+local 1.0.61 command list did not expose
+`/rubber-duck`, and invoking `/rubber-duck` returned `Unknown command`; treat
+rubber-duck CLI status evidence as unavailable until a narrower follow-up proves
+the local command shape.
 
 Cursor CLI probing used the local `cursor-agent` binary in an isolated tmux
 session. The default idle pane could expose a generic `Cursor Agent` title while
