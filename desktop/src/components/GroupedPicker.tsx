@@ -8,10 +8,10 @@ import {
   type PickerState,
 } from "../effect/pickerViewModel";
 import { HOTKEY_MODIFIER_LABEL } from "../platform";
-import logoUrl from "../assets/agentscan-logo.png";
 
 export function GroupedPicker({
   activation,
+  connectionOffline = false,
   filterQuery,
   focusedPaneId,
   groups,
@@ -26,6 +26,10 @@ export function GroupedPicker({
   onSelect,
 }: {
   activation: PickerActivation;
+  // True when this source's connection is non-online (e.g. no daemon), so a
+  // LiveStrip above is already stating why there are no rows. Suppresses the
+  // resolved-empty placeholder, which would otherwise imply a successful empty scan.
+  connectionOffline?: boolean;
   filterQuery: string;
   focusedPaneId: string | null;
   groups: PickerGroup[];
@@ -69,10 +73,16 @@ export function GroupedPicker({
   }
 
   if (rowCount === 0) {
+    // A non-online connection (no daemon, etc.) already shows a LiveStrip above
+    // stating why there are no rows; a second "No agents here" would imply we
+    // looked and found none. Let the strip own that message.
+    if (connectionOffline) {
+      return null;
+    }
     return (
-      <div className="empty-detected">
-        <img className="empty-logo" src={logoUrl} alt="agentscan" />
-        <p className="empty-note">No agents detected.</p>
+      <div className="empty-detected" role="status">
+        <span className="empty-marker" aria-hidden="true" />
+        <p>No agents here</p>
       </div>
     );
   }

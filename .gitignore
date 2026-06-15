@@ -1,5 +1,8 @@
 /target
 /desktop/node_modules
+# Desktop is pnpm-locked (pnpm-lock.yaml); ignore npm's lockfile so a stray
+# `npm install` can't reintroduce a second source of dependency truth.
+/desktop/package-lock.json
 /desktop/dist
 /desktop/src-tauri/gen
 /desktop/src-tauri/target

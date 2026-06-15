@@ -68,7 +68,7 @@ app="$repo_root/desktop/src-tauri/target/release/bundle/macos/agentscan.app"
 
 (
   cd "$repo_root/desktop"
-  npm ci
+  pnpm install --frozen-lockfile
   env \
     -u APPLE_CERTIFICATE \
     -u APPLE_CERTIFICATE_PASSWORD \
@@ -77,7 +77,7 @@ app="$repo_root/desktop/src-tauri/target/release/bundle/macos/agentscan.app"
     -u APPLE_PROVIDER_SHORT_NAME \
     -u APPLE_SIGNING_IDENTITY \
     -u APPLE_TEAM_ID \
-    npm run tauri -- build --bundles app --no-sign -- --locked
+    pnpm run tauri -- build --bundles app --no-sign -- --locked
 )
 
 "$script_dir/sign-macos-app.sh" --identity "$identity" "$app"

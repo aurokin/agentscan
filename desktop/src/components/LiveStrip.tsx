@@ -17,12 +17,21 @@ export function LiveStrip({
   onReconnect: () => void;
 }) {
   const tone = status.status === "fatal" ? "error" : "warn";
+  // noDaemon is an actionable "start it" prompt, not transient progress, so it earns
+  // the warm heads-up wash (mirroring fatal's error wash). connecting/reconnecting
+  // self-heal, so they stay on the neutral surface.
+  const className = `live-strip ${tone}${status.status === "noDaemon" ? " no-daemon" : ""}`;
 
   return (
-    <div className={`live-strip ${tone}`} aria-live="polite">
+    <div className={className} aria-live="polite">
       <span className="status-dot" data-tone={tone === "error" ? "error" : "busy"} />
       <span className="live-label">{liveStateLabel(status)}</span>
-      <span className="live-message">{status.message}</span>
+      {/* noDaemon's detail message is boilerplate ("daemon auto-start is disabled…")
+          that just truncates to noise beside the Start button — the label + button
+          say enough. Other states keep it; for fatal it's the actual error reason. */}
+      {status.status !== "noDaemon" ? (
+        <span className="live-message">{status.message}</span>
+      ) : null}
       {status.status === "noDaemon" ? (
         <button className="live-action" type="button" onClick={onStart}>
           Start agentscan

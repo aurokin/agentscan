@@ -71,14 +71,14 @@ From the repo root:
 scripts/check-desktop-version.sh
 cargo build --release --locked
 cd desktop
-npm ci
-npm run build
+pnpm install --frozen-lockfile
+pnpm build
 ```
 
 Build the unsigned app bundle when you only need a local compile check:
 
 ```sh
-npm run tauri -- build --bundles app --no-sign -- --locked
+pnpm run tauri -- build --bundles app --no-sign -- --locked
 ```
 
 The signed helper below clears Tauri's `APPLE_*` signing environment while it
