@@ -162,6 +162,7 @@ export function SourceFolders({
                     ) : null}
                     <GroupedPicker
                       activation={activation}
+                      connectionOffline={view.live.connection.status !== "online"}
                       filterQuery={pickerFilter}
                       focusedPaneId={view.focusedPaneId}
                       groups={view.groups}

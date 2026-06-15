@@ -815,6 +815,7 @@ function DockApp() {
         {effectiveOrientation === "horizontal" ? (
           <GroupedPicker
             activation={activation}
+            connectionOffline={!!ownerView && ownerView.live.connection.status !== "online"}
             filterQuery={pickerFilter}
             focusedPaneId={focusedPaneId}
             groups={ownerView?.groups ?? EMPTY_PICKER_GROUPS}

@@ -137,9 +137,9 @@ Desktop changes carry their own half of the CI baseline. The same four cargo
 commands run inside `desktop/src-tauri` (a standalone crate the root commands
 never touch), plus, in `desktop/`:
 
-- `npm run build` (the Tauri crate embeds `../dist` via `tauri::generate_context!`,
+- `pnpm build` (the Tauri crate embeds `../dist` via `tauri::generate_context!`,
   so the frontend must build before the crate compiles)
-- `npm test` (the vitest suite)
+- `pnpm test` (the vitest suite)
 
 Performance spot checks currently use:
 

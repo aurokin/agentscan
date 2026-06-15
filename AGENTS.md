@@ -3,6 +3,7 @@
 ## Package Manager
 - Use `cargo`: `cargo build`, `cargo test`, `cargo run -- --format text`
 - Bare `cargo run -- ...` examples use the default daemon-backed `list` flow; direct tmux snapshots use `cargo run -- scan ...`.
+- Desktop (`desktop/`) uses `pnpm` (never npm): `pnpm install`, `pnpm build`, `pnpm test`, `pnpm tauri dev`. The package is pnpm-locked (`pnpm-lock.yaml`, version pinned via the `packageManager` field); npm's `package-lock.json` is gitignored.
 
 ## File-Scoped Commands
 | Task | Command |

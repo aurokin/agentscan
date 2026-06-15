@@ -346,8 +346,21 @@ p {
   font-size: 12px;
 }
 
+/* fatal mirrors the noDaemon frosted-panel treatment in the error hue: translucent
+   fill + a soft border so both severity strips read as one family on the glass. */
 .live-strip.error {
-  background: rgba(248, 81, 73, 0.12);
+  background: rgba(248, 81, 73, 0.1);
+  border: 1px solid rgba(248, 81, 73, 0.3);
+}
+
+/* noDaemon is the actionable "start it" state, not transient progress. Drop the
+   opaque elevated slab for a warm frosted panel — a translucent amber fill + soft
+   amber border — so it reads as a heads-up that belongs to the glass rather than a
+   gray card floating on it. The warmth ties it to the status dot + Start button; the
+   solid (not dashed) border marks it as an active alert, unlike the empty-slot pill. */
+.live-strip.no-daemon {
+  background: rgba(227, 179, 65, 0.1);
+  border: 1px solid rgba(227, 179, 65, 0.3);
 }
 
 .live-label {
@@ -407,8 +420,11 @@ p {
 .inline-error {
   margin: 0 12px 6px;
   padding: 8px 10px;
+  /* Same frosted treatment as the error live-strip so the whole error family reads
+     identically on the glass. */
+  border: 1px solid rgba(248, 81, 73, 0.3);
   border-radius: 8px;
-  background: rgba(248, 81, 73, 0.12);
+  background: rgba(248, 81, 73, 0.1);
   color: var(--danger-text);
   font-size: 12px;
 }
@@ -425,7 +441,9 @@ p {
 .picker-groups {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  /* Keep this <= the .source-folders gap (8px): projects inside one source are
+     more closely related than separate sources, so they must not read looser. */
+  gap: 8px;
 }
 
 .picker-group {
@@ -434,7 +452,7 @@ p {
 }
 
 .group-header {
-  padding: 6px 8px 4px;
+  padding: 4px 8px 2px;
   font-size: 12px;
   font-weight: 600;
   color: var(--text-dim);
@@ -870,26 +888,40 @@ kbd.dimmed {
   text-align: center;
 }
 
-/* "No agents detected" rest state: lead with the brand mark so an empty
-   window still feels like the product, not a blank panel. */
+/* Resolved-empty rest state: compact enough to repeat under multiple open
+   source folders without turning the picker into a stack of blank panels. */
 .empty-detected {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 4px;
-  padding: 48px 12px;
+  gap: 8px;
+  margin: 3px 8px 6px;
+  min-height: 34px;
+  padding: 0 10px;
+  /* Dashed + fill-free so the placeholder reads as an empty slot and recedes
+     behind real agent rows (which are borderless/transparent at rest), rather
+     than out-weighting them. */
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  color: var(--text-dim);
+  font-size: 12px;
 }
 
-.empty-logo {
-  width: 132px;
-  height: auto;
-  opacity: 0.5;
-  -webkit-user-drag: none;
-  user-select: none;
+/* A dash, not a status dot: the colored dot vocabulary means live agent status,
+   so an empty slot uses a neutral mark to avoid reading as "unknown-status agent". */
+.empty-marker {
+  width: 10px;
+  height: 1.5px;
+  border-radius: 1px;
+  background: var(--text-dim);
+  opacity: 0.6;
+  flex: 0 0 auto;
 }
 
-.empty-detected .empty-note {
-  padding: 0;
+.empty-detected p {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---------- Bottom bar ---------- */

@@ -71,10 +71,10 @@ Current local baseline:
 
 Desktop shell checks:
 
-- `cd desktop && npm run build`
-- `cd desktop && npm test`
+- `cd desktop && pnpm build`
+- `cd desktop && pnpm test`
 - `cargo test --manifest-path desktop/src-tauri/Cargo.toml`
-- `cd desktop && npm run tauri dev`
+- `cd desktop && pnpm tauri dev`
 - `scripts/check-desktop-version.sh`
 
 Current test coverage also includes committed file-based fixtures for representative

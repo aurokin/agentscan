@@ -60,7 +60,9 @@ The slice sequence stayed aligned with the shared client contract:
 
 Verification has covered:
 
-- TypeScript production build with `npm run build`;
+- TypeScript production build with `npm run build` (npm was the desktop
+  package manager at the time; the package has since migrated to pnpm —
+  the equivalent today is `pnpm build`);
 - desktop Rust tests through `cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib`;
 - focused SSH runner command-construction, quoting, host-validation, and IPC
   deserialization tests;

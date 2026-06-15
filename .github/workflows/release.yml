@@ -63,13 +63,19 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      - name: Set up pnpm
+        if: ${{ matrix.target == 'aarch64-apple-darwin' }}
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: desktop/package.json
+
       - name: Install Node.js
         if: ${{ matrix.target == 'aarch64-apple-darwin' }}
         uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: desktop/package-lock.json
+          cache: pnpm
+          cache-dependency-path: desktop/pnpm-lock.yaml
 
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
