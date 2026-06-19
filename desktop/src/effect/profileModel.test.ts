@@ -141,6 +141,15 @@ describe("normalizeProfileState", () => {
     expect(state.openProfileIds).toEqual(["ssh-1"]);
   });
 
+  it("drops disabled profiles from the open set during normalization", () => {
+    const state = normalizeProfileState({
+      activeProfileId: "local",
+      profiles: [localProfile, sshProfile("ssh-1", "box", false)],
+      openProfileIds: ["local", "ssh-1"],
+    });
+    expect(state.openProfileIds).toEqual(["local"]);
+  });
+
   it("preserves an explicit all-closed state (no migration on an empty list)", () => {
     const state = normalizeProfileState({
       activeProfileId: "local",
@@ -358,16 +367,12 @@ describe("setProfileEnabled", () => {
     expect(disabled.profiles.find((profile) => profile.id === "ssh-1")).toMatchObject({
       enabled: false,
     });
-    expect(disabled.openProfileIds).toEqual(["local", "ssh-1"]);
+    expect(disabled.openProfileIds).toEqual(["local"]);
     expect(liveSourcesFor(disabled).map((source) => source.profile.id)).toEqual(["local"]);
   });
 
-  it("re-enables an SSH profile and preserves its open state", () => {
-    const disabled = stateOf(
-      ["local", "ssh-1"],
-      localProfile,
-      sshProfile("ssh-1", "box", false),
-    );
+  it("re-enables an SSH profile and opens it again", () => {
+    const disabled = stateOf(["local"], localProfile, sshProfile("ssh-1", "box", false));
 
     const enabled = setProfileEnabled(disabled, "ssh-1", true);
 
@@ -379,6 +384,24 @@ describe("setProfileEnabled", () => {
       "local",
       "ssh-1",
     ]);
+  });
+
+  it("does not keep a disabled non-active source open when the active source is disabled later", () => {
+    const state: ProfileState = {
+      activeProfileId: "ssh-2",
+      profiles: [
+        sshProfile("ssh-1", "box", false),
+        sshProfile("ssh-2", "other"),
+        localProfile,
+      ],
+      openProfileIds: ["ssh-1", "ssh-2"],
+    };
+
+    const disabled = setProfileEnabled(state, "ssh-2", false);
+
+    expect(disabled.activeProfileId).toBe("local");
+    expect(disabled.openProfileIds).toEqual([]);
+    expect(liveSourcesFor(disabled).map((source) => source.profile.id)).toEqual(["local"]);
   });
 
   it("ignores local and unknown profiles", () => {

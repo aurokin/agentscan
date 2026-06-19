@@ -181,7 +181,9 @@ export function normalizeProfileState(
       ? requestedActiveId
       : fallbackProfile.id;
 
-  // Open folders, remapped to dedupe survivors and filtered to surviving profiles.
+  // Open folders, remapped to dedupe survivors and filtered to runnable surviving
+  // profiles. Disabled sources stay persisted but cannot own a live subscription
+  // or become candidates for open-folder fallback behavior until re-enabled.
   // A state persisted before the folder UI has no openProfileIds: the previously-
   // active profile starts open so the upgrade keeps exactly the old
   // one-subscription behavior.
@@ -191,7 +193,11 @@ export function normalizeProfileState(
         .map((id) => remap.get(id) ?? id)
     : [activeProfileId];
   const openProfileIds = [
-    ...new Set(openSource.filter((id) => profiles.some((profile) => profile.id === id))),
+    ...new Set(
+      openSource.filter((id) =>
+        profiles.some((profile) => profile.id === id && isRunnableProfile(profile)),
+      ),
+    ),
   ];
 
   return { activeProfileId, profiles, openProfileIds };
@@ -314,8 +320,9 @@ export function toggleProfileOpen(state: ProfileState, id: string): ProfileState
   };
 }
 
-// Enable/disable one SSH source. Disabled sources remain persisted and keep their
-// open id, but stop being runnable/folder-eligible until re-enabled.
+// Enable/disable one SSH source. Disabled sources remain persisted but leave the
+// open/live set; re-enabling opens the source again so the footer checkbox acts
+// like "show this source in the dock" without re-entering connection settings.
 export function setProfileEnabled(
   state: ProfileState,
   id: string,
@@ -329,10 +336,15 @@ export function setProfileEnabled(
 
   const profiles = [...state.profiles];
   profiles[index] = { ...profile, enabled };
+  const openProfileIds = enabled
+    ? state.openProfileIds.includes(id)
+      ? state.openProfileIds
+      : [...state.openProfileIds, id]
+    : state.openProfileIds.filter((openId) => openId !== id);
   return normalizeProfileState({
     activeProfileId: state.activeProfileId,
     profiles,
-    openProfileIds: state.openProfileIds,
+    openProfileIds,
   });
 }
 
