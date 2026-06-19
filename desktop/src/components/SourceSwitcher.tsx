@@ -1,8 +1,15 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { SourceKindIcon } from "./SourceKindIcon";
-import { HOTKEY_MODIFIER_LABEL } from "../platform";
 import type { DesktopProfileConfig } from "../effect/profileModel";
 import type { Orientation } from "../effect/prefs";
+
+export type SourceMenuItem = {
+  profile: DesktopProfileConfig;
+  enabled: boolean;
+  canToggle: boolean;
+  isOwner: boolean;
+};
 
 // The footer's source trigger + the inline order menu. The menu's open/drag
 // state lives HERE (the one deliberate state move of the component cuts): it
@@ -15,7 +22,7 @@ import type { Orientation } from "../effect/prefs";
 // mousedown for the outside-dismiss to see) leaves the menu open behind the
 // settings window; an obscure pointer-free path, accepted.
 export function SourceSwitcher({
-  liveSources,
+  sourceMenuItems,
   triggerProfile,
   triggerShowsSource,
   triggerTone,
@@ -24,9 +31,10 @@ export function SourceSwitcher({
   labelFor,
   selectProfile,
   reorderProfile,
+  setProfileEnabled,
   onOpenSettings,
 }: {
-  liveSources: ReadonlyArray<{ profile: DesktopProfileConfig; isOwner: boolean }>;
+  sourceMenuItems: ReadonlyArray<SourceMenuItem>;
   triggerProfile: DesktopProfileConfig;
   triggerShowsSource: boolean;
   triggerTone: string;
@@ -39,6 +47,7 @@ export function SourceSwitcher({
   // settings so the window can't load the old selection.
   selectProfile: (id: string) => Promise<unknown>;
   reorderProfile: (input: { id: string; targetId: string }) => void;
+  setProfileEnabled: (input: { id: string; enabled: boolean }) => void;
   onOpenSettings: () => void;
 }) {
   // Which agentscan we're listening to (local vs a remote over SSH). Open
@@ -47,15 +56,45 @@ export function SourceSwitcher({
   // Mid-drag source id for the order menu (the counterpart of the settings
   // rail's draggedSourceId).
   const [draggedMenuSourceId, setDraggedMenuSourceId] = useState<string | null>(null);
+  const [menuFrame, setMenuFrame] = useState<{
+    bottom: number;
+    left: number;
+    width: number;
+  } | null>(null);
+  const draggedMenuSourceIdRef = useRef<string | null>(null);
   const sourceMenuRef = useRef<HTMLDivElement | null>(null);
+  const sourceMenuPopupRef = useRef<HTMLDivElement | null>(null);
+
+  function updateMenuFrame() {
+    const rect = sourceMenuRef.current?.getBoundingClientRect();
+    if (!rect) {
+      return;
+    }
+    const width = Math.min(Math.max(rect.width, 340), window.innerWidth - 20);
+    setMenuFrame({
+      bottom: window.innerHeight - rect.top + 6,
+      left: Math.min(Math.max(10, rect.left), Math.max(10, window.innerWidth - width - 10)),
+      width,
+    });
+  }
 
   // A wide drag or pinning to horizontal can strand an already-open source menu in
   // the thin bar (where it clips). Close it whenever the layout goes horizontal.
   useEffect(() => {
     if (orientation === "horizontal") {
       setIsSourceMenuOpen(false);
+      setMenuFrame(null);
     }
   }, [orientation]);
+
+  useEffect(() => {
+    if (!isSourceMenuOpen) {
+      return;
+    }
+    updateMenuFrame();
+    window.addEventListener("resize", updateMenuFrame);
+    return () => window.removeEventListener("resize", updateMenuFrame);
+  }, [isSourceMenuOpen]);
 
   // Dismiss the source dropdown on an outside click or Escape. The keydown is
   // captured so it closes the menu before the picker's global Escape handler
@@ -67,8 +106,12 @@ export function SourceSwitcher({
     }
 
     function onPointerDown(event: MouseEvent) {
-      if (sourceMenuRef.current && !sourceMenuRef.current.contains(event.target as Node)) {
+      const target = event.target as Node;
+      const isInsideTrigger = sourceMenuRef.current?.contains(target) ?? false;
+      const isInsideMenu = sourceMenuPopupRef.current?.contains(target) ?? false;
+      if (!isInsideTrigger && !isInsideMenu) {
         setIsSourceMenuOpen(false);
+        setMenuFrame(null);
       }
     }
 
@@ -77,6 +120,7 @@ export function SourceSwitcher({
         event.stopPropagation();
         event.preventDefault();
         setIsSourceMenuOpen(false);
+        setMenuFrame(null);
       }
     }
 
@@ -122,13 +166,20 @@ export function SourceSwitcher({
             // Vertical: only the order menu toggles — no selection happens
             // on this branch (the deep-link above is horizontal-exclusive,
             // where the trigger's label names exactly one source).
-            setIsSourceMenuOpen((open) => !open);
+            setIsSourceMenuOpen((open) => {
+              if (open) {
+                setMenuFrame(null);
+                return false;
+              }
+              updateMenuFrame();
+              return true;
+            });
           }
         }}
         title={
           triggerShowsSource
             ? triggerTitle
-            : "Drag to reorder sources — the top open source owns row hotkeys"
+            : "Show, hide, or reorder sources — the top open source owns row hotkeys"
         }
       >
         {triggerShowsSource ? (
@@ -137,85 +188,124 @@ export function SourceSwitcher({
         <span className="source-label">
           {triggerShowsSource ? labelFor(triggerProfile) : "Manage sources"}
         </span>
-        <span className={`source-caret${isSourceMenuOpen ? " open" : ""}`} aria-hidden="true">
-          {"›"}
-        </span>
       </button>
-      {isSourceMenuOpen ? (
-        // Pure ordering surface: drag rows to reorder sources. The topmost
-        // OPEN folder owns the row hotkeys, so this is where the dock decides
-        // which source answers them. Nothing else is duplicated here —
-        // open/close lives on the folder headers, and enable/disable/add/
-        // remove live in Settings.
-        //
-        // Deliberately NOT a quick-switch: the dock never changes the active
-        // source. The old single-select footer existed because the dock could
-        // show one source at a time; folders replace that gesture with the open
-        // set. "Active" now only means the settings-edit selection + the single
-        // preflight target, and it changes in Settings.
-        <div className="source-menu" role="menu">
-          {/* Draggable rows are safe inside the footer's frameless drag
-              region: Tauri's data-tauri-drag-region handler only fires
-              when the mousedown TARGET itself carries the attribute, so
-              descendants start HTML5 drags, never window drags. */}
-          {liveSources.map(({ profile, isOwner }) => (
+      {isSourceMenuOpen
+        ? createPortal(
+            // Ordering + visibility surface: drag rows to reorder sources. SSH
+            // checkboxes enable/disable a source without deleting its
+            // configuration. The topmost open enabled source owns row hotkeys.
+            //
+            // Deliberately NOT a quick-switch: the dock never changes the
+            // active source. The old single-select footer existed because the
+            // dock could show one source at a time; folders replace that
+            // gesture with the open set. "Active" now only means the
+            // settings-edit selection + the single preflight target, and it
+            // changes in Settings.
             <div
-              className={`source-option draggable${
+              className="source-menu"
+              ref={sourceMenuPopupRef}
+              role="menu"
+              style={
+                menuFrame
+                  ? {
+                      bottom: menuFrame.bottom,
+                      left: menuFrame.left,
+                      width: menuFrame.width,
+                    }
+                  : undefined
+              }
+            >
+              {/* Portaled out of the footer drag region so native window drags
+                  cannot swallow menu row interactions. */}
+          {sourceMenuItems.map(({ profile, enabled, canToggle, isOwner }) => (
+            <div
+              className={`source-option source-row${isOwner ? " owner" : ""}${
+                enabled ? "" : " disabled"
+              }${
                 draggedMenuSourceId === profile.id ? " dragging" : ""
               }`}
+              data-source-id={profile.id}
               key={profile.id}
               role="menuitem"
-              draggable
-              onDragStart={(event) => {
-                event.dataTransfer.effectAllowed = "move";
-                setDraggedMenuSourceId(profile.id);
-              }}
-              onDragEnd={() => setDraggedMenuSourceId(null)}
-              onDragOver={(event) => {
-                // preventDefault marks this row as a valid drop target.
-                if (draggedMenuSourceId && draggedMenuSourceId !== profile.id) {
-                  event.preventDefault();
-                  event.dataTransfer.dropEffect = "move";
-                }
-              }}
-              onDrop={(event) => {
-                event.preventDefault();
-                if (draggedMenuSourceId && draggedMenuSourceId !== profile.id) {
-                  reorderProfile({
-                    id: draggedMenuSourceId,
-                    targetId: profile.id,
-                  });
-                }
-                setDraggedMenuSourceId(null);
-              }}
             >
+              <label
+                className="source-toggle"
+                title={canToggle ? undefined : "Local source is always shown"}
+                onMouseDown={(event) => event.stopPropagation()}
+                onClick={(event) => event.stopPropagation()}
+              >
+                <input
+                  type="checkbox"
+                  checked={enabled}
+                  disabled={!canToggle}
+                  aria-label={`${enabled ? "Hide" : "Show"} ${labelFor(profile)} in dock`}
+                  onChange={(event) =>
+                    setProfileEnabled({
+                      id: profile.id,
+                      enabled: event.currentTarget.checked,
+                    })
+                  }
+                />
+              </label>
               <span className="source-option-mark" aria-hidden="true">
                 <SourceKindIcon kind={profile.kind} />
               </span>
               <span className="source-option-text">
                 <span className="source-option-name">{labelFor(profile)}</span>
               </span>
-              {isOwner ? (
-                <kbd className="folder-kbd" title="Row hotkeys target this source">
-                  {HOTKEY_MODIFIER_LABEL.trim()}
-                </kbd>
-              ) : null}
-              <svg
+              <button
                 className="source-grip"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                aria-hidden="true"
+                type="button"
+                aria-label={`Drag ${labelFor(profile)} to reorder`}
+                onPointerDown={(event) => {
+                  if (event.button !== 0) {
+                    return;
+                  }
+                  event.preventDefault();
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                  draggedMenuSourceIdRef.current = profile.id;
+                  setDraggedMenuSourceId(profile.id);
+                }}
+                onPointerUp={(event) => {
+                  if (draggedMenuSourceIdRef.current !== profile.id) {
+                    return;
+                  }
+                  const target = document.elementFromPoint(event.clientX, event.clientY);
+                  const targetRow = target?.closest<HTMLElement>("[data-source-id]");
+                  const targetId = targetRow?.dataset.sourceId;
+                  if (targetId && targetId !== profile.id) {
+                    reorderProfile({ id: profile.id, targetId });
+                  }
+                  if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                    event.currentTarget.releasePointerCapture(event.pointerId);
+                  }
+                  draggedMenuSourceIdRef.current = null;
+                  setDraggedMenuSourceId(null);
+                }}
+                onPointerCancel={(event) => {
+                  if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                    event.currentTarget.releasePointerCapture(event.pointerId);
+                  }
+                  draggedMenuSourceIdRef.current = null;
+                  setDraggedMenuSourceId(null);
+                }}
               >
-                <circle cx="9" cy="5" r="1" />
-                <circle cx="9" cy="12" r="1" />
-                <circle cx="9" cy="19" r="1" />
-                <circle cx="15" cy="5" r="1" />
-                <circle cx="15" cy="12" r="1" />
-                <circle cx="15" cy="19" r="1" />
-              </svg>
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  aria-hidden="true"
+                >
+                  <circle cx="9" cy="5" r="1" />
+                  <circle cx="9" cy="12" r="1" />
+                  <circle cx="9" cy="19" r="1" />
+                  <circle cx="15" cy="5" r="1" />
+                  <circle cx="15" cy="12" r="1" />
+                  <circle cx="15" cy="19" r="1" />
+                </svg>
+              </button>
             </div>
           ))}
           <div className="source-menu-divider" role="separator" />
@@ -234,6 +324,7 @@ export function SourceSwitcher({
               // card + the form's fields), so Apply/Delete can't silently
               // target a source other than the one displayed.
               setIsSourceMenuOpen(false);
+              setMenuFrame(null);
               onOpenSettings();
             }}
           >
@@ -242,8 +333,10 @@ export function SourceSwitcher({
             </span>
             <span className="source-option-label">Add or edit sources…</span>
           </button>
-        </div>
-      ) : null}
+        </div>,
+          document.body,
+        )
+        : null}
     </div>
   );
 }

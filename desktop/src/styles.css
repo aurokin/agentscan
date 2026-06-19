@@ -145,9 +145,9 @@
 body {
   margin: 0;
   /* Follow the picker window's own min-width (220 on macOS, set in
-     tauri.{macos.,}conf.json) rather than enforcing a hidden 320px floor here
+     tauri.{macos.,}conf.json) rather than enforcing a hidden default-width floor here
      — leaving that floor in place clipped the trailing kbd/suffix off-screen
-     whenever the user dragged the sidebar narrower than 320. */
+     whenever the user dragged the sidebar narrower than the default width. */
   min-width: 0;
   min-height: 100vh;
   overflow: hidden;
@@ -506,8 +506,24 @@ p {
    configured SSH host. */
 .folder-mark {
   flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
   color: var(--text-muted);
   font-size: 12px;
+  opacity: 0.55;
+}
+
+.folder-header.owner .folder-mark {
+  background: var(--overlay-08);
+  color: var(--text);
+  opacity: 1;
+}
+
+.folder-header.owner .folder-label {
+  color: var(--text);
 }
 
 /* Inline Lucide outline for the source-kind mark; 1em square so each
@@ -524,23 +540,6 @@ p {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* Marks the keybind owner: the one open folder whose rows answer Ctrl+<key>. */
-.folder-kbd {
-  flex: 0 0 auto;
-}
-
-.folder-caret {
-  flex: 0 0 auto;
-  font-size: 14px;
-  color: var(--text-dim);
-  transition: transform 0.15s ease;
-}
-
-/* Right-pointing chevron when closed; down when the folder is open. */
-.folder-caret.open {
-  transform: rotate(90deg);
 }
 
 .folder-body {
@@ -611,7 +610,7 @@ p {
   /* Settings shares this window, so its widest fixed control — the 3-up
      Dark/Light/System theme toggle — also has to survive the tight floor. The
      even 1fr columns can't seat "System" at 13px here, so shave the label type
-     and button padding just in this range; the 280px default keeps full size.
+     and button padding just in this range; the default width keeps full size.
      Scoped as `.theme-toggle .theme-option` (specificity 0,2,0) so it wins over
      the base `.theme-option` rule, which is declared later in the file — a plain
      `.theme-option` here has equal specificity and would lose on source order. */
@@ -724,11 +723,6 @@ p {
 .sidebar[data-orientation="horizontal"] .source-switcher {
   flex: 0 0 auto;
   max-width: 160px;
-}
-/* The trigger re-docks into settings here rather than popping the inline menu, so
-   drop the caret that would imply a dropdown. */
-.sidebar[data-orientation="horizontal"] .source-caret {
-  display: none;
 }
 /* The multi-client notice is an informational full-width block authored for the
    vertical strip; it doesn't fit the bar and isn't an error or staleness signal, so
@@ -992,27 +986,11 @@ kbd.dimmed {
   white-space: nowrap;
 }
 
-.source-caret {
-  flex: 0 0 auto;
-  font-size: 14px;
-  color: var(--text-dim);
-  transition: transform 0.15s ease;
-}
-
-/* Right-pointing chevron when closed; rotate it to point up when the menu
-   opens above the trigger. */
-.source-caret.open {
-  transform: rotate(-90deg);
-}
-
 .source-menu {
-  position: absolute;
-  bottom: calc(100% + 6px);
-  left: 0;
-  right: 0;
+  position: fixed;
   display: flex;
   flex-direction: column;
-  padding: 4px;
+  padding: 6px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--bg-elevated);
@@ -1036,24 +1014,81 @@ kbd.dimmed {
   text-align: left;
 }
 
-.source-option:hover {
+.source-option:not(.source-row):hover {
   background: var(--bg-hover);
 }
 
-/* Drag rows in the footer order menu (mirrors .source-card.dragging). */
-.source-option.draggable {
-  cursor: grab;
+.source-row {
+  display: grid;
+  grid-template-columns: 16px 20px minmax(0, 1fr) 28px;
+  gap: 8px;
+  cursor: default;
 }
 
-.source-option.dragging {
+.source-row:hover {
+  background: transparent;
+}
+
+.source-row.disabled {
+  color: var(--text-dim);
+}
+
+.source-row.dragging {
+  opacity: 0.5;
+}
+
+.source-toggle {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+}
+
+.source-toggle input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.source-toggle input:disabled {
+  cursor: default;
   opacity: 0.5;
 }
 
 .source-grip {
+  display: inline-grid;
+  place-items: center;
+  justify-self: center;
+  align-self: center;
   flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: grab;
+}
+
+.source-grip:hover,
+.source-grip:focus-visible {
+  background: var(--bg-hover);
+  color: var(--text-muted);
+  outline: none;
+}
+
+.source-grip:active {
+  cursor: grabbing;
+}
+
+.source-grip svg {
   width: 14px;
   height: 14px;
-  color: var(--text-dim);
 }
 
 .source-check {
@@ -1077,9 +1112,22 @@ kbd.dimmed {
   flex: 0 0 auto;
   display: inline-grid;
   place-items: center;
-  width: 14px;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
   font-size: 12px;
   color: var(--text-muted);
+  opacity: 0.55;
+}
+
+.source-row.owner .source-option-mark {
+  background: var(--overlay-08);
+  color: var(--text);
+  opacity: 1;
+}
+
+.source-row.disabled .source-option-mark {
+  opacity: 0.35;
 }
 
 .source-option-text {

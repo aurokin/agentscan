@@ -1,7 +1,6 @@
 import { GroupedPicker } from "./GroupedPicker";
 import { LiveStrip } from "./LiveStrip";
 import { SourceKindIcon } from "./SourceKindIcon";
-import { HOTKEY_MODIFIER_LABEL } from "../platform";
 import {
   connectionTone,
   type PickerActivation,
@@ -87,7 +86,7 @@ export function SourceFolders({
         return (
           <section className="source-folder" key={view.profile.id}>
             <button
-              className="folder-header"
+              className={`folder-header${view.isOwner ? " owner" : ""}`}
               type="button"
               aria-expanded={view.isOpen}
               onClick={() => onToggleFolder(view.profile.id)}
@@ -118,14 +117,6 @@ export function SourceFolders({
                 <SourceKindIcon kind={view.profile.kind} />
               </span>
               <span className="folder-label">{labelFor(view.profile)}</span>
-              {view.isOwner ? (
-                <kbd className="folder-kbd" title="Row hotkeys target this source">
-                  {HOTKEY_MODIFIER_LABEL.trim()}
-                </kbd>
-              ) : null}
-              <span className={`folder-caret${view.isOpen ? " open" : ""}`} aria-hidden="true">
-                {"›"}
-              </span>
             </button>
             {view.isOpen ? (
               <div className="folder-body">

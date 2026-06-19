@@ -314,6 +314,28 @@ export function toggleProfileOpen(state: ProfileState, id: string): ProfileState
   };
 }
 
+// Enable/disable one SSH source. Disabled sources remain persisted and keep their
+// open id, but stop being runnable/folder-eligible until re-enabled.
+export function setProfileEnabled(
+  state: ProfileState,
+  id: string,
+  enabled: boolean,
+): ProfileState {
+  const index = state.profiles.findIndex((profile) => profile.id === id);
+  const profile = index === -1 ? undefined : state.profiles[index];
+  if (!profile || profile.kind !== "ssh" || profile.enabled === enabled) {
+    return state;
+  }
+
+  const profiles = [...state.profiles];
+  profiles[index] = { ...profile, enabled };
+  return normalizeProfileState({
+    activeProfileId: state.activeProfileId,
+    profiles,
+    openProfileIds: state.openProfileIds,
+  });
+}
+
 // Move the dragged profile onto the target's position (after it when dragging
 // down, before it when dragging up — the usual list-reorder feel). Keybind
 // ownership is derived from this order. Returns the SAME state when nothing moves.

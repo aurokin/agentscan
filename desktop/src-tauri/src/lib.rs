@@ -29,11 +29,10 @@ const DAEMON_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 const LIVE_CHILD_EXIT_GRACE: Duration = Duration::from_millis(500);
 const LIVE_PICKER_EVENT: &str = "agentscan-live-picker";
 const PICKER_WINDOW_MARGIN: f64 = 16.0;
-const PICKER_WINDOW_TARGET_WIDTH: f64 = 280.0;
-// The drag floor sits ~21% below the default opening width: the picker opens at
-// a compact sidebar size (matching the codex/claude code chat sidebars), and a
-// user who wants a tighter strip can pull it in further by hand. Below ~250 the
-// CSS flips agent rows to a two-line layout so the title + status keep breathing.
+const PICKER_WINDOW_TARGET_WIDTH: f64 = 360.0;
+// The picker opens wide enough for source names and menu controls, while a user
+// who wants a tighter strip can pull it in further by hand. Below ~250 the CSS
+// flips agent rows to a two-line layout so the title + status keep breathing.
 const PICKER_WINDOW_MIN_WIDTH: f64 = 220.0;
 const PICKER_WINDOW_MAX_WIDTH: f64 = 520.0;
 const PICKER_WINDOW_MIN_HEIGHT: f64 = 560.0;
@@ -2595,7 +2594,7 @@ mod tests {
             PickerWindowPlacement {
                 x: 116.0,
                 y: 40.0,
-                width: 280.0,
+                width: 360.0,
                 height: 868.0,
             }
         );
@@ -2629,7 +2628,7 @@ mod tests {
             PickerWindowPlacement {
                 x: -1904.0,
                 y: 16.0,
-                width: 280.0,
+                width: 360.0,
                 height: 960.0,
             }
         );

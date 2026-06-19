@@ -10,6 +10,7 @@ import {
   normalizeRunnerSettings,
   recordProbedHost as recordProbedHostState,
   reorderProfile as reorderProfileState,
+  setProfileEnabled as setProfileEnabledState,
   sshHostCollides,
   storeProfileState,
   toggleProfileOpen as toggleProfileOpenState,
@@ -195,6 +196,18 @@ export class Profiles extends Effect.Service<Profiles>()("desktop/Profiles", {
         yield* commit(next);
       });
 
+    // Enable/disable one SSH source. The source stays persisted so the user can
+    // bring it back without re-entering the host/runner fields.
+    const setProfileEnabled = (id: string, enabled: boolean) =>
+      Effect.gen(function* () {
+        const latest = loadProfileState(bridge.loadRaw);
+        const next = setProfileEnabledState(latest, id, enabled);
+        if (next === latest) {
+          return;
+        }
+        yield* commit(next);
+      });
+
     // Persist the hostname a successful preflight probed for one source, so the
     // short label outlives the probe and app restarts. Merges onto the LATEST
     // persisted state; an unchanged value, unknown id, non-ssh target, or a
@@ -246,6 +259,7 @@ export class Profiles extends Effect.Service<Profiles>()("desktop/Profiles", {
       applyRunnerSettings,
       toggleProfileOpen,
       reorderProfile,
+      setProfileEnabled,
       recordProbedHost,
       // Value-guarded reconcile from storage, driven by React on the cross-window
       // profiles sync and the settings focus/clean transitions.

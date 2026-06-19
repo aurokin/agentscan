@@ -9,6 +9,7 @@ import {
   recordProbedHost,
   reorderProfile,
   runnerKeyForProfile,
+  setProfileEnabled,
   sourceLabel,
   toggleProfileOpen,
   updateProfileSettings,
@@ -338,6 +339,53 @@ describe("reorderProfile", () => {
     expect(reorderProfile(state, "local", "local")).toBe(state);
     expect(reorderProfile(state, "ghost", "local")).toBe(state);
     expect(reorderProfile(state, "local", "ghost")).toBe(state);
+  });
+});
+
+describe("setProfileEnabled", () => {
+  it("disables an SSH profile without deleting it and falls back from active", () => {
+    const state = stateOf(
+      ["local", "ssh-1"],
+      localProfile,
+      sshProfile("ssh-1", "box"),
+    );
+    const activeSshState = { ...state, activeProfileId: "ssh-1" };
+
+    const disabled = setProfileEnabled(activeSshState, "ssh-1", false);
+
+    expect(disabled.activeProfileId).toBe("local");
+    expect(disabled.profiles.map((profile) => profile.id)).toEqual(["local", "ssh-1"]);
+    expect(disabled.profiles.find((profile) => profile.id === "ssh-1")).toMatchObject({
+      enabled: false,
+    });
+    expect(disabled.openProfileIds).toEqual(["local", "ssh-1"]);
+    expect(liveSourcesFor(disabled).map((source) => source.profile.id)).toEqual(["local"]);
+  });
+
+  it("re-enables an SSH profile and preserves its open state", () => {
+    const disabled = stateOf(
+      ["local", "ssh-1"],
+      localProfile,
+      sshProfile("ssh-1", "box", false),
+    );
+
+    const enabled = setProfileEnabled(disabled, "ssh-1", true);
+
+    expect(enabled.profiles.find((profile) => profile.id === "ssh-1")).toMatchObject({
+      enabled: true,
+    });
+    expect(enabled.openProfileIds).toEqual(["local", "ssh-1"]);
+    expect(liveSourcesFor(enabled).map((source) => source.profile.id)).toEqual([
+      "local",
+      "ssh-1",
+    ]);
+  });
+
+  it("ignores local and unknown profiles", () => {
+    const state = stateOf(["local"], localProfile);
+
+    expect(setProfileEnabled(state, "local", false)).toBe(state);
+    expect(setProfileEnabled(state, "ghost", true)).toBe(state);
   });
 });
 
