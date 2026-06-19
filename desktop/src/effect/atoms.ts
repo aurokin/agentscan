@@ -137,6 +137,14 @@ export const reorderProfileAtom = runtime.fn(
   }),
 );
 
+// Enable/disable one SSH source without deleting its configuration.
+export const setProfileEnabledAtom = runtime.fn(
+  Effect.fnUntraced(function* (input: { readonly id: string; readonly enabled: boolean }) {
+    const profiles = yield* Profiles;
+    yield* profiles.setProfileEnabled(input.id, input.enabled);
+  }),
+);
+
 // Value-guarded reconcile from storage, driven by React on the cross-window profiles
 // sync and the settings window's focus/clean transitions (emitTo has no replay).
 export const reloadProfilesAtom = runtime.fn(

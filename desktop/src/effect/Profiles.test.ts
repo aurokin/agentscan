@@ -340,6 +340,40 @@ describe("Profiles", () => {
         }),
     ));
 
+  it("setProfileEnabled persists a disabled SSH source without deleting it", () =>
+    run(
+      "dock",
+      seed({
+        activeProfileId: "ssh-1",
+        profiles: [localProfile, sshProfile("ssh-1")],
+        openProfileIds: ["local", "ssh-1"],
+      }),
+      ({ profiles, store, emitted }) =>
+        Effect.gen(function* () {
+          yield* profiles.setProfileEnabled("ssh-1", false);
+          const state = yield* SubscriptionRef.get(profiles.state);
+          expect(state.activeProfileId).toBe("local");
+          expect(state.profiles.map((p) => p.id)).toEqual(["local", "ssh-1"]);
+          expect(state.profiles.find((p) => p.id === "ssh-1")).toMatchObject({
+            enabled: false,
+          });
+          const persisted = JSON.parse(store.get(PROFILES_STORAGE_KEY)!) as ProfileState;
+          expect(persisted.profiles.find((p) => p.id === "ssh-1")).toMatchObject({
+            enabled: false,
+          });
+          expect(yield* Queue.take(emitted)).toEqual({ kind: "profiles" });
+        }),
+    ));
+
+  it("setProfileEnabled with a local or unknown profile is a no-op", () =>
+    run("dock", seed(stateOf("local", localProfile)), ({ profiles, emitted }) =>
+      Effect.gen(function* () {
+        yield* profiles.setProfileEnabled("local", false);
+        yield* profiles.setProfileEnabled("ghost", true);
+        expect(yield* Queue.size(emitted)).toBe(0);
+      }),
+    ));
+
   it("addSshProfile starts the new source open", () =>
     run("settings", seed(stateOf("local", localProfile)), ({ profiles }) =>
       Effect.gen(function* () {

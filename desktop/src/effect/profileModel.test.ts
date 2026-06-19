@@ -9,6 +9,7 @@ import {
   recordProbedHost,
   reorderProfile,
   runnerKeyForProfile,
+  setProfileEnabled,
   sourceLabel,
   toggleProfileOpen,
   updateProfileSettings,
@@ -138,6 +139,15 @@ describe("normalizeProfileState", () => {
       openProfileIds: ["ssh-1", "ssh-1", "ghost"],
     });
     expect(state.openProfileIds).toEqual(["ssh-1"]);
+  });
+
+  it("drops disabled profiles from the open set during normalization", () => {
+    const state = normalizeProfileState({
+      activeProfileId: "local",
+      profiles: [localProfile, sshProfile("ssh-1", "box", false)],
+      openProfileIds: ["local", "ssh-1"],
+    });
+    expect(state.openProfileIds).toEqual(["local"]);
   });
 
   it("preserves an explicit all-closed state (no migration on an empty list)", () => {
@@ -338,6 +348,67 @@ describe("reorderProfile", () => {
     expect(reorderProfile(state, "local", "local")).toBe(state);
     expect(reorderProfile(state, "ghost", "local")).toBe(state);
     expect(reorderProfile(state, "local", "ghost")).toBe(state);
+  });
+});
+
+describe("setProfileEnabled", () => {
+  it("disables an SSH profile without deleting it and falls back from active", () => {
+    const state = stateOf(
+      ["local", "ssh-1"],
+      localProfile,
+      sshProfile("ssh-1", "box"),
+    );
+    const activeSshState = { ...state, activeProfileId: "ssh-1" };
+
+    const disabled = setProfileEnabled(activeSshState, "ssh-1", false);
+
+    expect(disabled.activeProfileId).toBe("local");
+    expect(disabled.profiles.map((profile) => profile.id)).toEqual(["local", "ssh-1"]);
+    expect(disabled.profiles.find((profile) => profile.id === "ssh-1")).toMatchObject({
+      enabled: false,
+    });
+    expect(disabled.openProfileIds).toEqual(["local"]);
+    expect(liveSourcesFor(disabled).map((source) => source.profile.id)).toEqual(["local"]);
+  });
+
+  it("re-enables an SSH profile and opens it again", () => {
+    const disabled = stateOf(["local"], localProfile, sshProfile("ssh-1", "box", false));
+
+    const enabled = setProfileEnabled(disabled, "ssh-1", true);
+
+    expect(enabled.profiles.find((profile) => profile.id === "ssh-1")).toMatchObject({
+      enabled: true,
+    });
+    expect(enabled.openProfileIds).toEqual(["local", "ssh-1"]);
+    expect(liveSourcesFor(enabled).map((source) => source.profile.id)).toEqual([
+      "local",
+      "ssh-1",
+    ]);
+  });
+
+  it("does not keep a disabled non-active source open when the active source is disabled later", () => {
+    const state: ProfileState = {
+      activeProfileId: "ssh-2",
+      profiles: [
+        sshProfile("ssh-1", "box", false),
+        sshProfile("ssh-2", "other"),
+        localProfile,
+      ],
+      openProfileIds: ["ssh-1", "ssh-2"],
+    };
+
+    const disabled = setProfileEnabled(state, "ssh-2", false);
+
+    expect(disabled.activeProfileId).toBe("local");
+    expect(disabled.openProfileIds).toEqual([]);
+    expect(liveSourcesFor(disabled).map((source) => source.profile.id)).toEqual(["local"]);
+  });
+
+  it("ignores local and unknown profiles", () => {
+    const state = stateOf(["local"], localProfile);
+
+    expect(setProfileEnabled(state, "local", false)).toBe(state);
+    expect(setProfileEnabled(state, "ghost", true)).toBe(state);
   });
 });
 

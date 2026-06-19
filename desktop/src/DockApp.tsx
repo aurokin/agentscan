@@ -8,7 +8,7 @@ import { BootScreen } from "./components/BootScreen";
 import { GroupedPicker } from "./components/GroupedPicker";
 import { LiveStrip } from "./components/LiveStrip";
 import { SourceFolders } from "./components/SourceFolders";
-import { SourceSwitcher } from "./components/SourceSwitcher";
+import { SourceSwitcher, type SourceMenuItem } from "./components/SourceSwitcher";
 import { WindowControls } from "./components/WindowControls";
 import { IS_MAC } from "./platform";
 import {
@@ -30,6 +30,7 @@ import {
   reloadProfilesAtom,
   reorderProfileAtom,
   selectProfileAtom,
+  setProfileEnabledAtom,
   startAtom,
   summonHotkeyAtom,
   toggleProfileOpenAtom,
@@ -127,6 +128,7 @@ function DockApp() {
   const applyRunnerSettingsSet = useAtomSet(applyRunnerSettingsAtom, { mode: "promise" });
   const toggleProfileOpenSet = useAtomSet(toggleProfileOpenAtom);
   const reorderProfileSet = useAtomSet(reorderProfileAtom);
+  const setProfileEnabledSet = useAtomSet(setProfileEnabledAtom);
   const configureHostnameEnrichment = useAtomSet(configureHostnameEnrichmentAtom);
   const reloadProfiles = useAtomSet(reloadProfilesAtom);
   const activeProfile = useMemo(() => getActiveProfile(profileState), [profileState]);
@@ -144,6 +146,21 @@ function DockApp() {
   const ownerSource = useMemo(() => liveSources.find((s) => s.isOwner) ?? null, [liveSources]);
   const ownerProfile = ownerSource?.profile ?? null;
   const ownerRunnerKey = ownerSource?.runnerKey ?? null;
+  const sourceMenuItems = useMemo<SourceMenuItem[]>(
+    () =>
+      profileState.profiles
+        .filter((profile) => profile.kind === "local" || profile.host.trim().length > 0)
+        .map((profile) => {
+          const liveSource = liveSources.find((source) => source.profile.id === profile.id);
+          return {
+            profile,
+            enabled: profile.kind === "local" || profile.enabled,
+            canToggle: profile.kind === "ssh",
+            isOwner: liveSource?.isOwner ?? false,
+          };
+        }),
+    [liveSources, profileState.profiles],
+  );
   // The dock only WRITES its per-window debug log (command lifecycles, native
   // apply failures); the settings window renders its own instance. The append
   // setter is registry-stable, unlike the old per-render closure, so logging
@@ -869,7 +886,7 @@ function DockApp() {
 
       <footer className="bottombar" data-tauri-drag-region={dragRegion}>
         <SourceSwitcher
-          liveSources={liveSources}
+          sourceMenuItems={sourceMenuItems}
           triggerProfile={triggerProfile}
           triggerShowsSource={triggerShowsSource}
           triggerTone={triggerTone}
@@ -878,6 +895,7 @@ function DockApp() {
           labelFor={labelFor}
           selectProfile={(id) => selectProfileSet(id)}
           reorderProfile={(input) => reorderProfileSet(input)}
+          setProfileEnabled={(input) => setProfileEnabledSet(input)}
           onOpenSettings={openSettings}
         />
         {/* Settings and (when frameless) the window controls are one trailing group with a
