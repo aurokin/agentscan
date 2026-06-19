@@ -97,6 +97,44 @@ function renderSwitcher({
   return { reorderProfile, setProfileEnabled };
 }
 
+function rect({
+  left = 20,
+  top = 0,
+  width = 320,
+  height = 36,
+}: Partial<DOMRect> = {}): DOMRect {
+  return {
+    x: left,
+    y: top,
+    left,
+    top,
+    width,
+    height,
+    right: left + width,
+    bottom: top + height,
+    toJSON: () => ({}),
+  } as DOMRect;
+}
+
+function mockSourceMenuRects() {
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function () {
+    const element = this as HTMLElement;
+    if (element.dataset.sourceId === "local") {
+      return rect({ top: 100 });
+    }
+    if (element.dataset.sourceId === "ssh-1") {
+      return rect({ top: 136 });
+    }
+    if (element.dataset.sourceId === "ssh-2") {
+      return rect({ top: 172 });
+    }
+    if (element.classList.contains("source-menu")) {
+      return rect({ left: 20, top: 90, width: 340, height: 170 });
+    }
+    return rect({ top: 700, height: 30 });
+  });
+}
+
 describe("SourceSwitcher", () => {
   it("shows disabled sources in the menu and toggles them back on", () => {
     const { setProfileEnabled } = renderSwitcher();
@@ -134,5 +172,53 @@ describe("SourceSwitcher", () => {
     fireEvent.pointerUp(grip, { clientX: 110, clientY: 653, pointerId: 1 });
 
     expect(reorderProfile).toHaveBeenCalledWith({ id: "ssh-1", targetId: "ssh-2" });
+  });
+
+  it("shows a drag ghost and insertion marker while reordering", () => {
+    mockSourceMenuRects();
+    const { reorderProfile } = renderSwitcher();
+    const grip = screen.getByLabelText("Drag mander to reorder");
+
+    fireEvent.pointerDown(grip, { button: 0, pointerId: 1, clientX: 330, clientY: 150 });
+    fireEvent.pointerMove(grip, { pointerId: 1, clientX: 330, clientY: 205 });
+
+    expect(document.body.querySelector(".source-drag-ghost")).not.toBeNull();
+    expect(document.body.querySelector(".source-drop-marker")).not.toBeNull();
+
+    fireEvent.pointerUp(grip, { pointerId: 1, clientX: 330, clientY: 205 });
+
+    expect(reorderProfile).toHaveBeenCalledWith({ id: "ssh-1", targetId: "ssh-2" });
+    expect(document.body.querySelector(".source-drag-ghost")).toBeNull();
+    expect(document.body.querySelector(".source-drop-marker")).toBeNull();
+  });
+
+  it("does not commit a stale insertion marker when released back over the original row", () => {
+    mockSourceMenuRects();
+    const { reorderProfile } = renderSwitcher();
+    const grip = screen.getByLabelText("Drag mander to reorder");
+
+    fireEvent.pointerDown(grip, { button: 0, pointerId: 1, clientX: 330, clientY: 150 });
+    fireEvent.pointerMove(grip, { pointerId: 1, clientX: 330, clientY: 205 });
+    fireEvent.pointerUp(grip, { pointerId: 1, clientX: 330, clientY: 150 });
+
+    expect(reorderProfile).not.toHaveBeenCalled();
+    expect(document.body.querySelector(".source-drag-ghost")).toBeNull();
+    expect(document.body.querySelector(".source-drop-marker")).toBeNull();
+  });
+
+  it("does not let the release-target fallback override a geometry no-op", () => {
+    mockSourceMenuRects();
+    const { reorderProfile } = renderSwitcher();
+    vi.spyOn(document, "elementFromPoint").mockReturnValue(screen.getByText("luma"));
+    const grip = screen.getByLabelText("Drag mander to reorder");
+
+    fireEvent.pointerDown(grip, { button: 0, pointerId: 1, clientX: 330, clientY: 150 });
+    fireEvent.pointerMove(grip, { pointerId: 1, clientX: 330, clientY: 180 });
+    expect(document.body.querySelector(".source-drop-marker")).toBeNull();
+
+    fireEvent.pointerUp(grip, { pointerId: 1, clientX: 330, clientY: 180 });
+
+    expect(reorderProfile).not.toHaveBeenCalled();
+    expect(document.body.querySelector(".source-drag-ghost")).toBeNull();
   });
 });

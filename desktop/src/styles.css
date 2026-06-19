@@ -1034,7 +1034,7 @@ kbd.dimmed {
 }
 
 .source-row.dragging {
-  opacity: 0.5;
+  opacity: 0.28;
 }
 
 .source-toggle {
@@ -1089,6 +1089,50 @@ kbd.dimmed {
 .source-grip svg {
   width: 14px;
   height: 14px;
+}
+
+.source-drag-ghost {
+  position: fixed;
+  z-index: 30;
+  pointer-events: none;
+  background: var(--surface-strong);
+  border: 1px solid var(--border);
+  box-shadow: 0 6px 8px rgba(0, 0, 0, 0.28);
+  opacity: 0.96;
+}
+
+.source-drag-ghost .source-toggle input {
+  pointer-events: none;
+}
+
+.source-grip-ghost {
+  cursor: grabbing;
+  background: var(--bg-hover);
+  color: var(--text-muted);
+}
+
+.source-drop-marker {
+  position: fixed;
+  z-index: 31;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow:
+    0 0 0 1px rgba(var(--accent-rgb), 0.2),
+    0 0 14px rgba(var(--accent-rgb), 0.35);
+  pointer-events: none;
+}
+
+.source-drop-marker::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--accent);
+  transform: translate(-1px, -50%);
 }
 
 .source-check {
