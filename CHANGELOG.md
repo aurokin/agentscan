@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+## 0.7.4 - 2026-06-19
+
+### Changed
+
+- Reworked the desktop source menu so configured sources stay visible in the
+  menu, SSH sources can be shown or hidden without deleting their settings, and
+  drag reordering uses a clearer ghost row and insertion marker.
+- Refined desktop empty and offline states. Resolved-empty folders now render a
+  compact "No agents here" placeholder, while offline/no-daemon states avoid
+  implying that a scan completed successfully.
+- Migrated desktop dependency management, local release scripts, and CI/release
+  workflows from npm/package-lock to pnpm/pnpm-lock.
+
+### Fixed
+
+- Kept disabled desktop SSH sources out of the open source set so hidden
+  profiles do not arm live subscriptions or claim dock space.
+- Hardened GitHub Copilot status detection for the current working footer and
+  title working indicator while keeping pane-output status scoped to confirmed
+  Copilot panes.
+- Fixed the pnpm-based desktop app build helper and smoke command so Tauri
+  receives `build` as the subcommand instead of an unexpected argument after
+  `--`.
+
 ## 0.7.3 - 2026-06-11
 
 ### Added
