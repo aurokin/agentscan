@@ -1957,6 +1957,36 @@ fn droid_pane_output_marks_current_prompt_idle_only_after_provider_is_known() {
 }
 
 #[test]
+fn droid_pane_output_marks_current_tmux_footer_idle() {
+    let output = "                       █████████    █████████     ████████    ███   █████████\n\
+         \n\
+                                  v0.156.2 (ctrl+j for changelog)\n\
+         \n\
+                    TIP: Use /context to see your context window usage breakdown\n\
+         \n\
+                         shift+tab to cycle modes · ctrl+N to cycle models\n\
+                              ctrl+L for autonomy · tab for reasoning\n\
+         \n\
+                               Skills (21) ✓  MCPs (0) ✗  AGENTS.md ✓\n\
+         \n\
+         \n\
+         Auto (High) · allow all commands                                       Droid Core (GLM-5.2) (High)\n\
+         ╭──────────────────────────────────────────────────────────────────────────────────────────────────╮\n\
+         │ > Try \"Review the changes in my current branch\"                                                  │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯\n\
+         ? for help                                                                                    TMUX ⧉\n";
+
+    assert_pane_output_status(
+        820,
+        Provider::Droid,
+        "⛬ New Session",
+        output,
+        StatusKind::Idle,
+        super::StatusSource::PaneOutput,
+    );
+}
+
+#[test]
 fn droid_pane_output_marks_current_steer_prompt_busy() {
     // Mirrors a real busy droid frame (v0.134.0): the input box prompt switches to
     // "Enter to steer" during a turn, with a streaming line above it whose verb varies

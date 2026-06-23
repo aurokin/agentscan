@@ -27,7 +27,10 @@ pub(super) fn status(output: &str) -> Option<StatusKind> {
 
 fn droid_current_footer_line(line: &str) -> bool {
     let line = line.trim();
-    line.contains("? for help") && line.contains("IDE")
+    line.contains("? for help")
+        && line
+            .split_whitespace()
+            .any(|token| matches!(token, "IDE" | "TMUX"))
 }
 
 fn droid_current_busy_prompt_line(line: &str) -> bool {

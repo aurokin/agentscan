@@ -26,6 +26,11 @@ Observed idle startup:
 - current idle output includes the Droid banner, version, model/mode row, boxed
   prompt line `│ >`, and footer text containing `? for help` plus `IDE`.
 
+Follow-up probing on `droid 0.156.2` in an isolated tmux server found the same
+`pane_current_command=droid` and `⛬ New Session` title, but the current idle
+footer now ends with `TMUX ⧉` instead of `IDE ◌`. The prompt line still uses the
+boxed `│ >` shape, including placeholder text in a fresh session.
+
 Observed busy state after a short prompt:
 
 - tmux title stayed Droid-owned and later changed to `⛬ Basic Math Question`
@@ -49,7 +54,7 @@ Observed completed state:
 | Metadata aliases `droid`, `factory-droid`, `factory droid` | Strong | Provider identity when wrapper-published | Explicit tmux metadata only |
 | Foreground argv basename `droid` | Strong | Process fallback identity for shell/interpreter panes | Uses existing process-tree fallback rules |
 | Title prefix `⛬ ` | Supporting only | Display label after provider identity | Does not classify generic shell panes by itself |
-| Current boxed `│ >` prompt plus `? for help` / `IDE` footer | Strong after identity | `status.source="pane_output"` idle fallback | Requires known Droid provider and current footer context |
+| Current boxed `│ >` prompt plus `? for help` / `IDE` or `TMUX` footer | Strong after identity | `status.source="pane_output"` idle fallback | Requires known Droid provider and current footer context |
 | Current `Streaming... (Press ESC to stop)` or `│ > Enter to steer` prompt | Strong after identity | Busy fallback | Scoped to known Droid panes and current prompt/footer region |
 | Stale `Streaming...` above a returned idle prompt | Rejected | None | Current idle prompt wins over historical busy text |
 | Generic `Droid` / `Factory` text | Rejected | None | Never establishes provider alone |

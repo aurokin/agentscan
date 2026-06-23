@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Fixed
+
+- Restored Factory Droid pane-output status detection for current tmux footers
+  that end in `TMUX ⧉` instead of `IDE ◌`.
+
 ## 0.7.4 - 2026-06-19
 
 ### Changed
