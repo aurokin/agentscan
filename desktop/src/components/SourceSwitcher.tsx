@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { PointerEvent } from "react";
 import { createPortal } from "react-dom";
+import { MultiClientBadge } from "./MultiClientBadge";
 import { SourceKindIcon } from "./SourceKindIcon";
 import type { DesktopProfileConfig } from "../effect/profileModel";
 import type { Orientation } from "../effect/prefs";
@@ -73,6 +74,7 @@ export function SourceSwitcher({
   triggerShowsSource,
   triggerTone,
   triggerTitle,
+  attachedClientCount = 0,
   orientation,
   labelFor,
   selectProfile,
@@ -85,6 +87,9 @@ export function SourceSwitcher({
   triggerShowsSource: boolean;
   triggerTone: string;
   triggerTitle: string;
+  // Owner source's tmux client count; the badge surfaces only in the horizontal
+  // bar (the vertical strip carries it per folder header instead).
+  attachedClientCount?: number;
   orientation: Orientation;
   // Passed down, never recreated here: it closes over the dock's hostname/
   // preflight label sources.
@@ -378,6 +383,13 @@ export function SourceSwitcher({
         <span className="source-label">
           {triggerShowsSource ? labelFor(triggerProfile) : "Manage sources"}
         </span>
+        {/* Horizontal-only, and only when the trigger names a real source (not the
+            generic "Manage sources" state): the vertical strip shows this per
+            folder header, and the bar displays just the owner source, so the
+            owner's count belongs on its trigger. */}
+        {orientation === "horizontal" && triggerShowsSource ? (
+          <MultiClientBadge count={attachedClientCount} />
+        ) : null}
       </button>
       {isSourceMenuOpen
         ? createPortal(

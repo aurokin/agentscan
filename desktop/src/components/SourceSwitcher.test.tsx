@@ -221,4 +221,44 @@ describe("SourceSwitcher", () => {
     expect(reorderProfile).not.toHaveBeenCalled();
     expect(document.body.querySelector(".source-drag-ghost")).toBeNull();
   });
+
+  it("badges the trigger only in the horizontal bar when it names a source", () => {
+    const baseProps = {
+      sourceMenuItems: [
+        { profile: localProfile, enabled: true, canToggle: false, isOwner: true },
+      ],
+      triggerProfile: localProfile,
+      triggerTone: "idle",
+      triggerTitle: "koopa",
+      labelFor: (profile: DesktopProfileConfig) => (profile.id === "local" ? "koopa" : profile.id),
+      selectProfile: vi.fn(),
+      reorderProfile: vi.fn(),
+      setProfileEnabled: vi.fn(),
+      onOpenSettings: vi.fn(),
+    };
+
+    // Horizontal bar, trigger naming a source, >1 client: badge shows and the
+    // count flows through to the label.
+    const { rerender } = render(
+      <SourceSwitcher {...baseProps} triggerShowsSource orientation="horizontal" attachedClientCount={2} />,
+    );
+    expect(screen.queryByLabelText(", 2 viewers")).not.toBeNull();
+
+    // Vertical strip carries it per folder header instead — no trigger badge.
+    rerender(
+      <SourceSwitcher {...baseProps} triggerShowsSource orientation="vertical" attachedClientCount={2} />,
+    );
+    expect(screen.queryByRole("img")).toBeNull();
+
+    // Generic "Manage sources" trigger names no source — no badge even horizontal.
+    rerender(
+      <SourceSwitcher
+        {...baseProps}
+        triggerShowsSource={false}
+        orientation="horizontal"
+        attachedClientCount={2}
+      />,
+    );
+    expect(screen.queryByRole("img")).toBeNull();
+  });
 });

@@ -1,5 +1,6 @@
 import { GroupedPicker } from "./GroupedPicker";
 import { LiveStrip } from "./LiveStrip";
+import { MultiClientBadge } from "./MultiClientBadge";
 import { SourceKindIcon } from "./SourceKindIcon";
 import {
   connectionTone,
@@ -117,6 +118,15 @@ export function SourceFolders({
                 <SourceKindIcon kind={view.profile.kind} />
               </span>
               <span className="folder-label">{labelFor(view.profile)}</span>
+              {/* This source's own attached-client count (server-level, echoed on
+                  every row). >1 means focus-following is best-effort, so the mark
+                  sits on the specific host rather than a global banner. Gated on
+                  isOpen: only an open folder is subscribed, so only it has a live
+                  count — and the gate also avoids a stale-count flash on the
+                  header as a just-closed folder's live state tears down. */}
+              {view.isOpen ? (
+                <MultiClientBadge count={view.allRows[0]?.attached_client_count ?? 0} />
+              ) : null}
             </button>
             {view.isOpen ? (
               <div className="folder-body">

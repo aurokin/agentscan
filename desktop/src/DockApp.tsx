@@ -382,8 +382,10 @@ function DockApp() {
   const allPickerRows = ownerView?.allRows ?? EMPTY_PICKER_ROWS;
   const pickerRows = ownerView?.rows ?? EMPTY_PICKER_ROWS;
   const pickerStatus: PickerState["status"] = ownerView?.state.status ?? "ready";
-  // Server-level count echoed on every row; >1 means focus-following is
-  // best-effort, so we warn that the live-pane highlight may not be reliable.
+  // Owner source's server-level client count (echoed on every row); >1 means
+  // focus-following is best-effort. The horizontal bar shows only this source, so
+  // its trigger carries the badge; the vertical strip badges each folder from its
+  // own rows instead.
   const attachedClientCount = allPickerRows[0]?.attached_client_count ?? 0;
   // Spin the reconnect affordance while any open source's live client is
   // (re)connecting.
@@ -872,18 +874,6 @@ function DockApp() {
         )}
       </div>
 
-      {attachedClientCount > 1 ? (
-        <div className="client-warning" role="status">
-          <span className="client-warning-icon" aria-hidden="true">
-            ⚠
-          </span>
-          <span>
-            Multiple clients attached to the tmux server — the live-pane highlight
-            follows your most recent one.
-          </span>
-        </div>
-      ) : null}
-
       <footer className="bottombar" data-tauri-drag-region={dragRegion}>
         <SourceSwitcher
           sourceMenuItems={sourceMenuItems}
@@ -891,6 +881,7 @@ function DockApp() {
           triggerShowsSource={triggerShowsSource}
           triggerTone={triggerTone}
           triggerTitle={triggerTitle}
+          attachedClientCount={attachedClientCount}
           orientation={effectiveOrientation}
           labelFor={labelFor}
           selectProfile={(id) => selectProfileSet(id)}

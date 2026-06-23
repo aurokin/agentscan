@@ -534,6 +534,35 @@ p {
   height: 1em;
 }
 
+/* Per-source "multiple viewers" mark, shared by the folder header (vertical) and
+   the footer source trigger (bottom bar). A muted amber people glyph —
+   informational, not an alarm — so a normal two-terminal setup doesn't read as
+   broken. Sized via font-size like the source-kind mark above. */
+.client-badge {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  font-size: 13px;
+  color: var(--dot-busy);
+  opacity: 0.75;
+}
+
+/* The status amber reads fine as a solid dot on the light base but the badge's
+   thin open stroke washes out (~1.5:1), so light gets a darker amber at full
+   opacity to clear the 3:1 non-text-contrast threshold. Dark already passes. */
+:root[data-theme="light"] .client-badge {
+  color: #a37200;
+  opacity: 1;
+}
+
+.client-badge-icon {
+  display: block;
+  width: 1em;
+  height: 1em;
+}
+
 .folder-label {
   flex: 1 1 auto;
   min-width: 0;
@@ -724,12 +753,6 @@ p {
   flex: 0 0 auto;
   max-width: 160px;
 }
-/* The multi-client notice is an informational full-width block authored for the
-   vertical strip; it doesn't fit the bar and isn't an error or staleness signal, so
-   drop it here — it returns verbatim in the vertical strip. */
-.sidebar[data-orientation="horizontal"] .client-warning {
-  display: none;
-}
 /* Live-connection problems (connecting/reconnecting/noDaemon/fatal) and activation
    failures must stay visible even in the bar — the footer dot only reflects CLI
    preflight, not the live picker — but as compact, centered, single-line pills rather
@@ -919,28 +942,6 @@ kbd.dimmed {
 }
 
 /* ---------- Bottom bar ---------- */
-
-/* Caution strip just above the footer: informational, not an error. Uses the
-   warm "busy" dot hue so it reads as a heads-up across both themes. */
-.client-warning {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  flex: 0 0 auto;
-  padding: 8px 12px;
-  border-top: 1px solid var(--border);
-  background: rgba(227, 179, 65, 0.1);
-  color: var(--text-muted);
-  font-size: 11.5px;
-  line-height: 1.35;
-}
-
-.client-warning-icon {
-  color: var(--dot-busy);
-  flex: 0 0 auto;
-  font-size: 12px;
-  line-height: 1.35;
-}
 
 .bottombar {
   display: flex;
