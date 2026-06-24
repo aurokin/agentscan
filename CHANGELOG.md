@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.7.5 - 2026-06-23
+
+### Changed
+
+- Replaced the desktop multi-client banner with per-source badges so connection
+  state stays attached to the source it describes.
+
 ### Fixed
 
 - Restored Factory Droid pane-output status detection for current tmux footers
