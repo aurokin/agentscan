@@ -39,6 +39,68 @@ integration are still needed while the product matures, they should live here
 rather than being developed inside host-specific dotfiles. The host workflow can
 remain unchanged until `agentscan` is ready to replace it.
 
+## Requirements
+
+- **tmux 3.2 or newer.** Live pane updates rely on tmux control-mode
+  `refresh-client -B` subscriptions, introduced in tmux 3.2. On older tmux the
+  daemon still starts but never receives live events, so pane status can appear
+  stale; `agentscan doctor` warns when the installed tmux is too old.
+- **macOS (Apple Silicon) or Linux (x86_64 / ARM64).** Prebuilt CLI binaries are
+  published for those targets only — on an Intel Mac, build from source. The
+  desktop app is macOS Apple Silicon only.
+
+## Install
+
+With [mise](https://mise.jdx.dev/) (uses [ubi](https://github.com/houseabsolute/ubi)
+under the hood):
+
+```sh
+mise use -g ubi:aurokin/agentscan@latest
+```
+
+Or download a tarball for your platform from the
+[latest release](https://github.com/aurokin/agentscan/releases/latest) and verify
+it against `SHA256SUMS` before extracting:
+
+```sh
+# in the directory holding the downloaded tarball and SHA256SUMS
+sha256sum --check SHA256SUMS
+tar -xzf agentscan-aarch64-apple-darwin.tar.gz   # pick the tarball for your platform
+```
+
+Release artifacts:
+
+- `agentscan-aarch64-apple-darwin.tar.gz` — macOS Apple Silicon CLI
+- `agentscan-x86_64-unknown-linux-gnu.tar.gz` — Linux x86_64 CLI
+- `agentscan-aarch64-unknown-linux-gnu.tar.gz` — Linux ARM64 CLI
+- `agentscan-desktop-aarch64-apple-darwin.zip` — macOS desktop app (signed & notarized, Apple Silicon)
+
+### Build from source
+
+Requires a [Rust toolchain](https://rustup.rs/) (edition 2024):
+
+```sh
+cargo build --release
+# binary at target/release/agentscan
+```
+
+## Quickstart
+
+```sh
+# List agent panes across your tmux server (default command)
+agentscan --format text
+
+# Check your environment: tmux version, daemon health, config
+agentscan doctor
+
+# Interactive picker / TUI
+agentscan tui
+```
+
+The first run auto-starts a background daemon that indexes tmux panes over
+control mode; later commands read from it. See `docs/daemon-operations.md` for
+daemon lifecycle and troubleshooting.
+
 ## Docs
 
 - `docs/index.md`: map of the repo's progressively disclosed documentation

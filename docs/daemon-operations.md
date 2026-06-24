@@ -8,6 +8,16 @@ Use this document for operational behavior and troubleshooting. Use
 `docs/architecture.md` for the internal model and `docs/integration.md` for
 machine-readable contracts.
 
+## Prerequisite: tmux 3.2+
+
+The daemon's live-update path uses tmux control-mode `refresh-client -B`
+subscriptions, which were introduced in **tmux 3.2**. On tmux 3.0/3.1 the daemon
+still binds its socket and answers snapshot queries, but it never receives
+control-mode events, so pane status stops tracking live activity and only the
+periodic reconcile (off by default) would refresh it. `agentscan doctor` parses
+the installed tmux version and emits a `warn` on the `tmux.reachable` check below
+3.2 — if live status looks frozen, check there first.
+
 ## Diagnostics (`agentscan doctor`)
 
 `agentscan doctor` is the high-level first stop when discovery, updates, or focus

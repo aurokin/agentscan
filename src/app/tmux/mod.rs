@@ -5,8 +5,11 @@ mod focus;
 mod metadata;
 mod parse;
 
+#[cfg(test)]
+pub(crate) use command::parse_tmux_version;
 pub(crate) use command::{
     default_session_target, list_session_ids, tmux_command, tmux_target_is_missing, tmux_version,
+    tmux_version_supports_subscriptions,
 };
 use command::{
     run_tmux_output, run_tmux_status, run_tmux_text_output, tmux_pane_target_is_missing,

@@ -1,4 +1,8 @@
 use super::*;
+// `daemon status` text output is buffered into a String and emitted through
+// `output::write_stdout`, so a closed pipe surfaces as a recoverable `BrokenPipe`
+// error instead of a `println!` panic. `writeln!` into a String needs this trait.
+use std::fmt::Write as _;
 
 #[derive(Clone)]
 pub(super) struct LifecyclePaths {
@@ -291,11 +295,17 @@ impl StartOutput {
         status: &ipc::LifecycleStatusFrame,
     ) {
         if self == Self::Verbose {
-            match confirmation {
-                StartConfirmation::Started => println!("agentscan daemon started"),
-                StartConfirmation::AlreadyRunning => println!("agentscan daemon already running"),
-            }
-            print_lifecycle_status(paths, status);
+            let mut out = String::new();
+            let _ = match confirmation {
+                StartConfirmation::Started => writeln!(out, "agentscan daemon started"),
+                StartConfirmation::AlreadyRunning => {
+                    writeln!(out, "agentscan daemon already running")
+                }
+            };
+            print_lifecycle_status(&mut out, paths, status);
+            // Best-effort confirmation: the daemon is already started, so a closed
+            // consumer pipe must neither error nor panic here.
+            let _ = output::write_stdout(&out);
         }
     }
 }
@@ -1635,14 +1645,19 @@ pub(crate) fn snapshot_via_socket_path_with_start_command(
     )
 }
 
-fn print_lifecycle_not_running(socket_path: &Path, paths: &LifecyclePaths, reason: &str) {
-    println!("daemon_state: not_running");
-    println!("socket_path: {}", socket_path.display());
-    println!("lock_path: {}", paths.lock_path.display());
-    println!("start_lock_path: {}", paths.start_lock_path.display());
-    println!("log_path: {}", paths.log_path.display());
-    println!("event_log_path: {}", paths.event_log_path.display());
-    println!("reason: {reason}");
+fn print_lifecycle_not_running(
+    out: &mut String,
+    socket_path: &Path,
+    paths: &LifecyclePaths,
+    reason: &str,
+) {
+    let _ = writeln!(out, "daemon_state: not_running");
+    let _ = writeln!(out, "socket_path: {}", socket_path.display());
+    let _ = writeln!(out, "lock_path: {}", paths.lock_path.display());
+    let _ = writeln!(out, "start_lock_path: {}", paths.start_lock_path.display());
+    let _ = writeln!(out, "log_path: {}", paths.log_path.display());
+    let _ = writeln!(out, "event_log_path: {}", paths.event_log_path.display());
+    let _ = writeln!(out, "reason: {reason}");
 }
 
 #[derive(Serialize)]
@@ -2007,8 +2022,9 @@ fn emit_lifecycle_not_running(
 ) -> Result<()> {
     match format {
         OutputFormat::Text => {
-            print_lifecycle_not_running(socket_path, paths, reason);
-            Ok(())
+            let mut out = String::new();
+            print_lifecycle_not_running(&mut out, socket_path, paths, reason);
+            output::write_stdout(&out)
         }
         OutputFormat::Json => output::print_json(&lifecycle_not_running_json(
             socket_path,
@@ -2027,11 +2043,12 @@ fn emit_lifecycle_status(
 ) -> Result<()> {
     match format {
         OutputFormat::Text => {
-            print_lifecycle_status(paths, status);
+            let mut out = String::new();
+            print_lifecycle_status(&mut out, paths, status);
             if include_events {
-                print_recent_observability_events(&status.recent_events);
+                print_recent_observability_events(&mut out, &status.recent_events);
             }
-            Ok(())
+            output::write_stdout(&out)
         }
         OutputFormat::Json => {
             output::print_json(&lifecycle_status_json(paths, status, include_events))
@@ -2071,94 +2088,138 @@ fn control_mode_broker_mode_label(mode: ipc::ControlModeBrokerMode) -> &'static 
     }
 }
 
-fn print_lifecycle_status(paths: &LifecyclePaths, status: &ipc::LifecycleStatusFrame) {
-    println!("daemon_state: {}", lifecycle_state_label(status.state));
-    println!("socket_path: {}", status.identity.socket_path);
-    println!("lock_path: {}", paths.lock_path.display());
-    println!("start_lock_path: {}", paths.start_lock_path.display());
-    println!("log_path: {}", paths.log_path.display());
-    println!("event_log_path: {}", paths.event_log_path.display());
-    println!("pid: {}", status.identity.pid);
-    println!("daemon_start_time: {}", status.identity.daemon_start_time);
-    println!("executable: {}", status.identity.executable);
+fn print_lifecycle_status(
+    out: &mut String,
+    paths: &LifecyclePaths,
+    status: &ipc::LifecycleStatusFrame,
+) {
+    let _ = writeln!(out, "daemon_state: {}", lifecycle_state_label(status.state));
+    let _ = writeln!(out, "socket_path: {}", status.identity.socket_path);
+    let _ = writeln!(out, "lock_path: {}", paths.lock_path.display());
+    let _ = writeln!(out, "start_lock_path: {}", paths.start_lock_path.display());
+    let _ = writeln!(out, "log_path: {}", paths.log_path.display());
+    let _ = writeln!(out, "event_log_path: {}", paths.event_log_path.display());
+    let _ = writeln!(out, "pid: {}", status.identity.pid);
+    let _ = writeln!(
+        out,
+        "daemon_start_time: {}",
+        status.identity.daemon_start_time
+    );
+    let _ = writeln!(out, "executable: {}", status.identity.executable);
     if let Some(executable) = &status.identity.executable_canonical {
-        println!("executable_canonical: {executable}");
+        let _ = writeln!(out, "executable_canonical: {executable}");
     }
-    println!("protocol_version: {}", status.identity.protocol_version);
-    println!(
+    let _ = writeln!(
+        out,
+        "protocol_version: {}",
+        status.identity.protocol_version
+    );
+    let _ = writeln!(
+        out,
         "snapshot_schema_version: {}",
         status.identity.snapshot_schema_version
     );
-    println!("subscriber_count: {}", status.subscriber_count);
+    let _ = writeln!(out, "subscriber_count: {}", status.subscriber_count);
     if let Some(generated_at) = &status.latest_snapshot_generated_at {
-        println!("latest_snapshot_generated_at: {generated_at}");
+        let _ = writeln!(out, "latest_snapshot_generated_at: {generated_at}");
     }
     if let Some(pane_count) = status.latest_snapshot_pane_count {
-        println!("latest_snapshot_pane_count: {pane_count}");
+        let _ = writeln!(out, "latest_snapshot_pane_count: {pane_count}");
     }
     if let Some(source) = &status.latest_snapshot_update_source {
-        println!("latest_snapshot_update_source: {source}");
+        let _ = writeln!(out, "latest_snapshot_update_source: {source}");
     }
     if let Some(detail) = &status.latest_snapshot_update_detail {
-        println!("latest_snapshot_update_detail: {detail}");
+        let _ = writeln!(out, "latest_snapshot_update_detail: {detail}");
     }
     if let Some(duration_ms) = status.latest_snapshot_update_duration_ms {
-        println!("latest_snapshot_update_duration_ms: {duration_ms}");
+        let _ = writeln!(out, "latest_snapshot_update_duration_ms: {duration_ms}");
     }
     if let Some(broker) = &status.control_mode_broker {
-        println!(
+        let _ = writeln!(
+            out,
             "control_mode_broker_mode: {}",
             control_mode_broker_mode_label(broker.mode)
         );
-        println!(
+        let _ = writeln!(
+            out,
             "control_mode_broker_reconnect_count: {}",
             broker.reconnect_count
         );
         if let Some(fallback_count) = broker.fallback_count {
-            println!("control_mode_broker_fallback_count: {fallback_count}");
+            let _ = writeln!(out, "control_mode_broker_fallback_count: {fallback_count}");
         } else {
-            println!("control_mode_broker_fallback_count: unavailable");
+            let _ = writeln!(out, "control_mode_broker_fallback_count: unavailable");
         }
         if let Some(subscriber_count) = broker.subscriber_count {
-            println!("control_mode_broker_subscriber_count: {subscriber_count}");
+            let _ = writeln!(
+                out,
+                "control_mode_broker_subscriber_count: {subscriber_count}"
+            );
         } else {
-            println!("control_mode_broker_subscriber_count: unavailable");
+            let _ = writeln!(out, "control_mode_broker_subscriber_count: unavailable");
         }
         if let Some(primary_session_id) = &broker.primary_session_id {
-            println!("control_mode_broker_primary_session_id: {primary_session_id}");
+            let _ = writeln!(
+                out,
+                "control_mode_broker_primary_session_id: {primary_session_id}"
+            );
         }
         if let Some(coverage_complete) = broker.subscriber_coverage_complete {
-            println!("control_mode_broker_subscriber_coverage_complete: {coverage_complete}");
+            let _ = writeln!(
+                out,
+                "control_mode_broker_subscriber_coverage_complete: {coverage_complete}"
+            );
         }
         if let Some(desired_count) = broker.desired_subscriber_count {
-            println!("control_mode_broker_desired_subscriber_count: {desired_count}");
+            let _ = writeln!(
+                out,
+                "control_mode_broker_desired_subscriber_count: {desired_count}"
+            );
         }
         if let Some(active_count) = broker.active_subscriber_count {
-            println!("control_mode_broker_active_subscriber_count: {active_count}");
+            let _ = writeln!(
+                out,
+                "control_mode_broker_active_subscriber_count: {active_count}"
+            );
         }
         if let Some(missing_session_ids) = &broker.missing_subscriber_session_ids
             && !missing_session_ids.is_empty()
         {
-            println!(
+            let _ = writeln!(
+                out,
                 "control_mode_broker_missing_subscriber_session_ids: {}",
                 missing_session_ids.join(",")
             );
         }
         if let Some(dead_count) = broker.dead_subscriber_count {
-            println!("control_mode_broker_dead_subscriber_count: {dead_count}");
+            let _ = writeln!(
+                out,
+                "control_mode_broker_dead_subscriber_count: {dead_count}"
+            );
         }
         if let Some(last_reconcile_at) = &broker.last_subscriber_reconcile_at {
-            println!("control_mode_broker_last_subscriber_reconcile_at: {last_reconcile_at}");
+            let _ = writeln!(
+                out,
+                "control_mode_broker_last_subscriber_reconcile_at: {last_reconcile_at}"
+            );
         }
         if let Some(next_monitor_ms) = broker.next_subscriber_monitor_in_ms {
-            println!("control_mode_broker_next_subscriber_monitor_in_ms: {next_monitor_ms}");
+            let _ = writeln!(
+                out,
+                "control_mode_broker_next_subscriber_monitor_in_ms: {next_monitor_ms}"
+            );
         }
         if let Some(next_reconcile_ms) = broker.next_reconcile_in_ms {
-            println!("control_mode_broker_next_reconcile_in_ms: {next_reconcile_ms}");
+            let _ = writeln!(
+                out,
+                "control_mode_broker_next_reconcile_in_ms: {next_reconcile_ms}"
+            );
         }
         if let Some(subscribers) = &broker.subscribers {
             for subscriber in subscribers {
-                println!(
+                let _ = writeln!(
+                    out,
                     "control_mode_broker_subscriber: session_id={} pid={} restart_count={} dead={} last_line_at={} last_event_at={}",
                     subscriber.session_id,
                     subscriber.pid,
@@ -2170,185 +2231,248 @@ fn print_lifecycle_status(paths: &LifecyclePaths, status: &ipc::LifecycleStatusF
             }
         }
         if let Some(reason) = &broker.disabled_reason {
-            println!("control_mode_broker_disabled_reason: {reason}");
+            let _ = writeln!(out, "control_mode_broker_disabled_reason: {reason}");
         }
     }
-    print_runtime_telemetry(status.runtime_telemetry.as_ref());
-    print_snapshot_observability(status.latest_snapshot_observability.as_ref());
+    print_runtime_telemetry(out, status.runtime_telemetry.as_ref());
+    print_snapshot_observability(out, status.latest_snapshot_observability.as_ref());
     if let Some(reason) = status.unavailable_reason {
-        println!("unavailable_reason: {}", unavailable_reason_label(reason));
+        let _ = writeln!(
+            out,
+            "unavailable_reason: {}",
+            unavailable_reason_label(reason)
+        );
     }
     if let Some(message) = &status.message {
-        println!("message: {message}");
+        let _ = writeln!(out, "message: {message}");
     }
 }
 
-fn print_runtime_telemetry(telemetry: Option<&ipc::RuntimeTelemetryFrame>) {
+fn print_runtime_telemetry(out: &mut String, telemetry: Option<&ipc::RuntimeTelemetryFrame>) {
     let Some(telemetry) = telemetry else {
-        println!("runtime_telemetry: unavailable");
+        let _ = writeln!(out, "runtime_telemetry: unavailable");
         return;
     };
 
-    println!(
+    let _ = writeln!(
+        out,
         "control_event_refresh_count: {}",
         telemetry.control_event_refresh_count
     );
-    println!(
+    let _ = writeln!(
+        out,
         "control_event_batch_count: {}",
         telemetry.control_event_batch_count
     );
-    println!(
+    let _ = writeln!(
+        out,
         "control_event_line_count: {}",
         telemetry.control_event_line_count
     );
-    println!(
+    let _ = writeln!(
+        out,
         "control_event_output_line_count: {}",
         telemetry.control_event_output_line_count
     );
-    println!(
+    let _ = writeln!(
+        out,
         "control_event_output_byte_count: {}",
         telemetry.control_event_output_byte_count
     );
-    println!(
+    let _ = writeln!(
+        out,
         "control_event_pane_count: {}",
         telemetry.control_event_pane_count
     );
-    println!(
+    let _ = writeln!(
+        out,
         "control_event_title_count: {}",
         telemetry.control_event_title_count
     );
-    println!(
+    let _ = writeln!(
+        out,
         "control_event_window_count: {}",
         telemetry.control_event_window_count
     );
-    println!(
+    let _ = writeln!(
+        out,
         "control_event_session_count: {}",
         telemetry.control_event_session_count
     );
-    println!(
+    let _ = writeln!(
+        out,
         "control_event_resnapshot_count: {}",
         telemetry.control_event_resnapshot_count
     );
-    println!(
+    let _ = writeln!(
+        out,
         "control_event_ignored_count: {}",
         telemetry.control_event_ignored_count
     );
-    println!(
+    let _ = writeln!(
+        out,
         "reconcile_attempt_count: {}",
         telemetry.reconcile_attempt_count
     );
-    println!("reconcile_noop_count: {}", telemetry.reconcile_noop_count);
-    println!(
+    let _ = writeln!(
+        out,
+        "reconcile_noop_count: {}",
+        telemetry.reconcile_noop_count
+    );
+    let _ = writeln!(
+        out,
         "reconcile_changed_snapshot_count: {}",
         telemetry.reconcile_changed_snapshot_count
     );
-    println!(
+    let _ = writeln!(
+        out,
         "targeted_title_update_count: {}",
         telemetry.targeted_title_update_count
     );
-    println!(
+    let _ = writeln!(
+        out,
         "targeted_pane_refresh_count: {}",
         telemetry.targeted_pane_refresh_count
     );
-    println!(
+    let _ = writeln!(
+        out,
         "targeted_scope_refresh_count: {}",
         telemetry.targeted_scope_refresh_count
     );
-    println!(
+    let _ = writeln!(
+        out,
         "full_snapshot_refresh_count: {}",
         telemetry.full_snapshot_refresh_count
     );
-    println!(
+    let _ = writeln!(
+        out,
         "targeted_refresh_fallback_to_full_count: {}",
         telemetry.targeted_refresh_fallback_to_full_count
     );
     print_optional_counter(
+        out,
         "subscriber_monitor_count",
         telemetry.subscriber_monitor_count,
     );
-    print_optional_counter("subscriber_start_count", telemetry.subscriber_start_count);
     print_optional_counter(
+        out,
+        "subscriber_start_count",
+        telemetry.subscriber_start_count,
+    );
+    print_optional_counter(
+        out,
         "subscriber_reattach_count",
         telemetry.subscriber_reattach_count,
     );
     print_optional_counter(
+        out,
         "subscriber_attach_failure_count",
         telemetry.subscriber_attach_failure_count,
     );
-    print_optional_counter("subscriber_exit_count", telemetry.subscriber_exit_count);
-    println!("broker_fallback_count: {}", telemetry.broker_fallback_count);
-    println!(
+    print_optional_counter(
+        out,
+        "subscriber_exit_count",
+        telemetry.subscriber_exit_count,
+    );
+    let _ = writeln!(
+        out,
+        "broker_fallback_count: {}",
+        telemetry.broker_fallback_count
+    );
+    let _ = writeln!(
+        out,
         "pane_output_capture_attempt_count: {}",
         telemetry.pane_output_capture_attempt_count
     );
-    println!(
+    let _ = writeln!(
+        out,
         "pane_output_capture_hit_count: {}",
         telemetry.pane_output_capture_hit_count
     );
-    println!(
+    let _ = writeln!(
+        out,
         "pane_output_capture_error_count: {}",
         telemetry.pane_output_capture_error_count
     );
 }
 
-fn print_optional_counter(label: &str, value: Option<u64>) {
+fn print_optional_counter(out: &mut String, label: &str, value: Option<u64>) {
     match value {
-        Some(value) => println!("{label}: {value}"),
-        None => println!("{label}: unavailable"),
+        Some(value) => {
+            let _ = writeln!(out, "{label}: {value}");
+        }
+        None => {
+            let _ = writeln!(out, "{label}: unavailable");
+        }
     }
 }
 
-fn print_snapshot_observability(observability: Option<&ipc::SnapshotObservabilityFrame>) {
+fn print_snapshot_observability(
+    out: &mut String,
+    observability: Option<&ipc::SnapshotObservabilityFrame>,
+) {
     let Some(observability) = observability else {
         return;
     };
 
-    println!(
+    let _ = writeln!(
+        out,
         "latest_snapshot_provider_known_count: {}",
         observability.provider_known_count
     );
-    println!(
+    let _ = writeln!(
+        out,
         "latest_snapshot_provider_unknown_count: {}",
         observability.provider_unknown_count
     );
-    println!(
+    let _ = writeln!(
+        out,
         "latest_snapshot_status_source_pane_metadata_count: {}",
         observability.status_source_pane_metadata_count
     );
-    println!(
+    let _ = writeln!(
+        out,
         "latest_snapshot_status_source_tmux_title_count: {}",
         observability.status_source_tmux_title_count
     );
-    println!(
+    let _ = writeln!(
+        out,
         "latest_snapshot_status_source_pane_output_count: {}",
         observability.status_source_pane_output_count
     );
-    println!(
+    let _ = writeln!(
+        out,
         "latest_snapshot_status_source_not_checked_count: {}",
         observability.status_source_not_checked_count
     );
-    println!(
+    let _ = writeln!(
+        out,
         "latest_snapshot_proc_fallback_not_run_count: {}",
         observability.proc_fallback_not_run_count
     );
-    println!(
+    let _ = writeln!(
+        out,
         "latest_snapshot_proc_fallback_skipped_count: {}",
         observability.proc_fallback_skipped_count
     );
-    println!(
+    let _ = writeln!(
+        out,
         "latest_snapshot_proc_fallback_no_match_count: {}",
         observability.proc_fallback_no_match_count
     );
-    println!(
+    let _ = writeln!(
+        out,
         "latest_snapshot_proc_fallback_error_count: {}",
         observability.proc_fallback_error_count
     );
-    println!(
+    let _ = writeln!(
+        out,
         "latest_snapshot_proc_fallback_resolved_count: {}",
         observability.proc_fallback_resolved_count
     );
     for (provider, stats) in &observability.per_provider {
-        println!(
+        let _ = writeln!(
+            out,
             "latest_snapshot_provider[{provider}]: panes={} matched(metadata={},command={},title={},proc={}) status(metadata={},title={},output={},not_checked={})",
             stats.pane_count,
             stats.matched_pane_metadata_count,
@@ -2363,14 +2487,18 @@ fn print_snapshot_observability(observability: Option<&ipc::SnapshotObservabilit
     }
 }
 
-fn print_recent_observability_events(events: &[ipc::DaemonObservabilityEventFrame]) {
-    println!("recent_events:");
+fn print_recent_observability_events(
+    out: &mut String,
+    events: &[ipc::DaemonObservabilityEventFrame],
+) {
+    let _ = writeln!(out, "recent_events:");
     if events.is_empty() {
-        println!("  <empty>");
+        let _ = writeln!(out, "  <empty>");
         return;
     }
     for event in events {
-        println!(
+        let _ = writeln!(
+            out,
             "  {} source={} detail={} refresh={} changed={} published={} duration_ms={}",
             event.at,
             event.source,
@@ -3325,8 +3453,9 @@ pub(crate) fn daemon_stop() -> Result<()> {
     match lifecycle_status_from_socket(&socket_path, LIFECYCLE_CONNECT_TIMEOUT)? {
         LifecycleQuery::NotRunning(reason) => {
             remove_stale_socket_if_present(&socket_path)?;
-            print_lifecycle_not_running(&socket_path, &paths, &reason);
-            Ok(())
+            let mut out = String::new();
+            print_lifecycle_not_running(&mut out, &socket_path, &paths, &reason);
+            output::write_stdout(&out)
         }
         LifecycleQuery::Incompatible {
             message,
@@ -3401,8 +3530,7 @@ fn finish_daemon_stop(
 ) -> Result<()> {
     remove_stale_socket_if_present(socket_path)?;
     remove_matching_identity(&paths.identity_path, identity)?;
-    println!("agentscan daemon stopped");
-    Ok(())
+    output::write_stdout("agentscan daemon stopped\n")
 }
 
 pub(crate) fn daemon_restart() -> Result<()> {

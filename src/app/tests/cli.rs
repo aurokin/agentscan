@@ -586,3 +586,43 @@ fn tmux_set_metadata_accepts_provider_aliases() {
         }
     }
 }
+
+/// A writer that fails every write with `BrokenPipe`, emulating a downstream
+/// consumer (e.g. `head`) that closed the pipe before we finished writing.
+struct BrokenPipeStdout;
+
+impl std::io::Write for BrokenPipeStdout {
+    fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+        Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn one_shot_output_surfaces_broken_pipe_instead_of_panicking() {
+    // Regression guard: one-shot output used to `println!`, which panics (exit 101 +
+    // backtrace) when the consumer closes the pipe early. It must now return a
+    // recognizable `BrokenPipe` error that `run()` swallows as a clean exit.
+    let err = output::write_text(BrokenPipeStdout, "anything\n")
+        .expect_err("broken pipe must surface as an error, not a panic");
+    assert!(
+        super::commands::is_broken_pipe(&err),
+        "broken pipe error must be recognized by the run() clean-exit guard"
+    );
+}
+
+#[test]
+fn one_shot_output_writes_all_bytes_to_a_healthy_consumer() {
+    let mut buf = Vec::new();
+    output::write_text(&mut buf, "first\nsecond\n").expect("healthy write must succeed");
+    assert_eq!(buf, b"first\nsecond\n");
+}
+
+#[test]
+fn non_broken_pipe_errors_are_not_treated_as_clean_exit() {
+    let err = anyhow::anyhow!("some unrelated failure");
+    assert!(!super::commands::is_broken_pipe(&err));
+}

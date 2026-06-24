@@ -247,3 +247,31 @@ proptest! {
         prop_assert_eq!(classify::strip_known_status_glyph(&input), tail.trim_start());
     }
 }
+
+#[test]
+fn parses_tmux_version_strings_seen_in_the_wild() {
+    // tmux uses letter suffixes for point releases and a `next-` prefix for
+    // pre-releases; both must reduce to a comparable major.minor.
+    assert_eq!(tmux::parse_tmux_version("3.2"), Some((3, 2)));
+    assert_eq!(tmux::parse_tmux_version("3.2a"), Some((3, 2)));
+    assert_eq!(tmux::parse_tmux_version("3.6b"), Some((3, 6)));
+    assert_eq!(tmux::parse_tmux_version("next-3.4"), Some((3, 4)));
+    assert_eq!(tmux::parse_tmux_version("3"), Some((3, 0)));
+    assert_eq!(tmux::parse_tmux_version("10.12"), Some((10, 12)));
+    assert_eq!(tmux::parse_tmux_version("master"), None);
+    assert_eq!(tmux::parse_tmux_version(""), None);
+}
+
+#[test]
+fn flags_pre_3_2_tmux_as_lacking_subscription_support() {
+    // 3.2 is the floor where `refresh-client -B` subscriptions exist.
+    assert_eq!(tmux::tmux_version_supports_subscriptions("3.0"), Some(false));
+    assert_eq!(tmux::tmux_version_supports_subscriptions("3.1c"), Some(false));
+    assert_eq!(tmux::tmux_version_supports_subscriptions("2.9a"), Some(false));
+    assert_eq!(tmux::tmux_version_supports_subscriptions("3.2"), Some(true));
+    assert_eq!(tmux::tmux_version_supports_subscriptions("3.2a"), Some(true));
+    assert_eq!(tmux::tmux_version_supports_subscriptions("3.6b"), Some(true));
+    assert_eq!(tmux::tmux_version_supports_subscriptions("4.0"), Some(true));
+    // Unparseable versions are "unknown", not "too old".
+    assert_eq!(tmux::tmux_version_supports_subscriptions("master"), None);
+}
