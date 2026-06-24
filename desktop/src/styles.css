@@ -129,12 +129,13 @@
   color: var(--text);
 }
 
-/* Dark mode: the tmux session headers and the pane-index suffix (4.1, 5.1, …)
-   read too dim at the default gray — hard to see over the translucent glass and
-   underwhelming even on solid dark. Lift them close to white, a step below the
-   agent titles so a little hierarchy remains. Scoped to dark; light keeps its
-   black labels above. */
-:root[data-theme="dark"] :is(.group-header, .agent-suffix) {
+/* Dark mode: the pane-index suffix (4.1, 5.1, …) reads too dim at the default
+   gray — hard to see over the translucent glass and underwhelming even on solid
+   dark. Lift it close to white, a step below the agent titles so a little
+   hierarchy remains. The project/session header is deliberately left muted (it's
+   a quiet divider, not content), so only the suffix is lifted here. Scoped to
+   dark; light keeps its black labels above. */
+:root[data-theme="dark"] .agent-suffix {
   color: #d2d2d9;
 }
 
@@ -452,10 +453,13 @@ p {
 }
 
 .group-header {
+  /* A quiet section caption: sentence case, a step smaller than the agent titles,
+     and muted so it reads as a label over its rows without competing with them.
+     (Uppercase + letter-spacing + near-white read too loud in this dense list.) */
   padding: 4px 8px 2px;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
-  color: var(--text-dim);
+  color: var(--text-muted);
   letter-spacing: 0.01em;
 }
 
@@ -477,11 +481,20 @@ p {
 }
 
 .folder-header {
-  display: flex;
+  /* Mirror .agent-row's leading rail (14px dot track + 16px icon track + 8px
+     gaps) so the host dot/mark and the agent dot/logo beneath it land on one
+     vertical line. Flex-vs-grid was producing accidental 3px dot / 4px icon /
+     2px label drift; a shared track template removes all three at once. The
+     trailing `auto` track seats the optional MultiClientBadge at the row end. */
+  display: grid;
+  grid-template-columns: 14px 16px minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 6px 8px;
+  /* Tighter bottom than top so the header hugs its first project label below,
+     matching .group-header's child-hugging asymmetry (the 16px mark no longer
+     inflates the box the way the old 20px one did). */
+  padding: 6px 8px 4px;
   border: none;
   border-radius: 8px;
   background: transparent;
@@ -497,22 +510,24 @@ p {
   background: var(--bg-hover);
 }
 
-.folder-header .status-dot {
-  flex: 0 0 auto;
-}
+/* The host dot centers in its 14px grid track via the base .status-dot
+   `justify-self: center`, matching the agent-row dot rail — no folder-specific
+   rule needed now that the header is a grid. */
 
 /* Kind icon (house = local / server = ssh): disambiguates folders whose
    connection-derived labels coincide, e.g. a local hostname matching a
    configured SSH host. */
 .folder-mark {
-  flex: 0 0 auto;
   display: inline-grid;
   place-items: center;
-  width: 20px;
-  height: 20px;
+  /* 16px box + 14px glyph so the mark matches the agent rows' 16px provider
+     logos in both footprint and rail position (it sits in the same 16px grid
+     track), letting parent and child icons read as one column. */
+  width: 16px;
+  height: 16px;
   border-radius: 6px;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 14px;
   opacity: 0.55;
 }
 
@@ -564,7 +579,7 @@ p {
 }
 
 .folder-label {
-  flex: 1 1 auto;
+  /* Grows via the header's minmax(0, 1fr) track now (was flex: 1 1 auto). */
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
