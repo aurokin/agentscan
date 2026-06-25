@@ -89,6 +89,7 @@ fn title_activity_should_stay_empty(
 ) -> bool {
     (matches!(provider, Some(Provider::Pi)) && title_analysis.stripped.starts_with("π - "))
         || matches!(provider, Some(Provider::Antigravity))
+        || matches!(provider, Some(Provider::Aider))
         || matches!(provider, Some(Provider::Hermes))
         || (matches!(provider, Some(Provider::Opencode))
             && (title_analysis.opencode_label.is_some() || title_analysis.stripped == "OpenCode"))
@@ -171,6 +172,7 @@ fn infer_activity_label(provider: Option<Provider>, label: &str) -> Option<Strin
     match provider {
         Some(Provider::Codex) => Some(label.to_string()),
         Some(Provider::Claude)
+        | Some(Provider::Aider)
         | Some(Provider::Gemini)
         | Some(Provider::Opencode)
         | Some(Provider::Copilot)

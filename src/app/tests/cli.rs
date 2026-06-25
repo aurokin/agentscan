@@ -556,6 +556,8 @@ fn tmux_set_metadata_accepts_provider_aliases() {
         ("cursor_cli", Provider::CursorCli),
         ("cursor-cli", Provider::CursorCli),
         ("cursor-agent", Provider::CursorCli),
+        ("aider", Provider::Aider),
+        ("aider-chat", Provider::Aider),
         ("copilot", Provider::Copilot),
         ("github-copilot", Provider::Copilot),
         ("antigravity", Provider::Antigravity),

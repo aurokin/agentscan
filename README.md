@@ -166,6 +166,10 @@ It can:
 - classify Grok and Hermes panes from provider-specific command/title/metadata
   evidence while keeping pane-output status fallback provider-scoped
 - resolve unresolved Claude Code launcher panes from targeted process evidence, including Claude Code CLI paths and tmux teammate-spawn argv/env markers
+- classify Aider panes from exact `aider` commands, explicit metadata aliases,
+  `python -m aider`, known `aider-chat` package paths, and Python
+  console-script invocations
+  while keeping status unknown unless explicit metadata publishes state
 - classify Antigravity CLI panes from the exact native `agy` command while
   keeping status unknown until wrapper metadata or a future provider-scoped
   output fallback supplies direct state
@@ -270,7 +274,7 @@ Supported icon modes:
 
 - `emoji`: default provider icons for terminals without Nerd Font coverage
 - `nerd-font`: current Nerd Font provider icons
-- `nerd-font-patched`: custom agent glyphs from the `agent-icons-v8` patched
+- `nerd-font-patched`: custom agent glyphs from the `agent-icons-v9` patched
   font manifest; requires a terminal font patched with those private-use
   codepoints
 

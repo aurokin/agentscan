@@ -323,6 +323,7 @@ mod tests {
                 Some(Provider::Claude),
                 PaneStatus::title(StatusKind::Busy),
             ),
+            pane("%11", Some(Provider::Aider), PaneStatus::not_checked()),
         ];
         let mut capture = FakePaneOutputCapture::default()
             .with_output("%2", codex_idle_output())
@@ -351,6 +352,7 @@ mod tests {
         assert_eq!(panes[6].status, PaneStatus::pane_output(StatusKind::Idle));
         assert_eq!(panes[7].status, PaneStatus::pane_output(StatusKind::Idle));
         assert_eq!(panes[8].status, PaneStatus::pane_output(StatusKind::Idle));
+        assert_eq!(panes[10].status, PaneStatus::not_checked());
     }
 
     #[test]

@@ -850,6 +850,231 @@ fn proc_fallback_resolves_hermes_from_user_local_hermes_agent_shim_path() {
 }
 
 #[test]
+fn proc_fallback_resolves_aider_from_python_module_invocation() {
+    let mut pane = proc_fallback_pane(770, "python3.12", "aider");
+    let inspector = FakeProcessInspector::with_single_process(
+        770,
+        771,
+        "python3.12",
+        &[
+            "/Users/auro/.local/share/uv/tools/aider-chat/bin/python3",
+            "-m",
+            "aider",
+        ],
+    );
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_eq!(pane.provider, Some(Provider::Aider));
+    assert_eq!(pane.status.kind, StatusKind::Unknown);
+    assert_eq!(
+        pane.classification.matched_by,
+        Some(super::ClassificationMatchKind::ProcProcessTree)
+    );
+    assert_eq!(
+        pane.classification.reasons,
+        vec!["proc_descendant_argv=python -m aider"]
+    );
+    assert_eq!(
+        pane.diagnostics.proc_fallback.outcome,
+        super::ProcFallbackOutcome::Resolved
+    );
+}
+
+#[test]
+fn proc_fallback_does_not_treat_script_args_as_aider_module_invocation() {
+    let mut pane = proc_fallback_pane(779, "python3.12", "aider");
+    let inspector = FakeProcessInspector::with_single_process(
+        779,
+        780,
+        "python3.12",
+        &["/usr/bin/python3", "/tmp/helper.py", "-m", "aider"],
+    );
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_unresolved_ambiguous_pane(&pane, "aider");
+    assert_eq!(
+        pane.diagnostics.proc_fallback.outcome,
+        super::ProcFallbackOutcome::NoMatch
+    );
+}
+
+#[test]
+fn proc_fallback_does_not_treat_string_args_as_aider_module_invocation() {
+    let mut pane = proc_fallback_pane(781, "python3.12", "aider");
+    let inspector = FakeProcessInspector::with_single_process(
+        781,
+        782,
+        "python3.12",
+        &["/usr/bin/python3", "/tmp/helper.py", "--message=-m aider"],
+    );
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_unresolved_ambiguous_pane(&pane, "aider");
+    assert_eq!(
+        pane.diagnostics.proc_fallback.outcome,
+        super::ProcFallbackOutcome::NoMatch
+    );
+}
+
+#[test]
+fn proc_fallback_resolves_aider_from_known_python_console_script_path() {
+    let mut pane = proc_fallback_pane(771, "python3.12", "aider");
+    let inspector = FakeProcessInspector::with_single_process(
+        771,
+        772,
+        "python3.12",
+        &[
+            "/Users/auro/.local/share/pipx/venvs/aider-chat/bin/python3",
+            "/Users/auro/.local/bin/aider",
+        ],
+    );
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_eq!(pane.provider, Some(Provider::Aider));
+    assert_eq!(
+        pane.classification.reasons,
+        vec!["proc_descendant_argv=/Users/auro/.local/bin/aider"]
+    );
+}
+
+#[test]
+fn proc_fallback_resolves_aider_from_venv_console_script_path() {
+    let mut pane = proc_fallback_pane(783, "python3.12", "aider");
+    let inspector = FakeProcessInspector::with_single_process(
+        783,
+        784,
+        "python3.12",
+        &[
+            "/Users/auro/code/project/.venv/bin/python3",
+            "/Users/auro/code/project/.venv/bin/aider",
+        ],
+    );
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_eq!(pane.provider, Some(Provider::Aider));
+    assert_eq!(
+        pane.classification.reasons,
+        vec!["proc_descendant_argv=/Users/auro/code/project/.venv/bin/aider"]
+    );
+}
+
+#[test]
+fn proc_fallback_does_not_treat_venv_aider_argument_as_console_script() {
+    let mut pane = proc_fallback_pane(787, "python3.12", "aider");
+    let inspector = FakeProcessInspector::with_single_process(
+        787,
+        788,
+        "python3.12",
+        &[
+            "/Users/auro/code/project/.venv/bin/python3",
+            "-c",
+            "print('not aider')",
+            "/Users/auro/code/project/.venv/bin/aider",
+        ],
+    );
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_unresolved_ambiguous_pane(&pane, "aider");
+    assert_eq!(
+        pane.diagnostics.proc_fallback.outcome,
+        super::ProcFallbackOutcome::NoMatch
+    );
+}
+
+#[test]
+fn proc_fallback_resolves_aider_from_site_packages_path() {
+    let mut pane = proc_fallback_pane(773, "python3.12", "aider");
+    let inspector = FakeProcessInspector::with_single_process(
+        773,
+        774,
+        "python3.12",
+        &[
+            "/Users/auro/.local/share/pipx/venvs/aider-chat/bin/python3",
+            "/Users/auro/.local/share/pipx/venvs/aider-chat/lib/python3.12/site-packages/aider/main.py",
+        ],
+    );
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_eq!(pane.provider, Some(Provider::Aider));
+    assert_eq!(
+        pane.classification.reasons,
+        vec![
+            "proc_descendant_argv=/Users/auro/.local/share/pipx/venvs/aider-chat/lib/python3.12/site-packages/aider/main.py"
+        ]
+    );
+}
+
+#[test]
+fn proc_fallback_does_not_treat_arbitrary_aider_module_files_as_aider() {
+    let mut pane = proc_fallback_pane(785, "python3.12", "aider");
+    let inspector = FakeProcessInspector::with_single_process(
+        785,
+        786,
+        "python3.12",
+        &[
+            "/Users/auro/.local/share/pipx/venvs/aider-chat/bin/python3",
+            "/Users/auro/.local/share/pipx/venvs/aider-chat/lib/python3.12/site-packages/aider/args.py",
+        ],
+    );
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_unresolved_ambiguous_pane(&pane, "aider");
+    assert_eq!(
+        pane.diagnostics.proc_fallback.outcome,
+        super::ProcFallbackOutcome::NoMatch
+    );
+}
+
+#[test]
+fn proc_fallback_resolves_aider_from_uv_tool_console_script_path() {
+    let mut pane = proc_fallback_pane(775, "python3.12", "aider");
+    let inspector = FakeProcessInspector::with_single_process(
+        775,
+        776,
+        "python3.12",
+        &[
+            "/Users/auro/.local/share/uv/tools/aider-chat/bin/python3",
+            "/Users/auro/.local/share/uv/tools/aider-chat/bin/aider",
+        ],
+    );
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_eq!(pane.provider, Some(Provider::Aider));
+    assert_eq!(
+        pane.classification.reasons,
+        vec!["proc_descendant_argv=/Users/auro/.local/share/uv/tools/aider-chat/bin/aider"]
+    );
+}
+
+#[test]
+fn proc_fallback_does_not_treat_arbitrary_aider_paths_as_aider() {
+    let mut pane = proc_fallback_pane(777, "python3.12", "aider");
+    let inspector = FakeProcessInspector::with_single_process(
+        777,
+        778,
+        "python3.12",
+        &["/opt/python/bin/python3", "/workspace/tools/aider"],
+    );
+
+    classify::apply_proc_fallback(&mut pane, &inspector);
+
+    assert_unresolved_ambiguous_pane(&pane, "aider");
+    assert_eq!(
+        pane.diagnostics.proc_fallback.outcome,
+        super::ProcFallbackOutcome::NoMatch
+    );
+}
+
+#[test]
 fn hermes_title_text_alone_does_not_classify_provider() {
     assert!(classify::classify_provider(None, "zsh", "Hermes Agent").is_none());
     assert!(classify::classify_provider(None, "zsh", "⚕ gpt-5.5").is_none());
@@ -1879,6 +2104,50 @@ fn hermes_display_metadata_preserves_published_label_activity_state() {
 
     assert_eq!(hermes.label, "Review auth flow");
     assert_eq!(hermes.activity_label.as_deref(), Some("Review auth flow"));
+}
+
+#[test]
+fn aider_display_metadata_keeps_inherited_title_without_activity_state() {
+    let aider = classify::display_metadata(
+        Some(Provider::Aider),
+        Some(super::ClassificationMatchKind::PaneCurrentCommand),
+        None,
+        "worktree-aider",
+        "aider",
+        "ai",
+    );
+
+    assert_eq!(aider.label, "worktree-aider");
+    assert_eq!(aider.activity_label, None);
+}
+
+#[test]
+fn aider_display_metadata_preserves_published_label_activity_state() {
+    let aider = classify::display_metadata(
+        Some(Provider::Aider),
+        Some(super::ClassificationMatchKind::PaneMetadata),
+        Some("Review CLI support"),
+        "worktree-aider",
+        "aider",
+        "ai",
+    );
+
+    assert_eq!(aider.label, "Review CLI support");
+    assert_eq!(aider.activity_label.as_deref(), Some("Review CLI support"));
+}
+
+#[test]
+fn aider_pane_output_does_not_infer_status_from_generic_prompt() {
+    let mut aider = pane_output_status_pane(820, Provider::Aider, "aider");
+
+    classify::apply_pane_output_status_fallback(
+        &mut aider,
+        "Aider v0.86.0\n\
+         > \n",
+    );
+
+    assert_eq!(aider.status.kind, StatusKind::Unknown);
+    assert_eq!(aider.status.source, super::StatusSource::NotChecked);
 }
 
 #[test]

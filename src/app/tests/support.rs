@@ -221,6 +221,15 @@ impl FakeProcessInspector {
         }
     }
 
+    fn with_single_process(
+        root_pid: u32,
+        process_pid: u32,
+        command: &str,
+        argv: &[&str],
+    ) -> Self {
+        Self::with_processes([(root_pid, vec![process_evidence(process_pid, command, argv)])])
+    }
+
     fn with_foreground(
         descendants: impl IntoIterator<Item = (u32, Vec<String>)>,
         foreground: impl IntoIterator<Item = (String, Vec<String>)>,
@@ -252,6 +261,15 @@ impl FakeProcessInspector {
 
     fn foreground_calls(&self) -> Vec<String> {
         self.foreground_calls.borrow().clone()
+    }
+}
+
+fn process_evidence(pid: u32, command: &str, argv: &[&str]) -> proc::ProcessEvidence {
+    proc::ProcessEvidence {
+        pid,
+        command: command.to_string(),
+        argv: argv.iter().map(|arg| (*arg).to_string()).collect(),
+        env: Vec::new(),
     }
 }
 
