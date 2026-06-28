@@ -33,6 +33,7 @@ optional enrichment, not prerequisites.
 | Pi | metadata, upstream-observed Greek titles, package/shim paths, Linux `PI_CODING_AGENT=true` | current editor footer/retry/working loader fallback | Bare `pi` commands are not enough. |
 | Grok | metadata, command/title shapes from local probing | running body marker and current footer fallback | Approval footer remains conservative unless directly supported. |
 | Hermes | metadata, command/path aliases | current prompt fallback and wrapper-published labels | Title text alone is not provider identity. |
+| Aider | metadata, exact `aider` command, `python -m aider`, known `aider-chat` package paths, Python console-script invocations | unknown unless explicit metadata publishes state | Upstream prompt is a generic `> ` shape, so pane output is not a durable status source. |
 | Factory Droid | metadata, exact `droid` command | current Droid prompt/footer fallback | `⛬ ...` titles are display labels only after identity is known. |
 
 ## Rejected Or Supporting-Only Signals

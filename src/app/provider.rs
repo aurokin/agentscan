@@ -10,6 +10,8 @@ use super::IconMode;
 pub(crate) enum Provider {
     Codex,
     Claude,
+    #[value(alias = "aider-chat")]
+    Aider,
     Gemini,
     #[value(alias = "agy", alias = "google-antigravity")]
     Antigravity,
@@ -124,7 +126,7 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
     ProviderInfo {
         provider: Provider::Codex,
         canonical_name: "codex",
-        // Patched glyphs vendor agent-font-patcher's `agent-icons-v8` manifest.
+        // Patched glyphs vendor agent-font-patcher's `agent-icons-v9` manifest.
         icons: ProviderIconSet::new("💭", "\u{f4ac}", "\u{100040}"),
         metadata_aliases: &["codex"],
         command_aliases: &[ProviderCommandAlias::new("codex", true)],
@@ -141,6 +143,16 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
         title_prefixes: &["Claude Code | ", "Claude | "],
         title_aliases: &["Claude Code"],
         generic_display_labels: &[],
+    },
+    ProviderInfo {
+        provider: Provider::Aider,
+        canonical_name: "aider",
+        icons: ProviderIconSet::new("🧭", "\u{f14d}", "\u{10005A}"),
+        metadata_aliases: &["aider", "aider-chat", "aider chat"],
+        command_aliases: &[ProviderCommandAlias::new("aider", false)],
+        title_prefixes: &[],
+        title_aliases: &[],
+        generic_display_labels: &["Aider", "aider"],
     },
     ProviderInfo {
         provider: Provider::Gemini,

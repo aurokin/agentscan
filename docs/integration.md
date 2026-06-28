@@ -61,7 +61,7 @@ classification, daemon socket snapshots, or machine-readable pane records.
 
 Supported modes are `emoji`, `nerd-font`, and `nerd-font-patched`. The default is
 `emoji`. The patched Nerd Font mode emits provider glyphs from the
-`agent-icons-v8` manifest and requires a terminal font patched with those
+`agent-icons-v9` manifest and requires a terminal font patched with those
 private-use codepoints.
 
 Resolution precedence is:
@@ -253,10 +253,11 @@ Launch wrappers may publish explicit pane-local tmux user options:
 Field semantics:
 
 - `provider`: normalized provider identity. Canonical values are `codex`,
-  `claude`, `gemini`, `antigravity`, `opencode`, `copilot`, `cursor_cli`,
-  `pi`, `grok`, `hermes`, and `droid`. The metadata helper also accepts useful
-  aliases such as `agy`, `github-copilot`, `cursor-cli`, `cursor-agent`,
-  `pi-coding-agent`, `hermes-agent`, and `factory-droid`, then writes the
+  `claude`, `aider`, `gemini`, `antigravity`, `opencode`, `copilot`,
+  `cursor_cli`, `pi`, `grok`, `hermes`, and `droid`. The metadata helper also
+  accepts useful aliases such as `aider-chat`, `agy`, `github-copilot`,
+  `cursor-cli`, `cursor-agent`, `pi-coding-agent`, `hermes-agent`, and
+  `factory-droid`, then writes the
   canonical value.
 - `label`: short user-facing display text for list and TUI surfaces. It
   should describe the task or conversation only when the wrapper has that
@@ -363,6 +364,11 @@ Provider-specific guidance should stay narrow and correctness-driven:
   Linux `OPENCODE` environment marker. Its default terminal title does not
   publish busy or idle state; keep status unknown unless explicit tmux metadata
   supplies state.
+- Aider should remain plug-and-play from the exact `aider` command,
+  `python -m aider`, explicit metadata aliases, known `aider-chat` package paths,
+  and Python console-script invocations. Its upstream prompt is a generic `> `
+  prompt and should not drive pane-output status; keep status unknown unless
+  explicit tmux metadata publishes state.
 - GitHub Copilot and Cursor are closed-source enough that support should be
   based on empirical probing. Copilot baseline status can fall back to
   provider-scoped pane output after identity is known: current prompt/footer

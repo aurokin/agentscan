@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- Added Aider provider detection from exact `aider` commands, wrapper metadata,
+  targeted Python process evidence for `python -m aider`, known `aider-chat`
+  package paths, and Python console-script invocations.
+- Added Aider desktop provider SVGs and mapped its patched Nerd Font provider
+  glyph to `U+10005A` from `agent-icons-v9`.
+
 ## 0.7.5 - 2026-06-23
 
 ### Changed

@@ -46,6 +46,10 @@ The near-term provider evidence pass is complete:
 - Factory Droid CLI support shipped from empirical local probing, exact command
   evidence, supporting title labels, and provider-scoped pane-output status
   fallback.
+- Aider support shipped from upstream source evidence, exact command and package
+  path evidence, targeted `python -m aider` process evidence, and Python
+  console-script invocation evidence. Status remains conservative because
+  upstream exposes only a generic prompt surface.
 
 The remaining provider-side integration issues are intentionally deep-roadmap:
 
@@ -249,6 +253,20 @@ Completed source-analysis baselines:
   launchers whose argv points at the Hermes package or bin shim. Pane-output
   status should remain provider-scoped and current-prompt anchored after
   identity is known.
+- Aider: source analysis at `~/code/upstream/aider` commit
+  `5dc9490bb35f9729ef2c95d00a19ccd30c26339c` found the open-source Apache-2.0
+  package `aider-chat`, console script `aider = "aider.main:main"`, and module
+  entrypoint `aider/__main__.py` for `python -m aider`. Upstream install docs
+  cover the preferred installer plus `uv tool install`, `pipx install`, and
+  `python -m pip install` flows, all using `aider-chat`.
+- Aider does not appear to set a stable terminal title, process title, tmux
+  metadata, OSC status, bottom toolbar, or structured live state. The interactive
+  prompt is built through prompt_toolkit and renders a generic `> ` prompt, which
+  is too common to use as status evidence. Baseline detection should therefore
+  accept explicit metadata aliases, exact foreground `aider` commands, targeted
+  `python -m aider` evidence, known `aider-chat` package paths, and Python
+  console-script invocations, while leaving status `unknown` unless wrapper
+  metadata publishes state or upstream later adds a durable live-state signal.
 
 Closed-source providers require empirical probing and conservative inference.
 For each provider, capture snapshots while idle, busy, waiting for input, and

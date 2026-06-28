@@ -10,6 +10,8 @@ import antigravity from "./assets/providers/antigravity.svg";
 import claude from "./assets/providers/claude.svg";
 import gemini from "./assets/providers/gemini.svg";
 
+import aiderLight from "./assets/providers/aider-light.svg";
+import aiderDark from "./assets/providers/aider-dark.svg";
 import codexLight from "./assets/providers/codex-light.svg";
 import codexDark from "./assets/providers/codex-dark.svg";
 import copilotLight from "./assets/providers/copilot-light.svg";
@@ -36,6 +38,7 @@ const PROVIDER_LOGOS: Record<string, LogoEntry> = {
   antigravity,
   claude,
   gemini,
+  aider: { light: aiderLight, dark: aiderDark },
   codex: { light: codexLight, dark: codexDark },
   copilot: { light: copilotLight, dark: copilotDark },
   cursor_cli: { light: cursorCliLight, dark: cursorCliDark },

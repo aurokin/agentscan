@@ -434,9 +434,9 @@ Delivered baseline:
 - targeted process-tree fallback for unresolved `node`, `bun`, and `python3`
   launcher panes, including Claude Code binary-path and teammate-spawn evidence
 - provider-specific plug-and-play hardening for Gemini CLI, GitHub Copilot CLI,
-  Cursor CLI, Pi, opencode, Antigravity, Grok, Hermes, and Factory Droid from
-  upstream source evidence or local probing, while keeping weak status inference
-  conservative
+  Cursor CLI, Pi, opencode, Antigravity, Grok, Hermes, Aider, and Factory Droid
+  from upstream source evidence or local probing, while keeping weak status
+  inference conservative
 - provider-specific pane-output status fallback for already-identified
   supported providers, including current idle and busy prompt/footer shapes
   while ignoring stale output
@@ -444,7 +444,7 @@ Delivered baseline:
   decisions
 - provider icon modes through CLI/env/config, with `emoji` as default and
   `agentscan providers --format json` exposing all marker data, including the
-  custom patched Nerd Font `agent-icons-v8` codepoints
+  custom patched Nerd Font `agent-icons-v9` codepoints
 - configurable 16-slot picker key order through `picker_keys` in the core config
   file, with the previous `1 2 3 4 5 Q E R F G T Z X C V B` order preserved as
   the default shared contract
