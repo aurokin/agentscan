@@ -48,6 +48,7 @@ fn classifier_for(provider: Provider) -> Option<PaneOutputClassifier> {
     match provider {
         Provider::Codex => Some(codex::status),
         Provider::Claude => Some(claude::status),
+        Provider::Aider => None,
         Provider::Copilot => Some(copilot::status),
         Provider::CursorCli => Some(cursor_cli::status),
         Provider::Gemini => Some(gemini::status),

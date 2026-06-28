@@ -14,6 +14,35 @@ pub(super) fn provider_match_from_proc_evidence(
         return Some(provider_match);
     }
 
+    if process_has_aider_module_invocation(process) {
+        return Some(ProviderMatch::single_reason(
+            Provider::Aider,
+            ClassificationMatchKind::ProcProcessTree,
+            ClassificationConfidence::High,
+            format!("{source_reason_prefix}_argv=python -m aider"),
+        ));
+    }
+
+    if let Some(arg) = process_aider_console_script_arg(process) {
+        return Some(proc_provider_arg_match(
+            Provider::Aider,
+            source_reason_prefix,
+            arg,
+        ));
+    }
+
+    if let Some(arg) = process
+        .argv
+        .iter()
+        .find(|arg| aider_arg_has_known_package_path(arg))
+    {
+        return Some(proc_provider_arg_match(
+            Provider::Aider,
+            source_reason_prefix,
+            arg,
+        ));
+    }
+
     if process.argv.first().is_some_and(|arg| {
         claude_argv0_has_binary_shape(arg)
             || command_basename(arg).is_some_and(|command| command.eq_ignore_ascii_case("claude"))
@@ -271,6 +300,38 @@ const HERMES_ARG_PATTERNS: ProcArgPathPatterns = ProcArgPathPatterns {
     ],
 };
 
+const AIDER_PACKAGE_ARG_PATTERNS: ProcArgPathPatterns = ProcArgPathPatterns {
+    contains: &[],
+    suffixes: &[
+        "/site-packages/aider/main.py",
+        "/site-packages/aider/__main__.py",
+        "/aider-chat/bin/aider",
+    ],
+    node_module_files: &[],
+    bin_shims: &[],
+};
+
+const AIDER_CONSOLE_SCRIPT_PATTERNS: ProcArgPathPatterns = ProcArgPathPatterns {
+    contains: &[],
+    suffixes: &[
+        "/.local/bin/aider",
+        "/.venv/bin/aider",
+        "/venv/bin/aider",
+        "/aider-chat/bin/aider",
+    ],
+    node_module_files: &[],
+    bin_shims: &[BinShimPattern {
+        binary: "aider",
+        direct_bin_dirs: &[
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/.local/bin",
+        ],
+        allow_node_manager_bin: false,
+    }],
+};
+
 const OPENCODE_ARG_PATTERNS: ProcArgPathPatterns = ProcArgPathPatterns {
     contains: &[],
     suffixes: &[
@@ -406,6 +467,16 @@ fn hermes_arg_has_known_package_path(arg: &str) -> bool {
     arg_matches_patterns(&lower, &HERMES_ARG_PATTERNS)
 }
 
+fn aider_arg_has_known_package_path(arg: &str) -> bool {
+    let lower = normalize_proc_arg(arg);
+    arg_matches_patterns(&lower, &AIDER_PACKAGE_ARG_PATTERNS)
+}
+
+fn aider_arg_has_console_script_path(arg: &str) -> bool {
+    let lower = normalize_proc_arg(arg);
+    arg_matches_patterns(&lower, &AIDER_CONSOLE_SCRIPT_PATTERNS)
+}
+
 fn opencode_arg_has_known_package_path(arg: &str) -> bool {
     let lower = normalize_proc_arg(arg);
     arg_matches_patterns(&lower, &OPENCODE_ARG_PATTERNS)
@@ -519,6 +590,107 @@ fn process_has_opencode_env(process: &proc::ProcessEvidence) -> bool {
             .is_some_and(|role| matches!(role.trim(), "main" | "worker"))
         || process_env_value(process, "OPENCODE_RUN_ID")
             .is_some_and(|run_id| !run_id.trim().is_empty())
+}
+
+fn process_has_aider_module_invocation(process: &proc::ProcessEvidence) -> bool {
+    process_command_is_python(process) && argv_has_module_invocation(&process.argv, "aider")
+}
+
+fn process_aider_console_script_arg(process: &proc::ProcessEvidence) -> Option<&str> {
+    if !process_command_is_python(process) {
+        return None;
+    }
+    let script = argv_python_script_operand(&process.argv)?;
+    aider_arg_has_console_script_path(script).then_some(script)
+}
+
+fn process_command_is_python(process: &proc::ProcessEvidence) -> bool {
+    command_is_python(&process.command)
+        || process
+            .argv
+            .first()
+            .and_then(|argv0| command_basename(argv0))
+            .is_some_and(|command| command_is_python(&command))
+}
+
+fn command_is_python(command: &str) -> bool {
+    let command = command.trim().to_ascii_lowercase();
+    let command = match command_basename(&command) {
+        Some(basename) => basename,
+        None => command,
+    };
+    if matches!(command.as_str(), "python" | "python3") {
+        return true;
+    }
+
+    command
+        .strip_prefix("python3.")
+        .is_some_and(|suffix| !suffix.is_empty() && suffix.chars().all(|ch| ch.is_ascii_digit()))
+}
+
+fn argv_has_module_invocation(argv: &[String], module: &str) -> bool {
+    matches!(python_entrypoint(argv), Some(PythonEntrypoint::Module(candidate)) if candidate == module)
+}
+
+fn argv_python_script_operand(argv: &[String]) -> Option<&str> {
+    match python_entrypoint(argv) {
+        Some(PythonEntrypoint::Script(script)) => Some(script),
+        Some(PythonEntrypoint::Module(_)) | None => None,
+    }
+}
+
+enum PythonEntrypoint<'a> {
+    Module(&'a str),
+    Script(&'a str),
+}
+
+fn python_entrypoint(argv: &[String]) -> Option<PythonEntrypoint<'_>> {
+    let mut index = if argv
+        .first()
+        .and_then(|argv0| command_basename(argv0))
+        .is_some_and(|command| command_is_python(&command))
+    {
+        1
+    } else {
+        0
+    };
+
+    while let Some(arg) = argv.get(index).map(String::as_str) {
+        if arg == "--" {
+            return argv
+                .get(index + 1)
+                .map(String::as_str)
+                .map(PythonEntrypoint::Script);
+        }
+        if arg == "-m" {
+            return argv
+                .get(index + 1)
+                .map(String::as_str)
+                .map(PythonEntrypoint::Module);
+        }
+        if let Some(module) = arg.strip_prefix("-m")
+            && !module.is_empty()
+        {
+            return Some(PythonEntrypoint::Module(module));
+        }
+        if matches!(arg, "-" | "-c") {
+            return None;
+        }
+        if !arg.starts_with('-') {
+            return Some(PythonEntrypoint::Script(arg));
+        }
+
+        if python_option_consumes_next_arg(arg) {
+            index += 1;
+        }
+        index += 1;
+    }
+
+    None
+}
+
+fn python_option_consumes_next_arg(arg: &str) -> bool {
+    matches!(arg, "-Q" | "-W" | "-X" | "--check-hash-based-pycs")
 }
 
 fn process_env_value<'a>(process: &'a proc::ProcessEvidence, key: &str) -> Option<&'a str> {

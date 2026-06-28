@@ -46,6 +46,19 @@ fn classifies_from_command() {
         super::ClassificationConfidence::High,
         "exact agy binary match should be high confidence"
     );
+
+    let aider =
+        classify::classify_provider(None, "aider", "").expect("aider should classify as Aider");
+    assert_eq!(aider.provider, Provider::Aider);
+    assert_eq!(
+        aider.matched_by,
+        super::ClassificationMatchKind::PaneCurrentCommand
+    );
+    assert_eq!(
+        aider.confidence,
+        super::ClassificationConfidence::High,
+        "exact aider binary match should be high confidence"
+    );
 }
 
 #[test]
@@ -69,6 +82,10 @@ fn rejects_suffixed_binaries_for_generic_word_providers() {
     assert!(
         classify::classify_provider(None, "droid-helper", "").is_none(),
         "droid suffix should not classify as Droid"
+    );
+    assert!(
+        classify::classify_provider(None, "aider-helper", "").is_none(),
+        "aider suffix should not classify as Aider"
     );
 }
 
@@ -398,6 +415,9 @@ fn provider_metadata_table_covers_aliases_commands_and_summary_order() {
     for (alias, expected) in [
         ("codex", Provider::Codex),
         ("claude", Provider::Claude),
+        ("aider", Provider::Aider),
+        ("aider-chat", Provider::Aider),
+        ("aider chat", Provider::Aider),
         ("gemini", Provider::Gemini),
         ("antigravity", Provider::Antigravity),
         ("agy", Provider::Antigravity),
@@ -464,6 +484,7 @@ fn provider_metadata_table_covers_aliases_commands_and_summary_order() {
         vec![
             Provider::Codex,
             Provider::Claude,
+            Provider::Aider,
             Provider::Gemini,
             Provider::Antigravity,
             Provider::Opencode,
@@ -483,6 +504,7 @@ fn provider_summaries_expose_display_markers_and_aliases() {
 
     assert_eq!(summaries.len(), super::provider_summary_order().count());
     assert_codex_provider_summary(&summaries);
+    assert_aider_provider_summary(&summaries);
     assert_droid_provider_summary(&summaries);
 }
 
@@ -512,6 +534,32 @@ fn assert_codex_provider_summary(summaries: &[super::ProviderSummary]) {
     );
 }
 
+fn assert_aider_provider_summary(summaries: &[super::ProviderSummary]) {
+    let aider = summaries
+        .iter()
+        .find(|summary| summary.provider == Provider::Aider)
+        .expect("aider summary should be present");
+    assert_eq!(aider.name, "aider");
+    assert_eq!(aider.display_marker, "\u{f14d}");
+    assert_eq!(aider.display_marker_codepoints, ["U+F14D"]);
+    assert_eq!(aider.active_icon_mode, IconMode::Emoji);
+    assert_eq!(aider.active_marker, "🧭");
+    assert_eq!(aider.active_marker_codepoints, ["U+1F9ED"]);
+    assert_eq!(aider.icons.emoji.marker, "🧭");
+    assert_eq!(aider.icons.emoji.codepoints, ["U+1F9ED"]);
+    assert_eq!(aider.icons.nerd_font.marker, "\u{f14d}");
+    assert_eq!(aider.icons.nerd_font.codepoints, ["U+F14D"]);
+    assert_eq!(aider.icons.nerd_font_patched.marker, "\u{10005A}");
+    assert_eq!(aider.icons.nerd_font_patched.codepoints, ["U+10005A"]);
+    assert_eq!(aider.metadata_aliases, ["aider", "aider-chat", "aider chat"]);
+    assert!(
+        aider
+            .command_aliases
+            .iter()
+            .any(|alias| alias.name == "aider" && !alias.allow_suffix)
+    );
+}
+
 fn assert_droid_provider_summary(summaries: &[super::ProviderSummary]) {
     let droid = summaries
         .iter()
@@ -532,10 +580,11 @@ fn assert_droid_provider_summary(summaries: &[super::ProviderSummary]) {
 }
 
 #[test]
-fn patched_provider_icons_follow_agent_icons_v8_manifest() {
+fn patched_provider_icons_follow_agent_icons_v9_manifest() {
     let expected = [
         (Provider::Codex, "\u{100040}", ["U+100040"]),
         (Provider::Claude, "\u{100041}", ["U+100041"]),
+        (Provider::Aider, "\u{10005A}", ["U+10005A"]),
         (Provider::Gemini, "\u{100044}", ["U+100044"]),
         (Provider::Antigravity, "\u{10004C}", ["U+10004C"]),
         (Provider::Opencode, "\u{100043}", ["U+100043"]),

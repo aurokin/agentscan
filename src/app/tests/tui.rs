@@ -69,6 +69,7 @@ fn provider_display_marker_uses_emoji_by_default() {
         &[
             (Provider::Codex, "💭"),
             (Provider::Claude, "👾"),
+            (Provider::Aider, "🧭"),
             (Provider::Gemini, "✨"),
             (Provider::Antigravity, "🛸"),
             (Provider::Copilot, "🛫"),
@@ -90,6 +91,7 @@ fn provider_display_marker_supports_nerd_font_mode() {
         &[
             (Provider::Codex, "\u{f4ac}"),
             (Provider::Claude, "\u{f0bc9}"),
+            (Provider::Aider, "\u{f14d}"),
             (Provider::Gemini, "\u{e370}"),
             (Provider::Antigravity, "\u{f02af}"),
             (Provider::Copilot, "\u{ec1e}"),
@@ -110,6 +112,7 @@ fn provider_display_marker_supports_nerd_font_patched_mode() {
         &[
             (Provider::Codex, "\u{100040}"),
             (Provider::Claude, "\u{100041}"),
+            (Provider::Aider, "\u{10005A}"),
             (Provider::Gemini, "\u{100044}"),
             (Provider::Antigravity, "\u{10004C}"),
             (Provider::Copilot, "\u{100049}"),
