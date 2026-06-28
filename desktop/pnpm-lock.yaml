@@ -10,7 +10,7 @@ importers:
     dependencies:
       '@effect-atom/atom-react':
         specifier: ^0.5.0
-        version: 0.5.0(@effect/experimental@0.58.0(@effect/platform@0.94.5(effect@3.21.3))(effect@3.21.3))(@effect/platform@0.94.5(effect@3.21.3))(@effect/rpc@0.73.2(@effect/platform@0.94.5(effect@3.21.3))(effect@3.21.3))(effect@3.21.3)(react@19.2.6)(scheduler@0.27.0)
+        version: 0.5.0(@effect/experimental@0.58.0(@effect/platform@0.94.5(effect@3.21.4))(effect@3.21.4))(@effect/platform@0.94.5(effect@3.21.4))(@effect/rpc@0.73.2(@effect/platform@0.94.5(effect@3.21.4))(effect@3.21.4))(effect@3.21.4)(react@19.2.6)(scheduler@0.27.0)
       '@tauri-apps/api':
         specifier: 2.11.0
         version: 2.11.0
@@ -18,8 +18,8 @@ importers:
         specifier: ^2.3.1
         version: 2.3.2
       effect:
-        specifier: ^3.21.2
-        version: 3.21.3
+        specifier: ^3.21.4
+        version: 3.21.4
       react:
         specifier: 19.2.6
         version: 19.2.6
@@ -543,8 +543,8 @@ packages:
   dom-accessibility-api@0.5.16:
     resolution: {integrity: sha512-X7BJ2yElsnOJ30pZF4uIIDfBEVgF4XEBxL9Bxhy6dnrm5hkzqmsWHGTiHqRiITNhMyFLyAiWndIJP7Z1NTteDg==}
 
-  effect@3.21.3:
-    resolution: {integrity: sha512-RqwU7WnJ6CqYhyjpOVJA5vh1Sgkn6eVECO6mnD0EjlbWcC2M3LJaPglXXr13Rdo/Y+B+wTEPzGRYFNL2xKxNeQ==}
+  effect@3.21.4:
+    resolution: {integrity: sha512-B89v/xSgPbl1J2Ai2u18jxq3odpFauU1rC6/eSs4FeNHi72kwKdJp12VGigvRV2lK+kRnx+OOz41XV8guZd4gQ==}
 
   entities@8.0.0:
     resolution: {integrity: sha512-zwfzJecQ/Uej6tusMqwAqU/6KL2XaB2VZ2Jg54Je6ahNBGNH6Ek6g3jjNCF0fG9EWQKGZNddNjU5F1ZQn/sBnA==}
@@ -1001,10 +1001,10 @@ snapshots:
 
   '@csstools/css-tokenizer@4.0.0': {}
 
-  '@effect-atom/atom-react@0.5.0(@effect/experimental@0.58.0(@effect/platform@0.94.5(effect@3.21.3))(effect@3.21.3))(@effect/platform@0.94.5(effect@3.21.3))(@effect/rpc@0.73.2(@effect/platform@0.94.5(effect@3.21.3))(effect@3.21.3))(effect@3.21.3)(react@19.2.6)(scheduler@0.27.0)':
+  '@effect-atom/atom-react@0.5.0(@effect/experimental@0.58.0(@effect/platform@0.94.5(effect@3.21.4))(effect@3.21.4))(@effect/platform@0.94.5(effect@3.21.4))(@effect/rpc@0.73.2(@effect/platform@0.94.5(effect@3.21.4))(effect@3.21.4))(effect@3.21.4)(react@19.2.6)(scheduler@0.27.0)':
     dependencies:
-      '@effect-atom/atom': 0.5.3(@effect/experimental@0.58.0(@effect/platform@0.94.5(effect@3.21.3))(effect@3.21.3))(@effect/platform@0.94.5(effect@3.21.3))(@effect/rpc@0.73.2(@effect/platform@0.94.5(effect@3.21.3))(effect@3.21.3))(effect@3.21.3)
-      effect: 3.21.3
+      '@effect-atom/atom': 0.5.3(@effect/experimental@0.58.0(@effect/platform@0.94.5(effect@3.21.4))(effect@3.21.4))(@effect/platform@0.94.5(effect@3.21.4))(@effect/rpc@0.73.2(@effect/platform@0.94.5(effect@3.21.4))(effect@3.21.4))(effect@3.21.4)
+      effect: 3.21.4
       react: 19.2.6
       scheduler: 0.27.0
     transitivePeerDependencies:
@@ -1012,30 +1012,30 @@ snapshots:
       - '@effect/platform'
       - '@effect/rpc'
 
-  '@effect-atom/atom@0.5.3(@effect/experimental@0.58.0(@effect/platform@0.94.5(effect@3.21.3))(effect@3.21.3))(@effect/platform@0.94.5(effect@3.21.3))(@effect/rpc@0.73.2(@effect/platform@0.94.5(effect@3.21.3))(effect@3.21.3))(effect@3.21.3)':
+  '@effect-atom/atom@0.5.3(@effect/experimental@0.58.0(@effect/platform@0.94.5(effect@3.21.4))(effect@3.21.4))(@effect/platform@0.94.5(effect@3.21.4))(@effect/rpc@0.73.2(@effect/platform@0.94.5(effect@3.21.4))(effect@3.21.4))(effect@3.21.4)':
     dependencies:
-      '@effect/experimental': 0.58.0(@effect/platform@0.94.5(effect@3.21.3))(effect@3.21.3)
-      '@effect/platform': 0.94.5(effect@3.21.3)
-      '@effect/rpc': 0.73.2(@effect/platform@0.94.5(effect@3.21.3))(effect@3.21.3)
-      effect: 3.21.3
+      '@effect/experimental': 0.58.0(@effect/platform@0.94.5(effect@3.21.4))(effect@3.21.4)
+      '@effect/platform': 0.94.5(effect@3.21.4)
+      '@effect/rpc': 0.73.2(@effect/platform@0.94.5(effect@3.21.4))(effect@3.21.4)
+      effect: 3.21.4
 
-  '@effect/experimental@0.58.0(@effect/platform@0.94.5(effect@3.21.3))(effect@3.21.3)':
+  '@effect/experimental@0.58.0(@effect/platform@0.94.5(effect@3.21.4))(effect@3.21.4)':
     dependencies:
-      '@effect/platform': 0.94.5(effect@3.21.3)
-      effect: 3.21.3
+      '@effect/platform': 0.94.5(effect@3.21.4)
+      effect: 3.21.4
       uuid: 11.1.1
 
-  '@effect/platform@0.94.5(effect@3.21.3)':
+  '@effect/platform@0.94.5(effect@3.21.4)':
     dependencies:
-      effect: 3.21.3
+      effect: 3.21.4
       find-my-way-ts: 0.1.6
       msgpackr: 1.12.1
       multipasta: 0.2.7
 
-  '@effect/rpc@0.73.2(@effect/platform@0.94.5(effect@3.21.3))(effect@3.21.3)':
+  '@effect/rpc@0.73.2(@effect/platform@0.94.5(effect@3.21.4))(effect@3.21.4)':
     dependencies:
-      '@effect/platform': 0.94.5(effect@3.21.3)
-      effect: 3.21.3
+      '@effect/platform': 0.94.5(effect@3.21.4)
+      effect: 3.21.4
       msgpackr: 1.12.1
 
   '@emnapi/core@1.10.0':
@@ -1322,7 +1322,7 @@ snapshots:
 
   dom-accessibility-api@0.5.16: {}
 
-  effect@3.21.3:
+  effect@3.21.4:
     dependencies:
       '@standard-schema/spec': 1.1.0
       fast-check: 3.23.2
