@@ -113,6 +113,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      # `cargo audit` is a cargo subcommand, so cargo must be on PATH. The hosted
+      # ubuntu-latest image preinstalls Rust today, but install it explicitly (as
+      # the rust/desktop jobs do) so this gate does not silently depend on the
+      # runner image keeping a preinstalled toolchain.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install cargo-audit
         uses: taiki-e/install-action@v2
         with:
