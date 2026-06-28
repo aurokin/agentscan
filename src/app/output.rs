@@ -1,15 +1,30 @@
 use super::*;
 
+/// Write one-shot command output to stdout, surfacing the I/O error (notably
+/// `BrokenPipe`) instead of panicking the way `println!`/`print!` do. The CLI's
+/// top-level broken-pipe handling in `commands::run` turns that into a clean exit,
+/// so piping into `head` or quitting a pager early no longer aborts with exit 101
+/// and a backtrace. This mirrors the subscribe stream's discipline (see
+/// `lifecycle::write_subscription_event_json_line`) for the one-shot output paths.
+pub(super) fn write_stdout(text: &str) -> Result<()> {
+    write_text(std::io::stdout().lock(), text)
+}
+
+/// Writer-generic core of [`write_stdout`], split out so the broken-pipe path is
+/// testable without a real closed pipe.
+pub(super) fn write_text(mut writer: impl Write, text: &str) -> Result<()> {
+    writer.write_all(text.as_bytes())?;
+    writer.flush()?;
+    Ok(())
+}
+
 pub(super) fn emit_snapshot(
     snapshot: &SnapshotEnvelope,
     format: OutputFormat,
     icon_mode: IconMode,
 ) -> Result<()> {
     match format {
-        OutputFormat::Text => {
-            print_list_text(&snapshot.panes, icon_mode);
-            Ok(())
-        }
+        OutputFormat::Text => print_list_text(&snapshot.panes, icon_mode),
         OutputFormat::Json => print_json(snapshot),
     }
 }
@@ -20,64 +35,66 @@ pub(super) fn emit_providers(
     icon_mode: IconMode,
 ) -> Result<()> {
     match format {
-        OutputFormat::Text => {
-            print_providers_text(providers, icon_mode);
-            Ok(())
-        }
+        OutputFormat::Text => print_providers_text(providers, icon_mode),
         OutputFormat::Json => print_json(providers),
     }
 }
 
 pub(super) fn emit_picker_rows(rows: &[picker::PickerRow], format: OutputFormat) -> Result<()> {
     match format {
-        OutputFormat::Text => {
-            print_picker_rows_text(rows);
-            Ok(())
-        }
+        OutputFormat::Text => print_picker_rows_text(rows),
         OutputFormat::Json => print_json(rows),
     }
 }
 
-fn print_list_text(panes: &[PaneRecord], icon_mode: IconMode) {
+fn print_list_text(panes: &[PaneRecord], icon_mode: IconMode) -> Result<()> {
     if panes.is_empty() {
-        println!("No matching tmux panes.");
-        return;
+        return write_stdout("No matching tmux panes.\n");
     }
 
+    let mut lines = Vec::with_capacity(panes.len());
     for pane in panes {
         let provider = provider_display_marker(pane.provider, icon_mode);
 
-        println!(
+        lines.push(format!(
             "{} {}:{}.{} - {}",
             provider,
             pane.location.session_name,
             pane.location.window_index,
             pane.location.pane_index,
             pane.display_label()
-        );
+        ));
     }
+
+    let mut text = lines.join("\n");
+    text.push('\n');
+    write_stdout(&text)
 }
 
-fn print_picker_rows_text(rows: &[picker::PickerRow]) {
+fn print_picker_rows_text(rows: &[picker::PickerRow]) -> Result<()> {
     if rows.is_empty() {
-        println!("No matching tmux panes.");
-        return;
+        return write_stdout("No matching tmux panes.\n");
     }
 
+    let mut lines = Vec::with_capacity(rows.len());
     for row in rows {
         let provider = row
             .provider
             .map(|provider| provider.to_string())
             .unwrap_or_else(|| "unknown".to_string());
-        println!(
+        lines.push(format!(
             "[{}] {} {} {} - {}",
             row.key,
             row.status.kind.as_str(),
             provider,
             picker_row_location_text(row),
             row.display_label
-        );
+        ));
     }
+
+    let mut text = lines.join("\n");
+    text.push('\n');
+    write_stdout(&text)
 }
 
 fn picker_row_location_text(row: &picker::PickerRow) -> String {
@@ -90,17 +107,21 @@ fn picker_row_location_text(row: &picker::PickerRow) -> String {
     }
 }
 
-fn print_providers_text(providers: &[ProviderSummary], icon_mode: IconMode) {
-    println!("icons: {icon_mode}");
+fn print_providers_text(providers: &[ProviderSummary], icon_mode: IconMode) -> Result<()> {
+    let mut lines = vec![format!("icons: {icon_mode}")];
     for provider in providers {
         let marker = provider_marker(provider.provider, icon_mode);
         let codepoints = marker_codepoints(marker).join(" ");
-        println!("{} {} ({codepoints})", marker, provider.name);
+        lines.push(format!("{} {} ({codepoints})", marker, provider.name));
     }
+
+    let mut text = lines.join("\n");
+    text.push('\n');
+    write_stdout(&text)
 }
 
-pub(super) fn print_inspect_text(pane: &PaneRecord) {
-    print!("{}", inspect_text(pane));
+pub(super) fn print_inspect_text(pane: &PaneRecord) -> Result<()> {
+    write_stdout(&inspect_text(pane))
 }
 
 pub(super) fn inspect_text(pane: &PaneRecord) -> String {
@@ -237,36 +258,39 @@ pub(super) fn inspect_text(pane: &PaneRecord) -> String {
 }
 
 pub(super) fn print_json<T: Serialize + ?Sized>(value: &T) -> Result<()> {
-    println!(
-        "{}",
-        serde_json::to_string_pretty(value).context("failed to serialize JSON output")?
-    );
-    Ok(())
+    let mut text =
+        serde_json::to_string_pretty(value).context("failed to serialize JSON output")?;
+    text.push('\n');
+    write_stdout(&text)
 }
 
 pub(super) fn print_snapshot_summary_text(snapshot: &SnapshotEnvelope) -> Result<()> {
     let summary = snapshot::summarize_snapshot(snapshot)?;
 
-    println!("schema_version: {}", snapshot.schema_version);
-    println!("generated_at: {}", snapshot.generated_at);
-    println!("source: {:?}", snapshot.source.kind);
-    println!(
-        "tmux_version: {}",
-        snapshot
-            .source
-            .tmux_version
-            .as_deref()
-            .unwrap_or("<unknown>")
-    );
-    println!("pane_count: {}", summary.pane_count);
-    println!("agent_pane_count: {}", summary.agent_pane_count);
-    println!(
-        "providers: {}",
-        format_provider_counts(&summary.provider_counts)
-    );
-    println!("statuses: {}", format_status_counts(&summary.status_counts));
+    let lines = [
+        format!("schema_version: {}", snapshot.schema_version),
+        format!("generated_at: {}", snapshot.generated_at),
+        format!("source: {:?}", snapshot.source.kind),
+        format!(
+            "tmux_version: {}",
+            snapshot
+                .source
+                .tmux_version
+                .as_deref()
+                .unwrap_or("<unknown>")
+        ),
+        format!("pane_count: {}", summary.pane_count),
+        format!("agent_pane_count: {}", summary.agent_pane_count),
+        format!(
+            "providers: {}",
+            format_provider_counts(&summary.provider_counts)
+        ),
+        format!("statuses: {}", format_status_counts(&summary.status_counts)),
+    ];
 
-    Ok(())
+    let mut text = lines.join("\n");
+    text.push('\n');
+    write_stdout(&text)
 }
 
 fn format_provider_counts(counts: &[(Provider, usize)]) -> String {

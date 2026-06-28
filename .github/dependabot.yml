@@ -1,0 +1,28 @@
+# Keeps both Rust lockfiles, the desktop pnpm deps, and the pinned GitHub Actions
+# patched. Updates land as reviewable lockfile/manifest PRs; the CI `audit` job
+# is the gate that blocks anything still carrying a known advisory.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: cargo
+    directory: /desktop/src-tauri
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # pnpm is covered by the `npm` ecosystem (Dependabot reads pnpm-lock.yaml).
+  - package-ecosystem: npm
+    directory: /desktop
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

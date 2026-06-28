@@ -2375,6 +2375,19 @@ fn stderr_or_status(command: &str, stderr: &[u8], status: std::process::ExitStat
     }
 }
 
+/// Bring the main dock window back to the foreground. Shared by the second-launch
+/// (single-instance) handler and the macOS Dock-reopen handler. In frameless mode
+/// the window's close button only hides the window (see `WindowControls.tsx`), so
+/// clicking the Dock icon is the reliable way back when the summon hotkey is
+/// unavailable; without this, a hidden window could only be recovered by force-quit.
+fn reveal_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 pub fn run() {
     let builder = tauri::Builder::default();
 
@@ -2388,11 +2401,7 @@ pub fn run() {
     // in-use banner and retry loop, not by refusing to run.
     #[cfg(not(debug_assertions))]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-        if let Some(window) = app.get_webview_window("main") {
-            let _ = window.unminimize();
-            let _ = window.show();
-            let _ = window.set_focus();
-        }
+        reveal_main_window(app);
     }));
 
     builder
@@ -2412,8 +2421,17 @@ pub fn run() {
             start_live_picker,
             stop_live_picker
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running agentscan desktop");
+        .build(tauri::generate_context!())
+        .expect("error while running agentscan desktop")
+        .run(|app, event| {
+            // macOS fires Reopen when the user clicks the Dock icon while the app is
+            // already running. In frameless mode the close button only hides the
+            // window, so this is the recovery path that reshows it when the summon
+            // hotkey is unavailable — the alternative is a force-quit.
+            if let tauri::RunEvent::Reopen { .. } = event {
+                reveal_main_window(app);
+            }
+        });
 }
 
 #[cfg(test)]

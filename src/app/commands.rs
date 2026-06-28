@@ -1,6 +1,26 @@
 use super::*;
 
 pub fn run() -> Result<()> {
+    // A closed stdout consumer (piping into `head`, quitting a pager early, etc.)
+    // surfaces as a `BrokenPipe` error from the one-shot output helpers rather than
+    // panicking. Treat it as a clean exit, matching standard CLI behavior, instead
+    // of reporting it as a failure. The daemon/subscribe paths handle their own
+    // broken pipes internally and never reach here as an error.
+    match dispatch() {
+        Err(err) if is_broken_pipe(&err) => Ok(()),
+        other => other,
+    }
+}
+
+pub(super) fn is_broken_pipe(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io_err| io_err.kind() == std::io::ErrorKind::BrokenPipe)
+    })
+}
+
+fn dispatch() -> Result<()> {
     let cli = Cli::parse();
     let root_list_args = cli.list_args;
 
@@ -393,7 +413,7 @@ fn command_inspect(args: &InspectArgs) -> Result<()> {
         .with_context(|| format!("pane {} not found in {snapshot_name}", args.pane_id))?;
 
     match args.format {
-        OutputFormat::Text => output::print_inspect_text(&pane),
+        OutputFormat::Text => output::print_inspect_text(&pane)?,
         OutputFormat::Json => output::print_json(&pane)?,
     }
 
@@ -490,8 +510,7 @@ fn command_tmux_set_metadata(args: &TmuxSetMetadataArgs) -> Result<()> {
         tmux::set_tmux_pane_option(&pane_id, option_name, &value)?;
     }
 
-    println!("updated pane metadata for {pane_id}");
-    Ok(())
+    output::write_stdout(&format!("updated pane metadata for {pane_id}\n"))
 }
 
 fn command_tmux_clear_metadata(args: &TmuxClearMetadataArgs) -> Result<()> {
@@ -502,6 +521,5 @@ fn command_tmux_clear_metadata(args: &TmuxClearMetadataArgs) -> Result<()> {
         tmux::unset_tmux_pane_option(&pane_id, option_name)?;
     }
 
-    println!("cleared pane metadata for {pane_id}");
-    Ok(())
+    output::write_stdout(&format!("cleared pane metadata for {pane_id}\n"))
 }

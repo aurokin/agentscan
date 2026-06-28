@@ -88,7 +88,8 @@ use socket_server::{
 };
 #[cfg(test)]
 pub(crate) use socket_server::{
-    SubscriberMailbox, handle_daemon_socket_client, refuse_server_busy, test_recv_client_event,
+    SubscriberMailbox, handle_daemon_socket_client, is_transient_accept_error, refuse_server_busy,
+    test_recv_client_event,
 };
 
 const CONTROL_MODE_ACTIVE_RECONCILE_INTERVAL: Duration = Duration::from_secs(30);
@@ -854,6 +855,14 @@ impl<S: StartupActions> DaemonRuntime<S> {
             }
             if !server_handle.socket_still_matches() {
                 eprintln!("agentscan: daemon socket path no longer matches this daemon; exiting");
+                DAEMON_SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
+                break;
+            }
+            if !server_handle.accept_thread_alive() {
+                // The acceptor stopped without a recorded shutdown reason (e.g. a
+                // panic in the accept loop). A daemon that no longer accepts is deaf;
+                // exit so the next client auto-starts a healthy one.
+                eprintln!("agentscan: daemon socket acceptor stopped unexpectedly; exiting");
                 DAEMON_SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
                 break;
             }

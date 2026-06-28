@@ -99,3 +99,34 @@ jobs:
       - name: Test
         working-directory: desktop/src-tauri
         run: cargo test
+
+  # RustSec advisory gate for both committed lockfiles. The crates are built with
+  # `--locked`, so a vulnerable transitive dependency can only enter through a
+  # reviewable lockfile change — this job fails that change before it ships in a
+  # signed, notarized release. Pairs with .github/dependabot.yml, which proposes
+  # the patch bumps.
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # `cargo audit` is a cargo subcommand, so cargo must be on PATH. The hosted
+      # ubuntu-latest image preinstalls Rust today, but install it explicitly (as
+      # the rust/desktop jobs do) so this gate does not silently depend on the
+      # runner image keeping a preinstalled toolchain.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: Audit root crate dependencies
+        run: cargo audit --file Cargo.lock
+
+      - name: Audit desktop crate dependencies
+        run: cargo audit --file desktop/src-tauri/Cargo.lock

@@ -262,6 +262,35 @@ pub(crate) fn tmux_version() -> Option<String> {
         .or_else(|| Some(stdout.trim().to_string()))
 }
 
+/// Minimum tmux version whose control-mode `refresh-client -B` subscriptions the
+/// daemon relies on for live pane events. Subscriptions were introduced in tmux
+/// 3.2; below this, the daemon's live-update path silently produces nothing.
+pub(crate) const MIN_SUBSCRIPTION_TMUX_VERSION: (u32, u32) = (3, 2);
+
+/// Parse the leading `major.minor` from a `tmux -V` version string into a
+/// comparable tuple, tolerating the suffixes and prefixes tmux uses in the wild
+/// (`"3.2a"`, `"3.6b"`, `"next-3.4"`). Returns `None` for strings without a
+/// recognizable numeric version (e.g. `"master"`), so callers can treat an
+/// unparseable version as "unknown" rather than "too old".
+pub(crate) fn parse_tmux_version(version: &str) -> Option<(u32, u32)> {
+    let start = version.find(|c: char| c.is_ascii_digit())?;
+    let mut parts = version[start..].split('.');
+    let major: u32 = leading_number(parts.next()?)?;
+    let minor = parts.next().and_then(leading_number).unwrap_or(0);
+    Some((major, minor))
+}
+
+fn leading_number(token: &str) -> Option<u32> {
+    let digits: String = token.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
+/// Whether a `tmux -V` version string is new enough for the daemon's control-mode
+/// subscriptions. `None` when the version cannot be parsed.
+pub(crate) fn tmux_version_supports_subscriptions(version: &str) -> Option<bool> {
+    parse_tmux_version(version).map(|parsed| parsed >= MIN_SUBSCRIPTION_TMUX_VERSION)
+}
+
 pub(crate) fn default_session_target() -> Result<String> {
     if env::var_os("TMUX").is_some()
         && let Some(stdout) = run_tmux_text_output(

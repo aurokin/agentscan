@@ -1,5 +1,8 @@
 use super::*;
 use serde_json::{Map, Value, json};
+// Doctor text output is buffered and emitted through `output::write_stdout` so a
+// closed pipe surfaces as a recoverable `BrokenPipe` instead of a `println!` panic.
+use std::fmt::Write as _;
 
 /// Versioned envelope for `agentscan doctor --format json`. Bump when the report
 /// shape changes in a way machine consumers must notice.
@@ -69,7 +72,11 @@ pub(crate) fn run_doctor(args: DoctorArgs) -> Result<()> {
     let report = build_report(args);
     match args.format {
         OutputFormat::Json => output::print_json(&report)?,
-        OutputFormat::Text => print_doctor_text(&report),
+        OutputFormat::Text => {
+            let mut out = String::new();
+            print_doctor_text(&mut out, &report);
+            output::write_stdout(&out)?;
+        }
     }
     Ok(())
 }
@@ -269,16 +276,34 @@ fn tmux_check() -> DoctorCheck {
     let inside_tmux = env::var_os("TMUX").is_some();
     let harness_socket = env::var_os(TMUX_SOCKET_ENV_VAR).is_some();
     match tmux::tmux_version() {
-        Some(version) => DoctorCheck::new(
-            "tmux.reachable",
-            CheckStatus::Ok,
-            format!("tmux {version} is reachable"),
-            Some(json!({
-                "version": version,
-                "inside_tmux": inside_tmux,
-                "agentscan_tmux_socket": harness_socket,
-            })),
-        ),
+        Some(version) => {
+            let supports_subscriptions = tmux::tmux_version_supports_subscriptions(&version);
+            let (status, message) = match supports_subscriptions {
+                Some(false) => (
+                    CheckStatus::Warn,
+                    format!(
+                        "tmux {version} is reachable but older than 3.2; live pane updates require \
+                         tmux 3.2+ (control-mode `refresh-client -B` subscriptions). One-shot \
+                         snapshots still work — upgrade tmux for live status."
+                    ),
+                ),
+                // `Some(true)` is healthy; `None` means the version string was
+                // unparseable, so we don't warn rather than risk a false alarm.
+                _ => (CheckStatus::Ok, format!("tmux {version} is reachable")),
+            };
+            DoctorCheck::new(
+                "tmux.reachable",
+                status,
+                message,
+                Some(json!({
+                    "version": version,
+                    "min_subscription_version": "3.2",
+                    "supports_subscriptions": supports_subscriptions,
+                    "inside_tmux": inside_tmux,
+                    "agentscan_tmux_socket": harness_socket,
+                })),
+            )
+        }
         None => DoctorCheck::new(
             "tmux.reachable",
             CheckStatus::Fail,
@@ -682,8 +707,9 @@ fn rfc3339_age_seconds(timestamp: &str) -> Option<i64> {
     Some((OffsetDateTime::now_utc() - parsed).whole_seconds())
 }
 
-fn print_doctor_text(report: &DoctorReport) {
-    println!(
+fn print_doctor_text(out: &mut String, report: &DoctorReport) {
+    let _ = writeln!(
+        out,
         "agentscan doctor — {} (ok: {}, warn: {}, fail: {})",
         report.summary.status.label(),
         report.summary.ok_count,
@@ -691,19 +717,20 @@ fn print_doctor_text(report: &DoctorReport) {
         report.summary.fail_count,
     );
     for check in &report.checks {
-        println!(
+        let _ = writeln!(
+            out,
             "[{}] {} — {}",
             check.status.label(),
             check.id,
             check.message
         );
         if let Some(details) = &check.details {
-            print_detail_lines(details);
+            print_detail_lines(out, details);
         }
     }
 }
 
-fn print_detail_lines(details: &Value) {
+fn print_detail_lines(out: &mut String, details: &Value) {
     let Value::Object(map) = details else {
         return;
     };
@@ -715,7 +742,7 @@ fn print_detail_lines(details: &Value) {
             Value::String(text) => text.clone(),
             other => other.to_string(),
         };
-        println!("    {key}: {rendered}");
+        let _ = writeln!(out, "    {key}: {rendered}");
     }
 }
 

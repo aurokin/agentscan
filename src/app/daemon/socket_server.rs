@@ -88,8 +88,29 @@ impl DaemonSocketServer {
                     {
                         std::thread::sleep(Duration::from_millis(10));
                     }
+                    Err(error) if is_transient_accept_error(&error) => {
+                        // Resource pressure — fd exhaustion (EMFILE/ENFILE), out of
+                        // buffers, or a peer that hung up before accept completed — is
+                        // recoverable: the listener works again once the condition
+                        // clears. Back off a little longer than the idle poll so we
+                        // don't spin the CPU while waiting, then keep accepting.
+                        // Breaking here would silently turn the daemon deaf while it
+                        // still holds the socket and flock, so every later client hangs.
+                        eprintln!(
+                            "agentscan: daemon socket accept hit transient error, retrying: {error}"
+                        );
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
                     Err(error) => {
-                        eprintln!("agentscan: daemon socket accept failed: {error}");
+                        // A genuinely broken listener (e.g. EBADF/EINVAL) cannot
+                        // recover. Rather than leave a live-but-deaf daemon, request a
+                        // clean shutdown: the run loop observes the flag, exits and
+                        // releases the socket/flock, and the next client auto-starts a
+                        // healthy daemon.
+                        eprintln!(
+                            "agentscan: daemon socket accept failed fatally, requesting shutdown: {error}"
+                        );
+                        DAEMON_SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
                         break;
                     }
                 }
@@ -104,6 +125,20 @@ impl DaemonSocketServer {
     }
 }
 
+/// Whether a failed `accept()` is a recoverable, transient condition (resource
+/// pressure or an aborted connection) rather than a permanently broken listener.
+/// Transient errors are retried; anything else is treated as fatal so the daemon
+/// shuts down instead of going silently deaf.
+pub(crate) fn is_transient_accept_error(error: &std::io::Error) -> bool {
+    if error.kind() == std::io::ErrorKind::ConnectionAborted {
+        return true;
+    }
+    matches!(
+        error.raw_os_error(),
+        Some(libc::EMFILE | libc::ENFILE | libc::ENOBUFS | libc::ENOMEM)
+    )
+}
+
 pub(super) struct DaemonSocketServerHandle {
     stop: Arc<AtomicBool>,
     join: Option<std::thread::JoinHandle<()>>,
@@ -115,6 +150,15 @@ impl DaemonSocketServerHandle {
     pub(super) fn socket_still_matches(&self) -> bool {
         self.socket_identity
             .is_none_or(|identity| identity.still_matches(&self.socket_path))
+    }
+
+    /// Whether the acceptor thread is still running. The acceptor lives for the
+    /// daemon's whole life, so a finished thread means it stopped accepting (a
+    /// fatal accept error, or a panic that bypassed the shutdown flag). The run
+    /// loop uses this as a defense-in-depth liveness check so a deaf daemon exits
+    /// instead of lingering.
+    pub(super) fn accept_thread_alive(&self) -> bool {
+        self.join.as_ref().is_some_and(|join| !join.is_finished())
     }
 }
 

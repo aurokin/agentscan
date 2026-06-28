@@ -1619,3 +1619,34 @@ fn daemon_snapshot_helper_removes_stale_socket_before_untrusted_macos_refusal() 
         "macOS refusal should remove refused stale sockets so `agentscan daemon run` can bind"
     );
 }
+
+#[test]
+fn transient_accept_errors_are_retried_not_fatal() {
+    // Resource pressure must be retried so a momentary fd exhaustion does not leave
+    // the daemon permanently deaf.
+    for errno in [libc::EMFILE, libc::ENFILE, libc::ENOBUFS, libc::ENOMEM] {
+        let error = std::io::Error::from_raw_os_error(errno);
+        assert!(
+            daemon::is_transient_accept_error(&error),
+            "errno {errno} should be treated as transient"
+        );
+    }
+    assert!(
+        daemon::is_transient_accept_error(&std::io::Error::from(
+            std::io::ErrorKind::ConnectionAborted
+        )),
+        "a peer that aborted before accept should be transient"
+    );
+}
+
+#[test]
+fn broken_listener_accept_errors_are_fatal() {
+    // A structurally broken listener cannot recover; it must escalate to shutdown.
+    for errno in [libc::EBADF, libc::EINVAL, libc::ENOTSOCK] {
+        let error = std::io::Error::from_raw_os_error(errno);
+        assert!(
+            !daemon::is_transient_accept_error(&error),
+            "errno {errno} should be treated as fatal"
+        );
+    }
+}
