@@ -25,7 +25,7 @@ optional enrichment, not prerequisites.
 |----------|-------------------|-----------------|-------|
 | Claude Code | metadata, title, command/path, targeted process evidence | title/metadata where available; provider-scoped current prompt/footer, interrupt hint, and permission-wait pane-output fallback | Targeted process evidence covers launcher and teammate-spawn shapes; pane-output status is only used after identity is known. |
 | Codex | metadata, command/title shapes | current prompt/footer/status pane-output fallback for supported layouts | Model/path and plan/goal footer shapes are accepted only as current status context. |
-| Gemini CLI | metadata, command/title/source-observed shapes | provider-scoped current prompt/action-required fallback | Generic Gemini mentions in unrelated titles are not provider identity. |
+| Gemini CLI | metadata, command/title/source-observed shapes | provider-scoped current prompt/action-required fallback | Deprecated maintenance status: support remains for existing and enterprise users, but Gemini CLI drift is not an active update target. Generic Gemini mentions in unrelated titles are not provider identity. |
 | Antigravity | metadata, exact `agy` command | unknown unless explicit metadata or future provider-specific fallback | Keeps status conservative. |
 | opencode | metadata, upstream-observed `OpenCode` / `OC | ...` titles, package/shim paths, Linux `OPENCODE` env evidence | provider-scoped current prompt/status fallback where supported | Session titles alone do not invent state. |
 | GitHub Copilot CLI | metadata, command/package path/title shapes | current prompt/footer/thinking/trust-prompt pane-output fallback | Stale thinking lines are ignored. |

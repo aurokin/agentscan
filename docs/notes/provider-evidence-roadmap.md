@@ -58,6 +58,13 @@ The remaining provider-side integration issues are intentionally deep-roadmap:
 - Pi extension metadata may later enrich state, labels, and session identity,
   but default Pi detection must keep working without it.
 
+Gemini CLI is deprecated as an active maintenance target. Existing support is
+kept for current users, including enterprise users who still run Gemini CLI, but
+its progress has stalled and agentscan is not planning ongoing drift updates for
+the foreseeable future. Do not remove Gemini support solely because it is
+deprecated; also do not prioritize new Gemini UI/status changes unless product
+priorities change.
+
 New provider work should continue to start with source analysis for
 open-source agents or empirical probing for closed-source agents, then encode
 only the strongest low-risk signals in the baseline scanner.

@@ -2190,6 +2190,78 @@ fn copilot_pane_output_marks_current_working_footer_busy() {
 }
 
 #[test]
+fn copilot_pane_output_marks_bordered_prompt_idle() {
+    // Observed from Copilot v1.0.65: the ready prompt renders as a bordered empty input box
+    // instead of the older standalone `❯` line.
+    let mut copilot = pane_output_status_pane(822, Provider::Copilot, "GitHub Copilot");
+
+    classify::apply_pane_output_status_fallback(
+        &mut copilot,
+        "~/code/agentscan [⎇ main*%]                                      Session: 0 AIC used\n\
+         ╻▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄\n\
+         ┃\n\
+         ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+          / commands · ? help · tab next tab                                         GPT-5.5\n",
+    );
+
+    assert_eq!(copilot.status.kind, StatusKind::Idle);
+    assert_eq!(copilot.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn copilot_pane_output_marks_bordered_prompt_with_draft_text_idle() {
+    // When the user has typed but not submitted text, Copilot swaps the idle footer from
+    // `/ commands · ? help` to attachment hints. The pane is still available for input.
+    let mut copilot = pane_output_status_pane(825, Provider::Copilot, "GitHub Copilot");
+
+    classify::apply_pane_output_status_fallback(
+        &mut copilot,
+        "~/code/agentscan [⎇ main*%]                                      Session: 0 AIC used\n\
+         ╻▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄\n\
+         ┃ 3\n\
+         ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+          @ files · # issues                                                            GPT-5.5\n",
+    );
+
+    assert_eq!(copilot.status.kind, StatusKind::Idle);
+    assert_eq!(copilot.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn copilot_pane_output_marks_bordered_working_footer_busy() {
+    let mut copilot = pane_output_status_pane(823, Provider::Copilot, "GitHub Copilot");
+
+    classify::apply_pane_output_status_fallback(
+        &mut copilot,
+        "~/code/agentscan [⎇ main*%]                                      Session: 0 AIC used\n\
+         ╻▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄\n\
+         ┃\n\
+         ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+         ◉ Working esc cancel                                                           GPT-5.5\n",
+    );
+
+    assert_eq!(copilot.status.kind, StatusKind::Busy);
+    assert_eq!(copilot.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn copilot_pane_output_ignores_stale_bordered_prompt() {
+    let mut copilot = pane_output_status_pane(824, Provider::Copilot, "GitHub Copilot");
+
+    classify::apply_pane_output_status_fallback(
+        &mut copilot,
+        "~/code/agentscan [⎇ main*%]                                      Session: 0 AIC used\n\
+         ╻▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄\n\
+         ┃\n\
+         ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+         Reading files\n",
+    );
+
+    assert_eq!(copilot.status.kind, StatusKind::Unknown);
+    assert_eq!(copilot.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
 fn pane_output_status_fallback_requires_a_resolved_provider() {
     // Pane output is a provider-scoped status fallback: a pane with no resolved provider
     // must never be probed, even when its output looks agent-shaped.
@@ -2247,6 +2319,26 @@ fn droid_pane_output_marks_current_tmux_footer_idle() {
 
     assert_pane_output_status(
         820,
+        Provider::Droid,
+        "⛬ New Session",
+        output,
+        StatusKind::Idle,
+        super::StatusSource::PaneOutput,
+    );
+}
+
+#[test]
+fn droid_pane_output_marks_update_ready_tmux_footer_idle() {
+    // Observed from Droid v0.156.2: the current prompt is followed by an update-ready footer
+    // rather than the older `? for help` footer. The prompt box still anchors the live frame.
+    let output = "Auto (High) · allow all commands                         Droid Core (GLM-5.2) (High)\n\
+         ╭──────────────────────────────────────────────────────────────────────────────────────────────────╮\n\
+         │ > Try \"How do I handle errors in async functions?\"                                               │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯\n\
+         ✓ v0.159.1 ready (restart to apply)                                                          TMUX ⧉\n";
+
+    assert_pane_output_status(
+        821,
         Provider::Droid,
         "⛬ New Session",
         output,
@@ -2650,6 +2742,42 @@ fn grok_pane_output_marks_current_prompt_box_idle_only_after_provider_is_known()
 
     assert_eq!(unknown.status.kind, StatusKind::Unknown);
     assert_eq!(unknown.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn grok_pane_output_marks_channel_only_footer_idle() {
+    // Observed from Grok Build Beta 0.2.60: the fresh prompt footer can be just `[stable]`
+    // below the input box, with no dotted version token.
+    let mut grok = pane_output_status_pane(771, Provider::Grok, "grok");
+
+    classify::apply_pane_output_status_fallback(
+        &mut grok,
+        "╭────────────────────────────────────────────────────────────────────────────╮\n\
+         │ ❯                                                                          │\n\
+         ╰──────────────────────────────────── Composer 2.5 Fast · always-approve ─╯\n\
+         \n\
+         [stable]\n",
+    );
+
+    assert_eq!(grok.status.kind, StatusKind::Idle);
+    assert_eq!(grok.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn grok_pane_output_does_not_treat_plain_channel_word_below_box_as_chrome() {
+    let mut grok = pane_output_status_pane(783, Provider::Grok, "grok");
+
+    classify::apply_pane_output_status_fallback(
+        &mut grok,
+        "╭────────────────────────────────────────────────────────────────────────────╮\n\
+         │ ❯                                                                          │\n\
+         ╰──────────────────────────────────── Composer 2.5 Fast · always-approve ─╯\n\
+         \n\
+         stable\n",
+    );
+
+    assert_eq!(grok.status.kind, StatusKind::Unknown);
+    assert_eq!(grok.status.source, super::StatusSource::NotChecked);
 }
 
 #[test]
@@ -3352,6 +3480,96 @@ fn cursor_cli_pane_output_marks_initial_prompt_idle() {
 }
 
 #[test]
+fn cursor_cli_pane_output_marks_borderless_initial_prompt_idle() {
+    // Observed from Cursor Agent v2026.06.04: the initial prompt no longer has the
+    // `▄▄▄▄`/`▀▀▀▀` footer borders, but still renders the `→ Plan...` prompt above
+    // Cursor's composer/path footer.
+    let mut cursor = pane_output_status_pane(757, Provider::CursorCli, "Cursor Agent");
+
+    classify::apply_pane_output_status_fallback(
+        &mut cursor,
+        "  Cursor Agent\n\
+          v2026.06.04-5fd875e\n\
+          Use /run-everything to skip all approvals.\n\
+         \n\
+         \n\
+           → Plan, search, build anything\n\
+         \n\
+         \n\
+           Composer 2.5                                                   Auto-run -- INSERT --\n\
+           /private/tmp/agentscan-cursor-smoke · main\n",
+    );
+
+    assert_eq!(cursor.status.kind, StatusKind::Idle);
+    assert_eq!(cursor.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn cursor_cli_pane_output_marks_run_everything_footer_idle() {
+    let mut cursor = pane_output_status_pane(758, Provider::CursorCli, "Cursor Agent");
+
+    classify::apply_pane_output_status_fallback(
+        &mut cursor,
+        "  Cursor Agent\n\
+         \n\
+           → Plan, search, build anything\n\
+         \n\
+         \n\
+           Composer 2.5                                             Run Everything -- INSERT --\n\
+           /private/tmp/agentscan-cursor-smoke · main\n",
+    );
+
+    assert_eq!(cursor.status.kind, StatusKind::Idle);
+    assert_eq!(cursor.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn cursor_cli_pane_output_marks_borderless_stop_hint_busy() {
+    let mut cursor = pane_output_status_pane(759, Provider::CursorCli, "Command Runner");
+
+    classify::apply_pane_output_status_fallback(
+        &mut cursor,
+        "$ sleep 90 40s\n\
+           ctrl+b twice to send to background\n\
+         \n\
+         ⠘⠤ Running  46 tokens\n\
+            Tip: Use subagents to parallelize work and preserve context.\n\
+         \n\
+           → Add a follow-up                                                     ctrl+c to stop\n\
+         \n\
+         \n\
+           1 task\n\
+           Composer 2.5                                             Run Everything -- INSERT --\n\
+           /private/tmp/agentscan-cursor-smoke · main\n",
+    );
+
+    assert_eq!(cursor.status.kind, StatusKind::Busy);
+    assert_eq!(cursor.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn cursor_cli_pane_output_ignores_stale_borderless_stop_hint() {
+    let mut cursor = pane_output_status_pane(760, Provider::CursorCli, "Command Runner");
+
+    classify::apply_pane_output_status_fallback(
+        &mut cursor,
+        "$ sleep 90 40s\n\
+           ctrl+b twice to send to background\n\
+         \n\
+         ⠘⠤ Running  46 tokens\n\
+            Tip: Use subagents to parallelize work and preserve context.\n\
+         \n\
+           → Add a follow-up                                                     ctrl+c to stop\n\
+         \n\
+         Completed. I ran the requested command.\n\
+         There is no current Cursor composer footer below this output.\n",
+    );
+
+    assert_eq!(cursor.status.kind, StatusKind::Unknown);
+    assert_eq!(cursor.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
 fn hermes_pane_output_marks_busy_only_after_provider_is_known() {
     let mut hermes = pane_output_status_pane(765, Provider::Hermes, "agentscan: hermes");
 
@@ -3408,6 +3626,45 @@ fn hermes_pane_output_marks_idle_with_unsubmitted_draft_prompt() {
          ─────────────────────────────────────────────────────────────\n\
          ❯ Analyze the entire repo, tell me what you like, tell me what you don't\n\
          ─────────────────────────────────────────────────────────────\n",
+    );
+
+    assert_eq!(hermes.status.kind, StatusKind::Idle);
+    assert_eq!(hermes.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn hermes_pane_output_marks_initializing_turn_busy() {
+    let mut hermes = pane_output_status_pane(771, Provider::Hermes, "agentscan: hermes");
+
+    classify::apply_pane_output_status_fallback(
+        &mut hermes,
+        "────────────────────────────────────────\n\
+         ● Print exactly the marker formed by joining these parts with underscores\n\
+         Initializing agent...\n\
+         ────────────────────────────────────────\n",
+    );
+
+    assert_eq!(hermes.status.kind, StatusKind::Busy);
+    assert_eq!(hermes.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn hermes_pane_output_uses_idle_prompt_below_stale_initializing_turn() {
+    let mut hermes = pane_output_status_pane(772, Provider::Hermes, "agentscan: hermes");
+
+    classify::apply_pane_output_status_fallback(
+        &mut hermes,
+        "────────────────────────────────────────\n\
+         ● Print exactly the marker formed by joining these parts with underscores\n\
+         Initializing agent...\n\
+         ────────────────────────────────────────\n\
+         ╭─ ⚕ Hermes ────────────────────────────╮\n\
+             AGENTSCAN_E2E_DONE_hermes_123\n\
+         ╰───────────────────────────────────────╯\n\
+         ⚕ gpt-5.5 │ 16.4K/272K │ [█░░░░░░░░░] 6% │ 8s │ ⏲ 4s │ ⚠ YOLO\n\
+         ────────────────────────────────────────\n\
+         ❯\n\
+         ────────────────────────────────────────\n",
     );
 
     assert_eq!(hermes.status.kind, StatusKind::Idle);
@@ -3548,6 +3805,71 @@ fn gemini_pane_output_marks_action_required_busy() {
     );
 
     assert_eq!(gemini.status.kind, StatusKind::Busy);
+    assert_eq!(gemini.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn gemini_pane_output_marks_auth_prompt_busy() {
+    let mut gemini = pane_output_status_pane(780, Provider::Gemini, "Gemini CLI");
+
+    classify::apply_pane_output_status_fallback(
+        &mut gemini,
+        "Gemini CLI v0.49.0\n\
+         \n\
+         ╭──────────────────────────────────────────────────────────────────────────────╮\n\
+         │  Opening authentication page in your browser.                                │\n\
+         │                                                                              │\n\
+         │  Do you want to continue?                                                    │\n\
+         │                                                                              │\n\
+         │  ● 1. Yes                                                                    │\n\
+         │    2. No                                                                     │\n\
+         │                                                                              │\n\
+         │  Enter to select · ↑/↓ to navigate · Esc to cancel                           │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯\n",
+    );
+
+    assert_eq!(gemini.status.kind, StatusKind::Busy);
+    assert_eq!(gemini.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn gemini_pane_output_refines_ready_title_when_auth_prompt_is_visible() {
+    let mut gemini = pane_output_status_pane(781, Provider::Gemini, "◇  Ready (gemini)");
+    gemini.status = super::PaneStatus::title(StatusKind::Idle);
+
+    classify::apply_pane_output_status_fallback(
+        &mut gemini,
+        "Gemini CLI v0.49.0\n\
+         ╭──────────────────────────────────────────────────────────────────────────────╮\n\
+         │  Opening authentication page in your browser.                                │\n\
+         │  Do you want to continue?                                                    │\n\
+         │  Enter to select · ↑/↓ to navigate · Esc to cancel                           │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯\n",
+    );
+
+    assert_eq!(gemini.status.kind, StatusKind::Busy);
+    assert_eq!(gemini.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn gemini_pane_output_uses_current_idle_prompt_over_stale_auth_prompt() {
+    let mut gemini = pane_output_status_pane(782, Provider::Gemini, "Gemini CLI");
+
+    classify::apply_pane_output_status_fallback(
+        &mut gemini,
+        "Gemini CLI v0.49.0\n\
+         ╭──────────────────────────────────────────────────────────────────────────────╮\n\
+         │  Opening authentication page in your browser.                                │\n\
+         │  Do you want to continue?                                                    │\n\
+         │  Enter to select · ↑/↓ to navigate · Esc to cancel                           │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯\n\
+         \n\
+         >   Type your message or @path/to/file\n\
+         Workspace   Sandbox    Model\n\
+         ~/code/app  no sandbox gemini-2.5-pro\n",
+    );
+
+    assert_eq!(gemini.status.kind, StatusKind::Idle);
     assert_eq!(gemini.status.source, super::StatusSource::PaneOutput);
 }
 

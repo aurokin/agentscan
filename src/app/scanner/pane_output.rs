@@ -88,7 +88,8 @@ impl PaneOutputStatusCache {
             }
 
             let key = PaneOutputStatusCacheKey::from_pane(pane);
-            if let Some(entry) = self.fresh_entry(&pane.pane_id, &key, now) {
+            let cacheable = classify::pane_output_status_candidate_cacheable(pane);
+            if cacheable && let Some(entry) = self.fresh_entry(&pane.pane_id, &key, now) {
                 let status_kind = entry.status_kind;
                 self.stats.hit_count = self.stats.hit_count.saturating_add(1);
                 if let Some(kind) = status_kind {
@@ -112,14 +113,16 @@ impl PaneOutputStatusCache {
                 }
             };
 
-            self.entries.insert(
-                pane.pane_id.clone(),
-                PaneOutputStatusCacheEntry {
-                    key,
-                    status_kind,
-                    checked_at: now,
-                },
-            );
+            if cacheable {
+                self.entries.insert(
+                    pane.pane_id.clone(),
+                    PaneOutputStatusCacheEntry {
+                        key,
+                        status_kind,
+                        checked_at: now,
+                    },
+                );
+            }
         }
     }
 
@@ -284,6 +287,14 @@ mod tests {
          ~/code/app  no sandbox gemini-2.5-pro\n"
     }
 
+    fn gemini_auth_output() -> &'static str {
+        "╭──────────────────────────────────────────────────────────────────────────────╮\n\
+         │  Opening authentication page in your browser.                                │\n\
+         │  Do you want to continue?                                                    │\n\
+         │  Enter to select · ↑/↓ to navigate · Esc to cancel                           │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯\n"
+    }
+
     fn opencode_idle_output() -> &'static str {
         "╹  Ask anything... \"Fix a TODO in the codebase\"\n\
          Build · gpt-5.1 OpenAI\n\
@@ -328,6 +339,7 @@ mod tests {
         let mut capture = FakePaneOutputCapture::default()
             .with_output("%2", codex_idle_output())
             .with_output("%4", copilot_busy_output())
+            .with_output("%5", gemini_auth_output())
             .with_output("%6", gemini_idle_output())
             .with_output("%7", opencode_idle_output())
             .with_output("%8", pi_idle_output())
@@ -340,6 +352,7 @@ mod tests {
             vec![
                 ("%2".to_string(), PANE_OUTPUT_STATUS_LINES),
                 ("%4".to_string(), PANE_OUTPUT_STATUS_LINES),
+                ("%5".to_string(), PANE_OUTPUT_STATUS_LINES),
                 ("%6".to_string(), PANE_OUTPUT_STATUS_LINES),
                 ("%7".to_string(), PANE_OUTPUT_STATUS_LINES),
                 ("%8".to_string(), PANE_OUTPUT_STATUS_LINES),
@@ -348,6 +361,7 @@ mod tests {
         );
         assert_eq!(panes[1].status, PaneStatus::pane_output(StatusKind::Idle));
         assert_eq!(panes[3].status, PaneStatus::pane_output(StatusKind::Busy));
+        assert_eq!(panes[4].status, PaneStatus::pane_output(StatusKind::Busy));
         assert_eq!(panes[5].status, PaneStatus::pane_output(StatusKind::Idle));
         assert_eq!(panes[6].status, PaneStatus::pane_output(StatusKind::Idle));
         assert_eq!(panes[7].status, PaneStatus::pane_output(StatusKind::Idle));
@@ -375,6 +389,60 @@ mod tests {
         cache.apply(&mut second, &mut capture, now + Duration::from_millis(500));
 
         assert_eq!(capture.call_count(), 1);
+        assert_eq!(second[0].status, PaneStatus::pane_output(StatusKind::Busy));
+    }
+
+    #[test]
+    fn pane_output_cache_does_not_cache_gemini_title_idle_refinement_candidates() {
+        let now = Instant::now();
+        let mut cache = PaneOutputStatusCache::new(Duration::from_secs(2));
+        let mut capture = FakePaneOutputCapture::default().with_output("%1", gemini_idle_output());
+        let mut first = vec![pane(
+            "%1",
+            Some(Provider::Gemini),
+            PaneStatus::title(StatusKind::Idle),
+        )];
+        cache.apply(&mut first, &mut capture, now);
+
+        capture
+            .outputs
+            .insert("%1".to_string(), Some(gemini_auth_output().to_string()));
+        let mut second = vec![pane(
+            "%1",
+            Some(Provider::Gemini),
+            PaneStatus::title(StatusKind::Idle),
+        )];
+        cache.apply(&mut second, &mut capture, now + Duration::from_millis(500));
+
+        assert_eq!(capture.call_count(), 2);
+        assert_eq!(first[0].status, PaneStatus::title(StatusKind::Idle));
+        assert_eq!(second[0].status, PaneStatus::pane_output(StatusKind::Busy));
+    }
+
+    #[test]
+    fn pane_output_cache_does_not_reuse_gemini_unknown_status_entries() {
+        let now = Instant::now();
+        let mut cache = PaneOutputStatusCache::new(Duration::from_secs(2));
+        let mut capture = FakePaneOutputCapture::default().with_output("%1", gemini_idle_output());
+        let mut first = vec![pane(
+            "%1",
+            Some(Provider::Gemini),
+            PaneStatus::not_checked(),
+        )];
+        cache.apply(&mut first, &mut capture, now);
+
+        capture
+            .outputs
+            .insert("%1".to_string(), Some(gemini_auth_output().to_string()));
+        let mut second = vec![pane(
+            "%1",
+            Some(Provider::Gemini),
+            PaneStatus::not_checked(),
+        )];
+        cache.apply(&mut second, &mut capture, now + Duration::from_millis(500));
+
+        assert_eq!(capture.call_count(), 2);
+        assert_eq!(first[0].status, PaneStatus::pane_output(StatusKind::Idle));
         assert_eq!(second[0].status, PaneStatus::pane_output(StatusKind::Busy));
     }
 

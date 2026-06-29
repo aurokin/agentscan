@@ -19,12 +19,16 @@ type PaneOutputClassifier = fn(&str) -> Option<StatusKind>;
 
 pub(crate) fn pane_output_status_fallback_candidate(pane: &PaneRecord) -> bool {
     pane.provider.and_then(classifier_for).is_some()
-        && pane.status.kind == StatusKind::Unknown
-        && pane.status.source == StatusSource::NotChecked
+        && ((pane.status.kind == StatusKind::Unknown
+            && pane.status.source == StatusSource::NotChecked)
+            || pane_output_status_refinement_candidate(pane))
 }
 
 pub(crate) fn apply_pane_output_status_fallback(pane: &mut PaneRecord, output: &str) {
-    if pane.status.kind != StatusKind::Unknown || pane.status.source != StatusSource::NotChecked {
+    let can_fill_unknown =
+        pane.status.kind == StatusKind::Unknown && pane.status.source == StatusSource::NotChecked;
+    let can_refine = pane_output_status_refinement_candidate(pane);
+    if !(can_fill_unknown || can_refine) {
         return;
     }
 
@@ -39,9 +43,21 @@ pub(crate) fn apply_pane_output_status_fallback(pane: &mut PaneRecord, output: &
     // once here, so each provider matcher does not have to fight pane padding.
     let output = trim_trailing_blank_lines(output);
 
-    if let Some(kind) = classifier(output) {
+    if let Some(kind) = classifier(output)
+        && (can_fill_unknown || kind == StatusKind::Busy)
+    {
         pane.status = PaneStatus::pane_output(kind);
     }
+}
+
+fn pane_output_status_refinement_candidate(pane: &PaneRecord) -> bool {
+    matches!(pane.provider, Some(Provider::Gemini))
+        && pane.status.kind == StatusKind::Idle
+        && pane.status.source == StatusSource::TmuxTitle
+}
+
+pub(crate) fn pane_output_status_candidate_cacheable(pane: &PaneRecord) -> bool {
+    !matches!(pane.provider, Some(Provider::Gemini))
 }
 
 fn classifier_for(provider: Provider) -> Option<PaneOutputClassifier> {

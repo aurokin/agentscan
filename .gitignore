@@ -6,5 +6,6 @@
 /desktop/dist
 /desktop/src-tauri/gen
 /desktop/src-tauri/target
+/tests/provider_e2e/local.toml
 
 .claude/scheduled_tasks.lock

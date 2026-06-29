@@ -53,6 +53,10 @@ This repo uses progressively disclosed documentation.
     ADR for separating picker workspace grouping from tmux location
     identity, preserving `session:window.pane`, and keeping picker hotkey
     assignment backend-owned.
+  - `docs/adr/real-agent-lifecycle-e2e-testing.md`
+    ADR for local opt-in real-agent lifecycle e2e tests, provider selection,
+    model/effort catalog overrides, spend/auth boundaries, and ready/busy/ready
+    assertions.
 - `docs/notes/`
   Narrow follow-up or historical notes that are too specific for the primary docs but still worth keeping in the repo.
   - `docs/notes/provider-evidence-roadmap.md`

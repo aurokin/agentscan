@@ -3,12 +3,20 @@ use super::{PaneOutputFrame, StatusKind};
 pub(super) fn status(output: &str) -> Option<StatusKind> {
     let frame = PaneOutputFrame::new(output);
     let busy_index = frame.rposition(hermes_busy_prompt_line);
+    let turn_busy_index = frame.rposition(hermes_current_turn_busy_line);
     let idle_index = frame.rposition(hermes_idle_prompt_line);
 
     if let Some(index) = busy_index
         && hermes_status_bar_directly_above(&frame, index)
         && idle_index.is_none_or(|idle_index| idle_index < index)
         && hermes_prompt_is_current_frame(&frame, index)
+    {
+        return Some(StatusKind::Busy);
+    }
+
+    if let Some(index) = turn_busy_index
+        && idle_index.is_none_or(|idle_index| idle_index < index)
+        && hermes_turn_busy_marker_is_current(&frame, index)
     {
         return Some(StatusKind::Busy);
     }
@@ -88,4 +96,15 @@ fn hermes_busy_prompt_line(line: &str) -> bool {
         && line.contains("msg=interrupt")
         && line.contains("/queue")
         && line.contains("Ctrl+C cancel")
+}
+
+fn hermes_current_turn_busy_line(line: &str) -> bool {
+    line.trim() == "Initializing agent..."
+}
+
+fn hermes_turn_busy_marker_is_current(frame: &PaneOutputFrame<'_>, busy_index: usize) -> bool {
+    frame.is_within_tail(busy_index, 12)
+        && frame
+            .lines_from(busy_index)
+            .is_some_and(|lines| lines.iter().any(|line| hermes_box_rule_line(line.trim())))
 }

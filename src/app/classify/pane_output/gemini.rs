@@ -11,6 +11,12 @@ pub(super) fn status(output: &str) -> Option<StatusKind> {
         return Some(StatusKind::Busy);
     }
 
+    if let Some(index) = gemini_current_auth_prompt_index(&frame)
+        && idle_index.is_none_or(|idle_index| idle_index < index)
+    {
+        return Some(StatusKind::Busy);
+    }
+
     idle_index
         .is_some_and(|index| gemini_prompt_is_near_current_footer(&frame, index))
         .then_some(StatusKind::Idle)
@@ -27,6 +33,25 @@ fn gemini_current_busy_marker_line(line: &str) -> bool {
         || line.contains("Apply this change?")
         || line.contains("Allow execution of")
         || (line.contains("Running Agent") && line.contains("ctrl+o to collapse"))
+}
+
+fn gemini_current_auth_prompt_index(frame: &PaneOutputFrame<'_>) -> Option<usize> {
+    let index =
+        frame.rposition(|line| line.contains("Opening authentication page in your browser"))?;
+
+    if !frame.is_within_tail(index, 14) {
+        return None;
+    }
+
+    let lines = frame.lines_from(index)?;
+    lines
+        .iter()
+        .any(|line| line.contains("Do you want to continue?"))
+        .then_some(())?;
+    lines
+        .iter()
+        .any(|line| line.contains("Enter to select") || line.contains("to navigate"))
+        .then_some(index)
 }
 
 fn gemini_prompt_is_near_current_footer(frame: &PaneOutputFrame<'_>, prompt_index: usize) -> bool {

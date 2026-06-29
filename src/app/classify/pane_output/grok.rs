@@ -62,11 +62,13 @@ fn grok_prompt_box_top_border(line: &str) -> bool {
 }
 
 /// grok's footer chrome directly below the input box: the keybind hints
-/// (`Shift+Tab:mode │ Ctrl+.:shortcuts`) or, on a fresh prompt, the version line
-/// (`0.2.3 [stable] Beta`). Matched by shape so a stale turn line below the box is not
-/// mistaken for chrome.
+/// (`Shift+Tab:mode │ Ctrl+.:shortcuts`), the version line (`0.2.3 [stable] Beta`), or the
+/// bracketed release-channel-only form (`[stable]`). Matched by shape so a stale turn line below
+/// the box is not mistaken for chrome.
 fn grok_footer_line(line: &str) -> bool {
-    grok_keybind_footer_line(line) || grok_version_footer_line(line)
+    grok_keybind_footer_line(line)
+        || grok_version_footer_line(line)
+        || grok_release_channel_footer_line(line)
 }
 
 fn grok_keybind_footer_line(line: &str) -> bool {
@@ -124,7 +126,7 @@ fn grok_version_footer_line(line: &str) -> bool {
         && rest.iter().all(|t| grok_release_channel_word(t))
 }
 
-/// A grok release-channel label such as `stable`, `Beta`, or the bracketed `[stable]` form.
+// A grok release-channel label such as `stable`, `Beta`, or the bracketed `[stable]` form.
 fn grok_release_channel_word(token: &str) -> bool {
     let token = token.trim_matches(|ch| matches!(ch, '[' | ']' | '(' | ')'));
     matches!(
@@ -143,8 +145,17 @@ fn grok_release_channel_word(token: &str) -> bool {
     )
 }
 
-/// True when the bottom-most rendered line is a running spinner: a braille spinner glyph with
-/// grok's in-flight run marker (`[✗]`).
+fn grok_release_channel_footer_line(line: &str) -> bool {
+    let tokens: Vec<&str> = line.split_whitespace().collect();
+    matches!(tokens.as_slice(), [token] if grok_bracketed_release_channel_word(token))
+}
+
+fn grok_bracketed_release_channel_word(token: &str) -> bool {
+    token.starts_with('[') && token.ends_with(']') && grok_release_channel_word(token)
+}
+
+// True when the bottom-most rendered line is a running spinner: a braille spinner glyph with
+// grok's in-flight run marker (`[✗]`).
 fn grok_current_running_spinner(frame: &PaneOutputFrame<'_>) -> bool {
     frame.last_nonblank().is_some_and(grok_running_status_line)
 }

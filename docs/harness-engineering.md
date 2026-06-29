@@ -38,6 +38,10 @@ The repo already uses multiple harnesses to validate behavior:
 - daemon integration harnesses for tmux topology changes, metadata updates, and socket publication
 - TUI and focus interaction harnesses for real tmux client behavior
 - snapshot validation harnesses for schema and daemon health behavior
+- local opt-in real-agent lifecycle e2e harnesses for provider drift checks.
+  These launch authenticated provider CLIs in isolated tmux servers, can spend
+  model tokens only after an explicit opt-in, and are not part of the default
+  `cargo test` baseline.
 - benchmark harnesses for hot-path regressions
 - frontend vitest harnesses for the desktop app: node-environment view-model and
   transcript tests (Effect services against a mock Tauri IPC layer, queued-op
@@ -95,6 +99,63 @@ The integration suite should keep a guard test that poisons the default
 `TMUX_TMPDIR` and asserts `agentscan scan --all --format json` still reads from
 the harness server. If that test starts reading the poisoned/default server, the
 suite should fail before any destructive tmux fixture can run.
+
+## Real-Agent Lifecycle E2E
+
+The real-agent lifecycle harness is a local validation surface, not a CI gate.
+It exists to catch provider drift in actual authenticated coding-agent CLIs and
+to verify the lifecycle contract:
+
+```text
+startup -> detected -> ready -> busy continuously -> ready
+```
+
+Run it explicitly through the Cargo example:
+
+```bash
+cargo run --example provider_e2e -- --list-providers
+cargo run --example provider_e2e -- --provider codex
+cargo run --example provider_e2e -- --provider codex --provider claude --spend-ok
+cargo run --example provider_e2e -- --all --spend-ok
+```
+
+Without `--spend-ok`, the runner stops after startup/provider/ready validation
+and does not submit a prompt. Model and effort defaults live in
+`tests/provider_e2e/catalog.toml`; machine-local overrides belong in the
+gitignored `tests/provider_e2e/local.toml`. Single runs can override with
+`--model provider:value`, `--effort provider:value`, or `--prompt ...`.
+
+Artifacts are written under `target/provider-e2e/<run-id>/<provider>/`,
+including timeline frames, pane tails, inspect JSON, tmux rows, daemon logs, and
+redacted runner metadata. Each provider also writes `outcome.json`.
+
+Provider outcomes start as `unknown` and are promoted only when the runner has
+evidence:
+
+- `unknown`: the provider command is not installed or not on `PATH`; the runner
+  skips it without launching tmux.
+- `blocked`: the provider exists but local auth, install, rate limit, or other
+  environment state prevents a meaningful lifecycle check.
+- `failed`: agentscan or the provider lifecycle violated an e2e assertion.
+- `success`: the provider completed the expected lifecycle.
+
+Only `failed` outcomes make the e2e command exit non-zero. `unknown` and
+`blocked` are inventory state for local real-agent coverage, not detection-rule
+failures.
+
+Lifecycle timeouts also write `failure-<phase>.json`. The failure report must
+separate provider identity failures from provider status failures. If the target
+pane is identified as the expected provider but status remains `unknown` or
+`not_checked`, the runner reports `provider_status_matcher_update_needed`; this
+means the real agent likely loaded, but agentscan's provider-specific status
+rules need to be updated. Concrete wrong statuses are reported separately as
+`provider_status_mismatch` so the pane tail can distinguish real provider
+behavior from stale reporting.
+
+The runner starts its daemon with isolated sockets and shorter control-mode
+active/self-heal reconcile intervals. This keeps pane-output-only providers from
+waiting on the production 300s self-heal window while preserving the same daemon
+snapshot and subscription surfaces that normal consumers use.
 
 ## Socket-First Daemon Harnesses
 

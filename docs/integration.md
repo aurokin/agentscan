@@ -348,6 +348,9 @@ Provider-specific guidance should stay narrow and correctness-driven:
   publishing, but hook support is deferred to the end of the provider roadmap.
   Hooks should publish explicit tmux metadata rather than becoming a required
   detection dependency.
+- Gemini CLI support is deprecated but retained. Existing and enterprise users
+  can keep using the supported evidence paths, but Gemini CLI drift is not an
+  active maintenance target for new status or UI updates.
 - Pi should remain plug-and-play from its default `pi` process, package paths,
   `PI_CODING_AGENT=true` environment marker, and Greek terminal title shape.
   Pi extension support is a deep-roadmap additive path for richer metadata;

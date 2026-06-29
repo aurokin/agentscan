@@ -1,0 +1,207 @@
+# Local real-agent lifecycle e2e catalog.
+#
+# The runner treats this file as launch/test configuration only. It is not a
+# product detection source. Copy selected entries to `local.toml` (gitignored) to
+# override commands, args, models, effort levels, or timeouts for one machine.
+#
+# Supported placeholders in args, prompt, env values, and completion_marker:
+# {provider}, {model}, {effort}, {workspace}, {completion_marker}, {run_id}
+
+[providers.codex]
+command = "codex"
+args = ["--model", "{model}", "-c", "model_reasoning_effort=\"{effort}\""]
+expected_provider = "codex"
+expected_match_kinds = ["pane_current_command", "proc_process_tree", "pane_title"]
+default_model = "gpt-5.5"
+default_effort = "low"
+prompt = "Print exactly the marker formed by joining these parts with underscores and nothing else: AGENTSCAN, E2E, DONE, {provider}, {run_id}"
+completion_marker = "AGENTSCAN_E2E_DONE_{provider}_{run_id}"
+startup_timeout_ms = 120000
+ready_timeout_ms = 120000
+busy_timeout_ms = 45000
+completion_timeout_ms = 240000
+
+[[providers.codex.startup_steps]]
+wait_text = "Update available!"
+keys = ["3", "Enter"]
+timeout_ms = 5000
+optional = true
+
+[[providers.codex.startup_steps]]
+wait_text = "Do you trust"
+keys = ["Enter"]
+timeout_ms = 120000
+
+[providers.claude]
+command = "claude"
+args = ["--model", "{model}"]
+expected_provider = "claude"
+expected_match_kinds = ["pane_current_command", "proc_process_tree", "pane_title"]
+default_model = "sonnet"
+default_effort = "default"
+prompt = "Print exactly the marker formed by joining these parts with underscores and nothing else: AGENTSCAN, E2E, DONE, {provider}, {run_id}"
+completion_marker = "AGENTSCAN_E2E_DONE_{provider}_{run_id}"
+startup_timeout_ms = 120000
+ready_timeout_ms = 120000
+busy_timeout_ms = 45000
+completion_timeout_ms = 240000
+
+[[providers.claude.startup_steps]]
+wait_text = "Quick safety check"
+keys = ["Enter"]
+timeout_ms = 120000
+
+[providers.gemini]
+command = "gemini"
+args = ["--model", "{model}"]
+expected_provider = "gemini"
+expected_match_kinds = ["pane_current_command", "proc_process_tree", "pane_title"]
+default_model = "default"
+default_effort = "default"
+prompt = "Print exactly the marker formed by joining these parts with underscores and nothing else: AGENTSCAN, E2E, DONE, {provider}, {run_id}"
+completion_marker = "AGENTSCAN_E2E_DONE_{provider}_{run_id}"
+startup_timeout_ms = 120000
+ready_timeout_ms = 120000
+busy_timeout_ms = 45000
+completion_timeout_ms = 240000
+
+[providers.opencode]
+command = "opencode"
+args = []
+expected_provider = "opencode"
+expected_match_kinds = ["pane_current_command", "proc_process_tree", "pane_title"]
+default_model = "default"
+default_effort = "default"
+prompt = "Print exactly the marker formed by joining these parts with underscores and nothing else: AGENTSCAN, E2E, DONE, {provider}, {run_id}"
+completion_marker = "AGENTSCAN_E2E_DONE_{provider}_{run_id}"
+startup_timeout_ms = 120000
+ready_timeout_ms = 120000
+busy_timeout_ms = 45000
+completion_timeout_ms = 240000
+
+[providers.copilot]
+command = "copilot"
+args = []
+expected_provider = "copilot"
+expected_match_kinds = ["pane_current_command", "proc_process_tree"]
+default_model = "default"
+default_effort = "default"
+prompt = "Print exactly the marker formed by joining these parts with underscores and nothing else: AGENTSCAN, E2E, DONE, {provider}, {run_id}"
+completion_marker = "AGENTSCAN_E2E_DONE_{provider}_{run_id}"
+startup_timeout_ms = 120000
+ready_timeout_ms = 120000
+busy_timeout_ms = 45000
+completion_timeout_ms = 240000
+
+[[providers.copilot.startup_steps]]
+wait_text = "Confirm folder trust"
+keys = ["Enter"]
+timeout_ms = 120000
+
+[providers.cursor_cli]
+command = "cursor-agent"
+args = []
+expected_provider = "cursor_cli"
+expected_match_kinds = ["pane_current_command", "proc_process_tree"]
+default_model = "default"
+default_effort = "default"
+prompt = "Print exactly the marker formed by joining these parts with underscores and nothing else: AGENTSCAN, E2E, DONE, {provider}, {run_id}"
+completion_marker = "AGENTSCAN_E2E_DONE_{provider}_{run_id}"
+startup_timeout_ms = 120000
+ready_timeout_ms = 120000
+busy_timeout_ms = 45000
+completion_timeout_ms = 240000
+
+[[providers.cursor_cli.startup_steps]]
+wait_text = "Workspace Trust Required"
+keys = ["a"]
+timeout_ms = 120000
+
+[providers.pi]
+command = "pi"
+args = []
+expected_provider = "pi"
+expected_match_kinds = ["pane_current_command", "proc_process_tree", "pane_title"]
+default_model = "default"
+default_effort = "default"
+prompt = "Print exactly the marker formed by joining these parts with underscores and nothing else: AGENTSCAN, E2E, DONE, {provider}, {run_id}"
+completion_marker = "AGENTSCAN_E2E_DONE_{provider}_{run_id}"
+startup_timeout_ms = 120000
+ready_timeout_ms = 120000
+busy_timeout_ms = 45000
+completion_timeout_ms = 240000
+
+[providers.grok]
+command = "grok"
+args = []
+expected_provider = "grok"
+expected_match_kinds = ["pane_current_command", "proc_process_tree", "pane_title"]
+default_model = "default"
+default_effort = "default"
+prompt = "Print exactly the marker formed by joining these parts with underscores and nothing else: AGENTSCAN, E2E, DONE, {provider}, {run_id}"
+completion_marker = "AGENTSCAN_E2E_DONE_{provider}_{run_id}"
+startup_timeout_ms = 120000
+ready_timeout_ms = 120000
+busy_timeout_ms = 45000
+completion_timeout_ms = 240000
+
+[providers.hermes]
+command = "hermes"
+args = []
+expected_provider = "hermes"
+expected_match_kinds = ["pane_current_command", "proc_process_tree"]
+default_model = "default"
+default_effort = "default"
+prompt = "Print exactly the marker formed by joining these parts with underscores and nothing else: AGENTSCAN, E2E, DONE, {provider}, {run_id}"
+completion_marker = "AGENTSCAN_E2E_DONE_{provider}_{run_id}"
+startup_timeout_ms = 120000
+ready_timeout_ms = 120000
+busy_timeout_ms = 45000
+completion_timeout_ms = 240000
+
+[providers.aider]
+command = "aider"
+args = ["--model", "{model}"]
+expected_provider = "aider"
+expected_match_kinds = ["pane_current_command", "proc_process_tree"]
+default_model = "default"
+default_effort = "default"
+prompt = "Print exactly the marker formed by joining these parts with underscores and nothing else: AGENTSCAN, E2E, DONE, {provider}, {run_id}"
+completion_marker = "AGENTSCAN_E2E_DONE_{provider}_{run_id}"
+startup_timeout_ms = 120000
+ready_timeout_ms = 120000
+busy_timeout_ms = 45000
+completion_timeout_ms = 240000
+
+[providers.droid]
+command = "droid"
+args = []
+expected_provider = "droid"
+expected_match_kinds = ["pane_current_command", "proc_process_tree"]
+default_model = "default"
+default_effort = "default"
+prompt = "Print exactly the marker formed by joining these parts with underscores and nothing else: AGENTSCAN, E2E, DONE, {provider}, {run_id}"
+completion_marker = "AGENTSCAN_E2E_DONE_{provider}_{run_id}"
+startup_timeout_ms = 120000
+ready_timeout_ms = 120000
+busy_timeout_ms = 45000
+completion_timeout_ms = 240000
+
+[providers.antigravity]
+command = "agy"
+args = []
+expected_provider = "antigravity"
+expected_match_kinds = ["pane_current_command", "proc_process_tree"]
+default_model = "default"
+default_effort = "default"
+prompt = "Print exactly the marker formed by joining these parts with underscores and nothing else: AGENTSCAN, E2E, DONE, {provider}, {run_id}"
+completion_marker = "AGENTSCAN_E2E_DONE_{provider}_{run_id}"
+startup_timeout_ms = 120000
+ready_timeout_ms = 120000
+busy_timeout_ms = 45000
+completion_timeout_ms = 240000
+
+[[providers.antigravity.startup_steps]]
+wait_text = "Do you trust the contents of this project?"
+keys = ["Enter"]
+timeout_ms = 120000
