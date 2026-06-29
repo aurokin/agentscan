@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.6 - 2026-06-29
+
 ### Added
 
 - Added Aider provider detection from exact `aider` commands, wrapper metadata,
@@ -9,6 +11,27 @@
   package paths, and Python console-script invocations.
 - Added Aider desktop provider SVGs and mapped its patched Nerd Font provider
   glyph to `U+10005A` from `agent-icons-v9`.
+- Added real-agent provider lifecycle E2E coverage, including the executable
+  harness, provider catalog, ADR, and harness engineering guidance.
+- Added install, requirements, and quickstart documentation, including the
+  tmux 3.2+ runtime floor for live daemon updates.
+- Added cargo-audit CI coverage for both Rust lockfiles and Dependabot update
+  coverage for Rust, pnpm, and GitHub Actions dependencies.
+
+### Changed
+
+- Aligned desktop source headers with agent rows and quieted project group
+  headers so the dock reads as one stable list.
+
+### Fixed
+
+- Treated broken output pipes as clean exits across one-shot CLI output paths
+  instead of panicking when downstream consumers close early.
+- Hardened the daemon socket accept loop so transient accept errors are retried
+  and fatal acceptor failures request a clean daemon shutdown.
+- Restored macOS Dock-click reopen behavior for hidden frameless desktop
+  windows.
+- Stabilized Antigravity provider lifecycle E2E prompt handling.
 
 ## 0.7.5 - 2026-06-23
 
