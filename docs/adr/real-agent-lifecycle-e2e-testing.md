@@ -94,9 +94,13 @@ opt-in when the provider can do so safely, but it must not submit a prompt that
 could trigger model usage unless the user has deliberately enabled that mode.
 
 The default prompt should be tiny, deterministic, and easy to detect in the
-pane output, such as asking the agent to print a unique completion marker. The
-prompt should not require repository mutation, network access beyond the
-provider call, or long-running work.
+pane output, such as asking the agent to print a unique completion marker.
+Provider catalog entries may use a slightly longer prompt when a CLI can
+complete the marker-only request before the harness observes a stable busy
+state. Those prompts should still be bounded, cheap, non-mutating, and should
+ask for the completion marker indirectly so echoed prompt text cannot satisfy
+completion. The prompt should not require repository mutation, network access
+beyond the provider call, or long-running work.
 
 Secrets, API keys, access tokens, home-directory paths, and provider account
 details must be redacted from logs and artifacts wherever practical.

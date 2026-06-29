@@ -124,6 +124,10 @@ and does not submit a prompt. Model and effort defaults live in
 `tests/provider_e2e/catalog.toml`; machine-local overrides belong in the
 gitignored `tests/provider_e2e/local.toml`. Single runs can override with
 `--model provider:value`, `--effort provider:value`, or `--prompt ...`.
+Provider catalog prompts should be short and deterministic, but may be
+provider-specific when a marker-only request is too fast to expose the
+ready/busy/ready lifecycle reliably. Keep completion markers indirect in the
+prompt so echoed input cannot be mistaken for a completed response.
 
 Artifacts are written under `target/provider-e2e/<run-id>/<provider>/`,
 including timeline frames, pane tails, inspect JSON, tmux rows, daemon logs, and

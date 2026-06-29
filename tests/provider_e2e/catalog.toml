@@ -194,7 +194,10 @@ expected_provider = "antigravity"
 expected_match_kinds = ["pane_current_command", "proc_process_tree"]
 default_model = "default"
 default_effort = "default"
-prompt = "Print exactly the marker formed by joining these parts with underscores and nothing else: AGENTSCAN, E2E, DONE, {provider}, {run_id}"
+# Antigravity can complete the tiny marker-only prompt before the harness
+# observes its live busy footer. Keep this prompt small, but long enough to
+# expose the ready -> busy -> ready lifecycle deterministically.
+prompt = "Write six concise numbered lines about why real-agent lifecycle tests catch provider UI drift. Then print exactly the marker formed by joining these parts with underscores and nothing else on its own final line: AGENTSCAN, E2E, DONE, {provider}, {run_id}"
 completion_marker = "AGENTSCAN_E2E_DONE_{provider}_{run_id}"
 startup_timeout_ms = 120000
 ready_timeout_ms = 120000
