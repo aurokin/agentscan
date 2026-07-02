@@ -14,7 +14,7 @@
 // wrapping the mount in fake timers would break it.
 import { StrictMode } from "react";
 import { expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -135,6 +135,21 @@ it("boots the dock: clears the recovery screen and arms only dock-side paths", a
   // active target, so settle on it.
   await vi.waitFor(() => {
     expect(mocks.listen.mock.calls.map((call) => call[0])).toContain("agentscan-live-picker");
+  });
+
+  const preflightCallsBeforeReconnect = mocks.invoke.mock.calls.filter(
+    ([cmd]) => cmd === "preflight_agentscan",
+  ).length;
+  const reconnectButton = screen
+    .getAllByRole("button", { name: "Reconnect" })
+    .find((button) => button.classList.contains("icon-button"));
+  expect(reconnectButton).toBeDefined();
+  fireEvent.click(reconnectButton as HTMLElement);
+  await vi.waitFor(() => {
+    const preflightCallsAfterReconnect = mocks.invoke.mock.calls.filter(
+      ([cmd]) => cmd === "preflight_agentscan",
+    ).length;
+    expect(preflightCallsAfterReconnect).toBeGreaterThan(preflightCallsBeforeReconnect);
   });
 
   // Settings-only listeners must never bind in the dock.

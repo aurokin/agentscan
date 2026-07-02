@@ -268,6 +268,16 @@ function DockApp() {
   );
   const activeProfileValid = activeProfileValidation.errors.length === 0;
 
+  function activePreflightTarget() {
+    const invalid = activeProfileValid
+      ? null
+      : {
+          binary: commandPrefix(activeProfile),
+          error: activeProfileValidation.errors.join(" "),
+        };
+    return { settings: runnerSettings, runnerKey, invalid };
+  }
+
   // Drive the Preflight service to the active runner. Only the dock probes (it gates the
   // live picker); the settings window reuses the dock's result over the prefs channel
   // instead of firing its own (which for SSH would be a second `ssh … --version` — an
@@ -275,16 +285,7 @@ function DockApp() {
   // an in-flight probe on the next target the way the old `cancelled` flag did, keeps the
   // previous ready result during a switch, and mirrors each result to settings.
   useEffect(() => {
-    // Precompute the synchronous validation: an invalid profile short-circuits the probe
-    // to a synthetic failed preflight (binary label + joined messages), matching the old
-    // loadShellState invalid branch; null means "probe the CLI".
-    const invalid = activeProfileValid
-      ? null
-      : {
-          binary: commandPrefix(activeProfile),
-          error: activeProfileValidation.errors.join(" "),
-        };
-    configurePreflight({ settings: runnerSettings, runnerKey, invalid });
+    configurePreflight(activePreflightTarget());
     // Keyed on runnerKey (the active runner's identity), NOT profileState/runnerSettings:
     // editing or deleting an INACTIVE profile syncs a fresh profileState but leaves the
     // active runner unchanged, so re-running here would needlessly re-probe (an extra ssh
@@ -786,6 +787,11 @@ function DockApp() {
           aria-label="Reconnect"
           title="Reconnect"
           onClick={() => {
+            // Manual recovery must also retry active-source preflight. A failed
+            // preflight gates that source before a live subscription exists, so
+            // reconnecting only live sources would leave a stale "Unavailable"
+            // strip until a settings edit or app restart re-ran the probe.
+            configurePreflight(activePreflightTarget());
             // Re-arm every open source; closed folders have no subscription.
             for (const source of liveSources) {
               if (source.isOpen) {
