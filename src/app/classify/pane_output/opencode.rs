@@ -1,4 +1,4 @@
-use super::{PaneOutputFrame, StatusKind, dotted_version_token};
+use super::{PaneOutputFrame, StatusKind, is_version_like_command};
 
 const OPENCODE_TIP_TEXT_INDENT: usize = 6;
 const OPENCODE_MIN_BLANK_LINES_AFTER_PIN_TIP_WRAP: usize = 3;
@@ -249,14 +249,14 @@ fn opencode_input_box_bottom_border(line: &str) -> bool {
 /// bare file path is not mistaken for chrome.
 fn opencode_bottom_status_bar_line(line: &str) -> bool {
     if line.contains("• OpenCode") {
-        return line.split_whitespace().any(dotted_version_token);
+        return line.split_whitespace().any(is_version_like_command);
     }
     (line.starts_with("~/") || line.starts_with('/'))
         && line.contains(':')
         && line
             .split_whitespace()
             .next_back()
-            .is_some_and(dotted_version_token)
+            .is_some_and(is_version_like_command)
 }
 
 fn opencode_current_busy_marker_line(line: &str) -> bool {

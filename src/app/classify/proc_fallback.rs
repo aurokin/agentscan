@@ -201,19 +201,8 @@ fn proc_fallback_uses_descendants(pane: &PaneRecord, title_analysis: &TitleAnaly
 
 fn is_proc_fallback_launcher_command(command: &str) -> bool {
     matches!(command, "node" | "bun")
-        || is_python_launcher_command(command)
+        || proc_evidence::command_is_python(command)
         || command.eq_ignore_ascii_case("pi")
-}
-
-fn is_python_launcher_command(command: &str) -> bool {
-    let command = command.trim().to_ascii_lowercase();
-    if matches!(command.as_str(), "python" | "python3") {
-        return true;
-    }
-
-    command
-        .strip_prefix("python3.")
-        .is_some_and(|suffix| !suffix.is_empty() && suffix.chars().all(|ch| ch.is_ascii_digit()))
 }
 
 fn is_shell_or_wrapper_command(command: &str) -> bool {
