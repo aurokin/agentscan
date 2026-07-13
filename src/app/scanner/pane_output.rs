@@ -4,9 +4,11 @@ use std::time::{Duration, Instant};
 
 const PANE_OUTPUT_STATUS_LINES: usize = 30;
 
-pub(crate) fn apply_pane_output_status_fallbacks(panes: &mut [PaneRecord]) {
+pub(crate) fn apply_pane_output_status_fallbacks(
+    panes: &mut [PaneRecord],
+) -> PaneOutputCaptureStats {
     let mut capture = TmuxPaneOutputCapture;
-    apply_pane_output_status_fallbacks_with_capture(panes, &mut capture);
+    apply_pane_output_status_fallbacks_with_capture(panes, &mut capture)
 }
 
 pub(crate) fn apply_pane_output_status_fallbacks_with_cache(
@@ -33,16 +35,26 @@ impl PaneOutputCapture for TmuxPaneOutputCapture {
 fn apply_pane_output_status_fallbacks_with_capture(
     panes: &mut [PaneRecord],
     capture: &mut impl PaneOutputCapture,
-) {
+) -> PaneOutputCaptureStats {
+    let mut stats = PaneOutputCaptureStats::default();
     for pane in panes {
         if !classify::pane_output_status_fallback_candidate(pane) {
             continue;
         }
 
-        if let Ok(Some(output)) = capture.capture_tail(&pane.pane_id, PANE_OUTPUT_STATUS_LINES) {
-            classify::apply_pane_output_status_fallback(pane, &output);
+        stats.attempt_count = stats.attempt_count.saturating_add(1);
+        // Mirror the cached path: a transient capture failure is recorded as an
+        // error rather than silently swallowed, so it stays distinguishable from
+        // a successful capture that simply produced no status.
+        match capture.capture_tail(&pane.pane_id, PANE_OUTPUT_STATUS_LINES) {
+            Ok(Some(output)) => classify::apply_pane_output_status_fallback(pane, &output),
+            Ok(None) => {}
+            Err(_) => {
+                stats.error_count = stats.error_count.saturating_add(1);
+            }
         }
     }
+    stats
 }
 
 /// Cumulative `capture-pane` accounting for the daemon's pane-output status path.
@@ -197,6 +209,7 @@ mod tests {
     #[derive(Default)]
     struct FakePaneOutputCapture {
         outputs: HashMap<String, Option<String>>,
+        errors: std::collections::HashSet<String>,
         calls: Vec<(String, usize)>,
     }
 
@@ -204,6 +217,11 @@ mod tests {
         fn with_output(mut self, pane_id: &str, output: impl Into<String>) -> Self {
             self.outputs
                 .insert(pane_id.to_string(), Some(output.into()));
+            self
+        }
+
+        fn with_error(mut self, pane_id: &str) -> Self {
+            self.errors.insert(pane_id.to_string());
             self
         }
 
@@ -215,6 +233,9 @@ mod tests {
     impl PaneOutputCapture for FakePaneOutputCapture {
         fn capture_tail(&mut self, pane_id: &str, lines: usize) -> Result<Option<String>> {
             self.calls.push((pane_id.to_string(), lines));
+            if self.errors.contains(pane_id) {
+                anyhow::bail!("simulated capture failure for {pane_id}");
+            }
             Ok(self.outputs.get(pane_id).cloned().unwrap_or(None))
         }
     }
@@ -367,6 +388,27 @@ mod tests {
         assert_eq!(panes[7].status, PaneStatus::pane_output(StatusKind::Idle));
         assert_eq!(panes[8].status, PaneStatus::pane_output(StatusKind::Idle));
         assert_eq!(panes[10].status, PaneStatus::not_checked());
+    }
+
+    #[test]
+    fn pane_output_fallbacks_record_capture_errors() {
+        // `%1` captures a status successfully; `%2`'s capture fails transiently.
+        // The failure must surface as a recorded error, distinguishable from a
+        // successful capture that yielded no status.
+        let mut panes = vec![
+            pane("%1", Some(Provider::Copilot), PaneStatus::not_checked()),
+            pane("%2", Some(Provider::Codex), PaneStatus::not_checked()),
+        ];
+        let mut capture = FakePaneOutputCapture::default()
+            .with_output("%1", copilot_busy_output())
+            .with_error("%2");
+
+        let stats = apply_pane_output_status_fallbacks_with_capture(&mut panes, &mut capture);
+
+        assert_eq!(stats.attempt_count, 2);
+        assert_eq!(stats.error_count, 1);
+        assert_eq!(panes[0].status, PaneStatus::pane_output(StatusKind::Busy));
+        assert_eq!(panes[1].status, PaneStatus::not_checked());
     }
 
     #[test]

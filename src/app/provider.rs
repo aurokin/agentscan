@@ -367,3 +367,19 @@ fn matches_binary(command: &str, provider: &str, allow_suffix: bool) -> Option<b
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_metadata_table_covers_every_variant() {
+        for provider in Provider::value_variants() {
+            assert!(
+                PROVIDER_INFOS.iter().any(|info| info.provider == *provider),
+                "provider metadata table is missing an entry for {provider:?}; \
+                 provider_info would panic at runtime"
+            );
+        }
+    }
+}

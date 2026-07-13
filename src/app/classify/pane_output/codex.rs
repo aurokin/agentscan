@@ -74,7 +74,17 @@ fn codex_model_path_footer_line(line: &str) -> bool {
 
 fn codex_model_footer_token(line: &str) -> bool {
     line.split_whitespace()
-        .any(|token| token.starts_with("gpt-") || token.starts_with("o"))
+        .any(|token| token.starts_with("gpt-") || is_openai_o_series_token(token))
+}
+
+/// OpenAI "o"-series model tokens (`o3`, `o4-mini`) are an `o` followed by a
+/// digit. Anchoring on that digit keeps bare English words like `on`/`or`/`of`/
+/// `output` from being mistaken for a model name in the footer.
+fn is_openai_o_series_token(token: &str) -> bool {
+    token
+        .strip_prefix('o')
+        .and_then(|rest| rest.chars().next())
+        .is_some_and(|next| next.is_ascii_digit())
 }
 
 fn codex_footer_has_path_context(line: &str) -> bool {
@@ -94,4 +104,24 @@ fn codex_footer_has_mode_context(line: &str) -> bool {
         || line.contains("Shell mode")
         || line.contains("Side from ")
         || line.contains("Goal ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::codex_model_footer_token;
+
+    #[test]
+    fn accepts_openai_model_tokens() {
+        assert!(codex_model_footer_token("o3 default · /tmp/project"));
+        assert!(codex_model_footer_token("o4-mini high · /tmp/project"));
+        assert!(codex_model_footer_token("gpt-5.2 default · /tmp/project"));
+    }
+
+    #[test]
+    fn rejects_bare_english_o_words() {
+        assert!(!codex_model_footer_token("on"));
+        assert!(!codex_model_footer_token("or"));
+        assert!(!codex_model_footer_token("of"));
+        assert!(!codex_model_footer_token("output"));
+    }
 }
