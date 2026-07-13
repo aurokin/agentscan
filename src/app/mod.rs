@@ -50,6 +50,12 @@ const TMUX_SOCKET_ENV_VAR: &str = "AGENTSCAN_TMUX_SOCKET";
 // and never auto-resolves a compatible install (see tmux::command).
 const TMUX_BIN_ENV_VAR: &str = "AGENTSCAN_TMUX_BIN";
 const CACHE_SCHEMA_VERSION: u32 = 5;
+// Schema versions for the machine-readable envelopes of the `hotkeys` and
+// `providers` JSON outputs. These wrap their arrays the way the snapshot wraps
+// `panes`, so a field change is a versioned break rather than a silent one. They
+// version independently of `CACHE_SCHEMA_VERSION` (the snapshot).
+const PICKER_ROWS_SCHEMA_VERSION: u32 = 1;
+const PROVIDERS_SCHEMA_VERSION: u32 = 1;
 const CLAUDE_SPINNER_GLYPHS: &[char] = &[
     '⠁', '⠂', '⠄', '⡀', '⢀', '⠠', '⠐', '⠈', '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏', '⣾',
     '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷',

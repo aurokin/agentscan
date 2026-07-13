@@ -152,7 +152,10 @@ fn handle_subscription_event(
             state.set_connecting(message);
             Ok(TuiLoopAction::Redraw)
         }
-        LiveClientEvent::Snapshot { mut snapshot } => {
+        // The TUI runs in-process and builds its own picker rows from the panes, so
+        // it ignores the `rows` the subscribe stream now carries for remote clients.
+        LiveClientEvent::Snapshot { snapshot, .. } => {
+            let mut snapshot = *snapshot;
             snapshot::filter_snapshot(&mut snapshot, include_all);
             state.replace_panes(snapshot.panes);
             Ok(TuiLoopAction::Redraw)

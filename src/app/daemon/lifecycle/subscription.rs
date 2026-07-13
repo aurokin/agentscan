@@ -361,6 +361,58 @@ fn write_subscription_event_json_line(
     Ok(true)
 }
 
+/// Builds the picker `rows` that ride alongside each `snapshot` frame on the
+/// subscribe stream. Owning this here (in the process that owns tmux) keeps the
+/// desktop from spawning a second `agentscan hotkeys` scan per update: the same
+/// `picker::picker_rows` assembly the `hotkeys` command uses runs once, on the
+/// host, so remote clients get correct focus/client resolution and host-local
+/// workspace grouping they could not reproduce from the snapshot alone.
+struct SubscriptionRowContext {
+    picker_group_by: picker::PickerGroupBy,
+    picker_keys: picker::PickerKeySet,
+}
+
+impl SubscriptionRowContext {
+    fn resolve() -> Result<Self> {
+        let config = config::resolve_picker_config()?;
+        Ok(Self {
+            picker_group_by: config.picker_group_by,
+            picker_keys: config.picker_keys,
+        })
+    }
+
+    /// Wrap a snapshot into a `Snapshot` event, deriving the picker rows from that
+    /// same snapshot. Hotkey assignment is stable across frames because
+    /// `picker_rows` orders panes deterministically (by workspace, then tmux
+    /// location, then pane id) before zipping keys — arrival order never affects it.
+    fn snapshot_event(&self, snapshot: SnapshotEnvelope) -> LiveClientEvent {
+        let rows = self.build_rows(&snapshot);
+        LiveClientEvent::Snapshot {
+            snapshot: Box::new(snapshot),
+            rows,
+        }
+    }
+
+    fn build_rows(&self, snapshot: &SnapshotEnvelope) -> Vec<picker::PickerRow> {
+        // Match `hotkeys`' default (agent panes only) and its live focus/client
+        // resolution; any tmux error degrades to "no focus" rather than failing.
+        let agent_panes: Vec<PaneRecord> = snapshot
+            .panes
+            .iter()
+            .filter(|pane| pane.provider.is_some())
+            .cloned()
+            .collect();
+        let focus = tmux::tmux_focus_state().unwrap_or_default();
+        picker::picker_rows(
+            &agent_panes,
+            focus.focused_session.as_deref(),
+            u32::try_from(focus.attached_client_count).unwrap_or(u32::MAX),
+            self.picker_group_by,
+            &self.picker_keys,
+        )
+    }
+}
+
 fn subscription_worker_loop(
     policy: AutoStartPolicy,
     events: &mpsc::Sender<LiveClientEvent>,
@@ -369,6 +421,7 @@ fn subscription_worker_loop(
     let socket_path = ipc::resolve_socket_path()?;
     let paths = LifecyclePaths::from_socket_path(&socket_path);
     let mut state = SubscriptionState::new();
+    let row_context = SubscriptionRowContext::resolve()?;
 
     while !cancel.load(Ordering::Relaxed) {
         send_subscription_event(events, state.connecting_event(&socket_path))?;
@@ -379,13 +432,8 @@ fn subscription_worker_loop(
                 bootstrap,
             } => {
                 state.mark_subscribed();
-                send_subscription_event(
-                    events,
-                    LiveClientEvent::Snapshot {
-                        snapshot: bootstrap,
-                    },
-                )?;
-                match read_subscription_frames(&mut reader, events, cancel) {
+                send_subscription_event(events, row_context.snapshot_event(bootstrap))?;
+                match read_subscription_frames(&mut reader, events, cancel, &row_context) {
                     SubscriptionReadResult::Reconnect(message) => {
                         if cancel.load(Ordering::Relaxed) {
                             break;
@@ -602,6 +650,7 @@ fn read_subscription_frames(
     reader: &mut BufReader<std::os::unix::net::UnixStream>,
     events: &mpsc::Sender<LiveClientEvent>,
     cancel: &Arc<AtomicBool>,
+    row_context: &SubscriptionRowContext,
 ) -> SubscriptionReadResult {
     loop {
         if cancel.load(Ordering::Relaxed) {
@@ -615,8 +664,7 @@ fn read_subscription_frames(
                         "invalid daemon snapshot: {error:#}"
                     ));
                 }
-                if send_subscription_event(events, LiveClientEvent::Snapshot { snapshot }).is_err()
-                {
+                if send_subscription_event(events, row_context.snapshot_event(snapshot)).is_err() {
                     return SubscriptionReadResult::Cancelled;
                 }
             }

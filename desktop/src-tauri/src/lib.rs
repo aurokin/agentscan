@@ -157,6 +157,20 @@ struct CommandOutput {
     stderr: Vec<u8>,
 }
 
+// Schema version of the `hotkeys --format json` envelope the host emits. The CLI
+// wraps its picker rows in `{ "schema_version": 1, "rows": [...] }` so a row-shape
+// change is a versioned break instead of a silent one; the desktop validates this
+// before trusting the rows.
+const PICKER_ROWS_SCHEMA_VERSION: u32 = 1;
+
+// Versioned envelope emitted by `agentscan hotkeys --format json`. Rows travel
+// under `rows`; `schema_version` gates compatibility.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct PickerRowsEnvelope {
+    schema_version: u32,
+    rows: Vec<PickerRow>,
+}
+
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 struct PickerRow {
     key: String,
@@ -205,8 +219,16 @@ enum SubscribeFrame {
     Connecting {
         message: String,
     },
+    // The host builds the picker `rows` on the tmux-owning side and ships them in
+    // this frame, so the desktop renders directly from the delivered snapshot
+    // instead of spawning a second `agentscan hotkeys` scan (a full extra tmux
+    // scan + SSH round-trip) per update. A `snapshot` frame missing `rows` is a
+    // known-type-with-bad-payload protocol error (host too old / mismatched),
+    // which tears the subscription down to reconnect rather than silently
+    // rendering an empty picker.
     Snapshot {
         snapshot: serde_json::Value,
+        rows: Vec<PickerRow>,
     },
     Offline {
         message: String,
@@ -912,16 +934,37 @@ fn load_picker_rows_from_runner_interruptible(
         return Err(classify_desktop_failure(runner, "hotkeys", &error));
     }
 
-    let rows: Vec<PickerRow> = serde_json::from_slice(&output.stdout).map_err(|error| {
+    let envelope: PickerRowsEnvelope = serde_json::from_slice(&output.stdout).map_err(|error| {
         classify_desktop_failure(
             runner,
             "hotkeys",
             &format!("Invalid agentscan hotkeys JSON: {error}"),
         )
     })?;
+    let rows = picker_rows_from_envelope(runner, envelope)?;
     validate_picker_rows(&rows)
         .map_err(|error| classify_desktop_failure(runner, "hotkeys", &error))?;
     Ok(rows)
+}
+
+// Unwrap a picker-rows envelope after checking its schema version. An unexpected
+// version means the host CLI changed the row shape under us, so treat it as an
+// incompatible-binary failure (upgrade guidance) rather than trusting the rows.
+fn picker_rows_from_envelope(
+    runner: &AgentscanRunner,
+    envelope: PickerRowsEnvelope,
+) -> Result<Vec<PickerRow>, String> {
+    if envelope.schema_version != PICKER_ROWS_SCHEMA_VERSION {
+        return Err(classify_desktop_failure(
+            runner,
+            "hotkeys",
+            &format!(
+                "Incompatible agentscan hotkeys schema_version {} (expected {PICKER_ROWS_SCHEMA_VERSION})",
+                envelope.schema_version
+            ),
+        ));
+    }
+    Ok(envelope.rows)
 }
 
 fn focus_picker_row_with_runner(runner: &AgentscanRunner, pane_id: &str) -> Result<(), String> {
@@ -1344,7 +1387,7 @@ fn run_live_picker_subscription(
             Ok(line) if line.trim().is_empty() => {}
             Ok(line) => match serde_json::from_str::<SubscribeFrame>(&line) {
                 Ok(frame) => {
-                    match handle_subscribe_frame(app, runner, frame, source_key, epoch, stop) {
+                    match handle_subscribe_frame(app, runner, frame, source_key, epoch) {
                         LivePickerWorkerExit::Retry => {}
                         _ => {
                             saw_terminal = true;
@@ -1432,9 +1475,8 @@ fn handle_subscribe_frame(
     frame: SubscribeFrame,
     source_key: &str,
     epoch: u64,
-    stop: &AtomicBool,
 ) -> LivePickerWorkerExit {
-    match live_event_from_subscribe_frame(runner, frame, stop) {
+    match live_event_from_subscribe_frame(runner, frame) {
         // A heartbeat (or any frame the worker doesn't act on) maps to no event:
         // keep reading the stream without disturbing the picker.
         Ok(None) => LivePickerWorkerExit::Retry,
@@ -1460,29 +1502,28 @@ fn handle_subscribe_frame(
 fn live_event_from_subscribe_frame(
     runner: &AgentscanRunner,
     frame: SubscribeFrame,
-    stop: &AtomicBool,
 ) -> Result<Option<(LivePickerEvent, LivePickerWorkerExit)>, String> {
     match frame {
         SubscribeFrame::Connecting { message } => Ok(Some((
             LivePickerEvent::Connecting { message },
             LivePickerWorkerExit::Retry,
         ))),
-        SubscribeFrame::Snapshot { snapshot } => {
-            // Pass the worker's stop flag so a profile/runner switch isn't blocked
-            // for the full hotkeys timeout while this snapshot fetch is in flight.
-            let rows = match load_picker_rows_from_runner_interruptible(runner, Some(stop)) {
-                Ok(rows) => rows,
-                Err(message) => {
-                    return Ok(Some((
-                        LivePickerEvent::Offline {
-                            message: classify_desktop_failure(runner, "hotkeys", &message),
-                            retrying: true,
-                            diagnostics: load_daemon_status(runner).ok(),
-                        },
-                        LivePickerWorkerExit::Retry,
-                    )));
-                }
-            };
+        SubscribeFrame::Snapshot { snapshot, rows } => {
+            // Rows arrive already built by the host (correct focus, client count,
+            // and workspace grouping), so no second `agentscan hotkeys` scan is
+            // spawned per frame. Validate them the same way the standalone fetch
+            // does; a semantic problem degrades to Offline/retry, keeping the last
+            // good picker visible rather than tearing the subscription down.
+            if let Err(message) = validate_picker_rows(&rows) {
+                return Ok(Some((
+                    LivePickerEvent::Offline {
+                        message: classify_desktop_failure(runner, "subscribe", &message),
+                        retrying: true,
+                        diagnostics: load_daemon_status(runner).ok(),
+                    },
+                    LivePickerWorkerExit::Retry,
+                )));
+            }
             let snapshot = summarize_snapshot(&snapshot);
             Ok(Some((
                 LivePickerEvent::Rows { rows, snapshot },
@@ -2784,6 +2825,34 @@ mod tests {
     }
 
     #[test]
+    fn picker_rows_envelope_unwraps_rows_at_supported_schema() {
+        let envelope: PickerRowsEnvelope =
+            serde_json::from_str(r#"{ "schema_version": 1, "rows": [] }"#)
+                .expect("envelope parses");
+        let runner = AgentscanRunner::Local(LocalRunnerSettings {
+            binary_path: None,
+            env: Vec::new(),
+        });
+
+        let rows = picker_rows_from_envelope(&runner, envelope).expect("supported schema unwraps");
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn picker_rows_envelope_rejects_unsupported_schema() {
+        let envelope: PickerRowsEnvelope =
+            serde_json::from_str(r#"{ "schema_version": 2, "rows": [] }"#)
+                .expect("envelope parses");
+        let runner = AgentscanRunner::Local(LocalRunnerSettings {
+            binary_path: None,
+            env: Vec::new(),
+        });
+
+        let error = picker_rows_from_envelope(&runner, envelope).unwrap_err();
+        assert!(error.contains("schema_version"));
+    }
+
+    #[test]
     fn picker_rows_parse_contract_fields_and_preserve_extra_fields() {
         let rows: Vec<PickerRow> = serde_json::from_str(
             r#"[
@@ -2946,14 +3015,12 @@ mod tests {
     fn keepalive_frame_maps_to_no_event() {
         // Keepalive is a no-op for the picker: it produces no event and keeps the
         // worker reading the stream.
-        let stop = AtomicBool::new(false);
         let event = live_event_from_subscribe_frame(
             &AgentscanRunner::Local(LocalRunnerSettings {
                 binary_path: None,
                 env: Vec::new(),
             }),
             SubscribeFrame::Keepalive,
-            &stop,
         )
         .expect("keepalive maps cleanly");
 
@@ -2973,20 +3040,82 @@ mod tests {
     #[test]
     fn unknown_frame_maps_to_no_event() {
         // Unknown is a no-op for the picker (same as Keepalive): no event, keep reading.
-        let stop = AtomicBool::new(false);
         let event = live_event_from_subscribe_frame(
             &AgentscanRunner::Local(LocalRunnerSettings {
                 binary_path: None,
                 env: Vec::new(),
             }),
             SubscribeFrame::Unknown,
-            &stop,
         )
         .expect("unknown maps cleanly");
 
         assert!(
             event.is_none(),
             "unknown frame must not emit a picker event"
+        );
+    }
+
+    #[test]
+    fn snapshot_frame_renders_delivered_rows_without_second_scan() {
+        // The host ships picker rows in the snapshot frame, so the desktop maps them
+        // straight into a Rows event — no `agentscan hotkeys` spawn. With a Local
+        // runner that has no binary, this succeeding at all proves nothing was run.
+        let frame: SubscribeFrame = serde_json::from_str(
+            r#"{
+              "type": "snapshot",
+              "snapshot": {
+                "generated_at": "2026-05-23T20:00:00Z",
+                "source": { "kind": "daemon" },
+                "panes": [{ "pane_id": "%1" }]
+              },
+              "rows": [
+                {
+                  "key": "1",
+                  "pane_id": "%1",
+                  "provider": "codex",
+                  "status": { "kind": "idle" },
+                  "display_label": "Root Task",
+                  "location_tag": "work:0.0",
+                  "location": { "session_name": "work" }
+                }
+              ]
+            }"#,
+        )
+        .expect("snapshot frame with rows parses");
+
+        let (event, exit) = live_event_from_subscribe_frame(
+            &AgentscanRunner::Local(LocalRunnerSettings {
+                binary_path: None,
+                env: Vec::new(),
+            }),
+            frame,
+        )
+        .expect("snapshot frame maps cleanly")
+        .expect("snapshot frame emits an event");
+
+        assert_eq!(exit, LivePickerWorkerExit::Retry);
+        match event {
+            LivePickerEvent::Rows { rows, snapshot } => {
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0].pane_id, "%1");
+                assert_eq!(snapshot.pane_count, 1);
+                assert_eq!(snapshot.source_kind.as_deref(), Some("daemon"));
+            }
+            other => panic!("expected Rows event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn snapshot_frame_missing_rows_is_a_protocol_error() {
+        // `rows` is a required field: a host too old to send it yields a malformed
+        // known frame, which the reader treats as a protocol error (teardown +
+        // reconnect) rather than silently rendering an empty picker.
+        assert!(
+            serde_json::from_str::<SubscribeFrame>(
+                r#"{"type":"snapshot","snapshot":{"panes":[]}}"#
+            )
+            .is_err(),
+            "snapshot frame missing `rows` must error"
         );
     }
 
