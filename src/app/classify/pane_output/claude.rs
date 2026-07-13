@@ -1,5 +1,23 @@
 use super::{PaneOutputFrame, StatusKind};
 
+// Claude Code interrupt hint shown in the status line while a turn is running
+// (`esc to interrupt`); probed as two substrings.
+const INTERRUPT_ESC_MARKER: &str = "esc";
+const INTERRUPT_VERB_MARKER: &str = "interrupt";
+// Claude Code permission approval prompt shown while awaiting the user.
+const WAITING_PERMISSION_MARKER: &str = "Waiting for permission";
+// Claude Code idle input footer hint.
+const SHORTCUTS_HINT: &str = "? for shortcuts";
+// Claude Code mode-cycle footer hint (`shift+tab to cycle`); probed as two substrings.
+const CYCLE_MODE_KEYBIND: &str = "shift+tab";
+const CYCLE_MODE_ACTION: &str = "cycle";
+// Claude Code footer mode indicators.
+const AUTO_MODE_MARKER: &str = "auto on";
+const PLAN_MODE_MARKER: &str = "plan on";
+const ACCEPT_EDITS_MODE_MARKER: &str = "accept edits on";
+const BYPASS_PERMISSIONS_MODE_MARKER: &str = "bypass permissions on";
+const ULTRAPLAN_MODE_MARKER: &str = "ultraplan on";
+
 pub(super) fn status(output: &str) -> Option<StatusKind> {
     let frame = PaneOutputFrame::new(output);
     let prompt_index = frame.rposition(claude_prompt_line);
@@ -29,11 +47,11 @@ fn claude_current_busy_marker_line(line: &str) -> bool {
 }
 
 fn claude_interrupt_hint_line(line: &str) -> bool {
-    line.contains("esc") && line.contains("interrupt")
+    line.contains(INTERRUPT_ESC_MARKER) && line.contains(INTERRUPT_VERB_MARKER)
 }
 
 fn claude_waiting_permission_line(line: &str) -> bool {
-    line.contains("Waiting for permission")
+    line.contains(WAITING_PERMISSION_MARKER)
 }
 
 fn claude_busy_marker_is_near_current_prompt(
@@ -56,13 +74,13 @@ fn claude_prompt_is_near_current_footer(frame: &PaneOutputFrame<'_>, prompt_inde
 
 fn claude_current_footer_line(line: &str) -> bool {
     let line = line.trim();
-    line.contains("? for shortcuts")
-        || line.contains("shift+tab") && line.contains("cycle")
-        || line.contains("auto on")
-        || line.contains("plan on")
-        || line.contains("accept edits on")
-        || line.contains("bypass permissions on")
-        || line.contains("ultraplan on")
+    line.contains(SHORTCUTS_HINT)
+        || line.contains(CYCLE_MODE_KEYBIND) && line.contains(CYCLE_MODE_ACTION)
+        || line.contains(AUTO_MODE_MARKER)
+        || line.contains(PLAN_MODE_MARKER)
+        || line.contains(ACCEPT_EDITS_MODE_MARKER)
+        || line.contains(BYPASS_PERMISSIONS_MODE_MARKER)
+        || line.contains(ULTRAPLAN_MODE_MARKER)
         || claude_interrupt_hint_line(line)
 }
 

@@ -1,5 +1,13 @@
 use super::{PaneOutputFrame, StatusKind};
 
+// hermes busy input prompt command hints shown while a turn is running
+// (`⚕ ❯ … msg=interrupt … /queue … Ctrl+C cancel`).
+const INTERRUPT_MARKER: &str = "msg=interrupt";
+const QUEUE_MARKER: &str = "/queue";
+const CANCEL_HINT: &str = "Ctrl+C cancel";
+// hermes turn-startup status line shown while the agent boots a turn.
+const INITIALIZING_MARKER: &str = "Initializing agent...";
+
 pub(super) fn status(output: &str) -> Option<StatusKind> {
     let frame = PaneOutputFrame::new(output);
     let busy_index = frame.rposition(hermes_busy_prompt_line);
@@ -93,13 +101,13 @@ fn hermes_idle_prompt_line(line: &str) -> bool {
 fn hermes_busy_prompt_line(line: &str) -> bool {
     let line = line.trim();
     line.starts_with("⚕ ❯")
-        && line.contains("msg=interrupt")
-        && line.contains("/queue")
-        && line.contains("Ctrl+C cancel")
+        && line.contains(INTERRUPT_MARKER)
+        && line.contains(QUEUE_MARKER)
+        && line.contains(CANCEL_HINT)
 }
 
 fn hermes_current_turn_busy_line(line: &str) -> bool {
-    line.trim() == "Initializing agent..."
+    line.trim() == INITIALIZING_MARKER
 }
 
 fn hermes_turn_busy_marker_is_current(frame: &PaneOutputFrame<'_>, busy_index: usize) -> bool {

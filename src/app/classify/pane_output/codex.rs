@@ -1,5 +1,27 @@
 use super::{PaneOutputFrame, StatusKind};
 
+// Codex idle input prompt placeholder.
+const IDLE_PROMPT_MARKER: &str = "Ask Codex to do anything";
+// Codex busy status footer shown while a turn is running (`(… esc to interrupt)`).
+const INTERRUPT_HINT: &str = "esc to interrupt)";
+// Codex approval prompt copy shown when awaiting user confirmation.
+const APPROVAL_CONFIRM_HINT: &str = "Press enter to confirm or esc to cancel";
+const APPROVAL_PROCEED_MARKER: &str = "Yes, proceed";
+const APPROVAL_REVIEW_PREFIX: &str = "Reviewing ";
+const APPROVAL_REQUEST_MARKER: &str = "approval request";
+// Codex idle footer context markers.
+const CONTEXT_LEFT_MARKER: &str = "context left";
+const CONTEXT_USED_PREFIX: &str = "Context ";
+const CONTEXT_USED_SUFFIX: &str = " used";
+const FAST_MODE_MARKER: &str = "Fast on";
+const QUEUE_MESSAGE_HINT: &str = "tab to queue message";
+// Codex footer mode-context labels.
+const PLAN_MODE_MARKER: &str = "Plan mode";
+const DEFAULT_MODE_MARKER: &str = "Default mode";
+const SHELL_MODE_MARKER: &str = "Shell mode";
+const SIDE_FROM_MARKER: &str = "Side from ";
+const GOAL_MARKER: &str = "Goal ";
+
 pub(super) fn status(output: &str) -> Option<StatusKind> {
     let frame = PaneOutputFrame::new(output);
     let idle_index = frame.rposition(codex_idle_prompt_line);
@@ -21,7 +43,7 @@ pub(super) fn status(output: &str) -> Option<StatusKind> {
 
 fn codex_idle_prompt_line(line: &str) -> bool {
     let line = line.trim_start();
-    line.starts_with('›') && line.contains("Ask Codex to do anything")
+    line.starts_with('›') && line.contains(IDLE_PROMPT_MARKER)
 }
 
 fn codex_current_busy_marker_line(line: &str) -> bool {
@@ -30,13 +52,13 @@ fn codex_current_busy_marker_line(line: &str) -> bool {
 }
 
 fn codex_interrupt_status_line(line: &str) -> bool {
-    line.contains("esc to interrupt)") && line.contains('(')
+    line.contains(INTERRUPT_HINT) && line.contains('(')
 }
 
 fn codex_approval_prompt_line(line: &str) -> bool {
-    line.contains("Press enter to confirm or esc to cancel")
-        || line.contains("Yes, proceed")
-        || line.contains("Reviewing ") && line.contains("approval request")
+    line.contains(APPROVAL_CONFIRM_HINT)
+        || line.contains(APPROVAL_PROCEED_MARKER)
+        || line.contains(APPROVAL_REVIEW_PREFIX) && line.contains(APPROVAL_REQUEST_MARKER)
 }
 
 fn codex_busy_marker_is_near_current_prompt(
@@ -59,10 +81,10 @@ fn codex_prompt_is_near_current_footer(frame: &PaneOutputFrame<'_>, prompt_index
 
 fn codex_footer_line(line: &str) -> bool {
     let line = line.trim();
-    line.contains("context left")
-        || (line.contains("Context ") && line.contains(" used"))
-        || line.contains("Fast on")
-        || line.contains("tab to queue message")
+    line.contains(CONTEXT_LEFT_MARKER)
+        || (line.contains(CONTEXT_USED_PREFIX) && line.contains(CONTEXT_USED_SUFFIX))
+        || line.contains(FAST_MODE_MARKER)
+        || line.contains(QUEUE_MESSAGE_HINT)
         || codex_model_path_footer_line(line)
 }
 
@@ -99,11 +121,11 @@ fn codex_footer_has_path_context(line: &str) -> bool {
 }
 
 fn codex_footer_has_mode_context(line: &str) -> bool {
-    line.contains("Plan mode")
-        || line.contains("Default mode")
-        || line.contains("Shell mode")
-        || line.contains("Side from ")
-        || line.contains("Goal ")
+    line.contains(PLAN_MODE_MARKER)
+        || line.contains(DEFAULT_MODE_MARKER)
+        || line.contains(SHELL_MODE_MARKER)
+        || line.contains(SIDE_FROM_MARKER)
+        || line.contains(GOAL_MARKER)
 }
 
 #[cfg(test)]

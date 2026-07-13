@@ -1,5 +1,20 @@
 use super::{PaneOutputFrame, StatusKind};
 
+// Copilot busy status line shown while a turn is running.
+const THINKING_CANCEL_HINT: &str = "Thinking (Esc to cancel";
+// Copilot working footer probes (`Working — esc to cancel`).
+const WORKING_MARKER: &str = "Working";
+const ESC_MARKER: &str = "esc";
+const CANCEL_MARKER: &str = "cancel";
+// Copilot idle footer command hints.
+const COMMANDS_HINT: &str = "/ commands";
+const HELP_HINT: &str = "? help";
+const FILES_HINT: &str = "@ files";
+const ISSUES_HINT: &str = "# issues";
+// Copilot folder-trust modal copy.
+const TRUST_MODAL_TITLE: &str = "Confirm folder trust";
+const TRUST_MODAL_QUESTION: &str = "Do you trust the files in this folder?";
+
 pub(super) fn status(output: &str) -> Option<StatusKind> {
     let frame = PaneOutputFrame::new(output);
     if copilot_pane_output_indicates_busy(&frame) {
@@ -10,7 +25,7 @@ pub(super) fn status(output: &str) -> Option<StatusKind> {
 }
 
 fn copilot_pane_output_indicates_busy(frame: &PaneOutputFrame<'_>) -> bool {
-    copilot_current_status_line(frame).is_some_and(|line| line.contains("Thinking (Esc to cancel"))
+    copilot_current_status_line(frame).is_some_and(|line| line.contains(THINKING_CANCEL_HINT))
         || copilot_current_working_footer_visible(frame)
         || copilot_current_bordered_prompt_footer(frame).is_some_and(copilot_working_footer_line)
         || copilot_current_trust_prompt_visible(frame)
@@ -29,7 +44,7 @@ fn copilot_current_status_line<'a>(frame: &'a PaneOutputFrame<'a>) -> Option<&'a
 
 fn copilot_prompt_context_line(line: &str) -> bool {
     let line = line.trim();
-    (line.starts_with('/') || line.starts_with("~/")) && !line.starts_with("/ commands")
+    (line.starts_with('/') || line.starts_with("~/")) && !line.starts_with(COMMANDS_HINT)
 }
 
 fn copilot_current_prompt_visible(frame: &PaneOutputFrame<'_>) -> bool {
@@ -111,13 +126,13 @@ fn copilot_current_working_footer_visible(frame: &PaneOutputFrame<'_>) -> bool {
 
 fn copilot_working_footer_line(line: &str) -> bool {
     let line = line.trim();
-    line.contains("Working") && line.contains("esc") && line.contains("cancel")
+    line.contains(WORKING_MARKER) && line.contains(ESC_MARKER) && line.contains(CANCEL_MARKER)
 }
 
 fn copilot_idle_footer_line(line: &str) -> bool {
     let line = line.trim();
-    (line.contains("/ commands") && line.contains("? help"))
-        || (line.contains("@ files") && line.contains("# issues"))
+    (line.contains(COMMANDS_HINT) && line.contains(HELP_HINT))
+        || (line.contains(FILES_HINT) && line.contains(ISSUES_HINT))
 }
 
 fn copilot_bordered_prompt_top_line(line: &str) -> bool {
@@ -140,7 +155,7 @@ fn copilot_separator_line(line: &str) -> bool {
 }
 
 fn copilot_current_trust_prompt_visible(frame: &PaneOutputFrame<'_>) -> bool {
-    let Some(modal_index) = frame.rposition(|line| line.contains("Confirm folder trust")) else {
+    let Some(modal_index) = frame.rposition(|line| line.contains(TRUST_MODAL_TITLE)) else {
         return false;
     };
 
@@ -151,5 +166,5 @@ fn copilot_current_trust_prompt_visible(frame: &PaneOutputFrame<'_>) -> bool {
     !normal_prompt_after_modal
         && modal_lines
             .iter()
-            .any(|line| line.contains("Do you trust the files in this folder?"))
+            .any(|line| line.contains(TRUST_MODAL_QUESTION))
 }

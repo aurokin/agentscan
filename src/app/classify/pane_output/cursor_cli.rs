@@ -1,5 +1,17 @@
 use super::{PaneOutputFrame, StatusKind};
 
+// Cursor CLI busy footer/prompt hint shown while a turn is running.
+const STOP_HINT: &str = "ctrl+c to stop";
+// Cursor CLI running-spinner status verb.
+const RUNNING_MARKER: &str = "Running";
+// Cursor CLI idle prompt placeholders.
+const IDLE_FOLLOW_UP_PROMPT: &str = "Add a follow-up";
+const IDLE_START_PROMPT: &str = "Plan, search, build anything";
+// Cursor CLI composer footer markers.
+const COMPOSER_MARKER: &str = "Composer";
+const COMPOSER_AUTO_RUN_MARKER: &str = "Auto-run";
+const COMPOSER_RUN_EVERYTHING_MARKER: &str = "Run Everything";
+
 pub(super) fn status(output: &str) -> Option<StatusKind> {
     let frame = PaneOutputFrame::new(output);
     let Some(footer_top_index) = frame.rposition(cursor_cli_footer_top_border) else {
@@ -12,7 +24,7 @@ pub(super) fn status(output: &str) -> Option<StatusKind> {
         .map(|line| line.trim())
         .find(|line| line.starts_with('→'));
 
-    if current_footer.is_some_and(|line| line.contains("ctrl+c to stop"))
+    if current_footer.is_some_and(|line| line.contains(STOP_HINT))
         || cursor_cli_current_status_line(&frame, footer_top_index)
             .is_some_and(cursor_cli_status_line_indicates_running)
     {
@@ -80,12 +92,12 @@ fn cursor_cli_status_line_indicates_running(line: &str) -> bool {
     spinner
         .chars()
         .all(|ch| ('\u{2800}'..='\u{28ff}').contains(&ch))
-        && parts.any(|part| part == "Running")
+        && parts.any(|part| part == RUNNING_MARKER)
 }
 
 fn cursor_cli_footer_indicates_idle(line: &str) -> bool {
     let line = line.trim_start_matches('→').trim();
-    line == "Add a follow-up" || line == "Plan, search, build anything"
+    line == IDLE_FOLLOW_UP_PROMPT || line == IDLE_START_PROMPT
 }
 
 fn cursor_cli_borderless_prompt_line(line: &str) -> bool {
@@ -93,11 +105,13 @@ fn cursor_cli_borderless_prompt_line(line: &str) -> bool {
 }
 
 fn cursor_cli_borderless_prompt_indicates_busy(line: &str) -> bool {
-    line.contains("ctrl+c to stop")
+    line.contains(STOP_HINT)
 }
 
 fn cursor_cli_composer_footer_line(line: &str) -> bool {
-    line.contains("Composer") && (line.contains("Auto-run") || line.contains("Run Everything"))
+    line.contains(COMPOSER_MARKER)
+        && (line.contains(COMPOSER_AUTO_RUN_MARKER)
+            || line.contains(COMPOSER_RUN_EVERYTHING_MARKER))
 }
 
 fn cursor_cli_path_footer_line(line: &str) -> bool {

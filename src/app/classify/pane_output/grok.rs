@@ -1,5 +1,12 @@
 use super::{PaneOutputFrame, StatusKind, is_version_like_command};
 
+// grok keybind footer key specs (`Shift+Tab:mode`, `Ctrl+.:shortcuts`).
+const MODE_KEYBIND_KEY: &str = "Shift+Tab";
+const CTRL_KEYBIND_PREFIX: &str = "Ctrl+";
+// grok active-turn interrupt keybind actions (`Ctrl+c:cancel`, `Ctrl+Enter:interject`).
+const CANCEL_ACTION: &str = "cancel";
+const INTERJECT_ACTION: &str = "interject";
+
 pub(super) fn status(output: &str) -> Option<StatusKind> {
     let frame = PaneOutputFrame::new(output);
 
@@ -84,7 +91,7 @@ fn grok_keybind_token(token: &str) -> bool {
     let Some((key, action)) = token.split_once(':') else {
         return false;
     };
-    !action.is_empty() && (key == "Shift+Tab" || key.starts_with("Ctrl+"))
+    !action.is_empty() && (key == MODE_KEYBIND_KEY || key.starts_with(CTRL_KEYBIND_PREFIX))
 }
 
 /// An active turn's footer adds interrupt keybinds (`Ctrl+c:cancel`, `Ctrl+Enter:interject`)
@@ -93,7 +100,8 @@ fn grok_keybind_token(token: &str) -> bool {
 fn grok_active_turn_footer_after(frame: &PaneOutputFrame<'_>, border: usize) -> bool {
     frame.trailing_lines_after_any(border, |line| {
         let line = line.trim();
-        grok_keybind_footer_line(line) && (line.contains("cancel") || line.contains("interject"))
+        grok_keybind_footer_line(line)
+            && (line.contains(CANCEL_ACTION) || line.contains(INTERJECT_ACTION))
     })
 }
 
