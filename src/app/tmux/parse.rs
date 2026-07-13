@@ -9,59 +9,72 @@ pub(crate) fn parse_pane_rows(input: &str) -> Result<Vec<TmuxPaneRow>> {
         }
 
         let fields = split_tmux_fields(line);
-        // Field count by optional sections: core(10) + active(2) is always
-        // present; session/window ids (+2) and the @agent block (+5) are
-        // optional. The two active flags (#{pane_active}, #{window_active})
-        // are always the trailing two fields, so the id/agent offsets are
-        // unchanged from the pre-active layout — only the totals grew by 2.
+        // Row width by optional section: the core and active blocks are always
+        // present; the session/window ids and the `@agent` block are optional,
+        // so each accepted width is one (ids?, agent?) combination (see
+        // `pane_field`). The active flags always trail, so an absent optional
+        // block simply shortens the row without shifting the blocks before it.
         let field_count = fields.len();
-        if field_count != 12 && field_count != 14 && field_count != 17 && field_count != 19 {
+        if !matches!(
+            field_count,
+            PANE_ROW_MINIMAL | PANE_ROW_WITH_IDS | PANE_ROW_WITH_AGENT | PANE_ROW_FULL
+        ) {
             bail!(
-                "unexpected tmux pane field count on line {}: expected 12, 14, 17, or 19, got {}",
+                "unexpected tmux pane field count on line {}: expected {}, {}, {}, or {}, got {}",
                 line_number + 1,
+                PANE_ROW_MINIMAL,
+                PANE_ROW_WITH_IDS,
+                PANE_ROW_WITH_AGENT,
+                PANE_ROW_FULL,
                 field_count
             );
         }
 
-        let (session_id, window_id, agent_fields_start) = match field_count {
-            14 => (empty_to_none(fields[10]), empty_to_none(fields[11]), None),
-            19 => (
-                empty_to_none(fields[10]),
-                empty_to_none(fields[11]),
-                Some(12),
-            ),
-            12 | 17 => (None, None, (field_count == 17).then_some(10)),
-            _ => unreachable!("unexpected tmux field count already validated"),
+        let has_ids = field_count == PANE_ROW_WITH_IDS || field_count == PANE_ROW_FULL;
+        let has_agent = field_count == PANE_ROW_WITH_AGENT || field_count == PANE_ROW_FULL;
+
+        // The ids block, when present, immediately follows the core block and so
+        // never shifts.
+        let (session_id, window_id) = if has_ids {
+            (
+                empty_to_none(fields[IDX_SESSION_ID]),
+                empty_to_none(fields[IDX_WINDOW_ID]),
+            )
+        } else {
+            (None, None)
         };
 
-        // Active flags trail every variant.
-        let pane_active = parse_bool_flag(fields[field_count - 2]);
-        let window_active = parse_bool_flag(fields[field_count - 1]);
+        // The agent block follows core (and ids when present), so its start
+        // shifts left by the ids width when ids are absent.
+        let (agent_provider, agent_label, agent_cwd, agent_state, agent_session_id) = if has_agent {
+            let start = CORE_FIELD_COUNT + if has_ids { IDS_FIELD_COUNT } else { 0 };
+            (
+                empty_to_none(fields[start + AGENT_PROVIDER_OFFSET]),
+                empty_to_none(fields[start + AGENT_LABEL_OFFSET]),
+                empty_to_none(fields[start + AGENT_CWD_OFFSET]),
+                empty_to_none(fields[start + AGENT_STATE_OFFSET]),
+                empty_to_none(fields[start + AGENT_SESSION_ID_OFFSET]),
+            )
+        } else {
+            (None, None, None, None, None)
+        };
 
-        let (agent_provider, agent_label, agent_cwd, agent_state, agent_session_id) =
-            if let Some(start) = agent_fields_start {
-                (
-                    empty_to_none(fields[start]),
-                    empty_to_none(fields[start + 1]),
-                    empty_to_none(fields[start + 2]),
-                    empty_to_none(fields[start + 3]),
-                    empty_to_none(fields[start + 4]),
-                )
-            } else {
-                (None, None, None, None, None)
-            };
+        // The active flags are always the trailing `ACTIVE_FIELD_COUNT` fields.
+        let active_start = field_count - ACTIVE_FIELD_COUNT;
+        let pane_active = parse_bool_flag(fields[active_start + ACTIVE_PANE_OFFSET]);
+        let window_active = parse_bool_flag(fields[active_start + ACTIVE_WINDOW_OFFSET]);
 
         panes.push(TmuxPaneRow {
-            session_name: fields[0].to_string(),
-            window_index: parse_u32(fields[1], "window_index", line_number + 1)?,
-            pane_index: parse_u32(fields[2], "pane_index", line_number + 1)?,
-            pane_id: fields[3].to_string(),
-            pane_pid: parse_u32(fields[4], "pane_pid", line_number + 1)?,
-            pane_current_command: fields[5].to_string(),
-            pane_title_raw: fields[6].to_string(),
-            pane_tty: fields[7].to_string(),
-            pane_current_path: fields[8].to_string(),
-            window_name: fields[9].to_string(),
+            session_name: fields[IDX_SESSION_NAME].to_string(),
+            window_index: parse_u32(fields[IDX_WINDOW_INDEX], "window_index", line_number + 1)?,
+            pane_index: parse_u32(fields[IDX_PANE_INDEX], "pane_index", line_number + 1)?,
+            pane_id: fields[IDX_PANE_ID].to_string(),
+            pane_pid: parse_u32(fields[IDX_PANE_PID], "pane_pid", line_number + 1)?,
+            pane_current_command: fields[IDX_PANE_CURRENT_COMMAND].to_string(),
+            pane_title_raw: fields[IDX_PANE_TITLE].to_string(),
+            pane_tty: fields[IDX_PANE_TTY].to_string(),
+            pane_current_path: fields[IDX_PANE_CURRENT_PATH].to_string(),
+            window_name: fields[IDX_WINDOW_NAME].to_string(),
             session_id,
             window_id,
             agent_provider,
