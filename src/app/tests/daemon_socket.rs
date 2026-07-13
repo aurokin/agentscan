@@ -562,6 +562,28 @@ fn daemon_socket_observability_event_ring_is_bounded() {
 }
 
 #[test]
+fn daemon_socket_state_recovers_from_poisoned_lock() {
+    let state = daemon::DaemonSocketState::new();
+    state
+        .publish_initial_snapshot(empty_socket_snapshot("2026-05-03T00:00:00Z"))
+        .expect("snapshot should publish");
+
+    // Simulate a handler thread panicking while holding the state mutex.
+    state.test_poison_lock();
+
+    // The daemon must keep serving: a subsequent state operation and a full
+    // snapshot exchange still succeed instead of panicking on the poisoned lock.
+    assert_eq!(state.test_recent_event_count(), 0);
+    let frames = exchange_daemon_frames(state, socket_hello(ipc::ClientMode::Snapshot));
+    assert!(
+        frames
+            .iter()
+            .any(|frame| matches!(frame, ipc::DaemonFrame::Snapshot { .. })),
+        "expected a snapshot frame after lock poisoning, got: {frames:?}"
+    );
+}
+
+#[test]
 fn daemon_socket_client_event_is_enqueued() {
     let state = daemon::DaemonSocketState::new();
     state
