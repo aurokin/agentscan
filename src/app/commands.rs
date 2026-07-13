@@ -26,7 +26,7 @@ fn dispatch() -> Result<()> {
 
     match cli.command {
         Some(Commands::Scan(mut args)) => {
-            reject_root_auto_start(&root_list_args, "scan")?;
+            deny_root(&root_list_args, "scan", SCAN_ROOT_FLAGS)?;
             merge_scan_args(&mut args, &root_list_args);
             command_scan(&args)
         }
@@ -67,12 +67,12 @@ fn dispatch() -> Result<()> {
             command_focus(&args)
         }
         Some(Commands::Daemon(args)) => {
-            reject_root_list_args(&root_list_args, "daemon")?;
+            deny_root(&root_list_args, "daemon", RootFlags::NONE)?;
             command_daemon(&args)
         }
         Some(Commands::Tmux(args)) => command_tmux(&args, &root_list_args),
         Some(Commands::Doctor(args)) => {
-            reject_root_list_args(&root_list_args, "doctor")?;
+            deny_root(&root_list_args, "doctor", RootFlags::NONE)?;
             command_doctor(&args)
         }
         None => command_list(&root_list_args),
@@ -81,6 +81,143 @@ fn dispatch() -> Result<()> {
 
 fn command_doctor(args: &DoctorArgs) -> Result<()> {
     doctor::run_doctor(*args)
+}
+
+/// Which root-level (implicit-list) flags a subcommand accepts before its name.
+///
+/// `ListArgs` is flattened at the CLI root so `agentscan --format json` works as
+/// an implicit `list`. clap therefore parses these flags for *any* subcommand and
+/// cannot, on its own, reject a root flag based on the subcommand that follows:
+/// `args_conflicts_with_subcommands` would also reject the valid
+/// `--format json list` merge, and `global = true` would silently accept the flag
+/// on every subcommand and advertise it in their `--help`. This table is the
+/// single source of truth for the per-subcommand allow-set, replacing the family
+/// of hand-written `reject_root_*` helpers whose sets used to drift independently.
+#[derive(Clone, Copy, Default)]
+pub(super) struct RootFlags {
+    refresh: bool,
+    all: bool,
+    format: bool,
+    auto_start: bool,
+    icons: bool,
+}
+
+impl RootFlags {
+    /// No root flag is accepted (daemon, doctor, tmux metadata commands).
+    pub(super) const NONE: Self = Self {
+        refresh: false,
+        all: false,
+        format: false,
+        auto_start: false,
+        icons: false,
+    };
+}
+
+pub(super) const SCAN_ROOT_FLAGS: RootFlags = RootFlags {
+    refresh: true,
+    all: true,
+    format: true,
+    auto_start: false,
+    icons: true,
+};
+
+pub(super) const SNAPSHOT_ROOT_FLAGS: RootFlags = RootFlags {
+    refresh: true,
+    all: false,
+    format: true,
+    auto_start: true,
+    icons: false,
+};
+
+pub(super) const SUBSCRIBE_ROOT_FLAGS: RootFlags = RootFlags {
+    refresh: false,
+    all: false,
+    format: false,
+    auto_start: true,
+    icons: false,
+};
+
+pub(super) const PROVIDERS_ROOT_FLAGS: RootFlags = RootFlags {
+    refresh: false,
+    all: false,
+    format: true,
+    auto_start: false,
+    icons: true,
+};
+
+pub(super) const INSPECT_ROOT_FLAGS: RootFlags = RootFlags {
+    refresh: true,
+    all: false,
+    format: true,
+    auto_start: true,
+    icons: false,
+};
+
+pub(super) const FOCUS_ROOT_FLAGS: RootFlags = RootFlags {
+    refresh: true,
+    all: false,
+    format: false,
+    auto_start: true,
+    icons: false,
+};
+
+pub(super) const HOTKEYS_ROOT_FLAGS: RootFlags = RootFlags {
+    refresh: true,
+    all: true,
+    format: true,
+    auto_start: true,
+    icons: false,
+};
+
+pub(super) const HOTKEY_ROOT_FLAGS: RootFlags = RootFlags {
+    refresh: true,
+    all: true,
+    format: false,
+    auto_start: true,
+    icons: false,
+};
+
+// `tui` also rejects root `--format`, but with bespoke guidance emitted by
+// `reject_tui_format` before this table is consulted, so `format` is left `true`
+// here to keep the generic message from shadowing the tui-specific one.
+pub(super) const TUI_ROOT_FLAGS: RootFlags = RootFlags {
+    refresh: false,
+    all: true,
+    format: true,
+    auto_start: true,
+    icons: true,
+};
+
+/// Reject every root flag that is present but not in `allow`, with the same
+/// per-flag guidance the old dedicated `reject_root_*` helpers produced.
+pub(super) fn deny_root(root: &ListArgs, command_name: &str, allow: RootFlags) -> Result<()> {
+    if !allow.refresh && root.refresh.refresh {
+        bail!(
+            "`--refresh` is not supported before `{command_name}`; place it on a refresh-capable subcommand or omit it"
+        );
+    }
+    if !allow.all && root.all {
+        bail!(
+            "`--all` is not supported before `{command_name}`; place it on a list-like subcommand or omit it"
+        );
+    }
+    if !allow.format && root.format != OutputFormat::Text {
+        bail!(
+            "`--format` is not supported before `{command_name}`; place it on a format-capable subcommand or omit it"
+        );
+    }
+    if !allow.auto_start && root.auto_start.no_auto_start {
+        bail!(
+            "`--no-auto-start` is not supported before `{command_name}`; place it on a daemon-backed consumer command or omit it"
+        );
+    }
+    if !allow.icons && root.icons.is_some() {
+        bail!(
+            "`--icons` is not supported before `{command_name}`; place it on a human-facing command that renders provider icons or omit it"
+        );
+    }
+
+    Ok(())
 }
 
 pub(super) fn merge_list_args(args: &mut ListArgs, root_list_args: &ListArgs) {
@@ -106,8 +243,7 @@ pub(super) fn merge_snapshot_args(
     args: &mut SnapshotArgs,
     root_list_args: &ListArgs,
 ) -> Result<()> {
-    reject_root_all(root_list_args, "snapshot")?;
-    reject_root_icons(root_list_args, "snapshot")?;
+    deny_root(root_list_args, "snapshot", SNAPSHOT_ROOT_FLAGS)?;
     args.refresh.refresh |= root_list_args.refresh.refresh;
     args.auto_start.no_auto_start |= root_list_args.auto_start.no_auto_start;
     if args.format == OutputFormat::Text {
@@ -121,10 +257,7 @@ pub(super) fn merge_subscribe_args(
     args: &mut SubscribeArgs,
     root_list_args: &ListArgs,
 ) -> Result<()> {
-    reject_root_refresh(root_list_args, "subscribe")?;
-    reject_root_all(root_list_args, "subscribe")?;
-    reject_root_format(root_list_args, "subscribe")?;
-    reject_root_icons(root_list_args, "subscribe")?;
+    deny_root(root_list_args, "subscribe", SUBSCRIBE_ROOT_FLAGS)?;
     args.auto_start.no_auto_start |= root_list_args.auto_start.no_auto_start;
 
     Ok(())
@@ -134,9 +267,7 @@ pub(super) fn merge_providers_args(
     args: &mut ProvidersArgs,
     root_list_args: &ListArgs,
 ) -> Result<()> {
-    reject_root_refresh(root_list_args, "providers")?;
-    reject_root_all(root_list_args, "providers")?;
-    reject_root_auto_start(root_list_args, "providers")?;
+    deny_root(root_list_args, "providers", PROVIDERS_ROOT_FLAGS)?;
     if args.format == OutputFormat::Text {
         args.format = root_list_args.format;
     }
@@ -146,8 +277,7 @@ pub(super) fn merge_providers_args(
 }
 
 pub(super) fn merge_inspect_args(args: &mut InspectArgs, root_list_args: &ListArgs) -> Result<()> {
-    reject_root_all(root_list_args, "inspect")?;
-    reject_root_icons(root_list_args, "inspect")?;
+    deny_root(root_list_args, "inspect", INSPECT_ROOT_FLAGS)?;
     args.auto_start.no_auto_start |= root_list_args.auto_start.no_auto_start;
     args.refresh.refresh |= root_list_args.refresh.refresh;
     if args.format == OutputFormat::Text {
@@ -158,9 +288,7 @@ pub(super) fn merge_inspect_args(args: &mut InspectArgs, root_list_args: &ListAr
 }
 
 pub(super) fn merge_focus_args(args: &mut FocusArgs, root_list_args: &ListArgs) -> Result<()> {
-    reject_root_all(root_list_args, "focus")?;
-    reject_root_format(root_list_args, "focus")?;
-    reject_root_icons(root_list_args, "focus")?;
+    deny_root(root_list_args, "focus", FOCUS_ROOT_FLAGS)?;
     args.auto_start.no_auto_start |= root_list_args.auto_start.no_auto_start;
     args.refresh.refresh |= root_list_args.refresh.refresh;
 
@@ -168,7 +296,7 @@ pub(super) fn merge_focus_args(args: &mut FocusArgs, root_list_args: &ListArgs) 
 }
 
 pub(super) fn merge_hotkeys_args(args: &mut HotkeysArgs, root_list_args: &ListArgs) -> Result<()> {
-    reject_root_icons(root_list_args, "hotkeys")?;
+    deny_root(root_list_args, "hotkeys", HOTKEYS_ROOT_FLAGS)?;
     args.refresh.refresh |= root_list_args.refresh.refresh;
     args.auto_start.no_auto_start |= root_list_args.auto_start.no_auto_start;
     args.all |= root_list_args.all;
@@ -180,8 +308,7 @@ pub(super) fn merge_hotkeys_args(args: &mut HotkeysArgs, root_list_args: &ListAr
 }
 
 pub(super) fn merge_hotkey_args(args: &mut HotkeyArgs, root_list_args: &ListArgs) -> Result<()> {
-    reject_root_format(root_list_args, "hotkey")?;
-    reject_root_icons(root_list_args, "hotkey")?;
+    deny_root(root_list_args, "hotkey", HOTKEY_ROOT_FLAGS)?;
     args.refresh.refresh |= root_list_args.refresh.refresh;
     args.auto_start.no_auto_start |= root_list_args.auto_start.no_auto_start;
     args.all |= root_list_args.all;
@@ -191,60 +318,10 @@ pub(super) fn merge_hotkey_args(args: &mut HotkeyArgs, root_list_args: &ListArgs
 
 pub(super) fn merge_tui_args(args: &mut TuiArgs, root_list_args: &ListArgs) -> Result<()> {
     reject_tui_format(root_list_args)?;
-    reject_root_refresh(root_list_args, "tui")?;
+    deny_root(root_list_args, "tui", TUI_ROOT_FLAGS)?;
     args.auto_start.no_auto_start |= root_list_args.auto_start.no_auto_start;
     args.all |= root_list_args.all;
     args.icons = args.icons.or(root_list_args.icons);
-
-    Ok(())
-}
-
-pub(super) fn reject_root_refresh(root_list_args: &ListArgs, command_name: &str) -> Result<()> {
-    if root_list_args.refresh.refresh {
-        bail!(
-            "`--refresh` is not supported before `{command_name}`; place it on a refresh-capable subcommand or omit it"
-        );
-    }
-
-    Ok(())
-}
-
-pub(super) fn reject_root_all(root_list_args: &ListArgs, command_name: &str) -> Result<()> {
-    if root_list_args.all {
-        bail!(
-            "`--all` is not supported before `{command_name}`; place it on a list-like subcommand or omit it"
-        );
-    }
-
-    Ok(())
-}
-
-pub(super) fn reject_root_format(root_list_args: &ListArgs, command_name: &str) -> Result<()> {
-    if root_list_args.format != OutputFormat::Text {
-        bail!(
-            "`--format` is not supported before `{command_name}`; place it on a format-capable subcommand or omit it"
-        );
-    }
-
-    Ok(())
-}
-
-pub(super) fn reject_root_auto_start(root_list_args: &ListArgs, command_name: &str) -> Result<()> {
-    if root_list_args.auto_start.no_auto_start {
-        bail!(
-            "`--no-auto-start` is not supported before `{command_name}`; place it on a daemon-backed consumer command or omit it"
-        );
-    }
-
-    Ok(())
-}
-
-pub(super) fn reject_root_icons(root_list_args: &ListArgs, command_name: &str) -> Result<()> {
-    if root_list_args.icons.is_some() {
-        bail!(
-            "`--icons` is not supported before `{command_name}`; place it on a human-facing command that renders provider icons or omit it"
-        );
-    }
 
     Ok(())
 }
@@ -257,14 +334,6 @@ pub(super) fn reject_tui_format(root_list_args: &ListArgs) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn reject_root_list_args(root_list_args: &ListArgs, command_name: &str) -> Result<()> {
-    reject_root_refresh(root_list_args, command_name)?;
-    reject_root_all(root_list_args, command_name)?;
-    reject_root_format(root_list_args, command_name)?;
-    reject_root_auto_start(root_list_args, command_name)?;
-    reject_root_icons(root_list_args, command_name)
 }
 
 fn resolve_command_config(icons: Option<IconMode>) -> Result<ResolvedConfig> {
@@ -472,18 +541,17 @@ fn command_daemon(args: &DaemonArgs) -> Result<()> {
 fn command_tmux(args: &TmuxArgs, root_list_args: &ListArgs) -> Result<()> {
     match &args.command {
         TmuxCommands::Hotkey(args) => {
-            reject_root_format(root_list_args, "tmux hotkey")?;
-            reject_root_icons(root_list_args, "tmux hotkey")?;
+            deny_root(root_list_args, "tmux hotkey", HOTKEY_ROOT_FLAGS)?;
             let mut args = args.clone();
             merge_hotkey_args(&mut args, root_list_args)?;
             command_tmux_hotkey(&args)
         }
         TmuxCommands::SetMetadata(args) => {
-            reject_root_list_args(root_list_args, "tmux set-metadata")?;
+            deny_root(root_list_args, "tmux set-metadata", RootFlags::NONE)?;
             command_tmux_set_metadata(args)
         }
         TmuxCommands::ClearMetadata(args) => {
-            reject_root_list_args(root_list_args, "tmux clear-metadata")?;
+            deny_root(root_list_args, "tmux clear-metadata", RootFlags::NONE)?;
             command_tmux_clear_metadata(args)
         }
     }

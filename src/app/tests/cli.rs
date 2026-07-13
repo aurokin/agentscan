@@ -330,12 +330,18 @@ fn root_icon_mode_is_rejected_for_non_icon_commands() {
             Some(super::Commands::Hotkey(mut args)) => {
                 super::commands::merge_hotkey_args(&mut args, &cli.list_args).unwrap_err()
             }
-            Some(super::Commands::Daemon(_)) => {
-                super::commands::reject_root_icons(&cli.list_args, command_name).unwrap_err()
-            }
-            Some(super::Commands::Tmux(_)) => {
-                super::commands::reject_root_icons(&cli.list_args, command_name).unwrap_err()
-            }
+            Some(super::Commands::Daemon(_)) => super::commands::deny_root(
+                &cli.list_args,
+                command_name,
+                super::commands::RootFlags::NONE,
+            )
+            .unwrap_err(),
+            Some(super::Commands::Tmux(_)) => super::commands::deny_root(
+                &cli.list_args,
+                command_name,
+                super::commands::RootFlags::NONE,
+            )
+            .unwrap_err(),
             other => panic!("unexpected command for {command_name}: {other:?}"),
         };
 
@@ -366,7 +372,10 @@ fn daemon_status_accepts_local_format() {
 fn unsupported_root_list_args_are_rejected_for_other_commands() {
     let cli = <Cli as clap::Parser>::parse_from(["agentscan", "--all", "daemon", "status"]);
     assert!(cli.list_args.all);
-    assert!(super::commands::reject_root_all(&cli.list_args, "daemon").is_err());
+    assert!(
+        super::commands::deny_root(&cli.list_args, "daemon", super::commands::RootFlags::NONE)
+            .is_err()
+    );
 
     let cli = <Cli as clap::Parser>::parse_from(["agentscan", "--format", "json", "tui"]);
     assert_eq!(cli.list_args.format, OutputFormat::Json);
@@ -410,7 +419,14 @@ fn unsupported_root_list_args_are_rejected_for_other_commands() {
 
     let cli = <Cli as clap::Parser>::parse_from(["agentscan", "-f", "tmux", "set-metadata"]);
     assert!(cli.list_args.refresh.refresh);
-    assert!(super::commands::reject_root_refresh(&cli.list_args, "tmux set-metadata").is_err());
+    assert!(
+        super::commands::deny_root(
+            &cli.list_args,
+            "tmux set-metadata",
+            super::commands::RootFlags::NONE
+        )
+        .is_err()
+    );
 
     let cli = <Cli as clap::Parser>::parse_from(["agentscan", "-f", "tui"]);
     assert!(cli.list_args.refresh.refresh);
@@ -521,7 +537,9 @@ fn auto_start_opt_out_is_rejected_for_non_daemon_backed_commands() {
     assert!(cli.list_args.auto_start.no_auto_start);
     match cli.command {
         Some(super::Commands::Scan(_)) => {
-            let error = super::commands::reject_root_auto_start(&cli.list_args, "scan").unwrap_err();
+            let error =
+                super::commands::deny_root(&cli.list_args, "scan", super::commands::SCAN_ROOT_FLAGS)
+                    .unwrap_err();
             assert!(
                 error.to_string().contains("`--no-auto-start` is not supported"),
                 "expected root no-auto-start rejection, got {error:#}"
@@ -530,23 +548,26 @@ fn auto_start_opt_out_is_rejected_for_non_daemon_backed_commands() {
         other => panic!("expected scan command, got {other:?}"),
     }
 
-    for (args, command_name) in [
+    for (args, command_name, allow) in [
         (
             ["agentscan", "--no-auto-start", "daemon", "status"].as_slice(),
             "daemon",
+            super::commands::RootFlags::NONE,
         ),
         (
             ["agentscan", "--no-auto-start", "tmux", "set-metadata"].as_slice(),
             "tmux",
+            super::commands::RootFlags::NONE,
         ),
         (
             ["agentscan", "--no-auto-start", "providers"].as_slice(),
             "providers",
+            super::commands::PROVIDERS_ROOT_FLAGS,
         ),
     ] {
         let cli = <Cli as clap::Parser>::parse_from(args);
         assert!(cli.list_args.auto_start.no_auto_start);
-        assert!(super::commands::reject_root_auto_start(&cli.list_args, command_name).is_err());
+        assert!(super::commands::deny_root(&cli.list_args, command_name, allow).is_err());
     }
 }
 
