@@ -33,6 +33,44 @@ pub fn control_event_batch_volume(lines: &[String]) -> u64 {
     daemon::bench_control_event_batch_volume(lines)
 }
 
+pub struct BenchSnapshot(SnapshotEnvelope);
+
+pub fn snapshot_from_json(input: &str) -> Result<BenchSnapshot> {
+    serde_json::from_str(input)
+        .map(BenchSnapshot)
+        .context("snapshot fixture should deserialize")
+}
+
+pub fn snapshot_from_pane_rows(rows: BenchPaneRows) -> BenchSnapshot {
+    let panes = rows
+        .0
+        .into_iter()
+        .map(classify::pane_from_row)
+        .collect::<Vec<_>>();
+    BenchSnapshot(SnapshotEnvelope {
+        schema_version: CACHE_SCHEMA_VERSION,
+        generated_at: "2026-07-13T00:00:00Z".to_string(),
+        source: SnapshotSource {
+            kind: SourceKind::Daemon,
+            tmux_version: Some("3.4".to_string()),
+            daemon_generated_at: None,
+        },
+        panes,
+    })
+}
+
+pub fn clone_bench_snapshot(snapshot: &BenchSnapshot) -> BenchSnapshot {
+    BenchSnapshot(snapshot.0.clone())
+}
+
+pub fn snapshots_are_materially_equal(left: &BenchSnapshot, right: &BenchSnapshot) -> bool {
+    daemon::bench_snapshots_are_materially_equal(&left.0, &right.0)
+}
+
+pub fn encode_snapshot_frame_bytes(snapshot: &BenchSnapshot) -> Result<usize> {
+    daemon::bench_encode_snapshot_frame_bytes(&snapshot.0)
+}
+
 #[doc(hidden)]
 pub fn daemon_protocol_version_for_tests() -> u32 {
     ipc::WIRE_PROTOCOL_VERSION

@@ -751,6 +751,12 @@ fn close_subscribers(subscribers: HashMap<SubscriberId, SubscriberMailbox>) {
     }
 }
 
+/// Bench seam: runs the publish/fan-out encode path and returns the encoded
+/// frame length so benchmarks can exercise it without touching subscribers.
+pub(crate) fn bench_encode_snapshot_frame_len(snapshot: &SnapshotEnvelope) -> Result<usize> {
+    encode_snapshot_frame(snapshot).map(|frame| frame.len())
+}
+
 fn encode_snapshot_frame(snapshot: &SnapshotEnvelope) -> Result<EncodedDaemonFrame> {
     let frame = ipc::DaemonFrame::Snapshot {
         snapshot: snapshot.clone(),

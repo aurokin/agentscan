@@ -85,6 +85,7 @@ pub(crate) use refresh::{
 };
 use snapshot_store::SnapshotStore;
 pub(crate) use socket_server::DaemonSocketState;
+use socket_server::bench_encode_snapshot_frame_len;
 use socket_server::{
     DaemonSocketServer, DaemonSocketServerHandle, PreparedSnapshot, SnapshotPublishContext,
 };
@@ -1743,6 +1744,17 @@ pub(crate) fn test_deep_control_mode_telemetry_value_enabled(value: &str) -> boo
 pub(crate) fn bench_control_event_batch_volume(lines: &[String]) -> u64 {
     let batch = ControlEventBatch::from_lines(lines);
     batch.total_line_count ^ batch.output_line_count ^ batch.output_byte_count ^ batch.ignored_count
+}
+
+pub(crate) fn bench_snapshots_are_materially_equal(
+    left: &SnapshotEnvelope,
+    right: &SnapshotEnvelope,
+) -> bool {
+    snapshots_are_materially_equal(left, right)
+}
+
+pub(crate) fn bench_encode_snapshot_frame_bytes(snapshot: &SnapshotEnvelope) -> Result<usize> {
+    bench_encode_snapshot_frame_len(snapshot)
 }
 
 #[cfg(test)]
