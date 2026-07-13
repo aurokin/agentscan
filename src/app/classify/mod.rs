@@ -89,6 +89,21 @@ pub(crate) fn pane_from_row(row: TmuxPaneRow) -> PaneRecord {
     }
 }
 
+// Compute only the provider a fresh classification would assign to `row`, without
+// building the full `PaneRecord`. Used on the targeted-refresh preserve path where
+// callers need the fresh provider to decide identity preservation but would otherwise
+// clone the row and run a full classification just to read `.provider`.
+pub(crate) fn provider_from_row(row: &TmuxPaneRow) -> Option<Provider> {
+    let title_analysis = analyze_title(&row.pane_title_raw);
+    let current_command = current_command_for_analysis(&row.pane_current_command);
+    classify_provider_from_analysis(
+        row.agent_provider.as_deref(),
+        current_command,
+        &title_analysis,
+    )
+    .map(|matched| matched.provider)
+}
+
 #[cfg(test)]
 pub(crate) fn panes_from_rows_with_proc_fallback(
     rows: Vec<TmuxPaneRow>,

@@ -10,7 +10,7 @@ pub(super) fn apply_control_event_batch(
 ) -> Result<ControlEventOutcome> {
     let mut refresh_context =
         RefreshContext::new(tmux_reads, pane_output_cache, disable_proc_fallback);
-    let pane_scopes_before_refresh = pane_scopes_by_id(snapshot);
+    let pane_scopes_before_refresh = pane_scopes_by_id(snapshot, batch);
     let mut changed = false;
     let mut fallback_to_full = false;
     let mut full_snapshot_refresh = false;
@@ -65,7 +65,7 @@ pub(super) fn apply_control_event_batch(
         }
     }
 
-    let pane_scopes_after_scope_refresh = pane_scopes_by_id(snapshot);
+    let pane_scopes_after_scope_refresh = pane_scopes_by_id(snapshot, batch);
     let activity_panes = batch
         .activities
         .keys()
@@ -121,6 +121,12 @@ pub(super) fn apply_control_event_batch(
         }
     }
 
+    // Sort/mark exactly once for the whole batch: every scope and pane refresh above ran
+    // its no-finalize variant, so a K-pane batch pays one full sort + mark instead of K.
+    if changed {
+        finalize_snapshot(snapshot)?;
+    }
+
     Ok(ControlEventOutcome {
         changed,
         fallback_to_full,
@@ -131,12 +137,21 @@ pub(super) fn apply_control_event_batch(
     })
 }
 
+// Map only the panes that carry a title event in this batch to their (session, window)
+// scope. `title_override_after_latest_refresh` short-circuits on panes without a title
+// event and never consults the map for them, so cloning every pane's scope Strings is
+// wasted work; when the batch carries no titles this returns an empty map with no clones.
 fn pane_scopes_by_id(
     snapshot: &SnapshotEnvelope,
+    batch: &ControlEventBatch,
 ) -> HashMap<String, (Option<String>, Option<String>)> {
+    if batch.titles.is_empty() {
+        return HashMap::new();
+    }
     snapshot
         .panes
         .iter()
+        .filter(|pane| batch.titles.contains_key(pane.pane_id.as_str()))
         .map(|pane| {
             (
                 pane.pane_id.clone(),
@@ -237,7 +252,7 @@ impl<'a, TmuxReads: TmuxReadProvider> RefreshContext<'a, TmuxReads> {
         pane_id: &str,
         title_override: Option<&str>,
     ) -> Result<bool> {
-        refresh_snapshot_pane_with_title(
+        refresh_snapshot_pane_with_title_no_finalize(
             snapshot,
             self.tmux_reads,
             pane_id,
@@ -248,9 +263,10 @@ impl<'a, TmuxReads: TmuxReadProvider> RefreshContext<'a, TmuxReads> {
     }
 
     fn refresh_window(&mut self, snapshot: &mut SnapshotEnvelope, window_id: &str) -> Result<()> {
-        refresh_snapshot_window(
+        refresh_snapshot_scope_no_finalize(
             snapshot,
             self.tmux_reads,
+            TargetScope::Window,
             window_id,
             self.pane_output_cache,
             self.disable_proc_fallback,
@@ -258,9 +274,10 @@ impl<'a, TmuxReads: TmuxReadProvider> RefreshContext<'a, TmuxReads> {
     }
 
     fn refresh_session(&mut self, snapshot: &mut SnapshotEnvelope, session_id: &str) -> Result<()> {
-        refresh_snapshot_session(
+        refresh_snapshot_scope_no_finalize(
             snapshot,
             self.tmux_reads,
+            TargetScope::Session,
             session_id,
             self.pane_output_cache,
             self.disable_proc_fallback,
@@ -296,6 +313,31 @@ impl<'a, TmuxReads: TmuxReadProvider> RefreshContext<'a, TmuxReads> {
 }
 
 pub(super) fn refresh_snapshot_pane_with_title(
+    snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &mut impl TmuxReadProvider,
+    pane_id: &str,
+    title_override: Option<&str>,
+    pane_output_cache: &mut scanner::PaneOutputStatusCache,
+    disable_proc_fallback: bool,
+) -> Result<bool> {
+    let changed = refresh_snapshot_pane_with_title_no_finalize(
+        snapshot,
+        tmux_reads,
+        pane_id,
+        title_override,
+        pane_output_cache,
+        disable_proc_fallback,
+    )?;
+    if changed {
+        finalize_snapshot(snapshot)?;
+    }
+    Ok(changed)
+}
+
+// Apply a single targeted pane refresh without sorting/marking the snapshot. Callers
+// that touch several panes in one pass (control-event batch, settle recapture) finalize
+// once at the end via `finalize_snapshot` instead of paying a full sort + mark per pane.
+pub(super) fn refresh_snapshot_pane_with_title_no_finalize(
     snapshot: &mut SnapshotEnvelope,
     tmux_reads: &mut impl TmuxReadProvider,
     pane_id: &str,
@@ -344,9 +386,12 @@ pub(super) fn refresh_snapshot_pane_with_title(
         snapshot.panes.push(pane);
     }
 
-    snapshot::sort_snapshot_panes(snapshot);
-    snapshot::mark_snapshot_as_daemon(snapshot)?;
     Ok(true)
+}
+
+fn finalize_snapshot(snapshot: &mut SnapshotEnvelope) -> Result<()> {
+    snapshot::sort_snapshot_panes(snapshot);
+    snapshot::mark_snapshot_as_daemon(snapshot)
 }
 
 // Carry the previous pane's identity (provider, how it was classified, and the
@@ -472,15 +517,14 @@ fn should_preserve_provider_identity_for_targeted_update(
         && row.agent_provider.is_none()
         && previous.tmux.pane_pid == row.pane_pid
         && {
-            let fresh_provider = fresh_row_provider(row);
+            // Provider-only classification (no row clone, no full PaneRecord) instead
+            // of `pane_from_row(row.clone()).provider`; the real classification still
+            // runs once in `pane_from_targeted_row_preserving_provider_identity`.
+            let fresh_provider = classify::provider_from_row(row);
             fresh_provider == previous.provider
                 || (fresh_provider.is_none()
                     && row_matches_previous_tmux_identity(previous, row, allow_title_change))
         }
-}
-
-fn fresh_row_provider(row: &TmuxPaneRow) -> Option<Provider> {
-    classify::pane_from_row(row.clone()).provider
 }
 
 fn row_matches_previous_tmux_identity(
@@ -494,6 +538,7 @@ fn row_matches_previous_tmux_identity(
         && previous.tmux.pane_tty == row.pane_tty
 }
 
+#[cfg(test)]
 pub(super) fn refresh_snapshot_window(
     snapshot: &mut SnapshotEnvelope,
     tmux_reads: &mut impl TmuxReadProvider,
@@ -501,14 +546,15 @@ pub(super) fn refresh_snapshot_window(
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
     disable_proc_fallback: bool,
 ) -> Result<()> {
-    refresh_snapshot_scope(
+    refresh_snapshot_scope_no_finalize(
         snapshot,
         tmux_reads,
         TargetScope::Window,
         window_id,
         pane_output_cache,
         disable_proc_fallback,
-    )
+    )?;
+    finalize_snapshot(snapshot)
 }
 
 pub(super) fn refresh_snapshot_session(
@@ -518,17 +564,20 @@ pub(super) fn refresh_snapshot_session(
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
     disable_proc_fallback: bool,
 ) -> Result<()> {
-    refresh_snapshot_scope(
+    refresh_snapshot_scope_no_finalize(
         snapshot,
         tmux_reads,
         TargetScope::Session,
         session_id,
         pane_output_cache,
         disable_proc_fallback,
-    )
+    )?;
+    finalize_snapshot(snapshot)
 }
 
-fn refresh_snapshot_scope(
+// Refresh every pane in a session/window scope without sorting/marking the snapshot; the
+// control-event batch finalizes once after all scope and pane refreshes are applied.
+fn refresh_snapshot_scope_no_finalize(
     snapshot: &mut SnapshotEnvelope,
     tmux_reads: &mut impl TmuxReadProvider,
     scope: TargetScope,
@@ -537,11 +586,6 @@ fn refresh_snapshot_scope(
     disable_proc_fallback: bool,
 ) -> Result<()> {
     let rows = tmux_reads.list_target_panes(target_id)?;
-    let previous_by_pane_id = snapshot
-        .panes
-        .iter()
-        .map(|pane| (pane.pane_id.clone(), pane.clone()))
-        .collect::<HashMap<_, _>>();
     let refreshed_pane_ids = rows
         .as_ref()
         .map(|rows| {
@@ -550,6 +594,15 @@ fn refresh_snapshot_scope(
                 .collect::<HashSet<_>>()
         })
         .unwrap_or_default();
+    // Only the panes being rebuilt need their previous identity carried forward, so clone
+    // just those rather than every pane in the snapshot (a one-window refresh otherwise
+    // deep-clones the whole pane list).
+    let previous_by_pane_id = snapshot
+        .panes
+        .iter()
+        .filter(|pane| refreshed_pane_ids.contains(pane.pane_id.as_str()))
+        .map(|pane| (pane.pane_id.clone(), pane.clone()))
+        .collect::<HashMap<_, _>>();
 
     snapshot.panes.retain(|pane| {
         !scope.matches(pane, target_id) && !refreshed_pane_ids.contains(&pane.pane_id)
@@ -579,8 +632,7 @@ fn refresh_snapshot_scope(
         }));
     }
 
-    snapshot::sort_snapshot_panes(snapshot);
-    snapshot::mark_snapshot_as_daemon(snapshot)
+    Ok(())
 }
 
 pub(super) fn reconcile_full_snapshot(

@@ -72,7 +72,8 @@ pub(crate) use lifecycle::{
 };
 use refresh::{
     apply_control_event_batch, reconcile_full_snapshot, reconcile_refresh_outcome,
-    refresh_snapshot_pane_with_title, snapshot_diff, snapshots_are_materially_equal,
+    refresh_snapshot_pane_with_title, refresh_snapshot_session, snapshot_diff,
+    snapshots_are_materially_equal,
 };
 #[cfg(test)]
 pub(crate) use refresh::{
@@ -1033,19 +1034,29 @@ impl<S: StartupActions> DaemonRuntime<S> {
     fn apply_refresh_request(&mut self, request: RefreshRequest<'_>) -> Result<bool> {
         let started_at = Instant::now();
         let observability = RefreshObservability::from_request(&request);
+        // Single pre-refresh clone shared by every consumer that needs the before-state:
+        // the observability diff below and the reconcile/publish gates inside each refresh
+        // method (threaded in as `pre_refresh` so they no longer each re-clone the snapshot).
         let previous_snapshot = observability
             .should_capture_snapshot_diff()
             .then(|| self.snapshot.clone());
+        let pre_refresh = previous_snapshot.as_ref();
         let mut outcome = match request {
             RefreshRequest::IntervalReconcile => self.apply_reconcile_refresh(
                 SnapshotPublishContext::new("reconcile").with_detail("interval"),
+                pre_refresh,
             )?,
             RefreshRequest::TimeoutReconcile => self.apply_reconcile_refresh(
                 SnapshotPublishContext::new("reconcile").with_detail("timeout"),
+                pre_refresh,
             )?,
-            RefreshRequest::ControlModeLines(lines) => self.apply_control_mode_refresh(lines)?,
-            RefreshRequest::ClientEvent(event) => self.apply_client_event_refresh(event)?,
-            RefreshRequest::SettleRecapture => self.apply_settle_recapture_refresh()?,
+            RefreshRequest::ControlModeLines(lines) => {
+                self.apply_control_mode_refresh(lines, pre_refresh)?
+            }
+            RefreshRequest::ClientEvent(event) => {
+                self.apply_client_event_refresh(event, pre_refresh)?
+            }
+            RefreshRequest::SettleRecapture => self.apply_settle_recapture_refresh(pre_refresh)?,
         };
         let publish_context = outcome.publish_context.take();
         let published = if let Some(publish_context) = publish_context {
@@ -1053,11 +1064,11 @@ impl<S: StartupActions> DaemonRuntime<S> {
         } else {
             false
         };
-        let current_snapshot = previous_snapshot.as_ref().map(|_| self.snapshot.clone());
+        // The current snapshot is `self.snapshot` itself; `record_observability_event`
+        // borrows it directly rather than taking a redundant clone here.
         self.record_observability_event(
             observability,
             previous_snapshot.as_ref(),
-            current_snapshot.as_ref(),
             &outcome,
             published,
             started_at.elapsed(),
@@ -1094,7 +1105,10 @@ impl<S: StartupActions> DaemonRuntime<S> {
     /// Re-read pane-output providers currently believed busy, to catch an idle transition that
     /// emitted no tmux event. The cache entry is invalidated first so the re-read forces a
     /// fresh capture (a `Busy` pane is otherwise not a fallback candidate).
-    fn apply_settle_recapture_refresh(&mut self) -> Result<RefreshOutcome> {
+    fn apply_settle_recapture_refresh(
+        &mut self,
+        pre_refresh: Option<&SnapshotEnvelope>,
+    ) -> Result<RefreshOutcome> {
         let busy_ids: Vec<String> = self
             .snapshot
             .panes
@@ -1109,7 +1123,14 @@ impl<S: StartupActions> DaemonRuntime<S> {
             return Ok(RefreshOutcome::no_publish());
         }
 
-        let previous_snapshot = self.snapshot.clone();
+        let owned_previous;
+        let previous_snapshot = match pre_refresh {
+            Some(previous) => previous,
+            None => {
+                owned_previous = self.snapshot.clone();
+                &owned_previous
+            }
+        };
         let mut tmux_reads = self.control_mode.read_provider();
         for pane_id in &busy_ids {
             self.pane_output_cache.invalidate(pane_id);
@@ -1123,7 +1144,7 @@ impl<S: StartupActions> DaemonRuntime<S> {
             )?;
         }
 
-        if snapshots_are_materially_equal(&previous_snapshot, &self.snapshot) {
+        if snapshots_are_materially_equal(previous_snapshot, &self.snapshot) {
             self.update_runtime_telemetry();
             Ok(RefreshOutcome::no_publish())
         } else {
@@ -1137,7 +1158,6 @@ impl<S: StartupActions> DaemonRuntime<S> {
         &mut self,
         observability: RefreshObservability,
         previous_snapshot: Option<&SnapshotEnvelope>,
-        current_snapshot: Option<&SnapshotEnvelope>,
         outcome: &RefreshOutcome,
         published: bool,
         duration: Duration,
@@ -1145,9 +1165,11 @@ impl<S: StartupActions> DaemonRuntime<S> {
         if !observability.should_record && !outcome.reset_reconcile_timer && !published {
             return;
         }
+        // The current snapshot is `self.snapshot`; borrow it for the diff instead of
+        // cloning. The borrow ends once `event` is built, before the `&mut self` writes.
+        let current_snapshot = &self.snapshot;
         let changed = previous_snapshot
-            .zip(current_snapshot)
-            .is_some_and(|(previous, current)| !snapshots_are_materially_equal(previous, current));
+            .is_some_and(|previous| !snapshots_are_materially_equal(previous, current_snapshot));
         let event = ipc::DaemonObservabilityEventFrame {
             at: snapshot::now_rfc3339().unwrap_or_else(|_| "unknown".to_string()),
             source: observability.source.to_string(),
@@ -1159,8 +1181,7 @@ impl<S: StartupActions> DaemonRuntime<S> {
             published,
             duration_ms: Some(elapsed_millis_u64(duration)),
             diff: previous_snapshot
-                .zip(current_snapshot)
-                .and_then(|(previous, current)| changed.then(|| snapshot_diff(previous, current))),
+                .and_then(|previous| changed.then(|| snapshot_diff(previous, current_snapshot))),
         };
         self.socket_state.record_observability_event(event.clone());
         if let Some(trace) = &mut self.event_trace {
@@ -1176,7 +1197,11 @@ impl<S: StartupActions> DaemonRuntime<S> {
         )
     }
 
-    fn apply_control_mode_refresh(&mut self, lines: &[ControlModeLine]) -> Result<RefreshOutcome> {
+    fn apply_control_mode_refresh(
+        &mut self,
+        lines: &[ControlModeLine],
+        pre_refresh: Option<&SnapshotEnvelope>,
+    ) -> Result<RefreshOutcome> {
         let batch = ControlEventBatch::from_control_lines(lines);
         self.telemetry.record_control_event_volume(&batch);
         let should_record_batch_telemetry =
@@ -1187,14 +1212,11 @@ impl<S: StartupActions> DaemonRuntime<S> {
         }
         let should_exit = batch.should_exit;
         let event_publish_context = batch.publish_context();
-        let previous_snapshot = batch
-            .can_refresh_full_snapshot()
-            .then(|| self.snapshot.clone());
-        // Captured for the publish gate below: a relevant `window_activity` tick can drive a
-        // targeted refresh for a pane-output provider yet leave its `PaneRecord` materially
-        // unchanged. Comparing against this pre-refresh snapshot lets us skip publishing an
-        // identical snapshot, matching the settle and reconcile paths.
-        let snapshot_before_refresh = self.snapshot.clone();
+        // The before-state for the reconcile telemetry and the publish gate below is
+        // `pre_refresh`, the single pre-refresh clone taken in `apply_refresh_request`. It is
+        // present on every path that reaches those uses: both are gated on the batch having
+        // materially refreshed (`can_refresh_full_snapshot`/`event_outcome.changed`), which in
+        // turn forces `observability_refresh() != "none"` and hence `should_capture_snapshot_diff`.
         let broker_enabled_before_refresh = self.control_mode.broker_enabled();
         let mut event_tmux_reads = self.control_mode.read_provider();
         let event_outcome = apply_control_event_batch(
@@ -1235,10 +1257,11 @@ impl<S: StartupActions> DaemonRuntime<S> {
         }
         self.telemetry.record_control_event_refresh(&event_outcome);
         if event_outcome.full_snapshot_refresh
-            && let Some(previous_snapshot) = previous_snapshot
+            && batch.can_refresh_full_snapshot()
+            && let Some(previous_snapshot) = pre_refresh
         {
             self.telemetry
-                .record_reconcile_result(&previous_snapshot, &self.snapshot);
+                .record_reconcile_result(previous_snapshot, &self.snapshot);
         }
         if event_outcome.fallback_to_full {
             self.telemetry.record_targeted_refresh_fallback_to_full();
@@ -1249,7 +1272,9 @@ impl<S: StartupActions> DaemonRuntime<S> {
             RefreshOutcome::publish(
                 SnapshotPublishContext::new("reconcile").with_detail("broker_reconnect"),
             )
-        } else if snapshots_are_materially_equal(&snapshot_before_refresh, &self.snapshot) {
+        } else if pre_refresh
+            .is_some_and(|before| snapshots_are_materially_equal(before, &self.snapshot))
+        {
             // The refresh ran but produced no material change (for example, a pane-output
             // activity tick whose status stayed busy); skip the redundant publish.
             self.update_runtime_telemetry();
@@ -1273,8 +1298,16 @@ impl<S: StartupActions> DaemonRuntime<S> {
     fn apply_reconcile_refresh(
         &mut self,
         publish_context: SnapshotPublishContext,
+        pre_refresh: Option<&SnapshotEnvelope>,
     ) -> Result<RefreshOutcome> {
-        let previous_snapshot = self.snapshot.clone();
+        let owned_previous;
+        let previous_snapshot = match pre_refresh {
+            Some(previous) => previous,
+            None => {
+                owned_previous = self.snapshot.clone();
+                &owned_previous
+            }
+        };
         let mut reconcile_tmux_reads = self.control_mode.read_provider();
         reconcile_full_snapshot(
             &mut self.snapshot,
@@ -1284,10 +1317,9 @@ impl<S: StartupActions> DaemonRuntime<S> {
             self.disable_proc_fallback,
         )?;
         self.telemetry
-            .record_reconcile_result(&previous_snapshot, &self.snapshot);
+            .record_reconcile_result(previous_snapshot, &self.snapshot);
         self.recover_broker_and_reconcile_if_needed()?;
-        let outcome =
-            reconcile_refresh_outcome(&previous_snapshot, &self.snapshot, publish_context);
+        let outcome = reconcile_refresh_outcome(previous_snapshot, &self.snapshot, publish_context);
         if outcome.publish_context.is_none() {
             self.update_runtime_telemetry();
         }
@@ -1297,20 +1329,50 @@ impl<S: StartupActions> DaemonRuntime<S> {
     fn apply_client_event_refresh(
         &mut self,
         event: &ipc::ClientEventFrame,
+        pre_refresh: Option<&SnapshotEnvelope>,
     ) -> Result<RefreshOutcome> {
         match event {
-            ipc::ClientEventFrame::PaneFocus { .. } => {
-                let previous_snapshot = self.snapshot.clone();
+            ipc::ClientEventFrame::PaneFocus { pane_id } => {
+                let owned_previous;
+                let previous_snapshot = match pre_refresh {
+                    Some(previous) => previous,
+                    None => {
+                        owned_previous = self.snapshot.clone();
+                        &owned_previous
+                    }
+                };
+                // A focus change flips `pane_active`/`window_active` within the focused pane's
+                // session only (each session tracks its own active window and per-window active
+                // pane, independent of other sessions), and it can move focus across windows in
+                // that session. Refreshing the whole session is the narrowest scope that keeps
+                // every affected active flag correct — including the previously-focused pane —
+                // instead of a full list-panes over every session on each rapid focus event. If
+                // the focused pane is not in the snapshot, fall back to a full reconcile.
+                let session_id = self
+                    .snapshot
+                    .panes
+                    .iter()
+                    .find(|pane| pane.pane_id == *pane_id)
+                    .and_then(|pane| pane.tmux.session_id.clone());
                 let mut event_tmux_reads = self.control_mode.read_provider();
-                reconcile_full_snapshot(
-                    &mut self.snapshot,
-                    &mut event_tmux_reads,
-                    self.tmux_version.as_deref(),
-                    &mut self.pane_output_cache,
-                    self.disable_proc_fallback,
-                )?;
+                match session_id.as_deref() {
+                    Some(session_id) => refresh_snapshot_session(
+                        &mut self.snapshot,
+                        &mut event_tmux_reads,
+                        session_id,
+                        &mut self.pane_output_cache,
+                        self.disable_proc_fallback,
+                    )?,
+                    None => reconcile_full_snapshot(
+                        &mut self.snapshot,
+                        &mut event_tmux_reads,
+                        self.tmux_version.as_deref(),
+                        &mut self.pane_output_cache,
+                        self.disable_proc_fallback,
+                    )?,
+                }
                 self.telemetry
-                    .record_reconcile_result(&previous_snapshot, &self.snapshot);
+                    .record_reconcile_result(previous_snapshot, &self.snapshot);
                 self.recover_broker_and_reconcile_if_needed()?;
                 Ok(RefreshOutcome::publish(
                     SnapshotPublishContext::new("client_event")
@@ -1343,6 +1405,12 @@ impl<S: StartupActions> DaemonRuntime<S> {
 
     fn publish_current_snapshot(&self, publish_context: SnapshotPublishContext) -> bool {
         self.update_runtime_telemetry();
+        // TODO(alloc): `publish_later_snapshot_with_context` takes the snapshot by value and
+        // stores it in `PreparedSnapshot` (owned by the socket state), so the daemon must keep
+        // its own copy — this clone is required by the current socket_server API boundary.
+        // `encode_snapshot_frame` then clones it a second time to build the wire frame. Both
+        // clones live behind socket_server (owned by another workstream); collapsing them needs
+        // an `Arc<SnapshotEnvelope>` handoff there, not a change here.
         self.socket_state
             .publish_later_snapshot_with_context(self.snapshot.clone(), publish_context)
     }
