@@ -611,15 +611,104 @@ pub(super) fn reconcile_refresh_outcome(
     }
 }
 
+/// Field-wise equivalent of cloning both envelopes, blanking the volatile
+/// fields (`generated_at`, `source.daemon_generated_at`, and each pane's
+/// `diagnostics.cache_origin`), and comparing with `==` — but without any
+/// allocation. It runs on nearly every daemon tick, so avoiding the deep clone
+/// of every `PaneRecord` matters for steady-state churn.
+///
+/// Each struct is destructured exhaustively so that adding a field forces a
+/// compile error here instead of silently escaping the comparison.
 pub(super) fn snapshots_are_materially_equal(
     left: &SnapshotEnvelope,
     right: &SnapshotEnvelope,
 ) -> bool {
-    let mut left = left.clone();
-    let mut right = right.clone();
-    normalize_snapshot_for_material_comparison(&mut left);
-    normalize_snapshot_for_material_comparison(&mut right);
-    left == right
+    let SnapshotEnvelope {
+        schema_version: left_schema_version,
+        // Volatile: cleared by the legacy normalize step before comparison.
+        generated_at: _,
+        source: left_source,
+        panes: left_panes,
+    } = left;
+    let SnapshotEnvelope {
+        schema_version: right_schema_version,
+        generated_at: _,
+        source: right_source,
+        panes: right_panes,
+    } = right;
+
+    left_schema_version == right_schema_version
+        && source_is_materially_equal(left_source, right_source)
+        && left_panes.len() == right_panes.len()
+        && left_panes
+            .iter()
+            .zip(right_panes.iter())
+            .all(|(left_pane, right_pane)| pane_is_materially_equal(left_pane, right_pane))
+}
+
+fn source_is_materially_equal(left: &SnapshotSource, right: &SnapshotSource) -> bool {
+    let SnapshotSource {
+        kind: left_kind,
+        tmux_version: left_tmux_version,
+        // Volatile: cleared by the legacy normalize step before comparison.
+        daemon_generated_at: _,
+    } = left;
+    let SnapshotSource {
+        kind: right_kind,
+        tmux_version: right_tmux_version,
+        daemon_generated_at: _,
+    } = right;
+
+    left_kind == right_kind && left_tmux_version == right_tmux_version
+}
+
+fn pane_is_materially_equal(left: &PaneRecord, right: &PaneRecord) -> bool {
+    let PaneRecord {
+        pane_id: left_pane_id,
+        location: left_location,
+        tmux: left_tmux,
+        display: left_display,
+        provider: left_provider,
+        status: left_status,
+        classification: left_classification,
+        agent_metadata: left_agent_metadata,
+        diagnostics: left_diagnostics,
+    } = left;
+    let PaneRecord {
+        pane_id: right_pane_id,
+        location: right_location,
+        tmux: right_tmux,
+        display: right_display,
+        provider: right_provider,
+        status: right_status,
+        classification: right_classification,
+        agent_metadata: right_agent_metadata,
+        diagnostics: right_diagnostics,
+    } = right;
+
+    left_pane_id == right_pane_id
+        && left_location == right_location
+        && left_tmux == right_tmux
+        && left_display == right_display
+        && left_provider == right_provider
+        && left_status == right_status
+        && left_classification == right_classification
+        && left_agent_metadata == right_agent_metadata
+        && diagnostics_are_materially_equal(left_diagnostics, right_diagnostics)
+}
+
+fn diagnostics_are_materially_equal(left: &PaneDiagnostics, right: &PaneDiagnostics) -> bool {
+    let PaneDiagnostics {
+        // Volatile: cleared by the legacy normalize step before comparison.
+        cache_origin: _,
+        proc_fallback: left_proc_fallback,
+    } = left;
+    let PaneDiagnostics {
+        cache_origin: _,
+        proc_fallback: right_proc_fallback,
+    } = right;
+
+    left_proc_fallback == right_proc_fallback
 }
 
 pub(super) fn snapshot_diff(
@@ -711,14 +800,6 @@ fn pane_diff_fields(left: &PaneRecord, right: &PaneRecord) -> Vec<String> {
         fields.push("classification".to_string());
     }
     fields
-}
-
-fn normalize_snapshot_for_material_comparison(snapshot: &mut SnapshotEnvelope) {
-    snapshot.generated_at.clear();
-    snapshot.source.daemon_generated_at = None;
-    for pane in &mut snapshot.panes {
-        pane.diagnostics.cache_origin.clear();
-    }
 }
 
 pub(super) fn daemon_snapshot_from_tmux_with_provider(
@@ -909,6 +990,200 @@ impl TargetScope {
         match self {
             Self::Window => pane.tmux.window_id.as_deref() == Some(target_id),
             Self::Session => pane.tmux.session_id.as_deref() == Some(target_id),
+        }
+    }
+}
+
+#[cfg(test)]
+mod material_equality_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// The original clone-then-normalize-then-`==` behavior, kept here verbatim
+    /// as a ground-truth oracle for the zero-allocation replacement.
+    fn oracle_snapshots_are_materially_equal(
+        left: &SnapshotEnvelope,
+        right: &SnapshotEnvelope,
+    ) -> bool {
+        fn normalize(snapshot: &mut SnapshotEnvelope) {
+            snapshot.generated_at.clear();
+            snapshot.source.daemon_generated_at = None;
+            for pane in &mut snapshot.panes {
+                pane.diagnostics.cache_origin.clear();
+            }
+        }
+        let mut left = left.clone();
+        let mut right = right.clone();
+        normalize(&mut left);
+        normalize(&mut right);
+        left == right
+    }
+
+    fn test_row(pane_id: &str, title: &str, command: &str) -> TmuxPaneRow {
+        TmuxPaneRow {
+            session_name: "session".to_string(),
+            window_index: 0,
+            pane_index: 0,
+            pane_id: pane_id.to_string(),
+            pane_pid: 4242,
+            pane_current_command: command.to_string(),
+            pane_title_raw: title.to_string(),
+            pane_tty: "/dev/ttys0".to_string(),
+            pane_current_path: "/tmp/agentscan".to_string(),
+            window_name: "window".to_string(),
+            session_id: Some("$1".to_string()),
+            window_id: Some("@0".to_string()),
+            agent_provider: None,
+            agent_label: None,
+            agent_cwd: None,
+            agent_state: None,
+            agent_session_id: None,
+            pane_active: false,
+            window_active: false,
+        }
+    }
+
+    fn sample_snapshot() -> SnapshotEnvelope {
+        let mut pane_a = classify::pane_from_row(test_row("%1", "alpha", "codex"));
+        pane_a.diagnostics.cache_origin = "daemon_snapshot".to_string();
+        let mut pane_b = classify::pane_from_row(test_row("%2", "beta", "claude"));
+        pane_b.diagnostics.cache_origin = "daemon_update".to_string();
+        SnapshotEnvelope {
+            schema_version: 1,
+            generated_at: "2026-07-13T00:00:00Z".to_string(),
+            source: SnapshotSource {
+                kind: SourceKind::Daemon,
+                tmux_version: Some("3.4".to_string()),
+                daemon_generated_at: Some("2026-07-13T00:00:01Z".to_string()),
+            },
+            panes: vec![pane_a, pane_b],
+        }
+    }
+
+    #[test]
+    fn equal_except_volatile_fields_are_materially_equal() {
+        let left = sample_snapshot();
+        let mut right = left.clone();
+        // Perturb only the volatile fields that normalize used to blank.
+        right.generated_at = "2099-01-01T00:00:00Z".to_string();
+        right.source.daemon_generated_at = None;
+        right.panes[0].diagnostics.cache_origin = "something_else".to_string();
+        right.panes[1].diagnostics.cache_origin.clear();
+
+        assert!(snapshots_are_materially_equal(&left, &right));
+        // Matches the oracle.
+        assert_eq!(
+            snapshots_are_materially_equal(&left, &right),
+            oracle_snapshots_are_materially_equal(&left, &right),
+        );
+    }
+
+    #[test]
+    fn each_material_field_difference_breaks_equality() {
+        let base = sample_snapshot();
+
+        type Mutator = fn(&mut SnapshotEnvelope);
+        let mutators: Vec<(&str, Mutator)> = vec![
+            ("schema_version", |s| s.schema_version += 1),
+            ("source.kind", |s| s.source.kind = SourceKind::Snapshot),
+            ("source.tmux_version", |s| {
+                s.source.tmux_version = Some("9.9".to_string())
+            }),
+            ("pane_id", |s| s.panes[0].pane_id = "%99".to_string()),
+            ("pane.location", |s| s.panes[0].location.window_index += 1),
+            ("pane.tmux.title", |s| {
+                s.panes[0].tmux.pane_title_raw = "changed".to_string()
+            }),
+            ("pane.tmux.active", |s| {
+                s.panes[0].tmux.pane_active = !s.panes[0].tmux.pane_active
+            }),
+            ("pane.display", |s| {
+                s.panes[0].display.label = "changed".to_string()
+            }),
+            ("pane.provider", |s| s.panes[0].provider = None),
+            ("pane.status", |s| {
+                s.panes[0].status = PaneStatus::title(StatusKind::Busy)
+            }),
+            ("pane.classification", |s| {
+                s.panes[0].classification.reasons.push("extra".to_string())
+            }),
+            ("pane.agent_metadata", |s| {
+                s.panes[0].agent_metadata.label = Some("agent".to_string())
+            }),
+            ("pane.proc_fallback", |s| {
+                s.panes[0].diagnostics.proc_fallback.outcome = ProcFallbackOutcome::Resolved
+            }),
+            ("pane_count", |s| {
+                s.panes.pop();
+            }),
+        ];
+
+        for (label, mutate) in mutators {
+            let mut mutated = base.clone();
+            mutate(&mut mutated);
+            assert!(
+                !snapshots_are_materially_equal(&base, &mutated),
+                "expected material difference for `{label}` to break equality",
+            );
+            assert_eq!(
+                snapshots_are_materially_equal(&base, &mutated),
+                oracle_snapshots_are_materially_equal(&base, &mutated),
+                "new impl disagreed with oracle for `{label}`",
+            );
+        }
+    }
+
+    fn arb_pane() -> impl Strategy<Value = PaneRecord> {
+        (
+            prop::sample::select(vec!["%1", "%2", "%3"]),
+            prop::sample::select(vec!["alpha", "beta"]),
+            prop::sample::select(vec!["codex", "claude", "bash"]),
+            prop::sample::select(vec!["origin_a", "origin_b"]),
+            any::<bool>(),
+        )
+            .prop_map(|(pane_id, title, command, cache_origin, active)| {
+                let mut pane = classify::pane_from_row(test_row(pane_id, title, command));
+                pane.diagnostics.cache_origin = cache_origin.to_string();
+                pane.tmux.pane_active = active;
+                pane
+            })
+    }
+
+    fn arb_snapshot() -> impl Strategy<Value = SnapshotEnvelope> {
+        (
+            prop::sample::select(vec![1u32, 2u32]),
+            prop::sample::select(vec!["g1", "g2"]),
+            prop::sample::select(vec![SourceKind::Snapshot, SourceKind::Daemon]),
+            prop::option::of(prop::sample::select(vec!["3.4", "3.5"])),
+            prop::option::of(prop::sample::select(vec!["d1", "d2"])),
+            prop::collection::vec(arb_pane(), 0..=3),
+        )
+            .prop_map(
+                |(schema_version, generated_at, kind, tmux_version, daemon_generated_at, panes)| {
+                    SnapshotEnvelope {
+                        schema_version,
+                        generated_at: generated_at.to_string(),
+                        source: SnapshotSource {
+                            kind,
+                            tmux_version: tmux_version.map(str::to_string),
+                            daemon_generated_at: daemon_generated_at.map(str::to_string),
+                        },
+                        panes,
+                    }
+                },
+            )
+    }
+
+    proptest! {
+        #[test]
+        fn materially_equal_matches_clone_normalize_oracle(
+            left in arb_snapshot(),
+            right in arb_snapshot(),
+        ) {
+            prop_assert_eq!(
+                snapshots_are_materially_equal(&left, &right),
+                oracle_snapshots_are_materially_equal(&left, &right),
+            );
         }
     }
 }
