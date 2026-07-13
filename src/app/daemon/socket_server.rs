@@ -1,5 +1,7 @@
 use super::*;
 use std::collections::VecDeque;
+use std::os::unix::io::AsRawFd;
+use std::os::unix::net::UnixStream;
 
 const OBSERVABILITY_EVENT_RING_CAPACITY: usize = 256;
 
@@ -9,6 +11,11 @@ pub(super) struct DaemonSocketServer {
     socket_identity: Option<SocketFileIdentity>,
     state: DaemonSocketState,
     stop: Arc<AtomicBool>,
+    // Read end of a self-pipe the acceptor waits on alongside the listener; a byte
+    // written to `wake_tx` unblocks `poll` so shutdown is instant and path-independent
+    // (it works even if the socket file was already unlinked or replaced).
+    wake_rx: UnixStream,
+    wake_tx: Option<UnixStream>,
 }
 
 #[derive(Clone, Copy)]
@@ -42,15 +49,21 @@ impl DaemonSocketServer {
     pub(super) fn bind(socket_path: &Path) -> Result<Self> {
         let listener = std::os::unix::net::UnixListener::bind(socket_path)
             .with_context(|| format!("failed to bind daemon socket {}", socket_path.display()))?;
+        // Nonblocking so that after `poll` reports readiness the `accept` never blocks on a
+        // spurious wakeup (e.g. a peer that aborted between poll and accept).
         listener
             .set_nonblocking(true)
             .context("failed to configure daemon socket listener")?;
+        let (wake_tx, wake_rx) =
+            UnixStream::pair().context("failed to create daemon socket acceptor wake pipe")?;
         Ok(Self {
             listener,
             socket_path: socket_path.to_path_buf(),
             socket_identity: SocketFileIdentity::from_path(socket_path)?,
             state: DaemonSocketState::new(),
             stop: Arc::new(AtomicBool::new(false)),
+            wake_rx,
+            wake_tx: Some(wake_tx),
         })
     }
 
@@ -58,14 +71,58 @@ impl DaemonSocketServer {
         self.state.clone()
     }
 
-    pub(super) fn spawn(self) -> DaemonSocketServerHandle {
+    pub(super) fn spawn(mut self) -> DaemonSocketServerHandle {
         let stop = self.stop.clone();
         let handle_stop = self.stop.clone();
+        let wake_tx = self.wake_tx.take();
+        let listener = self.listener;
+        let state = self.state;
+        let wake_rx = self.wake_rx;
         let join = std::thread::spawn(move || {
-            while !stop.load(Ordering::Relaxed) {
-                match self.listener.accept() {
+            let listener_fd = listener.as_raw_fd();
+            let wake_fd = wake_rx.as_raw_fd();
+            while !stop.load(Ordering::SeqCst) {
+                // Block until the listener is readable or a wake byte arrives. `poll(-1)`
+                // sleeps indefinitely, so a fully idle daemon issues zero accept-thread
+                // wakeups (the old 10ms WouldBlock poll spun ~100x/sec forever).
+                let mut fds = [
+                    libc::pollfd {
+                        fd: listener_fd,
+                        events: libc::POLLIN,
+                        revents: 0,
+                    },
+                    libc::pollfd {
+                        fd: wake_fd,
+                        events: libc::POLLIN,
+                        revents: 0,
+                    },
+                ];
+                let poll_result = unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) };
+                if poll_result < 0 {
+                    let error = std::io::Error::last_os_error();
+                    if error.kind() == std::io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    eprintln!(
+                        "agentscan: daemon socket acceptor poll failed fatally, requesting shutdown: {error}"
+                    );
+                    DAEMON_SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
+                    break;
+                }
+                // A wake byte means shutdown was requested; stop before touching the
+                // listener. The byte is never drained — the thread is exiting.
+                if fds[1].revents != 0 {
+                    break;
+                }
+                match listener.accept() {
                     Ok((stream, _)) => {
-                        let state = self.state.clone();
+                        // A client that connected in the same instant shutdown was
+                        // requested: drop it and stop rather than half-serve it.
+                        if stop.load(Ordering::SeqCst) {
+                            drop(stream);
+                            break;
+                        }
+                        let state = state.clone();
                         if let Some(pending_handshake) = state.try_acquire_pending_handshake() {
                             std::thread::spawn(move || {
                                 if let Err(error) = handle_daemon_socket_client_with_pending(
@@ -77,7 +134,10 @@ impl DaemonSocketServer {
                                 }
                             });
                         } else {
-                            refuse_server_busy(stream);
+                            // Offload the busy refusal to a short-lived thread like the
+                            // success path: writing it inline would let one non-reading
+                            // client stall the whole acceptor for the write timeout.
+                            std::thread::spawn(move || refuse_server_busy(stream));
                         }
                     }
                     Err(error)
@@ -86,16 +146,19 @@ impl DaemonSocketServer {
                             std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
                         ) =>
                     {
-                        std::thread::sleep(Duration::from_millis(10));
+                        // Spurious readiness (peer aborted between poll and accept) or an
+                        // interrupted syscall: just re-poll, no sleep/spin.
+                        continue;
                     }
                     Err(error) if is_transient_accept_error(&error) => {
                         // Resource pressure — fd exhaustion (EMFILE/ENFILE), out of
                         // buffers, or a peer that hung up before accept completed — is
                         // recoverable: the listener works again once the condition
-                        // clears. Back off a little longer than the idle poll so we
-                        // don't spin the CPU while waiting, then keep accepting.
-                        // Breaking here would silently turn the daemon deaf while it
-                        // still holds the socket and flock, so every later client hangs.
+                        // clears. Back off briefly so we don't spin the CPU while the
+                        // pressure clears (poll would keep reporting the fd readable),
+                        // then keep accepting. Breaking here would silently turn the
+                        // daemon deaf while it still holds the socket and flock, so every
+                        // later client hangs.
                         eprintln!(
                             "agentscan: daemon socket accept hit transient error, retrying: {error}"
                         );
@@ -121,6 +184,7 @@ impl DaemonSocketServer {
             join: Some(join),
             socket_path: self.socket_path,
             socket_identity: self.socket_identity,
+            wake_tx,
         }
     }
 }
@@ -144,6 +208,8 @@ pub(super) struct DaemonSocketServerHandle {
     join: Option<std::thread::JoinHandle<()>>,
     socket_path: PathBuf,
     socket_identity: Option<SocketFileIdentity>,
+    // Write end of the acceptor wake pipe; writing a byte unblocks its `poll`.
+    wake_tx: Option<UnixStream>,
 }
 
 impl DaemonSocketServerHandle {
@@ -164,7 +230,15 @@ impl DaemonSocketServerHandle {
 
 impl Drop for DaemonSocketServerHandle {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
+        self.stop.store(true, Ordering::SeqCst);
+        // Wake the acceptor's `poll` so it observes the stop flag immediately. Using the
+        // self-pipe (rather than a connect to the socket path) makes this robust even when
+        // the socket file was already unlinked or replaced — the case a path-based wake
+        // would miss, leaving `join` to hang forever.
+        if let Some(wake_tx) = self.wake_tx.take() {
+            use std::io::Write;
+            let _ = (&wake_tx).write(&[1u8]);
+        }
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
@@ -202,7 +276,7 @@ struct DaemonSocketStateInner {
     control_mode_broker: Option<ipc::ControlModeBrokerStatusFrame>,
     runtime_telemetry: Option<ipc::RuntimeTelemetryFrame>,
     recent_events: VecDeque<ipc::DaemonObservabilityEventFrame>,
-    client_event_tx: Option<mpsc::Sender<Result<ControlModeLine>>>,
+    client_event_tx: Option<mpsc::SyncSender<Result<ControlModeLine>>>,
     pending_handshakes: usize,
     subscribers: HashMap<SubscriberId, SubscriberMailbox>,
     next_subscriber_id: SubscriberId,
@@ -515,7 +589,10 @@ impl DaemonSocketState {
         inner.runtime_telemetry = Some(telemetry);
     }
 
-    pub(super) fn set_client_event_sender(&self, sender: mpsc::Sender<Result<ControlModeLine>>) {
+    pub(super) fn set_client_event_sender(
+        &self,
+        sender: mpsc::SyncSender<Result<ControlModeLine>>,
+    ) {
         let mut inner = self.lock();
         inner.client_event_tx = Some(sender);
     }
@@ -605,10 +682,6 @@ impl DaemonSocketState {
         }
     }
 
-    fn has_subscriber(&self, id: SubscriberId) -> bool {
-        self.lock().subscribers.contains_key(&id)
-    }
-
     #[cfg(test)]
     pub(crate) fn subscriber_count(&self) -> usize {
         self.lock().subscribers.len()
@@ -649,7 +722,7 @@ impl DaemonSocketState {
     pub(crate) fn test_install_client_event_sender(
         &self,
     ) -> mpsc::Receiver<Result<ControlModeLine>> {
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::sync_channel(256);
         self.set_client_event_sender(sender);
         receiver
     }
@@ -1019,35 +1092,29 @@ fn serve_subscriber(
                 break;
             }
         }
+        // The mailbox is now closed (client disconnect, write error, or daemon shutdown
+        // via `mark_closing`). Shut the shared connection down so the reader loop below,
+        // blocked in `read`, wakes with EOF and terminates promptly instead of waiting for
+        // the client to close its end. Any final frame was already flushed above.
+        let _ = writer.shutdown(std::net::Shutdown::Both);
     });
 
-    stream
-        .set_read_timeout(Some(SUBSCRIBER_MONITOR_POLL_INTERVAL))
-        .ok();
+    // Clear any read timeout left over from the handshake so the read below truly blocks
+    // indefinitely rather than returning a spurious `TimedOut` (which the arms below would
+    // misread as a disconnect).
+    stream.set_read_timeout(None).ok();
+    // Rely on a blocking `read` returning 0/EOF on disconnect rather than a timed poll: an
+    // idle subscriber parks here at zero cost. The read wakes on client disconnect (its FIN)
+    // or on the writer thread's `shutdown(Both)` above, which fires when the mailbox is
+    // closed — covering both the client-disconnect and daemon-shutdown teardown paths.
     let mut byte = [0; 1];
     loop {
         match stream.read(&mut byte) {
-            Ok(0) => {
-                state.retire_subscriber(id);
-                break;
-            }
+            // EOF (peer closed or our own writer shut the socket down) or an unexpected
+            // inbound byte (subscribers never write): either way the subscriber is done.
             Ok(_) => {
                 state.retire_subscriber(id);
                 break;
-            }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) =>
-            {
-                let should_back_off = error.kind() == std::io::ErrorKind::WouldBlock;
-                if !state.has_subscriber(id) {
-                    break;
-                }
-                if should_back_off {
-                    std::thread::sleep(SUBSCRIBER_MONITOR_POLL_INTERVAL);
-                }
             }
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
             Err(_) => {

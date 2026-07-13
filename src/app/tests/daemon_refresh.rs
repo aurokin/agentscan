@@ -1377,7 +1377,8 @@ fn daemon_control_mode_wait_does_not_arm_subscriber_monitor_without_subscribers(
         None,
     );
 
-    assert_eq!(wait, std::time::Duration::from_millis(500));
+    // With no near deadline the wait falls back to the idle cap (CONTROL_MODE_MAX_WAIT).
+    assert_eq!(wait, std::time::Duration::from_secs(2));
 }
 
 #[test]

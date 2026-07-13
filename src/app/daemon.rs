@@ -113,7 +113,24 @@ const TRACE_CONTROL_LINES_ENV_VAR: &str = "AGENTSCAN_TRACE_CONTROL_LINES";
 const DEFAULT_TRACE_EVENT_LIMIT: usize = 1000;
 const CONTROL_MODE_EVENT_BATCH_WINDOW: Duration = Duration::from_millis(100);
 const CONTROL_MODE_MIN_WAIT: Duration = Duration::from_millis(1);
-const CONTROL_MODE_MAX_WAIT: Duration = Duration::from_millis(500);
+// Upper bound on the idle run-loop wait. With no settle/reconcile/subscriber-monitor
+// deadline pending, this is the only thing that wakes the loop, so it doubles as the
+// detection latency for two rare conditions that only surface on a timeout wake:
+//   * a primary tmux client that died without emitting `%exit` (e.g. the tmux server
+//     was SIGKILLed and the pipe closed at silent EOF) — caught by
+//     `primary_child_exited()`; the reader thread does not signal the shared channel on
+//     EOF, so this genuinely relies on the poll rather than a channel wake;
+//   * a `daemon stop`/SIGTERM whose handler only sets `DAEMON_SHUTDOWN_REQUESTED` and
+//     cannot wake the mpsc wait, so shutdown is noticed at most one cap later.
+// A clean primary exit (`%exit`) or a forwarded read error wakes the loop immediately,
+// so those do not depend on this bound. Kept comfortably under `DAEMON_STOP_TIMEOUT`
+// (3s) so a stop is always noticed and torn down before the SIGKILL escalation fires.
+// Raised from 500ms to cut fully-idle (no-subscriber) wakeups from ~2/s to ~0.5/s.
+const CONTROL_MODE_MAX_WAIT: Duration = Duration::from_secs(2);
+// How often the run loop re-stats the socket path to confirm it still owns it. This is
+// a slow-drift/self-heal backstop (external socket replacement), so a coarse cadence is
+// plenty; running the stat on every wakeup was pure overhead.
+const SOCKET_IDENTITY_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 const PANE_OUTPUT_STATUS_CACHE_TTL: Duration = Duration::from_secs(2);
 // How long after a pane-output provider's last activity event to re-capture it once more.
 // `window_activity` ticks drive busy detection while a turn produces output, but an idle
@@ -856,14 +873,23 @@ impl<S: StartupActions> DaemonRuntime<S> {
         // stuck busy until the next reconcile. `update_settle_deadline` is set-when-None, so this
         // is a no-op when nothing is busy.
         self.update_settle_deadline();
+        // The socket-identity check is a coarse self-heal backstop; stat the path on a
+        // fixed cadence rather than every wakeup. Seed it so the first loop iteration runs
+        // the check immediately.
+        let mut next_socket_identity_check_at = Instant::now();
         loop {
             if DAEMON_SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
                 break;
             }
-            if !server_handle.socket_still_matches() {
-                eprintln!("agentscan: daemon socket path no longer matches this daemon; exiting");
-                DAEMON_SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
-                break;
+            if Instant::now() >= next_socket_identity_check_at {
+                next_socket_identity_check_at = Instant::now() + SOCKET_IDENTITY_CHECK_INTERVAL;
+                if !server_handle.socket_still_matches() {
+                    eprintln!(
+                        "agentscan: daemon socket path no longer matches this daemon; exiting"
+                    );
+                    DAEMON_SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
+                    break;
+                }
             }
             if !server_handle.accept_thread_alive() {
                 // The acceptor stopped without a recorded shutdown reason (e.g. a
