@@ -4,6 +4,7 @@ enum SubscriptionConnect {
     Subscribed {
         reader: BufReader<std::os::unix::net::UnixStream>,
         bootstrap: SnapshotEnvelope,
+        bootstrap_seq: u64,
     },
     NotRunning(String),
     Retryable(String),
@@ -430,10 +431,24 @@ fn subscription_worker_loop(
             SubscriptionConnect::Subscribed {
                 mut reader,
                 bootstrap,
+                bootstrap_seq,
             } => {
                 state.mark_subscribed();
+                // Seed the reconstruction state from the bootstrap full snapshot;
+                // subsequent diff frames are applied on top of it and must advance
+                // `seq` by exactly one.
+                let mut snapshot_state = SubscriptionSnapshotState {
+                    snapshot: bootstrap.clone(),
+                    seq: bootstrap_seq,
+                };
                 send_subscription_event(events, row_context.snapshot_event(bootstrap))?;
-                match read_subscription_frames(&mut reader, events, cancel, &row_context) {
+                match read_subscription_frames(
+                    &mut reader,
+                    events,
+                    cancel,
+                    &row_context,
+                    &mut snapshot_state,
+                ) {
                     SubscriptionReadResult::Reconnect(message) => {
                         if cancel.load(Ordering::Relaxed) {
                             break;
@@ -578,7 +593,7 @@ fn subscribe_once_from_socket(socket_path: &Path) -> Result<SubscriptionConnect>
                 ));
             };
             match second_frame {
-                ipc::DaemonFrame::Snapshot { snapshot } => {
+                ipc::DaemonFrame::Snapshot { seq, snapshot } => {
                     if let Err(error) = snapshot::validate_snapshot(&snapshot) {
                         return Ok(SubscriptionConnect::Incompatible(format!(
                             "daemon returned invalid bootstrap snapshot: {error:#}"
@@ -591,6 +606,7 @@ fn subscribe_once_from_socket(socket_path: &Path) -> Result<SubscriptionConnect>
                     Ok(SubscriptionConnect::Subscribed {
                         reader,
                         bootstrap: snapshot,
+                        bootstrap_seq: seq,
                     })
                 }
                 ipc::DaemonFrame::Unavailable {
@@ -640,10 +656,63 @@ fn read_subscription_bootstrap_frame(
     }
 }
 
+#[cfg_attr(test, derive(Debug))]
 enum SubscriptionReadResult {
     Reconnect(String),
     Shutdown(String),
     Cancelled,
+}
+
+/// The last full snapshot a subscriber reconstructed, plus the seq it was
+/// observed at. A full `snapshot` frame (bootstrap or coalesce fallback) replaces
+/// both fields wholesale; a `snapshot_diff` frame is applied on top and must carry
+/// exactly `seq + 1`.
+struct SubscriptionSnapshotState {
+    snapshot: SnapshotEnvelope,
+    seq: u64,
+}
+
+/// Reconstructs the current snapshot from a `snapshot_diff`: adopts the
+/// envelope-level fields, upserts every changed pane, drops removed panes, and
+/// restores the daemon's canonical pane sort order so rows/consumers see exactly
+/// what a fresh full snapshot would carry.
+fn apply_snapshot_diff(
+    base: &SnapshotEnvelope,
+    schema_version: u32,
+    generated_at: String,
+    source: SnapshotSource,
+    changed_panes: Vec<PaneRecord>,
+    removed_pane_ids: Vec<String>,
+) -> SnapshotEnvelope {
+    let mut snapshot = base.clone();
+    snapshot.schema_version = schema_version;
+    snapshot.generated_at = generated_at;
+    snapshot.source = source;
+
+    if !removed_pane_ids.is_empty() {
+        let removed = removed_pane_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<std::collections::HashSet<_>>();
+        snapshot
+            .panes
+            .retain(|pane| !removed.contains(pane.pane_id.as_str()));
+    }
+
+    for pane in changed_panes {
+        if let Some(existing) = snapshot
+            .panes
+            .iter_mut()
+            .find(|existing| existing.pane_id == pane.pane_id)
+        {
+            *existing = pane;
+        } else {
+            snapshot.panes.push(pane);
+        }
+    }
+
+    snapshot::sort_snapshot_panes(&mut snapshot);
+    snapshot
 }
 
 fn read_subscription_frames(
@@ -651,6 +720,7 @@ fn read_subscription_frames(
     events: &mpsc::Sender<LiveClientEvent>,
     cancel: &Arc<AtomicBool>,
     row_context: &SubscriptionRowContext,
+    snapshot_state: &mut SubscriptionSnapshotState,
 ) -> SubscriptionReadResult {
     loop {
         if cancel.load(Ordering::Relaxed) {
@@ -658,13 +728,56 @@ fn read_subscription_frames(
         }
 
         match ipc::read_daemon_frame(reader) {
-            Ok(Some(ipc::DaemonFrame::Snapshot { snapshot })) => {
+            Ok(Some(ipc::DaemonFrame::Snapshot { seq, snapshot })) => {
+                // An absolute full frame (coalesce fallback): validate, adopt it
+                // wholesale, and reset the expected seq. Full frames re-sync a
+                // subscriber regardless of any diffs it missed.
                 if let Err(error) = snapshot::validate_snapshot(&snapshot) {
                     return SubscriptionReadResult::Reconnect(format!(
                         "invalid daemon snapshot: {error:#}"
                     ));
                 }
+                snapshot_state.snapshot = snapshot.clone();
+                snapshot_state.seq = seq;
                 if send_subscription_event(events, row_context.snapshot_event(snapshot)).is_err() {
+                    return SubscriptionReadResult::Cancelled;
+                }
+            }
+            Ok(Some(ipc::DaemonFrame::SnapshotDiff {
+                seq,
+                schema_version,
+                generated_at,
+                source,
+                changed_panes,
+                removed_pane_ids,
+            })) => {
+                // Diffs are strictly ordered: any gap (or an out-of-order seq)
+                // means a frame was lost, so we cannot safely reconstruct. Force a
+                // reconnect, which re-bootstraps a full snapshot — never guess.
+                let expected = snapshot_state.seq.saturating_add(1);
+                if seq != expected {
+                    return SubscriptionReadResult::Reconnect(format!(
+                        "daemon snapshot diff seq gap: expected {expected}, got {seq}"
+                    ));
+                }
+                let reconstructed = apply_snapshot_diff(
+                    &snapshot_state.snapshot,
+                    schema_version,
+                    generated_at,
+                    source,
+                    changed_panes,
+                    removed_pane_ids,
+                );
+                if let Err(error) = snapshot::validate_snapshot(&reconstructed) {
+                    return SubscriptionReadResult::Reconnect(format!(
+                        "invalid reconstructed daemon snapshot: {error:#}"
+                    ));
+                }
+                snapshot_state.snapshot = reconstructed.clone();
+                snapshot_state.seq = seq;
+                if send_subscription_event(events, row_context.snapshot_event(reconstructed))
+                    .is_err()
+                {
                     return SubscriptionReadResult::Cancelled;
                 }
             }
@@ -737,4 +850,246 @@ pub(crate) fn test_write_subscription_keepalive(
     cancel: &AtomicBool,
 ) -> std::result::Result<bool, DaemonSnapshotError> {
     write_subscription_keepalive(writer, cancel)
+}
+
+#[cfg(test)]
+mod diff_apply_tests {
+    use super::*;
+    use std::os::unix::net::UnixStream;
+
+    fn test_source() -> SnapshotSource {
+        SnapshotSource {
+            kind: SourceKind::Daemon,
+            tmux_version: Some("3.4".to_string()),
+            daemon_generated_at: Some("2026-07-13T00:00:00Z".to_string()),
+        }
+    }
+
+    fn test_pane(session: &str, window_index: u32, pane_index: u32, pane_id: &str) -> PaneRecord {
+        PaneRecord {
+            pane_id: pane_id.to_string(),
+            location: PaneLocation {
+                session_name: session.to_string(),
+                window_index,
+                pane_index,
+                window_name: "win".to_string(),
+            },
+            tmux: TmuxPaneMetadata {
+                pane_pid: 100,
+                pane_tty: "/dev/ttys000".to_string(),
+                pane_current_path: "/tmp".to_string(),
+                pane_current_command: "node".to_string(),
+                pane_title_raw: "title".to_string(),
+                session_id: Some(format!("${session}")),
+                window_id: Some(format!("@{window_index}")),
+                pane_active: false,
+                window_active: false,
+            },
+            display: DisplayMetadata {
+                label: pane_id.to_string(),
+                activity_label: None,
+            },
+            provider: None,
+            status: PaneStatus::not_checked(),
+            classification: PaneClassification {
+                matched_by: None,
+                confidence: None,
+                reasons: Vec::new(),
+            },
+            agent_metadata: AgentMetadata::default(),
+            diagnostics: PaneDiagnostics {
+                cache_origin: "daemon_snapshot".to_string(),
+                proc_fallback: ProcFallbackDiagnostics::default(),
+            },
+        }
+    }
+
+    fn snapshot_with(panes: Vec<PaneRecord>, generated_at: &str) -> SnapshotEnvelope {
+        let mut snapshot = SnapshotEnvelope {
+            schema_version: CACHE_SCHEMA_VERSION,
+            generated_at: generated_at.to_string(),
+            source: test_source(),
+            panes,
+        };
+        snapshot::sort_snapshot_panes(&mut snapshot);
+        snapshot
+    }
+
+    #[test]
+    fn apply_diff_upserts_and_removes_preserving_sort_order() {
+        // Base: two panes in canonical sort order (session, window, pane, id).
+        let base = snapshot_with(
+            vec![
+                test_pane("alpha", 0, 0, "%1"),
+                test_pane("alpha", 2, 0, "%3"),
+            ],
+            "2026-07-13T00:00:00Z",
+        );
+
+        // Change %3's status, add %2 (which must sort between %1 and %3), remove %1.
+        let mut changed_pane3 = test_pane("alpha", 2, 0, "%3");
+        changed_pane3.status = PaneStatus::metadata(StatusKind::Busy);
+        let added_pane2 = test_pane("alpha", 1, 0, "%2");
+
+        let result = apply_snapshot_diff(
+            &base,
+            CACHE_SCHEMA_VERSION,
+            "2026-07-13T00:00:05Z".to_string(),
+            test_source(),
+            vec![changed_pane3.clone(), added_pane2.clone()],
+            vec!["%1".to_string()],
+        );
+
+        // Envelope-level field adopted from the diff.
+        assert_eq!(result.generated_at, "2026-07-13T00:00:05Z");
+        // %1 removed; %2 inserted in sorted position ahead of %3; %3 updated.
+        let ids: Vec<&str> = result.panes.iter().map(|p| p.pane_id.as_str()).collect();
+        assert_eq!(ids, vec!["%2", "%3"]);
+        assert_eq!(
+            result.panes[1].status,
+            PaneStatus::metadata(StatusKind::Busy)
+        );
+
+        // Reconstruction equals a fresh snapshot built from the same final panes.
+        let expected = snapshot_with(vec![added_pane2, changed_pane3], "2026-07-13T00:00:05Z");
+        assert_eq!(result, expected);
+    }
+
+    fn write_frame(stream: &mut UnixStream, frame: &ipc::DaemonFrame) {
+        let bytes = ipc::encode_frame(frame).expect("frame should encode");
+        stream.write_all(&bytes).expect("frame should write");
+    }
+
+    fn drive_read_frames(
+        bootstrap: SnapshotEnvelope,
+        bootstrap_seq: u64,
+        frames: Vec<ipc::DaemonFrame>,
+    ) -> (SubscriptionReadResult, Vec<LiveClientEvent>) {
+        let (mut server, client) = UnixStream::pair().expect("socket pair");
+        for frame in &frames {
+            write_frame(&mut server, frame);
+        }
+        server
+            .shutdown(std::net::Shutdown::Write)
+            .expect("server write side should close");
+
+        let mut reader = BufReader::new(client);
+        let (events_tx, events_rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let row_context = SubscriptionRowContext::resolve().expect("row context should resolve");
+        let mut state = SubscriptionSnapshotState {
+            snapshot: bootstrap,
+            seq: bootstrap_seq,
+        };
+        let result =
+            read_subscription_frames(&mut reader, &events_tx, &cancel, &row_context, &mut state);
+        drop(events_tx);
+        (result, events_rx.into_iter().collect())
+    }
+
+    #[test]
+    fn contiguous_diff_is_applied_and_emitted() {
+        let base = snapshot_with(vec![test_pane("alpha", 0, 0, "%1")], "2026-07-13T00:00:00Z");
+        let mut changed = test_pane("alpha", 0, 0, "%1");
+        changed.status = PaneStatus::metadata(StatusKind::Busy);
+        let diff = ipc::DaemonFrame::SnapshotDiff {
+            seq: 2,
+            schema_version: CACHE_SCHEMA_VERSION,
+            generated_at: "2026-07-13T00:00:01Z".to_string(),
+            source: test_source(),
+            changed_panes: vec![changed],
+            removed_pane_ids: Vec::new(),
+        };
+
+        let (result, events) = drive_read_frames(base, 1, vec![diff]);
+        // End of stream after the applied diff surfaces as a reconnect.
+        assert!(matches!(result, SubscriptionReadResult::Reconnect(_)));
+        let snapshot_events: Vec<_> = events
+            .iter()
+            .filter(|event| matches!(event, LiveClientEvent::Snapshot { .. }))
+            .collect();
+        assert_eq!(snapshot_events.len(), 1, "diff should emit one snapshot");
+        if let LiveClientEvent::Snapshot { snapshot, .. } = snapshot_events[0] {
+            assert_eq!(snapshot.generated_at, "2026-07-13T00:00:01Z");
+            assert_eq!(
+                snapshot.panes[0].status,
+                PaneStatus::metadata(StatusKind::Busy)
+            );
+        }
+    }
+
+    #[test]
+    fn seq_gap_forces_reconnect_without_emitting() {
+        let base = snapshot_with(vec![test_pane("alpha", 0, 0, "%1")], "2026-07-13T00:00:00Z");
+        // Bootstrap seq is 1, but the diff claims seq 3: a lost frame.
+        let gap_diff = ipc::DaemonFrame::SnapshotDiff {
+            seq: 3,
+            schema_version: CACHE_SCHEMA_VERSION,
+            generated_at: "2026-07-13T00:00:02Z".to_string(),
+            source: test_source(),
+            changed_panes: Vec::new(),
+            removed_pane_ids: Vec::new(),
+        };
+
+        let (result, events) = drive_read_frames(base, 1, vec![gap_diff]);
+        match result {
+            SubscriptionReadResult::Reconnect(message) => {
+                assert!(message.contains("seq gap"), "{message}");
+                assert!(message.contains("expected 2"), "{message}");
+                assert!(message.contains("got 3"), "{message}");
+            }
+            other => panic!("expected reconnect on seq gap, got {other:?}"),
+        }
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, LiveClientEvent::Snapshot { .. })),
+            "a gapped diff must not emit a reconstructed snapshot"
+        );
+    }
+
+    #[test]
+    fn mid_stream_full_snapshot_resets_seq() {
+        let base = snapshot_with(vec![test_pane("alpha", 0, 0, "%1")], "2026-07-13T00:00:00Z");
+        // A coalesce-fallback full frame at seq 5 (a jump), then a contiguous diff
+        // at seq 6 that must apply because the full frame reset the expected seq.
+        let full = snapshot_with(
+            vec![
+                test_pane("alpha", 0, 0, "%1"),
+                test_pane("beta", 0, 0, "%9"),
+            ],
+            "2026-07-13T00:00:05Z",
+        );
+        let full_frame = ipc::DaemonFrame::Snapshot {
+            seq: 5,
+            snapshot: full,
+        };
+        let follow_diff = ipc::DaemonFrame::SnapshotDiff {
+            seq: 6,
+            schema_version: CACHE_SCHEMA_VERSION,
+            generated_at: "2026-07-13T00:00:06Z".to_string(),
+            source: test_source(),
+            changed_panes: Vec::new(),
+            removed_pane_ids: vec!["%9".to_string()],
+        };
+
+        let (result, events) = drive_read_frames(base, 1, vec![full_frame, follow_diff]);
+        assert!(matches!(result, SubscriptionReadResult::Reconnect(_)));
+        let snapshots: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                LiveClientEvent::Snapshot { snapshot, .. } => Some(snapshot.as_ref()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(snapshots.len(), 2, "full frame + contiguous diff each emit");
+        assert_eq!(snapshots[0].panes.len(), 2);
+        // The follow-up diff removed %9, so the final snapshot has just %1.
+        let final_ids: Vec<&str> = snapshots[1]
+            .panes
+            .iter()
+            .map(|p| p.pane_id.as_str())
+            .collect();
+        assert_eq!(final_ids, vec!["%1"]);
+    }
 }

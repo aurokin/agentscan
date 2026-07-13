@@ -304,7 +304,9 @@ pub(super) fn snapshot_once_from_socket(socket_path: &Path) -> Result<SnapshotQu
                 ));
             };
             match second_frame {
-                ipc::DaemonFrame::Snapshot { snapshot } => Ok(SnapshotQuery::Snapshot(snapshot)),
+                ipc::DaemonFrame::Snapshot { snapshot, .. } => {
+                    Ok(SnapshotQuery::Snapshot(snapshot))
+                }
                 ipc::DaemonFrame::Unavailable {
                     reason: ipc::UnavailableReason::DaemonNotReady,
                     message: _,

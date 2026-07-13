@@ -423,38 +423,168 @@ fn daemon_fans_out_live_updates_to_subscriber_socket() -> Result<()> {
     assert_eq!(ack["snapshot_schema_version"], snapshot_schema_version());
     let bootstrap = read_daemon_socket_json_line(&mut reader)?;
     assert_eq!(bootstrap["type"], "snapshot");
+    assert_eq!(
+        bootstrap["seq"], 1,
+        "bootstrap should carry the initial seq"
+    );
     validate_snapshot_json(&bootstrap["snapshot"])?;
+
+    // Reconstruct the snapshot from the bootstrap full frame, then keep applying
+    // incremental `snapshot_diff` frames (the daemon no longer re-broadcasts full
+    // snapshots on every tick) until the reconstructed pane reflects the title.
+    let mut panes = std::collections::BTreeMap::new();
+    apply_wire_frame(&mut panes, &bootstrap)?;
     assert!(
-        bootstrap["snapshot"]["panes"]
-            .as_array()
-            .context("bootstrap panes were not an array")?
-            .iter()
-            .any(|pane| pane["pane_id"] == pane_id),
-        "subscriber bootstrap did not include pane {pane_id}: {bootstrap}"
+        panes.contains_key(pane_id.as_str()),
+        "subscriber bootstrap did not include pane {pane_id}"
     );
 
     harness.send_title_escape(&pane_id, "Claude Code | Working")?;
+    reconstruct_subscriber_until(&mut reader, &mut panes, |panes| {
+        panes.get(pane_id.as_str()).is_some_and(|pane| {
+            pane["provider"] == "claude"
+                && pane["status"]["kind"] == "busy"
+                && pane["display"]["label"] == "Working"
+        })
+    })?;
+
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .context("failed to close subscriber write side")?;
+    daemon.shutdown()?;
+    Ok(())
+}
+
+/// One-shot daemon snapshot query over a fresh connection, returning the
+/// `snapshot` envelope value.
+fn query_daemon_snapshot(socket_path: &Path) -> Result<Value> {
+    let mut stream = connect_agentscan_socket(socket_path)?;
+    writeln!(
+        stream,
+        "{}",
+        serde_json::json!({
+            "type": "hello",
+            "protocol_version": daemon_protocol_version(),
+            "snapshot_schema_version": snapshot_schema_version(),
+            "mode": "snapshot",
+        })
+    )
+    .context("failed to write daemon snapshot query hello")?;
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .context("failed to close snapshot query write side")?;
+    let mut reader = BufReader::new(stream);
+    let ack = read_daemon_socket_json_line(&mut reader)?;
+    assert_eq!(ack["type"], "hello_ack");
+    let frame = read_daemon_socket_json_line(&mut reader)?;
+    assert_eq!(frame["type"], "snapshot");
+    Ok(frame["snapshot"].clone())
+}
+
+/// Strips per-pane volatile fields (`diagnostics.cache_origin`) so reconstructed
+/// panes can be compared *materially* against a fresh query, matching the daemon's
+/// own equality contract.
+fn material_pane(pane: &Value) -> Value {
+    let mut pane = pane.clone();
+    if let Some(diagnostics) = pane.get_mut("diagnostics").and_then(Value::as_object_mut) {
+        diagnostics.remove("cache_origin");
+    }
+    pane
+}
+
+#[test]
+fn subscriber_diff_reconstruction_matches_fresh_snapshot_query() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let pane_id = harness.start_session("diff-reconstruct", "sh")?;
+    let mut daemon = harness.start_daemon()?;
+    harness.wait_for_daemon_snapshot(&mut daemon, |snapshot| {
+        pane_from_snapshot(snapshot, &pane_id).is_some()
+    })?;
+
+    let mut stream = connect_agentscan_socket(&harness.agentscan_socket_path)?;
+    stream
+        .set_read_timeout(Some(DAEMON_TIMEOUT))
+        .context("failed to set subscriber socket read timeout")?;
+    writeln!(
+        stream,
+        "{}",
+        serde_json::json!({
+            "type": "hello",
+            "protocol_version": daemon_protocol_version(),
+            "snapshot_schema_version": snapshot_schema_version(),
+            "mode": "subscribe",
+        })
+    )
+    .context("failed to write daemon socket subscribe hello")?;
+    let mut reader = BufReader::new(
+        stream
+            .try_clone()
+            .context("failed to clone subscriber socket")?,
+    );
+    let ack = read_daemon_socket_json_line(&mut reader)?;
+    assert_eq!(ack["type"], "hello_ack");
+    let bootstrap = read_daemon_socket_json_line(&mut reader)?;
+    assert_eq!(bootstrap["type"], "snapshot");
+    let mut panes = std::collections::BTreeMap::new();
+    apply_wire_frame(&mut panes, &bootstrap)?;
+
+    // Drive a change and confirm the post-bootstrap update actually arrives as an
+    // incremental `snapshot_diff` (the whole point of this feature), reconstructing
+    // it into the running pane map.
+    harness.send_title_escape(&pane_id, "Claude Code | Working")?;
+    let mut saw_diff = false;
     let deadline = Instant::now() + DAEMON_TIMEOUT;
     loop {
         let frame = read_daemon_socket_json_line(&mut reader)?;
-        if frame["type"] == "snapshot"
-            && frame["snapshot"]["panes"]
-                .as_array()
-                .context("subscriber update panes were not an array")?
-                .iter()
-                .any(|pane| {
-                    pane["pane_id"] == pane_id
-                        && pane["provider"] == "claude"
-                        && pane["status"]["kind"] == "busy"
-                        && pane["display"]["label"] == "Working"
-                })
-        {
+        if frame["type"] == "snapshot_diff" {
+            saw_diff = true;
+        }
+        apply_wire_frame(&mut panes, &frame)?;
+        let converged = panes.get(pane_id.as_str()).is_some_and(|pane| {
+            pane["status"]["kind"] == "busy" && pane["display"]["label"] == "Working"
+        });
+        if converged {
             break;
         }
         if Instant::now() >= deadline {
-            bail!("subscriber did not receive title update before timeout; last frame: {frame}");
+            bail!("subscriber did not reconstruct the title change before timeout");
         }
     }
+    assert!(
+        saw_diff,
+        "post-bootstrap update should arrive as a snapshot_diff frame"
+    );
+
+    // Drain any trailing diffs so the reconstruction quiesces to the daemon's
+    // current state before comparing against a fresh query.
+    stream
+        .set_read_timeout(Some(Duration::from_millis(400)))
+        .context("failed to set subscriber drain timeout")?;
+    while let Ok(frame) = read_daemon_socket_json_line(&mut reader) {
+        apply_wire_frame(&mut panes, &frame)?;
+    }
+
+    // A fresh full snapshot query must equal the diff-reconstructed state,
+    // material field for material field.
+    let fresh = query_daemon_snapshot(&harness.agentscan_socket_path)?;
+    let mut fresh_panes = std::collections::BTreeMap::new();
+    for pane in fresh["panes"]
+        .as_array()
+        .context("fresh snapshot panes were not an array")?
+    {
+        let id = pane["pane_id"]
+            .as_str()
+            .context("fresh snapshot pane missing pane_id")?;
+        fresh_panes.insert(id.to_string(), material_pane(pane));
+    }
+    let reconstructed_panes: std::collections::BTreeMap<String, Value> = panes
+        .iter()
+        .map(|(id, pane)| (id.clone(), material_pane(pane)))
+        .collect();
+    assert_eq!(
+        reconstructed_panes, fresh_panes,
+        "diff-reconstructed snapshot did not materially match a fresh query"
+    );
 
     stream
         .shutdown(std::net::Shutdown::Write)
@@ -499,17 +629,16 @@ fn focus_event_fans_out_snapshot_without_material_pane_change() -> Result<()> {
     let bootstrap = read_daemon_socket_json_line(&mut reader)?;
     assert_eq!(bootstrap["type"], "snapshot");
     validate_snapshot_json(&bootstrap["snapshot"])?;
+    let mut panes = std::collections::BTreeMap::new();
+    apply_wire_frame(&mut panes, &bootstrap)?;
 
     harness.agentscan(["focus", "--client-tty", &client.tty, &pane_id])?;
+    // The focus event fans out an update frame; whether it arrives as a full
+    // snapshot or a diff, reconstructing it must still surface the focused pane.
     let update = read_daemon_socket_json_line(&mut reader)?;
-    assert_eq!(update["type"], "snapshot");
-    validate_snapshot_json(&update["snapshot"])?;
+    apply_wire_frame(&mut panes, &update)?;
     assert!(
-        update["snapshot"]["panes"]
-            .as_array()
-            .context("focus event update panes were not an array")?
-            .iter()
-            .any(|pane| pane["pane_id"] == pane_id),
+        panes.contains_key(pane_id.as_str()),
         "focus event subscriber update did not include pane {pane_id}: {update}"
     );
 
@@ -2612,6 +2741,65 @@ fn read_daemon_socket_json_line(reader: &mut impl BufRead) -> Result<Value> {
     serde_json::from_str(&line).context("daemon socket frame was not valid JSON")
 }
 
+/// Applies a raw daemon wire frame (a full `snapshot` or an incremental
+/// `snapshot_diff`) to a reconstructed pane map keyed by `pane_id`, mirroring the
+/// subscribe client's reconstruction. A full frame replaces the map wholesale; a
+/// diff upserts `changed_panes` and drops `removed_pane_ids`.
+fn apply_wire_frame(
+    panes: &mut std::collections::BTreeMap<String, Value>,
+    frame: &Value,
+) -> Result<()> {
+    match frame["type"].as_str() {
+        Some("snapshot") => {
+            panes.clear();
+            let array = frame["snapshot"]["panes"]
+                .as_array()
+                .context("snapshot frame panes were not an array")?;
+            for pane in array {
+                let id = pane["pane_id"]
+                    .as_str()
+                    .context("snapshot pane missing pane_id")?;
+                panes.insert(id.to_string(), pane.clone());
+            }
+        }
+        Some("snapshot_diff") => {
+            for removed in frame["removed_pane_ids"].as_array().into_iter().flatten() {
+                if let Some(id) = removed.as_str() {
+                    panes.remove(id);
+                }
+            }
+            for pane in frame["changed_panes"].as_array().into_iter().flatten() {
+                let id = pane["pane_id"]
+                    .as_str()
+                    .context("changed pane missing pane_id")?;
+                panes.insert(id.to_string(), pane.clone());
+            }
+        }
+        other => bail!("unexpected subscriber frame type {other:?}: {frame}"),
+    }
+    Ok(())
+}
+
+/// Reads raw subscriber wire frames, reconstructing the snapshot after each, until
+/// the reconstructed pane map satisfies `matches` or the timeout elapses.
+fn reconstruct_subscriber_until(
+    reader: &mut impl BufRead,
+    panes: &mut std::collections::BTreeMap<String, Value>,
+    matches: impl Fn(&std::collections::BTreeMap<String, Value>) -> bool,
+) -> Result<()> {
+    let deadline = Instant::now() + DAEMON_TIMEOUT;
+    loop {
+        let frame = read_daemon_socket_json_line(reader)?;
+        apply_wire_frame(panes, &frame)?;
+        if matches(panes) {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            bail!("subscriber did not reach expected reconstructed state before timeout");
+        }
+    }
+}
+
 fn read_subscribe_stream_until(
     reader: &mut impl BufRead,
     matches: impl Fn(&Value) -> bool,
@@ -2707,6 +2895,7 @@ fn serve_fake_snapshot(socket_path: &Path, snapshot: Value) -> FakeSnapshotServe
         });
         let frame = serde_json::json!({
             "type": "snapshot",
+            "seq": 1,
             "snapshot": snapshot
         });
         writeln!(stream, "{ack}").expect("fake snapshot ack should write");

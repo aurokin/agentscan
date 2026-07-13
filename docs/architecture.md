@@ -14,10 +14,15 @@ The current runtime model is:
    trust preflight and only starts detached signed/trusted binaries.
 2. The daemon subscribes to tmux control-mode updates.
 3. The daemon maintains in-memory pane state keyed by `pane_id`.
-4. The daemon publishes full versioned `SnapshotEnvelope` frames over a
-   JSON-Lines Unix socket protocol.
+4. The daemon publishes versioned snapshot state over a JSON-Lines Unix socket
+   protocol. A one-shot `snapshot` query and every subscriber bootstrap receive a
+   full `SnapshotEnvelope` frame (carrying a monotonic `seq`); after bootstrap the
+   daemon broadcasts incremental `snapshot_diff` frames (`seq`, envelope volatile
+   fields, full `PaneRecord`s for added/changed panes, ids for removed panes)
+   instead of re-encoding the whole snapshot on every material change.
 5. Short-lived commands read one snapshot frame and disconnect; the TUI keeps a
-   live subscription.
+   live subscription and reconstructs the current snapshot by applying each
+   `snapshot_diff` on top of its bootstrap, forcing a reconnect on any `seq` gap.
 
 Direct tmux snapshots remain available for debugging and recovery through
 `agentscan scan` and refresh-capable command flags. `--no-auto-start` and
@@ -74,8 +79,13 @@ broker fallback activations. Reconcile materiality ignores timestamp-only
 differences and cache-origin churn so the counters can show whether the safety
 loop is catching missed state changes or mostly confirming the event stream.
 No-op interval and timeout reconciles update telemetry but do not fan out
-snapshot frames to subscribers; only materially changed reconcile results
-publish a new snapshot.
+frames to subscribers; only materially changed reconcile results publish a new
+snapshot. Each publish encodes one `snapshot_diff` (proportional to the changed
+panes) and hands the same bytes to every subscriber mailbox. Subscriber mailboxes
+still coalesce to a single pending frame, but because a dropped diff would
+silently diverge a slow client, a coalescing enqueue replaces the pending frame
+with an absolute full `snapshot` (encoded once and shared) rather than the newer
+diff, so the slow subscriber always re-syncs.
 
 The initial daemon snapshot still uses a short-lived tmux command before socket
 readiness is published.

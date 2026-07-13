@@ -5,6 +5,10 @@ use std::os::unix::net::UnixStream;
 
 const OBSERVABILITY_EVENT_RING_CAPACITY: usize = 256;
 
+/// Seq stamped on the bootstrap (initial) full snapshot. Post-bootstrap publishes
+/// advance from here, so the first `snapshot_diff` a subscriber sees is `seq + 1`.
+const INITIAL_SNAPSHOT_SEQ: u64 = 1;
+
 pub(super) struct DaemonSocketServer {
     listener: std::os::unix::net::UnixListener,
     socket_path: PathBuf,
@@ -340,12 +344,21 @@ impl SnapshotPublishContext {
 pub(super) struct PreparedSnapshot {
     pub(super) snapshot: SnapshotEnvelope,
     pub(super) frame: EncodedDaemonFrame,
+    pub(super) seq: u64,
 }
 
 impl PreparedSnapshot {
     pub(super) fn new(snapshot: SnapshotEnvelope) -> Result<Self> {
-        let frame = encode_snapshot_frame(&snapshot)?;
-        Ok(Self { snapshot, frame })
+        // The prepared snapshot is only ever the bootstrap, so it always encodes
+        // at `INITIAL_SNAPSHOT_SEQ`; this also validates the frame fits the wire
+        // limit before the daemon commits to serving it.
+        let seq = INITIAL_SNAPSHOT_SEQ;
+        let frame = encode_snapshot_frame(&snapshot, seq)?;
+        Ok(Self {
+            snapshot,
+            frame,
+            seq,
+        })
     }
 }
 
@@ -392,11 +405,14 @@ impl DaemonSocketState {
         let telemetry = context.telemetry();
         let (frame, subscribers) = {
             let mut inner = self.lock();
-            let frame = inner.snapshots.publish(prepared, telemetry);
+            let frame = inner.snapshots.publish_initial(prepared, telemetry);
             inner.startup_state = DaemonStartupState::Ready;
             (frame, subscriber_mailboxes(&inner))
         };
-        fan_out_snapshot(frame, subscribers);
+        // The bootstrap full frame is absolute, so a bare full-frame broadcast is
+        // safe here: any coalesce with a later diff already upgrades to a full
+        // frame in `enqueue`.
+        fan_out_broadcast(DaemonBroadcast::from_full(frame), subscribers);
     }
 
     #[cfg(test)]
@@ -410,26 +426,24 @@ impl DaemonSocketState {
         context: SnapshotPublishContext,
     ) -> bool {
         let telemetry = context.telemetry();
-        match encode_snapshot_frame(&snapshot) {
-            Ok(frame) => {
-                let prepared = PreparedSnapshot { snapshot, frame };
-                let (frame, subscribers) = {
-                    let mut inner = self.lock();
-                    let frame = inner.snapshots.publish(prepared, telemetry);
+        let (broadcast, subscribers) = {
+            let mut inner = self.lock();
+            match inner.snapshots.publish_diff(snapshot, telemetry) {
+                Ok(broadcast) => {
                     inner.startup_state = DaemonStartupState::Ready;
-                    (frame, subscriber_mailboxes(&inner))
-                };
-                fan_out_snapshot(frame, subscribers);
-                true
+                    (broadcast, subscriber_mailboxes(&inner))
+                }
+                Err(error) => {
+                    eprintln!(
+                        "agentscan: skipped daemon socket snapshot update because encoded frame exceeded {} bytes; previous good snapshot remains active: {error:#}",
+                        ipc::DAEMON_FRAME_MAX_BYTES
+                    );
+                    return false;
+                }
             }
-            Err(error) => {
-                eprintln!(
-                    "agentscan: skipped daemon socket snapshot update because encoded frame exceeded {} bytes; previous good snapshot remains active: {error:#}",
-                    ipc::DAEMON_FRAME_MAX_BYTES
-                );
-                false
-            }
-        }
+        };
+        fan_out_broadcast(broadcast, subscribers);
+        true
     }
 
     pub(crate) fn mark_startup_failed(&self, message: String) {
@@ -447,74 +461,84 @@ impl DaemonSocketState {
     }
 
     fn snapshot_response(&self) -> DaemonSocketResponse {
-        let inner = self.lock();
-        match &inner.startup_state {
-            DaemonStartupState::Closing => DaemonSocketResponse::Unavailable {
+        let mut inner = self.lock();
+        // Resolve the non-Ready states first so the immutable `startup_state`
+        // borrow is released before the mutable `latest_frame` lazy-encode below.
+        if let Some(response) = match &inner.startup_state {
+            DaemonStartupState::Closing => Some(DaemonSocketResponse::Unavailable {
                 reason: ipc::UnavailableReason::ServerClosing,
                 message: "daemon socket server is closing".to_string(),
-            },
-            DaemonStartupState::StartupFailed(message) => DaemonSocketResponse::Unavailable {
+            }),
+            DaemonStartupState::StartupFailed(message) => Some(DaemonSocketResponse::Unavailable {
                 reason: ipc::UnavailableReason::StartupFailed,
                 message: message.clone(),
-            },
-            DaemonStartupState::Ready => {
-                if let Some(frame) = inner.snapshots.latest_frame() {
-                    DaemonSocketResponse::Snapshot(frame)
-                } else {
-                    DaemonSocketResponse::Unavailable {
-                        reason: ipc::UnavailableReason::StartupFailed,
-                        message: "daemon reported ready without a snapshot".to_string(),
-                    }
-                }
-            }
-            DaemonStartupState::Initializing => DaemonSocketResponse::Unavailable {
+            }),
+            DaemonStartupState::Initializing => Some(DaemonSocketResponse::Unavailable {
                 reason: ipc::UnavailableReason::DaemonNotReady,
                 message: "daemon has not published its initial snapshot yet".to_string(),
-            },
+            }),
+            DaemonStartupState::Ready => None,
+        } {
+            return response;
+        }
+
+        if let Some(frame) = inner.snapshots.latest_frame() {
+            DaemonSocketResponse::Snapshot(frame)
+        } else {
+            DaemonSocketResponse::Unavailable {
+                reason: ipc::UnavailableReason::StartupFailed,
+                message: "daemon reported ready without a snapshot".to_string(),
+            }
         }
     }
 
     fn subscribe_response(&self) -> SubscribeResponse {
         let mut inner = self.lock();
-        match &inner.startup_state {
-            DaemonStartupState::Closing => SubscribeResponse::Unavailable {
+        // As in `snapshot_response`, settle the non-Ready states before the
+        // mutable `latest_frame` lazy-encode.
+        if let Some(response) = match &inner.startup_state {
+            DaemonStartupState::Closing => Some(SubscribeResponse::Unavailable {
                 reason: ipc::UnavailableReason::ServerClosing,
                 message: "daemon socket server is closing".to_string(),
-            },
-            DaemonStartupState::StartupFailed(message) => SubscribeResponse::Unavailable {
+            }),
+            DaemonStartupState::StartupFailed(message) => Some(SubscribeResponse::Unavailable {
                 reason: ipc::UnavailableReason::StartupFailed,
                 message: message.clone(),
-            },
-            DaemonStartupState::Initializing => SubscribeResponse::Unavailable {
+            }),
+            DaemonStartupState::Initializing => Some(SubscribeResponse::Unavailable {
                 reason: ipc::UnavailableReason::DaemonNotReady,
                 message: "daemon has not published its initial snapshot yet".to_string(),
-            },
-            DaemonStartupState::Ready => {
-                let Some(bootstrap_frame) = inner.snapshots.latest_frame() else {
-                    return SubscribeResponse::Unavailable {
-                        reason: ipc::UnavailableReason::StartupFailed,
-                        message: "daemon reported ready without a snapshot".to_string(),
-                    };
-                };
-                if inner.subscribers.len() >= MAX_SUBSCRIBERS {
-                    return SubscribeResponse::Unavailable {
-                        reason: ipc::UnavailableReason::SubscriberLimitReached,
-                        message: format!(
-                            "daemon subscriber limit reached ({MAX_SUBSCRIBERS} subscribers)"
-                        ),
-                    };
-                }
+            }),
+            DaemonStartupState::Ready => None,
+        } {
+            return response;
+        }
 
-                let id = inner.next_subscriber_id;
-                inner.next_subscriber_id = inner.next_subscriber_id.saturating_add(1);
-                let mailbox = SubscriberMailbox::new();
-                inner.subscribers.insert(id, mailbox.clone());
-                SubscribeResponse::Registered(SubscriberRegistration {
-                    id,
-                    bootstrap_frame,
-                    mailbox,
-                })
+        {
+            let Some(bootstrap_frame) = inner.snapshots.latest_frame() else {
+                return SubscribeResponse::Unavailable {
+                    reason: ipc::UnavailableReason::StartupFailed,
+                    message: "daemon reported ready without a snapshot".to_string(),
+                };
+            };
+            if inner.subscribers.len() >= MAX_SUBSCRIBERS {
+                return SubscribeResponse::Unavailable {
+                    reason: ipc::UnavailableReason::SubscriberLimitReached,
+                    message: format!(
+                        "daemon subscriber limit reached ({MAX_SUBSCRIBERS} subscribers)"
+                    ),
+                };
             }
+
+            let id = inner.next_subscriber_id;
+            inner.next_subscriber_id = inner.next_subscriber_id.saturating_add(1);
+            let mailbox = SubscriberMailbox::new();
+            inner.subscribers.insert(id, mailbox.clone());
+            SubscribeResponse::Registered(SubscriberRegistration {
+                id,
+                bootstrap_frame,
+                mailbox,
+            })
         }
     }
 
@@ -813,9 +837,9 @@ fn subscriber_mailboxes(inner: &DaemonSocketStateInner) -> Vec<SubscriberMailbox
     inner.subscribers.values().cloned().collect()
 }
 
-fn fan_out_snapshot(frame: EncodedDaemonFrame, subscribers: Vec<SubscriberMailbox>) {
+fn fan_out_broadcast(broadcast: DaemonBroadcast, subscribers: Vec<SubscriberMailbox>) {
     for subscriber in subscribers {
-        subscriber.enqueue(frame.clone());
+        subscriber.enqueue(broadcast.clone());
     }
 }
 
@@ -835,25 +859,189 @@ fn close_subscribers(subscribers: HashMap<SubscriberId, SubscriberMailbox>) {
     }
 }
 
-/// Bench seam: runs the publish/fan-out encode path and returns the encoded
-/// frame length so benchmarks can exercise it without touching subscribers.
+/// Bench seam: runs the publish/fan-out full-frame encode path and returns the
+/// encoded frame length so benchmarks can exercise it without touching subscribers.
 pub(crate) fn bench_encode_snapshot_frame_len(snapshot: &SnapshotEnvelope) -> Result<usize> {
-    encode_snapshot_frame(snapshot).map(|frame| frame.len())
+    encode_snapshot_frame(snapshot, INITIAL_SNAPSHOT_SEQ).map(|frame| frame.len())
 }
 
-fn encode_snapshot_frame(snapshot: &SnapshotEnvelope) -> Result<EncodedDaemonFrame> {
+/// Bench seam: encodes a `snapshot_diff` frame for the given delta and returns
+/// its byte length, so benchmarks can compare diff vs full-frame encode cost.
+pub(crate) fn bench_encode_diff_frame_len(
+    previous: &SnapshotEnvelope,
+    current: &SnapshotEnvelope,
+) -> Result<usize> {
+    let (changed_panes, removed_pane_ids) = super::refresh::snapshot_wire_diff(previous, current);
+    encode_diff_frame(
+        INITIAL_SNAPSHOT_SEQ + 1,
+        current,
+        changed_panes,
+        removed_pane_ids,
+    )
+    .map(|frame| frame.len())
+}
+
+/// Full-frame encode seam for the snapshot store's lazy bootstrap/query path.
+pub(super) fn encode_full_frame(
+    snapshot: &SnapshotEnvelope,
+    seq: u64,
+) -> Result<EncodedDaemonFrame> {
+    encode_snapshot_frame(snapshot, seq)
+}
+
+/// Builds the post-bootstrap fan-out broadcast: a `snapshot_diff` primary frame
+/// against `previous`, plus a lazily-encoded absolute full frame for coalesce
+/// safety.
+pub(super) fn build_diff_broadcast(
+    seq: u64,
+    previous: &SnapshotEnvelope,
+    current: &Arc<SnapshotEnvelope>,
+) -> Result<DaemonBroadcast> {
+    let (changed_panes, removed_pane_ids) = super::refresh::snapshot_wire_diff(previous, current);
+    let primary = encode_diff_frame(seq, current, changed_panes, removed_pane_ids)?;
+    Ok(DaemonBroadcast::new(primary, current.clone(), seq))
+}
+
+/// Builds a full-frame broadcast (no prior snapshot to diff against). The primary
+/// frame is itself absolute, so it doubles as the coalesce fallback.
+pub(super) fn build_full_broadcast(
+    seq: u64,
+    current: &Arc<SnapshotEnvelope>,
+) -> Result<DaemonBroadcast> {
+    let primary = encode_snapshot_frame(current, seq)?;
+    Ok(DaemonBroadcast::from_full(primary))
+}
+
+fn encode_snapshot_frame(snapshot: &SnapshotEnvelope, seq: u64) -> Result<EncodedDaemonFrame> {
     let frame = ipc::DaemonFrame::Snapshot {
+        seq,
         snapshot: snapshot.clone(),
     };
-    let encoded = ipc::encode_frame(&frame)?;
+    encode_bounded_frame(&frame, "snapshot")
+}
+
+fn encode_diff_frame(
+    seq: u64,
+    snapshot: &SnapshotEnvelope,
+    changed_panes: Vec<PaneRecord>,
+    removed_pane_ids: Vec<String>,
+) -> Result<EncodedDaemonFrame> {
+    let frame = ipc::DaemonFrame::SnapshotDiff {
+        seq,
+        schema_version: snapshot.schema_version,
+        generated_at: snapshot.generated_at.clone(),
+        source: snapshot.source.clone(),
+        changed_panes,
+        removed_pane_ids,
+    };
+    encode_bounded_frame(&frame, "snapshot diff")
+}
+
+fn encode_bounded_frame(frame: &ipc::DaemonFrame, label: &str) -> Result<EncodedDaemonFrame> {
+    let encoded = ipc::encode_frame(frame)?;
     if encoded.len() > ipc::DAEMON_FRAME_MAX_BYTES {
         bail!(
-            "encoded snapshot frame was {} bytes, exceeding daemon frame limit of {} bytes",
+            "encoded {label} frame was {} bytes, exceeding daemon frame limit of {} bytes",
             encoded.len(),
             ipc::DAEMON_FRAME_MAX_BYTES
         );
     }
     Ok(Arc::<[u8]>::from(encoded))
+}
+
+/// One fan-out unit: the frame to enqueue when a subscriber's mailbox is empty
+/// (a diff, or the bootstrap full frame) plus a lazily-encoded absolute full
+/// frame used only when coalescing would otherwise drop an undelivered frame.
+#[derive(Clone)]
+pub(crate) struct DaemonBroadcast {
+    primary: EncodedDaemonFrame,
+    full: SharedFullFrame,
+}
+
+impl DaemonBroadcast {
+    fn new(primary: EncodedDaemonFrame, snapshot: Arc<SnapshotEnvelope>, seq: u64) -> Self {
+        Self {
+            primary,
+            full: SharedFullFrame::new(snapshot, seq),
+        }
+    }
+
+    /// A broadcast whose primary frame is already a full snapshot. Used for the
+    /// bootstrap publish, where the coalesce fallback and the primary coincide.
+    fn from_full(frame: EncodedDaemonFrame) -> Self {
+        Self {
+            primary: frame.clone(),
+            full: SharedFullFrame::from_encoded(frame),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_diff(
+        primary: EncodedDaemonFrame,
+        full_snapshot: SnapshotEnvelope,
+        seq: u64,
+    ) -> Self {
+        Self::new(primary, Arc::new(full_snapshot), seq)
+    }
+}
+
+/// The absolute full snapshot frame for a broadcast, encoded at most once and
+/// shared across every coalescing subscriber. `None` from `encoded` means the
+/// full frame exceeds the wire limit and no safe coalesced frame exists.
+#[derive(Clone)]
+struct SharedFullFrame {
+    inner: Arc<SharedFullFrameInner>,
+}
+
+struct SharedFullFrameInner {
+    source: SharedFullFrameSource,
+    cell: std::sync::OnceLock<Option<EncodedDaemonFrame>>,
+}
+
+enum SharedFullFrameSource {
+    // Not yet encoded; encode lazily from this snapshot at this seq.
+    Lazy {
+        snapshot: Arc<SnapshotEnvelope>,
+        seq: u64,
+    },
+    // Already a full frame (bootstrap): the cell is pre-seeded in `from_encoded`.
+    Ready,
+}
+
+impl SharedFullFrame {
+    fn new(snapshot: Arc<SnapshotEnvelope>, seq: u64) -> Self {
+        Self {
+            inner: Arc::new(SharedFullFrameInner {
+                source: SharedFullFrameSource::Lazy { snapshot, seq },
+                cell: std::sync::OnceLock::new(),
+            }),
+        }
+    }
+
+    fn from_encoded(frame: EncodedDaemonFrame) -> Self {
+        let cell = std::sync::OnceLock::new();
+        let _ = cell.set(Some(frame));
+        Self {
+            inner: Arc::new(SharedFullFrameInner {
+                source: SharedFullFrameSource::Ready,
+                cell,
+            }),
+        }
+    }
+
+    fn encoded(&self) -> Option<EncodedDaemonFrame> {
+        self.inner
+            .cell
+            .get_or_init(|| match &self.inner.source {
+                SharedFullFrameSource::Lazy { snapshot, seq } => {
+                    encode_snapshot_frame(snapshot, *seq).ok()
+                }
+                // Unreachable in practice: `Ready` pre-seeds the cell, so
+                // `get_or_init` never runs this arm.
+                SharedFullFrameSource::Ready => None,
+            })
+            .clone()
+    }
 }
 
 #[derive(Clone)]
@@ -886,13 +1074,33 @@ impl SubscriberMailbox {
         }
     }
 
-    pub(crate) fn enqueue(&self, frame: EncodedDaemonFrame) {
+    pub(crate) fn enqueue(&self, broadcast: DaemonBroadcast) {
         let (lock, condvar) = &*self.inner;
         let mut state = recover_lock(lock.lock());
         if state.closed {
             return;
         }
-        state.pending_frame = Some(frame);
+        if state.pending_frame.is_some() {
+            // A previous frame is still undelivered, so this enqueue coalesces
+            // over it. With diff frames that would silently and permanently
+            // diverge the slow subscriber (it never sees the dropped diff), so
+            // replace the whole pending slot with the absolute full snapshot
+            // instead — the subscriber re-syncs no matter which diffs it missed.
+            // The full frame is encoded at most once and shared across all
+            // coalescing subscribers.
+            match broadcast.full.encoded() {
+                Some(full) => state.pending_frame = Some(full),
+                None => {
+                    // The full frame exceeds the wire limit, so no safe coalesced
+                    // frame exists. Close the mailbox so the subscriber reconnects
+                    // and re-bootstraps rather than diverging.
+                    state.pending_frame = None;
+                    state.closed = true;
+                }
+            }
+        } else {
+            state.pending_frame = Some(broadcast.primary);
+        }
         condvar.notify_one();
     }
 

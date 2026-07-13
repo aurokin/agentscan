@@ -820,6 +820,54 @@ pub(super) fn snapshot_diff(
     diff
 }
 
+/// Builds the exact pane delta for a `snapshot_diff` wire frame: full
+/// `PaneRecord`s for every added-or-materially-changed pane, plus the ids of
+/// panes present in `previous` but gone from `current`.
+///
+/// Unlike [`snapshot_diff`] (a bounded, field-name summary for observability),
+/// this delta must be lossless — a subscriber upserts `changed` and drops
+/// `removed` to reconstruct `current`, so it is neither truncated nor
+/// field-filtered. Panes that differ only in volatile fields
+/// (`diagnostics.cache_origin`) are intentionally omitted via
+/// [`pane_is_materially_equal`]: the reconstructed snapshot stays *materially*
+/// equal to a fresh query, which is the daemon's equality contract, while the
+/// wire payload shrinks to genuinely-changed panes.
+pub(super) fn snapshot_wire_diff(
+    previous: &SnapshotEnvelope,
+    current: &SnapshotEnvelope,
+) -> (Vec<PaneRecord>, Vec<String>) {
+    let previous_by_id = previous
+        .panes
+        .iter()
+        .map(|pane| (pane.pane_id.as_str(), pane))
+        .collect::<HashMap<_, _>>();
+
+    let changed = current
+        .panes
+        .iter()
+        .filter(|pane| {
+            previous_by_id
+                .get(pane.pane_id.as_str())
+                .is_none_or(|previous_pane| !pane_is_materially_equal(previous_pane, pane))
+        })
+        .cloned()
+        .collect();
+
+    let current_ids = current
+        .panes
+        .iter()
+        .map(|pane| pane.pane_id.as_str())
+        .collect::<HashSet<_>>();
+    let removed = previous
+        .panes
+        .iter()
+        .filter(|pane| !current_ids.contains(pane.pane_id.as_str()))
+        .map(|pane| pane.pane_id.clone())
+        .collect();
+
+    (changed, removed)
+}
+
 fn push_bounded(items: &mut Vec<String>, item: String, truncated: &mut bool) {
     const MAX_DIFF_ITEMS: usize = 24;
     if items.len() >= MAX_DIFF_ITEMS {

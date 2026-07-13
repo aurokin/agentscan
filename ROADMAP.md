@@ -164,6 +164,18 @@ Implications:
   version, and requested mode
 - compatible socket clients receive `hello_ack`; protocol or schema mismatches
   receive an explicit shutdown frame without acknowledgment
+- the subscribe stream is diff-based: a one-shot `snapshot` query and each
+  subscriber bootstrap get a full `SnapshotEnvelope` frame carrying a monotonic
+  `seq`; subsequent publishes broadcast incremental `snapshot_diff` frames
+  (`seq`, envelope volatile fields, full `PaneRecord`s for added/changed panes,
+  ids for removed panes). Subscribers reconstruct locally and require contiguous
+  `seq`, forcing a reconnect on any gap. Wire protocol version `2` gates this;
+  mixing a v1/v2 binary as daemon/subscriber is a clean handshake rejection, not
+  a partial stream. Slow-subscriber mailbox coalescing upgrades a dropped diff to
+  an absolute full snapshot so a coalesced frame can never silently diverge a
+  subscriber. Diffs are a wire-transport optimization only: the `agentscan
+  subscribe` process reconstructs host-side and still emits full snapshot events,
+  so the `SnapshotEnvelope` shape and consumer contract are unchanged.
 - lifecycle `stop` is the exception to the data-contract boundary: it may
   terminate a protocol/schema-mismatched daemon from the persisted identity
   sidecar only after the sidecar socket path, socket peer PID, lifecycle lock,

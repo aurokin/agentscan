@@ -93,6 +93,31 @@ Use it when:
 - a developer wants to see whether the reconcile loop is correcting missed
   event-driven updates.
 
+## Subscribe Wire Protocol
+
+The daemon Unix-socket protocol (wire protocol version `2`) sends a full
+`SnapshotEnvelope` frame for a one-shot `snapshot` query and for each subscriber's
+bootstrap. Every full `snapshot` frame carries a monotonically increasing `seq`
+(per daemon socket-server instance). After bootstrap, the daemon broadcasts
+incremental `snapshot_diff` frames rather than re-encoding the whole snapshot on
+every material change: each diff carries the next `seq`, the envelope volatile
+fields (`schema_version`, `generated_at`, `source`), full `PaneRecord`s for
+added-or-changed panes, and the ids of removed panes. A subscriber reconstructs
+the current snapshot by applying each diff to its last snapshot and requires each
+diff's `seq` to be exactly one greater than the last; any gap, an unexpected
+`seq`, or an invalid reconstruction forces a reconnect (which re-bootstraps a
+fresh full snapshot). Receiving a full `snapshot` frame mid-stream (the mailbox
+coalesce fallback for a slow subscriber) is absolute and resets the expected
+`seq`.
+
+Because the protocol version is gated at handshake, mixing a v1 and v2 binary as
+daemon and subscriber is rejected cleanly: the version mismatch produces a
+`shutdown`/protocol-mismatch frame that the client surfaces as an
+incompatible-binary error rather than looping on unparseable frames. The `agentscan
+subscribe` process reconstructs diffs host-side and re-emits full
+`LiveClientEvent::Snapshot` JSON, so `subscribe --format json` consumers (TUI,
+desktop) still see only full `snapshot` event frames.
+
 ## Event-Driven Behavior And Reconcile Telemetry
 
 The daemon is event-driven first. It subscribes to tmux control-mode events and

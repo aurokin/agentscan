@@ -7,7 +7,14 @@ use serde::{Deserialize, Serialize};
 use super::*;
 
 pub(crate) const SOCKET_ENV_VAR: &str = "AGENTSCAN_SOCKET_PATH";
-pub(crate) const WIRE_PROTOCOL_VERSION: u32 = 1;
+// Bumped 1 -> 2 for the snapshot-diff broadcast protocol: full `snapshot` frames
+// now carry a `seq`, and a new `snapshot_diff` frame type is broadcast on every
+// post-bootstrap publish. Mixing a v1 and v2 binary as daemon/subscriber is a
+// hard incompatibility (a v1 subscriber cannot apply diffs, a v2 subscriber
+// cannot parse a v1 bootstrap), so the version gate rejects the handshake and the
+// client takes the incompatible-binary path instead of looping on unparseable
+// frames.
+pub(crate) const WIRE_PROTOCOL_VERSION: u32 = 2;
 pub(crate) const CLIENT_HELLO_MAX_BYTES: usize = 4 * 1024;
 pub(crate) const DAEMON_FRAME_MAX_BYTES: usize = 4 * 1024 * 1024;
 
@@ -106,7 +113,29 @@ pub(crate) enum DaemonFrame {
         snapshot_schema_version: u32,
     },
     Snapshot {
+        // Monotonically increasing per daemon socket-server instance. A
+        // subscriber records the bootstrap `snapshot`'s `seq` and requires each
+        // subsequent `snapshot_diff` to carry exactly `seq + 1`; any gap forces a
+        // reconnect + fresh bootstrap. A full `snapshot` frame is absolute, so
+        // receiving one mid-stream (bootstrap or coalesce-fallback) resets the
+        // subscriber's expected `seq` to this value.
+        seq: u64,
         snapshot: SnapshotEnvelope,
+    },
+    // Incremental update broadcast after bootstrap. Carries the envelope-level
+    // volatile fields plus full `PaneRecord`s for every added-or-changed pane and
+    // the ids of removed panes, so a subscriber reconstructs the current snapshot
+    // by upserting `changed_panes`, dropping `removed_pane_ids`, and adopting the
+    // envelope fields. It is only ever applied on top of `seq - 1`; see `Snapshot`.
+    SnapshotDiff {
+        seq: u64,
+        schema_version: u32,
+        generated_at: String,
+        source: SnapshotSource,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        changed_panes: Vec<PaneRecord>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        removed_pane_ids: Vec<String>,
     },
     Unavailable {
         reason: UnavailableReason,

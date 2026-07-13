@@ -69,6 +69,21 @@ fn bench_encode_snapshot_frame(c: &mut Criterion) {
     });
 }
 
+fn bench_encode_diff_frame(c: &mut Criterion) {
+    let rows =
+        app_bench::parse_pane_rows(TMUX_SNAPSHOT_FIXTURE).expect("fixture snapshot should parse");
+    let previous = app_bench::snapshot_from_pane_rows(rows);
+    // A one-pane status change: the common daemon tick the diff frame targets.
+    let current = app_bench::bench_snapshot_with_one_status_flip(&previous);
+
+    c.bench_function("encode_diff_frame/one_pane_change", |b| {
+        b.iter(|| {
+            app_bench::encode_diff_frame_bytes(&previous, &current)
+                .expect("fixture diff should encode")
+        })
+    });
+}
+
 fn bench_tui_render_rows(c: &mut Criterion) {
     let panes =
         app_bench::parse_pane_rows(TMUX_SNAPSHOT_FIXTURE).expect("fixture snapshot should parse");
@@ -87,6 +102,7 @@ criterion_group!(
     bench_control_event_output_firehose,
     bench_snapshots_materially_equal,
     bench_encode_snapshot_frame,
+    bench_encode_diff_frame,
     bench_tui_render_rows
 );
 criterion_main!(benches);
