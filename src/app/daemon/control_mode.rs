@@ -1061,15 +1061,22 @@ extern "C" fn daemon_shutdown_signal_handler(_signal: libc::c_int) {
 }
 
 pub(super) fn install_shutdown_signal_handlers() {
+    // SAFETY: the handler only does a relaxed atomic store, which is
+    // async-signal-safe. SA_RESTART is chosen deliberately: shutdown is observed
+    // by the accept thread's wake-fd and by the main loop's bounded
+    // `recv_timeout`, both of which re-check `DAEMON_SHUTDOWN_REQUESTED` on their
+    // own cadence, so no blocking syscall needs to be interrupted to make
+    // progress — and both raw `poll` loops already treat EINTR as a benign retry.
+    // Restarting also matches the semantics the previous `libc::signal` install
+    // had on the platforms we target.
     unsafe {
-        libc::signal(
-            libc::SIGTERM,
-            daemon_shutdown_signal_handler as *const () as usize,
-        );
-        libc::signal(
-            libc::SIGINT,
-            daemon_shutdown_signal_handler as *const () as usize,
-        );
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = daemon_shutdown_signal_handler as *const () as usize;
+        action.sa_flags = libc::SA_RESTART;
+        libc::sigemptyset(&mut action.sa_mask);
+        for signal in [libc::SIGTERM, libc::SIGINT] {
+            libc::sigaction(signal, &action, std::ptr::null_mut());
+        }
     }
 }
 

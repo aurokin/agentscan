@@ -15,7 +15,13 @@ pub(super) fn print_lifecycle_not_running(
     let _ = writeln!(out, "reason: {reason}");
 }
 
-#[derive(Serialize)]
+// Serde emits fields in declaration order and always emits `Option::None` as an
+// explicit `null` (no `skip_serializing_if`), so `daemon status --format json`
+// carries every key for both running and not-running daemons. That is a machine
+// contract pinned by `json_shape_tests`; keep the field order and null behavior
+// stable. `Default` (all-`None` / empty strings) is what makes the not-running
+// constructor a thin override instead of a hand-maintained all-`None` mirror.
+#[derive(Default, Serialize)]
 struct DaemonStatusJson {
     daemon_state: String,
     socket_path: String,
@@ -91,6 +97,9 @@ fn lifecycle_not_running_json(
     reason: &str,
     include_events: bool,
 ) -> DaemonStatusJson {
+    // Every telemetry/broker/identity field defaults to `None` (serialized as an
+    // explicit `null`); only the locally-known paths, the `not_running` state,
+    // the reason, and the events opt-in differ from `Default`.
     DaemonStatusJson {
         daemon_state: "not_running".to_string(),
         socket_path: socket_path.display().to_string(),
@@ -99,65 +108,8 @@ fn lifecycle_not_running_json(
         log_path: paths.log_path.display().to_string(),
         event_log_path: paths.event_log_path.display().to_string(),
         reason: Some(reason.to_string()),
-        pid: None,
-        daemon_start_time: None,
-        executable: None,
-        executable_canonical: None,
-        protocol_version: None,
-        snapshot_schema_version: None,
-        subscriber_count: None,
-        latest_snapshot_generated_at: None,
-        latest_snapshot_pane_count: None,
-        latest_snapshot_update_source: None,
-        latest_snapshot_update_detail: None,
-        latest_snapshot_update_duration_ms: None,
-        control_mode_broker_mode: None,
-        control_mode_broker_disabled_reason: None,
-        control_mode_broker_reconnect_count: None,
-        control_mode_broker_fallback_count: None,
-        control_mode_broker_subscriber_count: None,
-        control_mode_broker_primary_session_id: None,
-        control_mode_broker_subscriber_coverage_complete: None,
-        control_mode_broker_desired_subscriber_count: None,
-        control_mode_broker_active_subscriber_count: None,
-        control_mode_broker_missing_subscriber_session_ids: None,
-        control_mode_broker_dead_subscriber_count: None,
-        control_mode_broker_subscribers: None,
-        control_mode_broker_last_subscriber_reconcile_at: None,
-        control_mode_broker_next_subscriber_monitor_in_ms: None,
-        control_mode_broker_next_reconcile_in_ms: None,
-        control_event_refresh_count: None,
-        control_event_batch_count: None,
-        control_event_line_count: None,
-        control_event_output_line_count: None,
-        control_event_output_byte_count: None,
-        control_event_pane_count: None,
-        control_event_title_count: None,
-        control_event_window_count: None,
-        control_event_session_count: None,
-        control_event_resnapshot_count: None,
-        control_event_ignored_count: None,
-        reconcile_attempt_count: None,
-        reconcile_noop_count: None,
-        reconcile_changed_snapshot_count: None,
-        targeted_title_update_count: None,
-        targeted_pane_refresh_count: None,
-        targeted_scope_refresh_count: None,
-        full_snapshot_refresh_count: None,
-        targeted_refresh_fallback_to_full_count: None,
-        subscriber_monitor_count: None,
-        subscriber_start_count: None,
-        subscriber_reattach_count: None,
-        subscriber_attach_failure_count: None,
-        subscriber_exit_count: None,
-        broker_fallback_count: None,
-        pane_output_capture_attempt_count: None,
-        pane_output_capture_hit_count: None,
-        pane_output_capture_error_count: None,
-        latest_snapshot_observability: None,
         recent_events: include_events.then(Vec::new),
-        unavailable_reason: None,
-        message: None,
+        ..Default::default()
     }
 }
 
@@ -866,5 +818,152 @@ fn print_recent_observability_events(
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "<none>".to_string())
         );
+    }
+}
+
+#[cfg(test)]
+mod json_shape_tests {
+    use super::*;
+
+    fn sample_paths() -> LifecyclePaths {
+        LifecyclePaths::from_socket_path(Path::new("/run/agentscan/agentscan.sock"))
+    }
+
+    fn sample_status_frame() -> ipc::LifecycleStatusFrame {
+        ipc::LifecycleStatusFrame {
+            state: ipc::LifecycleDaemonState::Ready,
+            identity: ipc::DaemonIdentityFrame {
+                pid: 4242,
+                daemon_start_time: "2026-07-13T15:28:27.347477Z".to_string(),
+                executable: "/usr/local/bin/agentscan".to_string(),
+                executable_canonical: Some("/usr/local/bin/agentscan".to_string()),
+                socket_path: "/run/agentscan/agentscan.sock".to_string(),
+                protocol_version: 1,
+                snapshot_schema_version: 5,
+            },
+            subscriber_count: 3,
+            latest_snapshot_generated_at: Some("2026-07-13T22:37:48.177483Z".to_string()),
+            latest_snapshot_pane_count: Some(22),
+            latest_snapshot_update_source: Some("control_event".to_string()),
+            latest_snapshot_update_detail: Some("batch".to_string()),
+            latest_snapshot_update_duration_ms: Some(2),
+            control_mode_broker: Some(ipc::ControlModeBrokerStatusFrame {
+                mode: ipc::ControlModeBrokerMode::Active,
+                // `None` here locks the "emit explicit null" behavior for the
+                // broker sub-fields that are absent on the wire.
+                disabled_reason: None,
+                reconnect_count: 0,
+                fallback_count: Some(0),
+                subscriber_count: Some(5),
+                primary_session_id: Some("$1".to_string()),
+                subscriber_coverage_complete: Some(true),
+                desired_subscriber_count: Some(5),
+                active_subscriber_count: Some(5),
+                missing_subscriber_session_ids: Some(Vec::new()),
+                dead_subscriber_count: Some(0),
+                subscribers: Some(vec![ipc::ControlModeSubscriberStatusFrame {
+                    session_id: "$0".to_string(),
+                    pid: 9397,
+                    started_at: "2026-07-13T15:28:27.391299Z".to_string(),
+                    last_line_at: Some("2026-07-13T22:27:11.083411Z".to_string()),
+                    last_event_at: None,
+                    restart_count: 0,
+                    dead: false,
+                }]),
+                last_subscriber_reconcile_at: Some("2026-07-13T22:33:30.421384Z".to_string()),
+                next_subscriber_monitor_in_ms: Some(249),
+                next_reconcile_in_ms: Some(41921),
+            }),
+            runtime_telemetry: Some(ipc::RuntimeTelemetryFrame {
+                control_event_refresh_count: 40255,
+                control_event_batch_count: 40295,
+                control_event_line_count: 74739,
+                control_event_output_line_count: 0,
+                control_event_output_byte_count: 0,
+                control_event_pane_count: 74127,
+                control_event_title_count: 0,
+                control_event_window_count: 19,
+                control_event_session_count: 0,
+                control_event_resnapshot_count: 37,
+                control_event_ignored_count: 387,
+                reconcile_attempt_count: 161,
+                reconcile_noop_count: 1,
+                reconcile_changed_snapshot_count: 160,
+                targeted_title_update_count: 0,
+                targeted_pane_refresh_count: 74126,
+                targeted_scope_refresh_count: 18,
+                full_snapshot_refresh_count: 37,
+                targeted_refresh_fallback_to_full_count: 0,
+                subscriber_monitor_count: Some(98565),
+                subscriber_start_count: Some(5),
+                // `None` locks the "emit explicit null" behavior for optional
+                // telemetry counters that are present-but-unset.
+                subscriber_reattach_count: None,
+                subscriber_attach_failure_count: Some(0),
+                subscriber_exit_count: Some(0),
+                broker_fallback_count: 0,
+                pane_output_capture_attempt_count: 11,
+                pane_output_capture_hit_count: 5,
+                pane_output_capture_error_count: 0,
+            }),
+            latest_snapshot_observability: Some(ipc::SnapshotObservabilityFrame {
+                provider_known_count: 4,
+                provider_unknown_count: 18,
+                status_source_pane_metadata_count: 0,
+                status_source_tmux_title_count: 4,
+                status_source_pane_output_count: 0,
+                status_source_not_checked_count: 18,
+                proc_fallback_not_run_count: 1,
+                proc_fallback_skipped_count: 5,
+                proc_fallback_no_match_count: 13,
+                proc_fallback_error_count: 0,
+                proc_fallback_resolved_count: 3,
+                per_provider: std::collections::BTreeMap::new(),
+            }),
+            recent_events: vec![ipc::DaemonObservabilityEventFrame {
+                at: "2026-07-13T22:37:48.177483Z".to_string(),
+                source: "control_event".to_string(),
+                detail: Some("batch".to_string()),
+                refresh: "targeted".to_string(),
+                control_sources: Vec::new(),
+                control_lines: Vec::new(),
+                changed: true,
+                published: true,
+                duration_ms: Some(2),
+                diff: None,
+            }],
+            unavailable_reason: None,
+            message: None,
+        }
+    }
+
+    // Byte-for-byte golden of `daemon status --format json` for a running
+    // daemon. `daemon status` output is a stable machine contract; any change
+    // to field names, order, or null presence/absence must be intentional.
+    #[test]
+    fn running_status_json_is_byte_stable() {
+        let paths = sample_paths();
+        let status = sample_status_frame();
+        let json =
+            serde_json::to_string_pretty(&lifecycle_status_json(&paths, &status, true)).unwrap();
+        let expected = include_str!("testdata/daemon_status_running.json").trim_end();
+        assert_eq!(json, expected);
+    }
+
+    // Byte-for-byte golden of `daemon status --format json` for a not-running
+    // daemon: every frame-derived key must still be present as an explicit
+    // `null`.
+    #[test]
+    fn not_running_status_json_is_byte_stable() {
+        let paths = sample_paths();
+        let json = serde_json::to_string_pretty(&lifecycle_not_running_json(
+            Path::new("/run/agentscan/agentscan.sock"),
+            &paths,
+            "daemon socket not found",
+            true,
+        ))
+        .unwrap();
+        let expected = include_str!("testdata/daemon_status_not_running.json").trim_end();
+        assert_eq!(json, expected);
     }
 }

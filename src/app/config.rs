@@ -106,22 +106,93 @@ impl ConfigSource {
     }
 }
 
+// The config file is read and TOML-parsed at most once per resolution and the
+// parsed `FileConfig` is shared across every view derived from it. Fields stay
+// as raw `toml::Value` (validated lazily by the `resolve_*` derivers) rather
+// than being strongly typed at deserialize time: each view validates only the
+// keys it consumes, so `resolve_picker_config` must tolerate an invalid `icons`
+// value and `resolve_icon_config` must tolerate an invalid `picker_group_by`.
+// Eager serde typing would move those failures into the shared parse step and
+// break that per-view scoping.
+struct LoadedConfig {
+    config_path: Option<PathBuf>,
+    file_config: FileConfig,
+}
+
+impl LoadedConfig {
+    fn load(source: &ConfigSource) -> Result<Self> {
+        let (config_path, file_config) = load_file_config(source)?;
+        Ok(Self {
+            config_path,
+            file_config,
+        })
+    }
+
+    fn resolve_config(&self, source: &ConfigSource) -> Result<ResolvedConfig> {
+        let config_path = self.config_path.as_deref();
+        Ok(ResolvedConfig {
+            icons: resolve_icon_mode(source, &self.file_config, config_path)?,
+            picker_keys: resolve_picker_keys(&self.file_config, config_path)?,
+            picker_group_by: resolve_picker_group_by(&self.file_config, config_path)?,
+            config_path: self.config_path.clone(),
+        })
+    }
+
+    fn resolve_picker_config(&self) -> Result<ResolvedPickerConfig> {
+        let config_path = self.config_path.as_deref();
+        Ok(ResolvedPickerConfig {
+            picker_keys: resolve_picker_keys(&self.file_config, config_path)?,
+            picker_group_by: resolve_picker_group_by(&self.file_config, config_path)?,
+            config_path: self.config_path.clone(),
+        })
+    }
+
+    fn resolve_runtime_options(&self, source: &ConfigSource) -> Result<ResolvedRuntimeOptions> {
+        let config_path = self.config_path.as_deref();
+        Ok(ResolvedRuntimeOptions {
+            // Periodic reconcile is disabled by default; the event-driven path is
+            // authoritative and the connect/reconnect bootstrap still recovers
+            // ground truth. Set `disable_reconcile = false` to re-enable polling.
+            disable_reconcile: resolve_bool_option(
+                source.env_disable_reconcile.as_deref(),
+                self.file_config.disable_reconcile.as_ref(),
+                true,
+                "disable_reconcile",
+                config_path,
+            )?,
+            disable_proc_fallback: resolve_bool_option(
+                source.env_disable_proc_fallback.as_deref(),
+                self.file_config.disable_proc_fallback.as_ref(),
+                false,
+                "disable_proc_fallback",
+                config_path,
+            )?,
+            config_path: self.config_path.clone(),
+        })
+    }
+}
+
 pub(crate) fn resolve_config(cli: CliConfigOverrides) -> Result<ResolvedConfig> {
     resolve_config_from_source(&ConfigSource::from_env(cli))
 }
 
 pub(crate) fn resolve_config_from_source(source: &ConfigSource) -> Result<ResolvedConfig> {
-    let (config_path, file_config) = load_file_config(source)?;
-    let icons = resolve_icon_mode(source, &file_config, config_path.as_deref())?;
-    let picker_keys = resolve_picker_keys(&file_config, config_path.as_deref())?;
-    let picker_group_by = resolve_picker_group_by(&file_config, config_path.as_deref())?;
+    LoadedConfig::load(source)?.resolve_config(source)
+}
 
-    Ok(ResolvedConfig {
-        icons,
-        picker_keys,
-        picker_group_by,
-        config_path,
-    })
+/// Resolve the icon/picker config and the runtime toggles from a single load of
+/// the config file. Callers that need both views (e.g. `doctor`) use this
+/// instead of two independent resolvers so the file is read and parsed once.
+pub(crate) fn resolve_config_and_runtime_options(
+    cli: CliConfigOverrides,
+) -> Result<(ResolvedConfig, ResolvedRuntimeOptions)> {
+    let source = ConfigSource::from_env(cli);
+    let loaded = LoadedConfig::load(&source)?;
+    // Match the historical ordering: the icon/picker view is validated before
+    // the runtime toggles so the first failure reported is unchanged.
+    let config = loaded.resolve_config(&source)?;
+    let runtime = loaded.resolve_runtime_options(&source)?;
+    Ok((config, runtime))
 }
 
 pub(crate) fn resolve_icon_config(cli: CliConfigOverrides) -> Result<ResolvedIconConfig> {
@@ -147,15 +218,7 @@ pub(crate) fn resolve_picker_config() -> Result<ResolvedPickerConfig> {
 pub(crate) fn resolve_picker_config_from_source(
     source: &ConfigSource,
 ) -> Result<ResolvedPickerConfig> {
-    let (config_path, file_config) = load_file_config(source)?;
-    let picker_keys = resolve_picker_keys(&file_config, config_path.as_deref())?;
-    let picker_group_by = resolve_picker_group_by(&file_config, config_path.as_deref())?;
-
-    Ok(ResolvedPickerConfig {
-        picker_keys,
-        picker_group_by,
-        config_path,
-    })
+    LoadedConfig::load(source)?.resolve_picker_config()
 }
 
 pub(crate) fn resolve_runtime_options() -> Result<ResolvedRuntimeOptions> {
@@ -165,28 +228,7 @@ pub(crate) fn resolve_runtime_options() -> Result<ResolvedRuntimeOptions> {
 pub(crate) fn resolve_runtime_options_from_source(
     source: &ConfigSource,
 ) -> Result<ResolvedRuntimeOptions> {
-    let (config_path, file_config) = load_file_config(source)?;
-
-    Ok(ResolvedRuntimeOptions {
-        // Periodic reconcile is disabled by default; the event-driven path is
-        // authoritative and the connect/reconnect bootstrap still recovers
-        // ground truth. Set `disable_reconcile = false` to re-enable polling.
-        disable_reconcile: resolve_bool_option(
-            source.env_disable_reconcile.as_deref(),
-            file_config.disable_reconcile.as_ref(),
-            true,
-            "disable_reconcile",
-            config_path.as_deref(),
-        )?,
-        disable_proc_fallback: resolve_bool_option(
-            source.env_disable_proc_fallback.as_deref(),
-            file_config.disable_proc_fallback.as_ref(),
-            false,
-            "disable_proc_fallback",
-            config_path.as_deref(),
-        )?,
-        config_path,
-    })
+    LoadedConfig::load(source)?.resolve_runtime_options(source)
 }
 
 pub(crate) fn config_path(source: &ConfigSource) -> Option<PathBuf> {
