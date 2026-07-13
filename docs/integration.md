@@ -15,9 +15,11 @@ Machine-readable consumers should use:
   subscription events
 - `agentscan daemon status --format json` for daemon lifecycle, socket, and readiness checks
 - `agentscan providers --format json` for supported provider names, display
-  markers for all icon modes, marker codepoints, and aliases
+  markers for all icon modes, marker codepoints, and aliases, wrapped in a
+  versioned `{ "schema_version": 1, "providers": [...] }` envelope
 - `agentscan hotkeys --format json` for the shared picker display model used by
-  tmux binds, the terminal TUI, and desktop picker surfaces
+  tmux binds, the terminal TUI, and desktop picker surfaces, wrapped in a
+  versioned `{ "schema_version": 1, "rows": [...] }` envelope
 
 `agentscan tui` is interactive-only. It must not become a TUI-shaped JSON or TSV
 surface, and unsupported formatting requests must not become compatibility
@@ -123,7 +125,10 @@ desktop UI code. The default shared key order is:
 ```
 
 Use `agentscan hotkeys --format json` to render a picker outside the terminal
-TUI. Each row includes the assigned key, pane id, provider, status, display
+TUI. The output is a versioned envelope, `{ "schema_version": 1, "rows": [...] }`,
+mirroring how the snapshot wraps `panes`; consumers should validate
+`schema_version` (currently `1`) and read the row array from `rows`. Each row
+includes the assigned key, pane id, provider, status, display
 metadata, display label, structured location, location tag, and workspace
 context. Desktop surfaces should consume these rows directly, or use the
 returned `pane_id` with
@@ -166,6 +171,12 @@ frame as it is written. The stream starts with connection lifecycle frames such
 as `connecting`, then emits `snapshot` frames for the bootstrap and later daemon
 updates. Terminal-adjacent tools and the desktop app should consume this stream
 instead of connecting to the daemon Unix socket directly.
+
+Each `snapshot` frame carries both the `snapshot` envelope and a `rows` array —
+the same picker rows `agentscan hotkeys --format json` returns, built on the
+tmux-owning host with live focus and client resolution. Consumers render the
+picker straight from the frame's `rows` and do not need a separate
+`agentscan hotkeys` call per update.
 
 The stream is designed to be transport-neutral. Local consumers can spawn
 `agentscan subscribe --format json`; remote consumers can run the same command

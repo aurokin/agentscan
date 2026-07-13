@@ -41,6 +41,12 @@ render and activate the returned `row.key` values from
 because users can customize `picker_keys` and `picker_group_by` in the host
 `agentscan` config.
 
+`agentscan hotkeys --format json` returns a versioned envelope,
+`{ "schema_version": 1, "rows": [...] }` (like the snapshot's `panes` wrapper).
+Clients validate `schema_version` and read rows from `rows`. The same row shape
+also rides inline on each subscribe `snapshot` frame (see Live State), so a
+client with a live subscription never needs a separate `hotkeys` call per update.
+
 When picker rows include `workspace`, clients should treat `workspace.id` as the
 grouping identity and `workspace.label` as display text. Labels are intentionally
 short and may collide across unrelated repositories or folders; `workspace.id`
@@ -70,9 +76,14 @@ and still shows/focuses the picker.
 The desktop app keeps one supervised `agentscan subscribe --format json`
 process per configured (open) source for live state, local and remote
 subscriptions streaming concurrently (the keyed multi-source model recorded in
-`ROADMAP.md`). Snapshot frames trigger a picker-row refresh through
-`agentscan hotkeys --format json`, preserving the shared CLI picker contract
-instead of reimplementing key assignment or display shaping in desktop code.
+`ROADMAP.md`). Each `snapshot` frame carries its picker `rows` inline — the same
+rows `agentscan hotkeys --format json` returns, assembled on the tmux-owning host
+with live focus and client resolution — so the client renders directly from the
+frame. This preserves the shared CLI picker contract (no key assignment or
+display shaping reimplemented in desktop code) while avoiding a second full tmux
+scan and SSH round-trip per update. The desktop still calls
+`agentscan hotkeys --format json` for the one-shot initial picker load before a
+subscription is established.
 
 The subscribe-frame contract is intentionally **tolerant of additive frame
 types**: a frame whose `type` is unknown to the client is ignored (a no-op), so a
@@ -80,6 +91,9 @@ newer daemon can introduce frame types without breaking the live view on an olde
 desktop build. Only a *known* `type` with a malformed payload, or a line that is
 not valid JSON, is a protocol error that tears the subscription down. Clients
 should follow the same rule rather than adding a dedicated handler per frame type.
+Because `rows` is a required field of the `snapshot` frame, a host too old to
+emit it produces a malformed known frame that reconnects rather than rendering an
+empty picker; the desktop and host `agentscan` are expected to move together.
 
 When the subscription exits unexpectedly, the UI keeps the last successful
 snapshot visible while reconnecting and uses:
@@ -126,11 +140,12 @@ Multiple-client semantics (we optimize for one attached client):
   so clients should not move the cursor rather than guess.
 
 `is_focused` resolution is best-effort: any tmux error degrades to "no focused
-pane" and never fails the picker. It re-resolves on every `hotkeys` call, so it
-follows focus live as snapshot frames trigger picker-row refreshes. Successful
-focus actions emit a best-effort daemon client event after tmux confirms the
-switch; the daemon re-reads tmux and republishes a snapshot so this refresh does
-not have to wait for the next tmux notification.
+pane" and never fails the picker. It re-resolves whenever picker rows are built —
+on every `hotkeys` call and on every subscribe `snapshot` frame, since the host
+rebuilds the frame's `rows` from live `list-clients` state — so it follows focus
+live. Successful focus actions emit a best-effort daemon client event after tmux
+confirms the switch; the daemon re-reads tmux and republishes a snapshot so this
+refresh does not have to wait for the next tmux notification.
 
 Each row also carries `attached_client_count`: the count of *interactive* clients
 attached to the tmux server, echoed on every row because the picker output is a

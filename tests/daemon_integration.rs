@@ -1721,10 +1721,11 @@ fn hotkeys_json_exposes_current_picker_assignments() -> Result<()> {
     harness.wait_for_daemon_pane(&mut daemon, &split_pane_id, |_| true)?;
 
     let stdout = harness.agentscan_output(["hotkeys", "--format", "json"])?;
-    let rows: Value = serde_json::from_str(&stdout).context("hotkeys output should be JSON")?;
-    let rows = rows
+    let envelope: Value = serde_json::from_str(&stdout).context("hotkeys output should be JSON")?;
+    assert_eq!(envelope["schema_version"], 1);
+    let rows = envelope["rows"]
         .as_array()
-        .context("hotkeys output should be an array")?;
+        .context("hotkeys envelope should carry a `rows` array")?;
 
     assert_eq!(rows[0]["key"], "1");
     assert_eq!(rows[0]["pane_id"], root_pane_id);

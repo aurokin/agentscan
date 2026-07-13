@@ -29,6 +29,23 @@ pub(super) fn emit_snapshot(
     }
 }
 
+/// Versioned envelope for the `providers --format json` output. Wraps the
+/// provider array the way [`SnapshotEnvelope`] wraps `panes`, so a field change
+/// is a versioned break instead of a silent one for machine consumers.
+#[derive(Serialize)]
+struct ProvidersEnvelope<'a> {
+    schema_version: u32,
+    providers: &'a [ProviderSummary],
+}
+
+/// Versioned envelope for the `hotkeys --format json` output. The desktop shell
+/// consumes these rows, so the envelope makes any row-shape change explicit.
+#[derive(Serialize)]
+struct PickerRowsEnvelope<'a> {
+    schema_version: u32,
+    rows: &'a [picker::PickerRow],
+}
+
 pub(super) fn emit_providers(
     providers: &[ProviderSummary],
     format: OutputFormat,
@@ -36,14 +53,20 @@ pub(super) fn emit_providers(
 ) -> Result<()> {
     match format {
         OutputFormat::Text => print_providers_text(providers, icon_mode),
-        OutputFormat::Json => print_json(providers),
+        OutputFormat::Json => print_json(&ProvidersEnvelope {
+            schema_version: PROVIDERS_SCHEMA_VERSION,
+            providers,
+        }),
     }
 }
 
 pub(super) fn emit_picker_rows(rows: &[picker::PickerRow], format: OutputFormat) -> Result<()> {
     match format {
         OutputFormat::Text => print_picker_rows_text(rows),
-        OutputFormat::Json => print_json(rows),
+        OutputFormat::Json => print_json(&PickerRowsEnvelope {
+            schema_version: PICKER_ROWS_SCHEMA_VERSION,
+            rows,
+        }),
     }
 }
 

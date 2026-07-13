@@ -13,11 +13,13 @@ fn live_client_events_serialize_to_stream_contract_shape() {
         ),
         (
             LiveClientEvent::Snapshot {
-                snapshot: snapshot.clone(),
+                snapshot: Box::new(snapshot.clone()),
+                rows: Vec::new(),
             },
             serde_json::json!({
                 "type": "snapshot",
                 "snapshot": snapshot,
+                "rows": [],
             }),
         ),
         (
