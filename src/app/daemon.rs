@@ -1,6 +1,7 @@
 use super::*;
 use std::collections::{HashMap, VecDeque};
 use std::fs::File;
+// Re-exported to the `daemon::lifecycle` submodules via their `use super::*`.
 use std::fs::OpenOptions;
 use std::io::Read;
 use std::os::fd::AsRawFd;
@@ -476,6 +477,10 @@ struct DaemonEventTrace {
     path: PathBuf,
     limit: usize,
     written_since_truncate: usize,
+    // The trace is written by the single daemon loop, so the open handle is held
+    // across events and only reopened on rotation. Sequential writes to a
+    // `File::create` handle advance the cursor, so this appends without O_APPEND.
+    file: File,
 }
 
 impl DaemonEventTrace {
@@ -484,13 +489,16 @@ impl DaemonEventTrace {
             return None;
         }
         let path = socket_path.with_extension("sock.events.jsonl");
-        if let Err(error) = File::create(&path) {
-            eprintln!(
-                "agentscan: failed to initialize daemon event trace {}: {error}",
-                path.display()
-            );
-            return None;
-        }
+        let file = match File::create(&path) {
+            Ok(file) => file,
+            Err(error) => {
+                eprintln!(
+                    "agentscan: failed to initialize daemon event trace {}: {error}",
+                    path.display()
+                );
+                return None;
+            }
+        };
         Some(Self {
             path,
             limit: env::var(TRACE_EVENT_LIMIT_ENV_VAR)
@@ -499,29 +507,26 @@ impl DaemonEventTrace {
                 .filter(|limit| *limit > 0)
                 .unwrap_or(DEFAULT_TRACE_EVENT_LIMIT),
             written_since_truncate: 0,
+            file,
         })
     }
 
     fn write(&mut self, event: &ipc::DaemonObservabilityEventFrame) {
         if self.written_since_truncate >= self.limit {
-            if let Err(error) = File::create(&self.path) {
-                eprintln!(
-                    "agentscan: failed to rotate daemon event trace {}: {error}",
-                    self.path.display()
-                );
-                return;
+            match File::create(&self.path) {
+                Ok(file) => self.file = file,
+                Err(error) => {
+                    eprintln!(
+                        "agentscan: failed to rotate daemon event trace {}: {error}",
+                        self.path.display()
+                    );
+                    return;
+                }
             }
             self.written_since_truncate = 0;
         }
 
-        let Ok(mut file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
-        else {
-            return;
-        };
-        if serde_json::to_writer(&mut file, event).is_ok() && writeln!(file).is_ok() {
+        if serde_json::to_writer(&mut self.file, event).is_ok() && writeln!(self.file).is_ok() {
             self.written_since_truncate = self.written_since_truncate.saturating_add(1);
         }
     }
@@ -1205,7 +1210,7 @@ impl<S: StartupActions> DaemonRuntime<S> {
             control_lines: observability.control_lines,
             changed,
             published,
-            duration_ms: Some(elapsed_millis_u64(duration)),
+            duration_ms: Some(duration_millis_u64(duration)),
             diff: previous_snapshot
                 .and_then(|previous| changed.then(|| snapshot_diff(previous, current_snapshot))),
         };
@@ -1818,12 +1823,12 @@ fn env_os_value_enabled(value: &std::ffi::OsStr) -> bool {
         )
 }
 
-fn elapsed_millis_u64(duration: Duration) -> u64 {
+pub(super) fn duration_millis_u64(duration: Duration) -> u64 {
     duration.as_millis().try_into().unwrap_or(u64::MAX)
 }
 
 fn duration_until_millis(deadline: Instant) -> u64 {
-    elapsed_millis_u64(deadline.saturating_duration_since(Instant::now()))
+    duration_millis_u64(deadline.saturating_duration_since(Instant::now()))
 }
 
 #[cfg(test)]

@@ -330,17 +330,11 @@ impl SnapshotPublishContext {
         SnapshotUpdateTelemetry {
             source: self.source,
             detail: self.detail.clone(),
-            duration_ms: self.started_at.map(elapsed_millis_u64),
+            duration_ms: self
+                .started_at
+                .map(|started_at| super::duration_millis_u64(started_at.elapsed())),
         }
     }
-}
-
-fn elapsed_millis_u64(started_at: Instant) -> u64 {
-    started_at
-        .elapsed()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
 }
 
 pub(super) struct PreparedSnapshot {
