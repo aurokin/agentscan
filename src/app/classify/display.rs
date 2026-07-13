@@ -169,20 +169,11 @@ fn infer_activity_label(provider: Option<Provider>, label: &str) -> Option<Strin
         return None;
     }
 
-    match provider {
-        Some(Provider::Codex) => Some(label.to_string()),
-        Some(Provider::Claude)
-        | Some(Provider::Aider)
-        | Some(Provider::Gemini)
-        | Some(Provider::Opencode)
-        | Some(Provider::Copilot)
-        | Some(Provider::CursorCli)
-        | Some(Provider::Pi)
-        | Some(Provider::Grok)
-        | Some(Provider::Hermes)
-        | Some(Provider::Droid) => Some(label.to_string()),
-        _ => None,
-    }
+    // Every known provider surfaces the label as its activity once the generic
+    // and status-only guards above have fired; only an unresolved provider
+    // (`None`) yields no activity label. Expressing that directly keeps a new
+    // `Provider` variant from silently defaulting to no activity label.
+    provider.map(|_| label.to_string())
 }
 
 fn is_generic_provider_label(provider: Option<Provider>, label: &str) -> bool {
