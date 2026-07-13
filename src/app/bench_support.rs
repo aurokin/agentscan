@@ -71,6 +71,24 @@ pub fn encode_snapshot_frame_bytes(snapshot: &BenchSnapshot) -> Result<usize> {
     daemon::bench_encode_snapshot_frame_bytes(&snapshot.0)
 }
 
+pub fn encode_diff_frame_bytes(previous: &BenchSnapshot, current: &BenchSnapshot) -> Result<usize> {
+    daemon::bench_encode_diff_frame_bytes(&previous.0, &current.0)
+}
+
+/// Derives a `current` snapshot from `previous` by flipping one pane's status,
+/// the one-pane-change case a `snapshot_diff` frame is meant to make cheap.
+pub fn bench_snapshot_with_one_status_flip(snapshot: &BenchSnapshot) -> BenchSnapshot {
+    let mut next = snapshot.0.clone();
+    if let Some(pane) = next.panes.first_mut() {
+        pane.status.kind = match pane.status.kind {
+            StatusKind::Busy => StatusKind::Idle,
+            _ => StatusKind::Busy,
+        };
+    }
+    next.generated_at = "2026-07-13T00:00:01Z".to_string();
+    BenchSnapshot(next)
+}
+
 #[doc(hidden)]
 pub fn daemon_protocol_version_for_tests() -> u32 {
     ipc::WIRE_PROTOCOL_VERSION

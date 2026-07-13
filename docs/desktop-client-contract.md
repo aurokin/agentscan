@@ -85,6 +85,15 @@ scan and SSH round-trip per update. The desktop still calls
 `agentscan hotkeys --format json` for the one-shot initial picker load before a
 subscription is established.
 
+The desktop consumes the `agentscan subscribe --format json` **event stream**,
+not the daemon's raw Unix-socket wire frames. The daemon↔subscribe-client wire
+was changed to broadcast incremental `snapshot_diff` frames after the bootstrap
+full snapshot, but reconstruction happens host-side inside the `agentscan
+subscribe` process: it applies each diff and re-emits a complete
+`LiveClientEvent::Snapshot` (with `rows`) per update. Desktop consumers therefore
+still see only full `snapshot` event frames and need no changes for the diff
+protocol; the diffs are invisible above the subscribe process boundary.
+
 The subscribe-frame contract is intentionally **tolerant of additive frame
 types**: a frame whose `type` is unknown to the client is ignored (a no-op), so a
 newer daemon can introduce frame types without breaking the live view on an older

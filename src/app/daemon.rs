@@ -88,13 +88,13 @@ pub(crate) use refresh::{
 use snapshot_store::SnapshotStore;
 pub(crate) use socket_server::DaemonSocketState;
 use socket_server::bench_encode_snapshot_frame_len;
-use socket_server::{
-    DaemonSocketServer, DaemonSocketServerHandle, PreparedSnapshot, SnapshotPublishContext,
-};
 #[cfg(test)]
 pub(crate) use socket_server::{
-    SubscriberMailbox, handle_daemon_socket_client, is_transient_accept_error, refuse_server_busy,
-    test_recv_client_event,
+    DaemonBroadcast, SubscriberMailbox, handle_daemon_socket_client, is_transient_accept_error,
+    refuse_server_busy, test_recv_client_event,
+};
+use socket_server::{
+    DaemonSocketServer, DaemonSocketServerHandle, PreparedSnapshot, SnapshotPublishContext,
 };
 
 const CONTROL_MODE_ACTIVE_RECONCILE_INTERVAL: Duration = Duration::from_secs(30);
@@ -1854,6 +1854,13 @@ pub(crate) fn bench_snapshots_are_materially_equal(
 
 pub(crate) fn bench_encode_snapshot_frame_bytes(snapshot: &SnapshotEnvelope) -> Result<usize> {
     bench_encode_snapshot_frame_len(snapshot)
+}
+
+pub(crate) fn bench_encode_diff_frame_bytes(
+    previous: &SnapshotEnvelope,
+    current: &SnapshotEnvelope,
+) -> Result<usize> {
+    socket_server::bench_encode_diff_frame_len(previous, current)
 }
 
 #[cfg(test)]

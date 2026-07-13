@@ -16,12 +16,23 @@ fn empty_socket_snapshot(generated_at: &str) -> SnapshotEnvelope {
     }
 }
 
-fn encoded_snapshot_frame(snapshot: &SnapshotEnvelope) -> daemon::EncodedDaemonFrame {
+fn encoded_snapshot_frame(seq: u64, snapshot: &SnapshotEnvelope) -> daemon::EncodedDaemonFrame {
     let encoded = ipc::encode_frame(&ipc::DaemonFrame::Snapshot {
+        seq,
         snapshot: snapshot.clone(),
     })
     .expect("snapshot frame should encode");
     std::sync::Arc::<[u8]>::from(encoded)
+}
+
+/// Builds a `snapshot_diff` fan-out broadcast whose primary is the given diff
+/// frame and whose coalesce fallback is a full snapshot at `seq`.
+fn diff_broadcast(
+    primary: daemon::EncodedDaemonFrame,
+    full_snapshot: &SnapshotEnvelope,
+    seq: u64,
+) -> daemon::DaemonBroadcast {
+    daemon::DaemonBroadcast::test_diff(primary, full_snapshot.clone(), seq)
 }
 
 fn socket_hello(mode: ipc::ClientMode) -> ipc::ClientFrame {
@@ -145,12 +156,13 @@ fn open_ready_subscriber(
             snapshot_schema_version: CACHE_SCHEMA_VERSION,
         }
     );
-    assert_eq!(
-        subscriber.read_frame(),
-        ipc::DaemonFrame::Snapshot {
-            snapshot: expected_snapshot
+    match subscriber.read_frame() {
+        ipc::DaemonFrame::Snapshot { seq, snapshot } => {
+            assert_eq!(seq, 1, "bootstrap snapshot should carry the initial seq");
+            assert_eq!(snapshot, expected_snapshot);
         }
-    );
+        other => panic!("expected bootstrap snapshot frame, got {other:?}"),
+    }
     subscriber
 }
 
@@ -436,7 +448,7 @@ fn daemon_socket_snapshot_client_receives_ack_snapshot_and_eof() {
                 protocol_version: ipc::WIRE_PROTOCOL_VERSION,
                 snapshot_schema_version: CACHE_SCHEMA_VERSION,
             },
-            ipc::DaemonFrame::Snapshot { snapshot },
+            ipc::DaemonFrame::Snapshot { seq: 1, snapshot },
         ]
     );
 }
@@ -939,10 +951,27 @@ fn daemon_socket_subscribe_client_receives_bootstrap_and_update() {
     let updated = empty_socket_snapshot("2026-05-03T00:00:01Z");
     assert!(state.publish_later_snapshot(updated.clone()));
 
-    assert_eq!(
-        subscriber.read_frame(),
-        ipc::DaemonFrame::Snapshot { snapshot: updated }
-    );
+    // Post-bootstrap publishes broadcast an incremental diff, not a full frame:
+    // the two empty snapshots differ only in the envelope-level `generated_at`, so
+    // the diff carries no pane changes but advances the seq to 2.
+    match subscriber.read_frame() {
+        ipc::DaemonFrame::SnapshotDiff {
+            seq,
+            schema_version,
+            generated_at,
+            source,
+            changed_panes,
+            removed_pane_ids,
+        } => {
+            assert_eq!(seq, 2);
+            assert_eq!(schema_version, updated.schema_version);
+            assert_eq!(generated_at, updated.generated_at);
+            assert_eq!(source, updated.source);
+            assert!(changed_panes.is_empty());
+            assert!(removed_pane_ids.is_empty());
+        }
+        other => panic!("expected snapshot diff frame, got {other:?}"),
+    }
 }
 
 #[test]
@@ -1002,29 +1031,54 @@ fn daemon_socket_oversized_later_snapshot_preserves_last_good_frame() {
                 protocol_version: ipc::WIRE_PROTOCOL_VERSION,
                 snapshot_schema_version: CACHE_SCHEMA_VERSION,
             },
-            ipc::DaemonFrame::Snapshot { snapshot: initial },
+            ipc::DaemonFrame::Snapshot { seq: 1, snapshot: initial },
         ]
     );
 }
 
 #[test]
-fn daemon_socket_subscriber_mailbox_is_latest_wins() {
+fn daemon_socket_subscriber_mailbox_single_enqueue_delivers_primary() {
     let mailbox = daemon::SubscriberMailbox::new();
-    let older = encoded_snapshot_frame(&empty_socket_snapshot("2026-05-03T00:00:00Z"));
-    let newer = encoded_snapshot_frame(&empty_socket_snapshot("2026-05-03T00:00:01Z"));
-
-    mailbox.enqueue(older);
-    mailbox.enqueue(newer.clone());
+    let snapshot = empty_socket_snapshot("2026-05-03T00:00:01Z");
+    // A diff primary that the mailbox delivers verbatim when nothing is pending.
+    let diff_primary = encoded_snapshot_frame(2, &snapshot);
+    mailbox.enqueue(diff_broadcast(diff_primary.clone(), &snapshot, 2));
 
     assert_eq!(
         mailbox
             .try_take_pending()
             .expect("mailbox should have pending frame")
             .as_ref(),
-        newer.as_ref()
+        diff_primary.as_ref()
     );
     mailbox.close();
     assert!(mailbox.is_closed());
+}
+
+#[test]
+fn daemon_socket_subscriber_mailbox_coalesce_upgrades_to_full_snapshot() {
+    let mailbox = daemon::SubscriberMailbox::new();
+    let first = empty_socket_snapshot("2026-05-03T00:00:01Z");
+    let second = empty_socket_snapshot("2026-05-03T00:00:02Z");
+
+    // A slow subscriber that never drained the first diff: coalescing the second
+    // enqueue over it must NOT silently drop a diff (that would diverge). Instead
+    // the mailbox replaces the whole pending slot with the second broadcast's
+    // absolute full snapshot, so the subscriber re-syncs regardless.
+    mailbox.enqueue(diff_broadcast(encoded_snapshot_frame(2, &first), &first, 2));
+    mailbox.enqueue(diff_broadcast(encoded_snapshot_frame(3, &second), &second, 3));
+
+    let pending = mailbox
+        .try_take_pending()
+        .expect("mailbox should have pending frame");
+    let frame = ipc::decode_daemon_frame(&pending).expect("pending frame should decode");
+    match frame {
+        ipc::DaemonFrame::Snapshot { seq, snapshot } => {
+            assert_eq!(seq, 3, "coalesced frame should be the latest full snapshot");
+            assert_eq!(snapshot, second);
+        }
+        other => panic!("expected coalesced full snapshot frame, got {other:?}"),
+    }
 }
 
 #[test]
@@ -1154,12 +1208,24 @@ fn daemon_socket_oversized_update_is_skipped_for_subscribers() {
 
     let next_good = empty_socket_snapshot("2026-05-03T00:00:02Z");
     assert!(state.publish_later_snapshot(next_good.clone()));
-    assert_eq!(
-        subscriber.read_frame(),
-        ipc::DaemonFrame::Snapshot {
-            snapshot: next_good
+    // The oversized publish was skipped (no frame enqueued and seq unchanged), so
+    // the next good publish is the subscriber's first post-bootstrap frame: a diff
+    // at seq 2 carrying the new envelope fields.
+    match subscriber.read_frame() {
+        ipc::DaemonFrame::SnapshotDiff {
+            seq,
+            generated_at,
+            changed_panes,
+            removed_pane_ids,
+            ..
+        } => {
+            assert_eq!(seq, 2);
+            assert_eq!(generated_at, next_good.generated_at);
+            assert!(changed_panes.is_empty());
+            assert!(removed_pane_ids.is_empty());
         }
-    );
+        other => panic!("expected snapshot diff frame, got {other:?}"),
+    }
 }
 
 #[test]
@@ -1331,7 +1397,7 @@ fn daemon_socket_client_handler_works_over_real_unix_socket_path() {
                 protocol_version: ipc::WIRE_PROTOCOL_VERSION,
                 snapshot_schema_version: CACHE_SCHEMA_VERSION,
             },
-            ipc::DaemonFrame::Snapshot { snapshot },
+            ipc::DaemonFrame::Snapshot { seq: 1, snapshot },
         ]
     );
 }
@@ -1369,7 +1435,7 @@ fn daemon_socket_client_handler_waits_on_nonblocking_accepted_stream() {
                 protocol_version: ipc::WIRE_PROTOCOL_VERSION,
                 snapshot_schema_version: CACHE_SCHEMA_VERSION,
             },
-            ipc::DaemonFrame::Snapshot { snapshot },
+            ipc::DaemonFrame::Snapshot { seq: 1, snapshot },
         ]
     );
 }
@@ -1384,6 +1450,7 @@ fn daemon_snapshot_helper_reads_ready_socket() {
         vec![vec![
             hello_ack_frame(),
             ipc::DaemonFrame::Snapshot {
+                seq: 1,
                 snapshot: snapshot.clone(),
             },
         ]],
@@ -1415,6 +1482,7 @@ fn daemon_snapshot_helper_retries_not_ready_then_succeeds() {
             vec![
                 hello_ack_frame(),
                 ipc::DaemonFrame::Snapshot {
+                    seq: 1,
                     snapshot: snapshot.clone(),
                 },
             ],
@@ -1524,7 +1592,7 @@ fn daemon_snapshot_helper_rejects_incompatible_hello_ack() {
                 protocol_version: ipc::WIRE_PROTOCOL_VERSION + 1,
                 snapshot_schema_version: CACHE_SCHEMA_VERSION,
             },
-            ipc::DaemonFrame::Snapshot { snapshot },
+            ipc::DaemonFrame::Snapshot { seq: 1, snapshot },
         ]],
     );
 
@@ -1550,7 +1618,7 @@ fn daemon_snapshot_helper_rejects_invalid_snapshot_schema() {
         &socket_path,
         vec![vec![
             hello_ack_frame(),
-            ipc::DaemonFrame::Snapshot { snapshot },
+            ipc::DaemonFrame::Snapshot { seq: 1, snapshot },
         ]],
     );
 
