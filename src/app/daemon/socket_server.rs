@@ -645,6 +645,20 @@ impl DaemonSocketState {
         self.lock().recent_events.len()
     }
 
+    /// Poison the state mutex by panicking while holding it, mimicking a
+    /// handler thread that panics mid-critical-section. Used to prove that
+    /// subsequent `lock()` calls still recover instead of propagating.
+    #[cfg(test)]
+    pub(crate) fn test_poison_lock(&self) {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = self
+                .inner
+                .lock()
+                .expect("acquire daemon socket state lock to poison it");
+            panic!("intentionally poisoning daemon socket state lock");
+        }));
+    }
+
     #[cfg(test)]
     pub(crate) fn test_install_client_event_sender(
         &self,
@@ -655,9 +669,12 @@ impl DaemonSocketState {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, DaemonSocketStateInner> {
+        // Recover from a poisoned lock instead of propagating the panic: a
+        // single handler thread panicking while holding this mutex must not
+        // permanently deafen the long-running daemon.
         self.inner
             .lock()
-            .expect("daemon socket state lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -776,6 +793,13 @@ struct SubscriberMailboxState {
     closed: bool,
 }
 
+/// Recover a lock guard from a poisoned mutex/condvar result instead of
+/// panicking. A handler thread panicking while holding a subscriber mailbox
+/// lock must not permanently wedge fan-out for the long-running daemon.
+fn recover_lock<T>(result: std::sync::LockResult<T>) -> T {
+    result.unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 impl SubscriberMailbox {
     pub(crate) fn new() -> Self {
         Self {
@@ -791,7 +815,7 @@ impl SubscriberMailbox {
 
     pub(crate) fn enqueue(&self, frame: EncodedDaemonFrame) {
         let (lock, condvar) = &*self.inner;
-        let mut state = lock.lock().expect("subscriber mailbox lock poisoned");
+        let mut state = recover_lock(lock.lock());
         if state.closed {
             return;
         }
@@ -801,7 +825,7 @@ impl SubscriberMailbox {
 
     pub(crate) fn close(&self) {
         let (lock, condvar) = &*self.inner;
-        let mut state = lock.lock().expect("subscriber mailbox lock poisoned");
+        let mut state = recover_lock(lock.lock());
         state.closed = true;
         state.pending_frame = None;
         condvar.notify_all();
@@ -809,7 +833,7 @@ impl SubscriberMailbox {
 
     pub(crate) fn close_with_frame(&self, frame: EncodedDaemonFrame) {
         let (lock, condvar) = &*self.inner;
-        let mut state = lock.lock().expect("subscriber mailbox lock poisoned");
+        let mut state = recover_lock(lock.lock());
         state.pending_frame = Some(frame);
         state.closed = true;
         condvar.notify_all();
@@ -817,7 +841,7 @@ impl SubscriberMailbox {
 
     pub(crate) fn recv(&self) -> Option<EncodedDaemonFrame> {
         let (lock, condvar) = &*self.inner;
-        let mut state = lock.lock().expect("subscriber mailbox lock poisoned");
+        let mut state = recover_lock(lock.lock());
         loop {
             if let Some(frame) = state.pending_frame.take() {
                 return Some(frame);
@@ -825,27 +849,20 @@ impl SubscriberMailbox {
             if state.closed {
                 return None;
             }
-            state = condvar
-                .wait(state)
-                .expect("subscriber mailbox lock poisoned while waiting");
+            state = recover_lock(condvar.wait(state));
         }
     }
 
     #[cfg(test)]
     pub(crate) fn try_take_pending(&self) -> Option<EncodedDaemonFrame> {
         let (lock, _) = &*self.inner;
-        lock.lock()
-            .expect("subscriber mailbox lock poisoned")
-            .pending_frame
-            .take()
+        recover_lock(lock.lock()).pending_frame.take()
     }
 
     #[cfg(test)]
     pub(crate) fn is_closed(&self) -> bool {
         let (lock, _) = &*self.inner;
-        lock.lock()
-            .expect("subscriber mailbox lock poisoned")
-            .closed
+        recover_lock(lock.lock()).closed
     }
 }
 
