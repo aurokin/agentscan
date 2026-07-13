@@ -2,11 +2,58 @@
 
 ## Unreleased
 
+### Added
+
+- Added snapshot diff frames to the daemon wire protocol (now v2): subscribers
+  bootstrap with a full snapshot, then receive sequence-numbered per-pane diffs,
+  reconnecting on any sequence gap. Slow-subscriber coalescing upgrades a
+  pending diff to a full frame so subscribers can never silently diverge.
+  Mismatched client/daemon protocol versions reject cleanly at handshake.
+- Added versioned envelopes to machine-readable picker output: `hotkeys
+  --format json` now emits `{schema_version, rows}` and `providers --format
+  json` emits `{schema_version, providers}` (breaking change from the previous
+  bare arrays).
+- Added criterion benchmarks for snapshot material equality and full/diff
+  frame encoding.
+
+### Changed
+
+- Subscribe frames now carry picker rows alongside each snapshot, so the
+  desktop derives rows from the delivered frame instead of spawning a second
+  `agentscan hotkeys` scan (and tmux sweep) per live update.
+- Classification captures one process-table snapshot per scan instead of
+  enumerating every system process per candidate pane, and computes one title
+  analysis per pane instead of up to six.
+- Reduced daemon hot-path allocation: zero-allocation material snapshot
+  comparison, fewer full-snapshot clones per control event, one snapshot sort
+  per control batch, and session-scoped refresh for pane focus events instead
+  of full reconciles.
+- Made the socket accept loop and subscriber monitors event-driven and bounded
+  the control-mode event channel; steady-state idle wakeups drop from roughly
+  one hundred per second to well under one per second.
+- The TUI renders on the alternate screen, keeping picker frames out of
+  terminal scrollback, and restores the terminal even when a panic occurs.
+- Consolidated per-provider detection into ordered tables (proc-evidence arg
+  patterns and title/status specs), so adding a provider's matching behavior is
+  a table row plus pattern consts instead of edits across parallel if-chains.
+- Derived the tmux pane format strings and row parser from one ordered field
+  table, split the daemon lifecycle and doctor modules into focused
+  submodules, unified root CLI flag validity into one allow-set table, and
+  loaded the config file once per invocation.
+
 ### Fixed
 
 - Split tmux metadata and output-activity subscriptions so noisy panes only
   trigger targeted reads when their current status path can require pane output;
   agent identity and metadata changes remain event-driven for every pane.
+- The daemon now recovers from poisoned socket-state locks instead of becoming
+  permanently unresponsive after a handler-thread panic.
+- Pane-output capture errors on the direct scan path are recorded in
+  diagnostics instead of being silently dropped.
+- Codex footer model detection no longer treats bare English "o"-words ("on",
+  "or", "of") as model names.
+- Wrapper-published labels now surface as activity labels for every resolved
+  provider instead of silently defaulting to none for unlisted providers.
 
 ## 0.7.6 - 2026-06-29
 
