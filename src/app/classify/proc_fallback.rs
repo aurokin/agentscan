@@ -2,12 +2,13 @@ use super::*;
 
 #[cfg(test)]
 pub(crate) fn apply_proc_fallback(pane: &mut PaneRecord, inspector: &impl proc::ProcessInspector) {
-    apply_proc_fallback_with_options(pane, inspector, false);
+    let snapshot = inspector.snapshot();
+    apply_proc_fallback_with_options(pane, &snapshot, false);
 }
 
 pub(crate) fn apply_proc_fallback_with_options(
     pane: &mut PaneRecord,
-    inspector: &impl proc::ProcessInspector,
+    snapshot: &impl proc::ProcessSnapshot,
     disabled: bool,
 ) {
     if disabled {
@@ -19,7 +20,12 @@ pub(crate) fn apply_proc_fallback_with_options(
         return;
     }
 
-    if !is_proc_fallback_candidate(pane) {
+    // Analyze the title once and reuse it for the candidate gate, evidence gating,
+    // and the resolved-provider derivation below, rather than recomputing (and
+    // reallocating) it in each helper.
+    let title_analysis = analyze_title(&pane.tmux.pane_title_raw);
+
+    if !is_proc_fallback_candidate(pane, &title_analysis) {
         pane.diagnostics.proc_fallback = ProcFallbackDiagnostics {
             outcome: ProcFallbackOutcome::Skipped,
             reason: proc_fallback_skip_reason(pane),
@@ -28,7 +34,7 @@ pub(crate) fn apply_proc_fallback_with_options(
         return;
     }
 
-    let evidence = match proc_fallback_evidence(pane, inspector) {
+    let evidence = match proc_fallback_evidence(pane, snapshot, &title_analysis) {
         Ok(evidence) => evidence,
         Err(error) => {
             pane.diagnostics.proc_fallback = ProcFallbackDiagnostics {
@@ -58,7 +64,11 @@ pub(crate) fn apply_proc_fallback_with_options(
         return;
     };
 
-    apply_provider_match(pane, provider_match);
+    let derived = provider_match_derived_fields(pane, &title_analysis, provider_match);
+    pane.provider = derived.provider;
+    pane.status = derived.status;
+    pane.display = derived.display;
+    pane.classification = derived.classification;
     pane.diagnostics.proc_fallback = ProcFallbackDiagnostics {
         outcome: ProcFallbackOutcome::Resolved,
         reason: "resolved provider from process evidence".to_string(),
@@ -88,21 +98,22 @@ impl ProcEvidenceSource {
 
 fn proc_fallback_evidence(
     pane: &PaneRecord,
-    inspector: &impl proc::ProcessInspector,
+    snapshot: &impl proc::ProcessSnapshot,
+    title_analysis: &TitleAnalysis<'_>,
 ) -> Result<Vec<ProcFallbackEvidence>, String> {
     let mut foreground = Vec::new();
     let mut descendants = Vec::new();
     let mut errors = Vec::new();
 
-    if proc_fallback_uses_foreground(pane) {
-        match inspector.foreground_processes(&pane.tmux.pane_tty) {
+    if proc_fallback_uses_foreground(pane, title_analysis) {
+        match snapshot.foreground_processes(&pane.tmux.pane_tty) {
             Ok(processes) => foreground = processes,
             Err(error) => errors.push(format!("failed to inspect foreground process: {error}")),
         }
     }
 
-    if proc_fallback_uses_descendants(pane) {
-        match inspector.descendant_processes(pane.tmux.pane_pid) {
+    if proc_fallback_uses_descendants(pane, title_analysis) {
+        match snapshot.descendant_processes(pane.tmux.pane_pid) {
             Ok(processes) => descendants = processes,
             Err(error) => errors.push(format!("failed to inspect descendants: {error}")),
         }
@@ -145,30 +156,29 @@ fn proc_fallback_no_match_reason(evidence: &[ProcFallbackEvidence]) -> String {
     }
 }
 
-fn apply_provider_match(pane: &mut PaneRecord, provider_match: ProviderMatch) {
-    let title_analysis = analyze_title(&pane.tmux.pane_title_raw);
-    let derived = pane_derived_fields(
-        &title_analysis,
+fn provider_match_derived_fields(
+    pane: &PaneRecord,
+    title_analysis: &TitleAnalysis<'_>,
+    provider_match: ProviderMatch,
+) -> PaneDerivedFields {
+    pane_derived_fields(
+        title_analysis,
         Some(provider_match),
         &pane.agent_metadata,
         current_command_for_analysis(&pane.tmux.pane_current_command),
         &pane.location.window_name,
-    );
-    pane.provider = derived.provider;
-    pane.status = derived.status;
-    pane.display = derived.display;
-    pane.classification = derived.classification;
+    )
 }
 
-fn is_proc_fallback_candidate(pane: &PaneRecord) -> bool {
+fn is_proc_fallback_candidate(pane: &PaneRecord, title_analysis: &TitleAnalysis<'_>) -> bool {
     pane.provider.is_none()
         && pane.classification.matched_by.is_none()
         && pane.agent_metadata.provider.is_none()
-        && (proc_fallback_uses_foreground(pane) || proc_fallback_uses_descendants(pane))
+        && (proc_fallback_uses_foreground(pane, title_analysis)
+            || proc_fallback_uses_descendants(pane, title_analysis))
 }
 
-fn proc_fallback_uses_foreground(pane: &PaneRecord) -> bool {
-    let title_analysis = analyze_title(&pane.tmux.pane_title_raw);
+fn proc_fallback_uses_foreground(pane: &PaneRecord, title_analysis: &TitleAnalysis<'_>) -> bool {
     let current_command = current_command_for_analysis(&pane.tmux.pane_current_command);
 
     !pane.tmux.pane_tty.trim().is_empty()
@@ -180,8 +190,7 @@ fn proc_fallback_uses_foreground(pane: &PaneRecord) -> bool {
             || is_version_like_command(&pane.tmux.pane_current_command))
 }
 
-fn proc_fallback_uses_descendants(pane: &PaneRecord) -> bool {
-    let title_analysis = analyze_title(&pane.tmux.pane_title_raw);
+fn proc_fallback_uses_descendants(pane: &PaneRecord, title_analysis: &TitleAnalysis<'_>) -> bool {
     let current_command = current_command_for_analysis(&pane.tmux.pane_current_command);
 
     is_proc_fallback_launcher_command(current_command)
