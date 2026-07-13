@@ -1,5 +1,16 @@
 use super::{PaneOutputFrame, StatusKind};
 
+// droid idle footer hint shown at the bottom of the input box.
+const HELP_HINT: &str = "? for help";
+// droid footer shown after an IDE/TMUX integration reload (`… ready … restart to apply`).
+const READY_MARKER: &str = " ready ";
+const RESTART_MARKER: &str = "restart to apply";
+// droid busy prompt shown while a turn can be steered.
+const STEER_PROMPT_MARKER: &str = "> Enter to steer";
+const STEER_HINT: &str = "Enter to steer";
+// droid streaming status stop hint (rendered after a leading spinner glyph).
+const STOP_HINT: &str = "Press ESC to stop";
+
 pub(super) fn status(output: &str) -> Option<StatusKind> {
     let frame = PaneOutputFrame::new(output);
     let footer_index = frame.rposition(droid_current_footer_line)?;
@@ -27,18 +38,18 @@ pub(super) fn status(output: &str) -> Option<StatusKind> {
 
 fn droid_current_footer_line(line: &str) -> bool {
     let line = line.trim();
-    (line.contains("? for help")
+    (line.contains(HELP_HINT)
         && line
             .split_whitespace()
             .any(|token| matches!(token, "IDE" | "TMUX")))
-        || (line.contains(" ready ")
-            && line.contains("restart to apply")
+        || (line.contains(READY_MARKER)
+            && line.contains(RESTART_MARKER)
             && line.split_whitespace().any(|token| token == "TMUX"))
 }
 
 fn droid_current_busy_prompt_line(line: &str) -> bool {
     let line = line.trim();
-    line.contains("> Enter to steer")
+    line.contains(STEER_PROMPT_MARKER)
 }
 
 fn droid_current_streaming_line(line: &str) -> bool {
@@ -50,10 +61,10 @@ fn droid_current_streaming_line(line: &str) -> bool {
     line.chars()
         .next()
         .is_some_and(|ch| ('\u{2800}'..='\u{28ff}').contains(&ch))
-        && line.contains("Press ESC to stop")
+        && line.contains(STOP_HINT)
 }
 
 fn droid_current_idle_prompt_line(line: &str) -> bool {
     let line = line.trim();
-    line.starts_with("│ >") && !line.contains("Enter to steer")
+    line.starts_with("│ >") && !line.contains(STEER_HINT)
 }

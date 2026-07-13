@@ -6,6 +6,30 @@ const OPENCODE_PIN_SESSION_TIP_PREFIX: &str =
     "● Tip Press ctrl+f in the session list to pin a session so it stays at the";
 const OPENCODE_PIN_SESSION_TIP_CONTINUATION: &str = "top";
 
+// opencode idle input placeholders (older placeholder-row build).
+const OPENCODE_ASK_PLACEHOLDER: &str = "Ask anything... \"";
+const OPENCODE_COMMAND_PLACEHOLDER: &str = "Run a command... \"";
+// opencode `● Tip` notice marker rendered below the input box.
+const OPENCODE_TIP_MARKER: &str = "● Tip";
+// opencode command-bar footer hints (`tab agents  ctrl+p commands`).
+const OPENCODE_COMMAND_BAR_TAB_HINT: &str = "tab agents";
+const OPENCODE_COMMAND_BAR_COMMANDS_HINT: &str = "ctrl+p commands";
+// opencode pinned bottom status-bar brand marker (`• OpenCode <ver>`).
+const OPENCODE_BRAND_MARKER: &str = "• OpenCode";
+// opencode interrupt hint shown while a turn is running (`esc interrupt`); two substrings.
+const OPENCODE_INTERRUPT_ESC_MARKER: &str = "esc";
+const OPENCODE_INTERRUPT_VERB_MARKER: &str = "interrupt";
+// opencode permission-prompt copy shown while awaiting the user.
+const OPENCODE_PERMISSION_REQUIRED_MARKER: &str = "Permission required";
+const OPENCODE_REJECT_PERMISSION_MARKER: &str = "Reject permission";
+const OPENCODE_ALLOW_ONCE_MARKER: &str = "Allow once";
+const OPENCODE_ALLOW_ALWAYS_MARKER: &str = "Allow always";
+const OPENCODE_PERMISSION_MARKER: &str = "Permission";
+// opencode question-prompt copy shown while awaiting the user.
+const OPENCODE_REJECT_QUESTION_MARKER: &str = "Reject question";
+const OPENCODE_WAITING_QUESTION_MARKER: &str = "Waiting for question event";
+const OPENCODE_QUESTIONS_MARKER: &str = "# Questions";
+
 pub(super) fn status(output: &str) -> Option<StatusKind> {
     let frame = PaneOutputFrame::new(output);
 
@@ -91,7 +115,7 @@ fn opencode_prompt_gap_line(line: &str) -> bool {
 
 fn opencode_idle_prompt_line(line: &str) -> bool {
     let line = line.trim_start();
-    line.contains("Ask anything... \"") || line.contains("Run a command... \"")
+    line.contains(OPENCODE_ASK_PLACEHOLDER) || line.contains(OPENCODE_COMMAND_PLACEHOLDER)
 }
 
 /// Index of the newer build's command bar when its input box is the current prompt.
@@ -215,7 +239,7 @@ fn opencode_tip_notice(line: &str) -> Option<(usize, bool)> {
     let column = first_nonblank_column(line)?;
     let trimmed = line.trim_start();
     trimmed
-        .starts_with("● Tip")
+        .starts_with(OPENCODE_TIP_MARKER)
         .then_some((column, trimmed == OPENCODE_PIN_SESSION_TIP_PREFIX))
 }
 
@@ -234,7 +258,8 @@ fn first_nonblank_column(line: &str) -> Option<usize> {
 
 fn opencode_command_bar_footer_line(line: &str) -> bool {
     let line = line.trim();
-    line.contains("tab agents") && line.contains("ctrl+p commands")
+    line.contains(OPENCODE_COMMAND_BAR_TAB_HINT)
+        && line.contains(OPENCODE_COMMAND_BAR_COMMANDS_HINT)
 }
 
 fn opencode_input_box_bottom_border(line: &str) -> bool {
@@ -248,7 +273,7 @@ fn opencode_input_box_bottom_border(line: &str) -> bool {
 /// that merely mentions a semver/IP (`Updated SDK to 1.2.3`, `See RFC 192.168.1.1`) or a
 /// bare file path is not mistaken for chrome.
 fn opencode_bottom_status_bar_line(line: &str) -> bool {
-    if line.contains("• OpenCode") {
+    if line.contains(OPENCODE_BRAND_MARKER) {
         return line.split_whitespace().any(is_version_like_command);
     }
     (line.starts_with("~/") || line.starts_with('/'))
@@ -267,21 +292,21 @@ fn opencode_current_busy_marker_line(line: &str) -> bool {
 }
 
 fn opencode_interrupt_hint_line(line: &str) -> bool {
-    line.contains("esc") && line.contains("interrupt")
+    line.contains(OPENCODE_INTERRUPT_ESC_MARKER) && line.contains(OPENCODE_INTERRUPT_VERB_MARKER)
 }
 
 fn opencode_permission_prompt_line(line: &str) -> bool {
-    line.contains("Permission required")
-        || line.contains("Reject permission")
-        || line.contains("Allow once")
-        || line.contains("Allow always")
-        || (line.contains('△') && line.contains("Permission"))
+    line.contains(OPENCODE_PERMISSION_REQUIRED_MARKER)
+        || line.contains(OPENCODE_REJECT_PERMISSION_MARKER)
+        || line.contains(OPENCODE_ALLOW_ONCE_MARKER)
+        || line.contains(OPENCODE_ALLOW_ALWAYS_MARKER)
+        || (line.contains('△') && line.contains(OPENCODE_PERMISSION_MARKER))
 }
 
 fn opencode_question_prompt_line(line: &str) -> bool {
-    line.contains("Reject question")
-        || line.contains("Waiting for question event")
-        || line.contains("# Questions")
+    line.contains(OPENCODE_REJECT_QUESTION_MARKER)
+        || line.contains(OPENCODE_WAITING_QUESTION_MARKER)
+        || line.contains(OPENCODE_QUESTIONS_MARKER)
 }
 
 fn opencode_prompt_is_near_current_footer(

@@ -1,5 +1,10 @@
 use super::{PaneOutputFrame, StatusKind};
 
+// Antigravity idle footer shown below the `>` input box while awaiting input.
+const IDLE_FOOTER_MARKER: &str = "? for shortcuts";
+// Antigravity busy footer shown during an active turn (with a spinner above).
+const BUSY_FOOTER_MARKER: &str = "esc to cancel";
+
 pub(super) fn status(output: &str) -> Option<StatusKind> {
     let frame = PaneOutputFrame::new(output);
 
@@ -31,11 +36,11 @@ pub(super) fn status(output: &str) -> Option<StatusKind> {
 }
 
 fn antigravity_idle_footer_line(line: &str) -> bool {
-    line.trim_start().starts_with("? for shortcuts")
+    line.trim_start().starts_with(IDLE_FOOTER_MARKER)
 }
 
 fn antigravity_busy_footer_line(line: &str) -> bool {
-    line.trim_start().starts_with("esc to cancel")
+    line.trim_start().starts_with(BUSY_FOOTER_MARKER)
 }
 
 fn antigravity_prompt_above_footer(frame: &PaneOutputFrame<'_>, footer_index: usize) -> bool {

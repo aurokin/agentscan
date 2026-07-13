@@ -1,5 +1,18 @@
 use super::{PaneOutputFrame, StatusKind};
 
+// pi working loader shown while a turn is running (`Working… (… to interrupt)`).
+const WORKING_MARKER: &str = "Working...";
+const INTERRUPT_HINT: &str = " to interrupt)";
+// pi retry loader shown while retrying a request.
+const RETRYING_MARKER: &str = "Retrying (";
+// pi cancel hint shared by the retry/compaction/bash loaders (`(… to cancel)`).
+const CANCEL_HINT: &str = " to cancel)";
+// pi context-compaction loaders.
+const COMPACTING_MARKER: &str = "Compacting context...";
+const AUTO_COMPACTING_MARKER: &str = "Auto-compacting...";
+// pi bash-execution loader.
+const RUNNING_MARKER: &str = "Running...";
+
 pub(super) fn status(output: &str) -> Option<StatusKind> {
     let frame = PaneOutputFrame::new(output);
     let idle_index = frame.rposition(pi_editor_border_line);
@@ -41,20 +54,20 @@ fn pi_editor_gap_line(line: &str) -> bool {
 }
 
 fn pi_working_loader_line(line: &str) -> bool {
-    line.contains("Working...") || line.contains(" to interrupt)")
+    line.contains(WORKING_MARKER) || line.contains(INTERRUPT_HINT)
 }
 
 fn pi_retry_loader_line(line: &str) -> bool {
-    line.contains("Retrying (") && line.contains(" to cancel)")
+    line.contains(RETRYING_MARKER) && line.contains(CANCEL_HINT)
 }
 
 fn pi_compaction_loader_line(line: &str) -> bool {
-    (line.contains("Compacting context...") || line.contains("Auto-compacting..."))
-        && line.contains(" to cancel)")
+    (line.contains(COMPACTING_MARKER) || line.contains(AUTO_COMPACTING_MARKER))
+        && line.contains(CANCEL_HINT)
 }
 
 fn pi_running_bash_line(line: &str) -> bool {
-    line.contains("Running...") && line.contains(" to cancel)")
+    line.contains(RUNNING_MARKER) && line.contains(CANCEL_HINT)
 }
 
 fn pi_editor_border_line(line: &str) -> bool {

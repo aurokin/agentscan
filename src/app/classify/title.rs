@@ -1,4 +1,7 @@
-use super::status_label::status_from_codex_run_state_label;
+use super::status_label::{
+    status_from_codex_run_state_label, status_from_gemini_generic_title,
+    status_from_ready_working_prefix,
+};
 use super::*;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -92,46 +95,19 @@ impl<'a> TitleAnalysis<'a> {
             return None;
         }
 
+        // Claude and OpenCode title prefixes are self-identifying, so their stripped label wins
+        // regardless of the resolved provider. This precedence predates the per-provider spec
+        // dispatch below and is preserved here as an explicit special case.
         if let Some(stripped) = self.claude_label {
             return Some(stripped.to_string());
         }
         if let Some(stripped) = self.opencode_label {
             return Some(stripped.to_string());
         }
-        if matches!(provider, Some(Provider::Copilot))
-            && let Some(stripped) = self.copilot_label
-        {
-            return Some(stripped.to_string());
-        }
-        if matches!(provider, Some(Provider::CursorCli))
-            && let Some(stripped) = self.cursor_label
-        {
-            return Some(stripped.to_string());
-        }
-        if matches!(provider, Some(Provider::Pi))
-            && let Some(stripped) = self.pi_label
-        {
-            return Some(stripped.to_string());
-        }
-        if matches!(provider, Some(Provider::Grok))
-            && let Some(stripped) = self.grok_label
-        {
-            return Some(stripped.to_string());
-        }
-        if matches!(provider, Some(Provider::Droid))
-            && let Some(stripped) = self.droid_label
-        {
-            return Some(stripped.to_string());
-        }
 
-        if matches!(provider, Some(Provider::Codex)) {
-            return Some(self.codex_normalized_label.clone());
-        }
-        if matches!(provider, Some(Provider::Gemini))
-            && let Some(label) = self
-                .gemini_title
-                .as_ref()
-                .and_then(|title| title.label.clone())
+        if let Some(provider) = provider
+            && let Some(spec) = provider_title_spec(provider)
+            && let Some(label) = (spec.normalized_label)(self)
         {
             return Some(label);
         }
@@ -198,84 +174,309 @@ pub(super) fn analyze_title(raw_title: &str) -> TitleAnalysis<'_> {
     }
 }
 
+// Per-provider title/status behavior, table-driven so adding a provider means adding one
+// `ProviderTitleSpec` row rather than editing the hint, status, and label ladders in lockstep.
+//   * `detect_hint` powers `provider_hint_from_title_signals`; it returns the hint strength and
+//     kind when this provider's title signals match, or `None` otherwise.
+//   * `title_status` powers `infer_title_status_from_analysis` via `provider_title_status`.
+//   * `normalized_label` powers `TitleAnalysis::normalized_label` for the resolved provider.
+// Bespoke parsers (Codex status-title, Gemini structured title) stay as dedicated functions and
+// are merely referenced here rather than open-coded in the ladders.
+type HintDetectFn =
+    fn(&TitleProviderSignals<'_>) -> Option<(TitleHintStrength, TitleProviderHintKind)>;
+type TitleStatusFn = fn(&TitleAnalysis<'_>) -> Option<StatusKind>;
+type NormalizedLabelFn = fn(&TitleAnalysis<'_>) -> Option<String>;
+
+struct ProviderTitleSpec {
+    provider: Provider,
+    detect_hint: HintDetectFn,
+    title_status: TitleStatusFn,
+    normalized_label: NormalizedLabelFn,
+}
+
+// Row order defines cross-ladder hint priority: strong self-identifying providers (Claude,
+// OpenCode, Codex) are probed before the weak title-prefix providers, so a Codex title that also
+// carries a stray `Copilot |` prefix still resolves to Codex. Gemini is probed last because its
+// weakest signal is a fuzzy "contains gemini" substring match. `title_status` and
+// `normalized_label` are looked up by `provider`, so their ordering here does not matter.
+const PROVIDER_TITLE_SPECS: &[ProviderTitleSpec] = &[
+    ProviderTitleSpec {
+        provider: Provider::Claude,
+        detect_hint: detect_claude_hint,
+        title_status: claude_title_status,
+        normalized_label: no_spec_label,
+    },
+    ProviderTitleSpec {
+        provider: Provider::Opencode,
+        detect_hint: detect_opencode_hint,
+        title_status: no_title_status,
+        normalized_label: no_spec_label,
+    },
+    ProviderTitleSpec {
+        provider: Provider::Codex,
+        detect_hint: detect_codex_hint,
+        title_status: codex_title_status,
+        normalized_label: codex_spec_label,
+    },
+    ProviderTitleSpec {
+        provider: Provider::Copilot,
+        detect_hint: detect_copilot_hint,
+        title_status: copilot_title_status,
+        normalized_label: copilot_spec_label,
+    },
+    ProviderTitleSpec {
+        provider: Provider::CursorCli,
+        detect_hint: detect_cursor_hint,
+        title_status: cursor_title_status,
+        normalized_label: cursor_spec_label,
+    },
+    ProviderTitleSpec {
+        provider: Provider::Pi,
+        detect_hint: detect_pi_hint,
+        title_status: pi_title_status,
+        normalized_label: pi_spec_label,
+    },
+    ProviderTitleSpec {
+        provider: Provider::Grok,
+        detect_hint: detect_grok_hint,
+        title_status: grok_title_status,
+        normalized_label: grok_spec_label,
+    },
+    ProviderTitleSpec {
+        provider: Provider::Droid,
+        detect_hint: detect_droid_hint,
+        title_status: no_title_status,
+        normalized_label: droid_spec_label,
+    },
+    ProviderTitleSpec {
+        provider: Provider::Gemini,
+        detect_hint: detect_gemini_hint,
+        title_status: gemini_title_status,
+        normalized_label: gemini_spec_label,
+    },
+    ProviderTitleSpec {
+        provider: Provider::Aider,
+        detect_hint: no_hint,
+        title_status: no_title_status,
+        normalized_label: no_spec_label,
+    },
+    ProviderTitleSpec {
+        provider: Provider::Antigravity,
+        detect_hint: no_hint,
+        title_status: no_title_status,
+        normalized_label: no_spec_label,
+    },
+    ProviderTitleSpec {
+        provider: Provider::Hermes,
+        detect_hint: no_hint,
+        title_status: no_title_status,
+        normalized_label: no_spec_label,
+    },
+];
+
+fn provider_title_spec(provider: Provider) -> Option<&'static ProviderTitleSpec> {
+    PROVIDER_TITLE_SPECS
+        .iter()
+        .find(|spec| spec.provider == provider)
+}
+
+pub(super) fn provider_title_status(
+    provider: Provider,
+    analysis: &TitleAnalysis<'_>,
+) -> Option<StatusKind> {
+    provider_title_spec(provider).and_then(|spec| (spec.title_status)(analysis))
+}
+
 fn provider_hint_from_title_signals(
     signals: &TitleProviderSignals<'_>,
 ) -> Option<TitleProviderHint> {
-    if signals.claude_label.is_some() || title_matches_alias(Provider::Claude, signals.stripped) {
-        Some(TitleProviderHint {
-            provider: Provider::Claude,
-            strength: TitleHintStrength::Strong,
-            kind: TitleProviderHintKind::Explicit,
+    PROVIDER_TITLE_SPECS.iter().find_map(|spec| {
+        (spec.detect_hint)(signals).map(|(strength, kind)| TitleProviderHint {
+            provider: spec.provider,
+            strength,
+            kind,
         })
-    } else if signals.opencode_label.is_some()
-        || title_matches_alias(Provider::Opencode, signals.stripped)
-    {
-        Some(TitleProviderHint {
-            provider: Provider::Opencode,
-            strength: TitleHintStrength::Strong,
-            kind: TitleProviderHintKind::Explicit,
-        })
-    } else if looks_like_codex_title(signals.stripped) {
-        Some(TitleProviderHint {
-            provider: Provider::Codex,
-            strength: TitleHintStrength::Strong,
-            kind: TitleProviderHintKind::Explicit,
-        })
-    } else if signals.copilot_label.is_some()
-        || title_matches_alias(Provider::Copilot, signals.stripped)
-    {
-        Some(TitleProviderHint {
-            provider: Provider::Copilot,
-            strength: TitleHintStrength::Weak,
-            kind: TitleProviderHintKind::Explicit,
-        })
-    } else if signals.cursor_title_shaped {
-        Some(TitleProviderHint {
-            provider: Provider::CursorCli,
-            strength: TitleHintStrength::Weak,
-            kind: TitleProviderHintKind::Explicit,
-        })
-    } else if signals.pi_label.is_some() {
-        Some(TitleProviderHint {
-            provider: Provider::Pi,
-            strength: if signals.stripped.starts_with("π - ") || signals.has_spinner_glyph {
-                TitleHintStrength::Strong
-            } else {
-                TitleHintStrength::Weak
-            },
-            kind: TitleProviderHintKind::Explicit,
-        })
-    } else if signals.grok_label.is_some() {
-        Some(TitleProviderHint {
-            provider: Provider::Grok,
-            strength: if signals.has_spinner_glyph {
-                TitleHintStrength::Strong
-            } else {
-                TitleHintStrength::Weak
-            },
-            kind: TitleProviderHintKind::Explicit,
-        })
-    } else if signals.droid_label.is_some() {
-        Some(TitleProviderHint {
-            provider: Provider::Droid,
-            strength: TitleHintStrength::Weak,
-            kind: TitleProviderHintKind::Explicit,
-        })
-    } else if signals.gemini_strong_provider_signal {
-        Some(TitleProviderHint {
-            provider: Provider::Gemini,
-            strength: TitleHintStrength::Strong,
-            kind: TitleProviderHintKind::Explicit,
-        })
+    })
+}
+
+fn no_hint(_: &TitleProviderSignals<'_>) -> Option<(TitleHintStrength, TitleProviderHintKind)> {
+    None
+}
+
+fn detect_claude_hint(
+    signals: &TitleProviderSignals<'_>,
+) -> Option<(TitleHintStrength, TitleProviderHintKind)> {
+    (signals.claude_label.is_some() || title_matches_alias(Provider::Claude, signals.stripped))
+        .then_some((TitleHintStrength::Strong, TitleProviderHintKind::Explicit))
+}
+
+fn detect_opencode_hint(
+    signals: &TitleProviderSignals<'_>,
+) -> Option<(TitleHintStrength, TitleProviderHintKind)> {
+    (signals.opencode_label.is_some() || title_matches_alias(Provider::Opencode, signals.stripped))
+        .then_some((TitleHintStrength::Strong, TitleProviderHintKind::Explicit))
+}
+
+fn detect_codex_hint(
+    signals: &TitleProviderSignals<'_>,
+) -> Option<(TitleHintStrength, TitleProviderHintKind)> {
+    looks_like_codex_title(signals.stripped)
+        .then_some((TitleHintStrength::Strong, TitleProviderHintKind::Explicit))
+}
+
+fn detect_copilot_hint(
+    signals: &TitleProviderSignals<'_>,
+) -> Option<(TitleHintStrength, TitleProviderHintKind)> {
+    (signals.copilot_label.is_some() || title_matches_alias(Provider::Copilot, signals.stripped))
+        .then_some((TitleHintStrength::Weak, TitleProviderHintKind::Explicit))
+}
+
+fn detect_cursor_hint(
+    signals: &TitleProviderSignals<'_>,
+) -> Option<(TitleHintStrength, TitleProviderHintKind)> {
+    signals
+        .cursor_title_shaped
+        .then_some((TitleHintStrength::Weak, TitleProviderHintKind::Explicit))
+}
+
+fn detect_pi_hint(
+    signals: &TitleProviderSignals<'_>,
+) -> Option<(TitleHintStrength, TitleProviderHintKind)> {
+    signals.pi_label.is_some().then(|| {
+        let strength = if signals.stripped.starts_with("π - ") || signals.has_spinner_glyph {
+            TitleHintStrength::Strong
+        } else {
+            TitleHintStrength::Weak
+        };
+        (strength, TitleProviderHintKind::Explicit)
+    })
+}
+
+fn detect_grok_hint(
+    signals: &TitleProviderSignals<'_>,
+) -> Option<(TitleHintStrength, TitleProviderHintKind)> {
+    signals.grok_label.is_some().then(|| {
+        let strength = if signals.has_spinner_glyph {
+            TitleHintStrength::Strong
+        } else {
+            TitleHintStrength::Weak
+        };
+        (strength, TitleProviderHintKind::Explicit)
+    })
+}
+
+fn detect_droid_hint(
+    signals: &TitleProviderSignals<'_>,
+) -> Option<(TitleHintStrength, TitleProviderHintKind)> {
+    signals
+        .droid_label
+        .is_some()
+        .then_some((TitleHintStrength::Weak, TitleProviderHintKind::Explicit))
+}
+
+fn detect_gemini_hint(
+    signals: &TitleProviderSignals<'_>,
+) -> Option<(TitleHintStrength, TitleProviderHintKind)> {
+    if signals.gemini_strong_provider_signal {
+        Some((TitleHintStrength::Strong, TitleProviderHintKind::Explicit))
     } else if signals.stripped.to_ascii_lowercase().contains("gemini") {
-        Some(TitleProviderHint {
-            provider: Provider::Gemini,
-            strength: TitleHintStrength::Weak,
-            kind: TitleProviderHintKind::Fuzzy,
-        })
+        Some((TitleHintStrength::Weak, TitleProviderHintKind::Fuzzy))
     } else {
         None
     }
+}
+
+fn no_title_status(_: &TitleAnalysis<'_>) -> Option<StatusKind> {
+    None
+}
+
+fn claude_title_status(analysis: &TitleAnalysis<'_>) -> Option<StatusKind> {
+    if analysis.has_spinner_glyph {
+        return Some(StatusKind::Busy);
+    }
+    if analysis.has_idle_glyph {
+        return Some(StatusKind::Idle);
+    }
+    analysis
+        .claude_label
+        .and_then(status_from_ready_working_prefix)
+}
+
+fn codex_title_status(analysis: &TitleAnalysis<'_>) -> Option<StatusKind> {
+    if codex_title_has_spinner_indicator(analysis.raw) {
+        return Some(StatusKind::Busy);
+    }
+    codex_run_state_from_title(&analysis.codex_status_title)
+}
+
+fn gemini_title_status(analysis: &TitleAnalysis<'_>) -> Option<StatusKind> {
+    analysis
+        .gemini_title
+        .as_ref()
+        .and_then(|title| title.status)
+        .or_else(|| status_from_gemini_generic_title(analysis.stripped))
+}
+
+fn copilot_title_status(analysis: &TitleAnalysis<'_>) -> Option<StatusKind> {
+    if copilot_title_has_working_indicator(analysis.raw) {
+        return Some(StatusKind::Busy);
+    }
+    analysis
+        .copilot_label
+        .and_then(status_from_ready_working_prefix)
+}
+
+fn cursor_title_status(analysis: &TitleAnalysis<'_>) -> Option<StatusKind> {
+    analysis
+        .cursor_label
+        .and_then(status_from_ready_working_prefix)
+}
+
+fn pi_title_status(analysis: &TitleAnalysis<'_>) -> Option<StatusKind> {
+    (analysis.pi_label.is_some() && analysis.has_spinner_glyph).then_some(StatusKind::Busy)
+}
+
+fn grok_title_status(analysis: &TitleAnalysis<'_>) -> Option<StatusKind> {
+    analysis.has_spinner_glyph.then_some(StatusKind::Busy)
+}
+
+fn copilot_title_has_working_indicator(title: &str) -> bool {
+    title.trim_start().starts_with("🤖")
+}
+
+fn no_spec_label(_: &TitleAnalysis<'_>) -> Option<String> {
+    None
+}
+
+fn copilot_spec_label(analysis: &TitleAnalysis<'_>) -> Option<String> {
+    analysis.copilot_label.map(str::to_string)
+}
+
+fn cursor_spec_label(analysis: &TitleAnalysis<'_>) -> Option<String> {
+    analysis.cursor_label.map(str::to_string)
+}
+
+fn pi_spec_label(analysis: &TitleAnalysis<'_>) -> Option<String> {
+    analysis.pi_label.map(str::to_string)
+}
+
+fn grok_spec_label(analysis: &TitleAnalysis<'_>) -> Option<String> {
+    analysis.grok_label.map(str::to_string)
+}
+
+fn droid_spec_label(analysis: &TitleAnalysis<'_>) -> Option<String> {
+    analysis.droid_label.map(str::to_string)
+}
+
+fn codex_spec_label(analysis: &TitleAnalysis<'_>) -> Option<String> {
+    Some(analysis.codex_normalized_label.clone())
+}
+
+fn gemini_spec_label(analysis: &TitleAnalysis<'_>) -> Option<String> {
+    analysis
+        .gemini_title
+        .as_ref()
+        .and_then(|title| title.label.clone())
 }
 fn provider_prefixed_title_label(provider: Provider, title: &str) -> Option<&str> {
     provider_title_prefixes(provider)

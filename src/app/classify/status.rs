@@ -1,4 +1,3 @@
-use super::status_label::{status_from_gemini_generic_title, status_from_ready_working_prefix};
 use super::*;
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -20,78 +19,13 @@ pub(super) fn infer_title_status_from_analysis(
         return PaneStatus::not_checked();
     }
 
-    if matches!(provider, Some(Provider::Claude)) {
-        if title_analysis.has_spinner_glyph {
-            return PaneStatus::title(StatusKind::Busy);
-        }
-        if title_analysis.has_idle_glyph {
-            return PaneStatus::title(StatusKind::Idle);
-        }
-        if let Some(rest) = title_analysis.claude_label
-            && let Some(status) = status_from_ready_working_prefix(rest)
-        {
-            return PaneStatus::title(status);
-        }
-    }
-
-    if matches!(provider, Some(Provider::Codex)) {
-        if codex_title_has_spinner_indicator(title_analysis.raw) {
-            return PaneStatus::title(StatusKind::Busy);
-        }
-        if let Some(status) = codex_run_state_from_title(&title_analysis.codex_status_title) {
-            return PaneStatus::title(status);
-        }
-    }
-
-    if matches!(provider, Some(Provider::Gemini))
-        && let Some(status) = title_analysis
-            .gemini_title
-            .as_ref()
-            .and_then(|title| title.status)
-    {
-        return PaneStatus::title(status);
-    }
-
-    if matches!(provider, Some(Provider::Gemini))
-        && let Some(status) = status_from_gemini_generic_title(title_analysis.stripped)
-    {
-        return PaneStatus::title(status);
-    }
-
-    if matches!(provider, Some(Provider::Copilot)) {
-        if copilot_title_has_working_indicator(title_analysis.raw) {
-            return PaneStatus::title(StatusKind::Busy);
-        }
-        if let Some(rest) = title_analysis.copilot_label
-            && let Some(status) = status_from_ready_working_prefix(rest)
-        {
-            return PaneStatus::title(status);
-        }
-    }
-
-    if matches!(provider, Some(Provider::CursorCli))
-        && let Some(rest) = title_analysis.cursor_label
-        && let Some(status) = status_from_ready_working_prefix(rest)
-    {
-        return PaneStatus::title(status);
-    }
-
-    if matches!(provider, Some(Provider::Pi))
-        && title_analysis.pi_label.is_some()
-        && title_analysis.has_spinner_glyph
-    {
-        return PaneStatus::title(StatusKind::Busy);
-    }
-
-    if matches!(provider, Some(Provider::Grok)) && title_analysis.has_spinner_glyph {
-        return PaneStatus::title(StatusKind::Busy);
-    }
-
-    PaneStatus::not_checked()
-}
-
-fn copilot_title_has_working_indicator(title: &str) -> bool {
-    title.trim_start().starts_with("🤖")
+    // Provider identity is already resolved here, so a single spec lookup replaces the former
+    // per-provider ladder. `provider_title_status` returns the title-derived status for the
+    // resolved provider (or `None`, which stays "not checked" so pane-output fallback can run).
+    provider
+        .and_then(|provider| provider_title_status(provider, title_analysis))
+        .map(PaneStatus::title)
+        .unwrap_or_else(PaneStatus::not_checked)
 }
 
 pub(crate) fn infer_status(title_status: PaneStatus, published_state: Option<&str>) -> PaneStatus {
