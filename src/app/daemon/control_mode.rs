@@ -1,5 +1,17 @@
 use super::*;
 
+// Bound on the shared control-mode line channel. The single-threaded run-loop consumer
+// can stall for seconds inside blocking tmux subprocess calls (a full reconcile/refresh),
+// so an unbounded channel would let a tmux event storm grow memory without limit. A
+// `sync_channel` caps that: at steady state the consumer drains far faster than events
+// arrive and this is never hit, but under a burst that outruns a stalled consumer the
+// reader threads block briefly on `send` — bounded backpressure that self-limits tmux's
+// control-mode output. The consumer always returns to `recv`, so senders always drain and
+// no path deadlocks (reader threads are detached and never joined; the only other sender,
+// the socket client-event handler, runs on its own thread). Capacity is generous so the
+// backstop only engages on a genuine storm: ~4k sub-KB lines is a few MB ceiling.
+const CONTROL_MODE_CHANNEL_CAPACITY: usize = 4096;
+
 pub(super) struct TmuxDaemonReadProvider<'a> {
     fallback: TmuxCommandReadProvider,
     broker: Option<TmuxControlModeReadBroker<'a>>,
@@ -319,7 +331,7 @@ pub(super) struct RunningTmuxControlModeClient {
     // death is instead detected by the events the primary forwards — `%exit` on a
     // clean tmux exit and a `Fatal` read error on an abnormal one — not by channel
     // closure.
-    line_tx: mpsc::Sender<Result<ControlModeLine>>,
+    line_tx: mpsc::SyncSender<Result<ControlModeLine>>,
     // Event-only control clients, one per non-primary session. tmux control mode
     // is scoped to the attached session, so these provide event coverage for
     // panes the primary client cannot see. They never issue commands; their
@@ -747,7 +759,7 @@ impl RunningTmuxControlModeClient {
         result
     }
 
-    pub(super) fn event_sender(&self) -> mpsc::Sender<Result<ControlModeLine>> {
+    pub(super) fn event_sender(&self) -> mpsc::SyncSender<Result<ControlModeLine>> {
         self.line_tx.clone()
     }
 
@@ -909,14 +921,14 @@ type PrimaryControlConnection = (
     std::process::Child,
     std::process::ChildStdin,
     mpsc::Receiver<Result<ControlModeLine>>,
-    mpsc::Sender<Result<ControlModeLine>>,
+    mpsc::SyncSender<Result<ControlModeLine>>,
 );
 
 fn connect_primary_control_client(
     started: StartedTmuxControlModeClient,
     primary_session_id: Option<String>,
 ) -> Result<PrimaryControlConnection> {
-    let (line_tx, line_rx) = mpsc::channel();
+    let (line_tx, line_rx) = mpsc::sync_channel(CONTROL_MODE_CHANNEL_CAPACITY);
     let (child, stdin) = spawn_control_client_reader(
         started,
         line_tx.clone(),
@@ -966,7 +978,7 @@ enum ClientErrorMode {
 
 fn spawn_control_client_reader(
     mut started: StartedTmuxControlModeClient,
-    line_tx: mpsc::Sender<Result<ControlModeLine>>,
+    line_tx: mpsc::SyncSender<Result<ControlModeLine>>,
     error_mode: ClientErrorMode,
     source: ControlModeLineSource,
 ) -> Result<(std::process::Child, std::process::ChildStdin)> {
@@ -1006,7 +1018,7 @@ pub(crate) fn test_subscriber_local_exit(quiet: bool, line: &str) -> bool {
 
 fn spawn_control_mode_line_reader(
     stdout_reader: BufReader<std::process::ChildStdout>,
-    line_tx: mpsc::Sender<Result<ControlModeLine>>,
+    line_tx: mpsc::SyncSender<Result<ControlModeLine>>,
     error_mode: ClientErrorMode,
     source: ControlModeLineSource,
 ) {
