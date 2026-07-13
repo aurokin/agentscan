@@ -471,7 +471,10 @@ fn recover_targeted_pane_provider_with_inspector(
     if pane.provider.is_some() {
         return;
     }
-    let snapshot = inspector.snapshot();
+    // Lazy: non-candidate panes (which `apply_proc_fallback_with_options`
+    // rejects before querying) and disabled fallback never pay for a
+    // process-table capture on this per-control-event path.
+    let snapshot = proc::LazyProcessSnapshot::new(inspector);
     classify::apply_proc_fallback_with_options(pane, &snapshot, disable_proc_fallback);
 }
 

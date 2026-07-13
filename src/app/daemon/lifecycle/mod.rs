@@ -24,7 +24,9 @@ pub(crate) use macos_trust::assess_macos_executable_for_daemon_autostart;
 pub(crate) use macos_trust::test_macos_executable_assessment_for_outputs;
 #[cfg(test)]
 pub(crate) use subscription::test_write_subscription_keepalive;
-pub(crate) use subscription::{spawn_subscription_worker, stream_subscription_events_json};
+pub(crate) use subscription::{
+    SubscriptionRowMode, spawn_subscription_worker, stream_subscription_events_json,
+};
 
 #[derive(Clone)]
 pub(super) struct LifecyclePaths {

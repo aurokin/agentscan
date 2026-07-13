@@ -229,9 +229,10 @@ pub(crate) fn spawn_subscription_worker(
     policy: AutoStartPolicy,
     events: mpsc::Sender<LiveClientEvent>,
     cancel: Arc<AtomicBool>,
+    row_mode: SubscriptionRowMode,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
-        let result = subscription_worker_loop(policy, &events, &cancel);
+        let result = subscription_worker_loop(policy, &events, &cancel, row_mode);
         if let Err(error) = result {
             let _ = events.send(LiveClientEvent::Fatal {
                 message: error.to_string(),
@@ -245,7 +246,12 @@ pub(crate) fn stream_subscription_events_json(
 ) -> std::result::Result<(), DaemonSnapshotError> {
     let (events_tx, events_rx) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
-    let worker = spawn_subscription_worker(policy, events_tx, Arc::clone(&cancel));
+    let worker = spawn_subscription_worker(
+        policy,
+        events_tx,
+        Arc::clone(&cancel),
+        SubscriptionRowMode::Build,
+    );
     let result = write_subscription_events_json(events_rx, &cancel);
     cancel.store(true, Ordering::Relaxed);
     match result {
@@ -362,24 +368,42 @@ fn write_subscription_event_json_line(
     Ok(true)
 }
 
+/// Whether the subscription worker should assemble picker rows for each
+/// snapshot event. The JSON stream needs them (the desktop renders them); the
+/// in-process TUI discards them, and building rows costs a `tmux list-clients`
+/// spawn plus row assembly per frame, so the TUI opts out.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SubscriptionRowMode {
+    Build,
+    Skip,
+}
+
 /// Builds the picker `rows` that ride alongside each `snapshot` frame on the
 /// subscribe stream. Owning this here (in the process that owns tmux) keeps the
 /// desktop from spawning a second `agentscan hotkeys` scan per update: the same
 /// `picker::picker_rows` assembly the `hotkeys` command uses runs once, on the
 /// host, so remote clients get correct focus/client resolution and host-local
 /// workspace grouping they could not reproduce from the snapshot alone.
-struct SubscriptionRowContext {
-    picker_group_by: picker::PickerGroupBy,
-    picker_keys: picker::PickerKeySet,
+enum SubscriptionRowContext {
+    Build {
+        picker_group_by: picker::PickerGroupBy,
+        picker_keys: picker::PickerKeySet,
+    },
+    Skip,
 }
 
 impl SubscriptionRowContext {
-    fn resolve() -> Result<Self> {
-        let config = config::resolve_picker_config()?;
-        Ok(Self {
-            picker_group_by: config.picker_group_by,
-            picker_keys: config.picker_keys,
-        })
+    fn resolve(mode: SubscriptionRowMode) -> Result<Self> {
+        match mode {
+            SubscriptionRowMode::Build => {
+                let config = config::resolve_picker_config()?;
+                Ok(Self::Build {
+                    picker_group_by: config.picker_group_by,
+                    picker_keys: config.picker_keys,
+                })
+            }
+            SubscriptionRowMode::Skip => Ok(Self::Skip),
+        }
     }
 
     /// Wrap a snapshot into a `Snapshot` event, deriving the picker rows from that
@@ -395,6 +419,13 @@ impl SubscriptionRowContext {
     }
 
     fn build_rows(&self, snapshot: &SnapshotEnvelope) -> Vec<picker::PickerRow> {
+        let Self::Build {
+            picker_group_by,
+            picker_keys,
+        } = self
+        else {
+            return Vec::new();
+        };
         // Match `hotkeys`' default (agent panes only) and its live focus/client
         // resolution; any tmux error degrades to "no focus" rather than failing.
         let agent_panes: Vec<PaneRecord> = snapshot
@@ -408,8 +439,8 @@ impl SubscriptionRowContext {
             &agent_panes,
             focus.focused_session.as_deref(),
             u32::try_from(focus.attached_client_count).unwrap_or(u32::MAX),
-            self.picker_group_by,
-            &self.picker_keys,
+            *picker_group_by,
+            picker_keys,
         )
     }
 }
@@ -418,11 +449,12 @@ fn subscription_worker_loop(
     policy: AutoStartPolicy,
     events: &mpsc::Sender<LiveClientEvent>,
     cancel: &Arc<AtomicBool>,
+    row_mode: SubscriptionRowMode,
 ) -> Result<()> {
     let socket_path = ipc::resolve_socket_path()?;
     let paths = LifecyclePaths::from_socket_path(&socket_path);
     let mut state = SubscriptionState::new();
-    let row_context = SubscriptionRowContext::resolve()?;
+    let row_context = SubscriptionRowContext::resolve(row_mode)?;
 
     while !cancel.load(Ordering::Relaxed) {
         send_subscription_event(events, state.connecting_event(&socket_path))?;
@@ -976,7 +1008,8 @@ mod diff_apply_tests {
         let mut reader = BufReader::new(client);
         let (events_tx, events_rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
-        let row_context = SubscriptionRowContext::resolve().expect("row context should resolve");
+        let row_context = SubscriptionRowContext::resolve(SubscriptionRowMode::Build)
+            .expect("row context should resolve");
         let mut state = SubscriptionSnapshotState {
             snapshot: bootstrap,
             seq: bootstrap_seq,

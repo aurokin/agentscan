@@ -2,7 +2,7 @@ use super::*;
 
 #[cfg(test)]
 pub(crate) fn apply_proc_fallback(pane: &mut PaneRecord, inspector: &impl proc::ProcessInspector) {
-    let snapshot = inspector.snapshot();
+    let snapshot = proc::LazyProcessSnapshot::new(inspector);
     apply_proc_fallback_with_options(pane, &snapshot, false);
 }
 

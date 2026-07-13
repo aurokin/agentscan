@@ -117,6 +117,9 @@ fn proc_fallback_options_can_skip_process_inspection() {
     );
     assert!(node_launcher.diagnostics.proc_fallback.commands.is_empty());
     assert!(inspector.calls().is_empty());
+    // Disabled fallback must not even capture the process table: the per-scan
+    // snapshot is lazy and only a gated candidate's first query triggers it.
+    assert_eq!(inspector.snapshot_captures(), 0);
 }
 
 #[test]

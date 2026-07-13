@@ -25,6 +25,39 @@ pub(crate) trait ProcessSnapshot {
     }
 }
 
+/// Defers the process-table enumeration until a gated fallback candidate
+/// actually queries it. Scans with proc fallback disabled, and scans (or
+/// targeted refreshes) whose panes never pass the candidate gates, pay no
+/// table capture at all; the first real query captures once and every later
+/// query reuses that snapshot.
+pub(crate) struct LazyProcessSnapshot<'a, I: ProcessInspector> {
+    inspector: &'a I,
+    snapshot: std::cell::OnceCell<I::Snapshot<'a>>,
+}
+
+impl<'a, I: ProcessInspector> LazyProcessSnapshot<'a, I> {
+    pub(crate) fn new(inspector: &'a I) -> Self {
+        Self {
+            inspector,
+            snapshot: std::cell::OnceCell::new(),
+        }
+    }
+
+    fn get(&self) -> &I::Snapshot<'a> {
+        self.snapshot.get_or_init(|| self.inspector.snapshot())
+    }
+}
+
+impl<'a, I: ProcessInspector> ProcessSnapshot for LazyProcessSnapshot<'a, I> {
+    fn descendant_processes(&self, root_pid: u32) -> Result<Vec<ProcessEvidence>> {
+        self.get().descendant_processes(root_pid)
+    }
+
+    fn foreground_processes(&self, pane_tty: &str) -> Result<Vec<ProcessEvidence>> {
+        self.get().foreground_processes(pane_tty)
+    }
+}
+
 const SELECTED_ENV_KEYS: &[&str] = &[
     "CLAUDECODE",
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",

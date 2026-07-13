@@ -116,9 +116,12 @@ pub(crate) fn panes_from_rows_with_proc_fallback_options(
     inspector: &impl proc::ProcessInspector,
     disable_proc_fallback: bool,
 ) -> Vec<PaneRecord> {
-    // Enumerate the process table once per scan; every pane's fallback consults
-    // this prebuilt index instead of re-scanning all PIDs per candidate pane.
-    let snapshot = inspector.snapshot();
+    // Enumerate the process table at most once per scan, lazily: the capture
+    // happens only when the first fallback candidate actually queries it, so
+    // disabled or candidate-free scans do no process inspection at all, and
+    // every candidate shares one prebuilt index instead of re-scanning all
+    // PIDs per pane.
+    let snapshot = proc::LazyProcessSnapshot::new(inspector);
     rows.into_iter()
         .map(|row| {
             let mut pane = pane_from_row(row);

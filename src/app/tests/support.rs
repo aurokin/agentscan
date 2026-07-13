@@ -182,6 +182,7 @@ struct FakeProcessInspector {
     foreground_by_tty: std::collections::HashMap<String, Vec<proc::ProcessEvidence>>,
     calls: RefCell<Vec<u32>>,
     foreground_calls: RefCell<Vec<String>>,
+    snapshot_captures: std::cell::Cell<u32>,
 }
 
 impl FakeProcessInspector {
@@ -207,6 +208,7 @@ impl FakeProcessInspector {
             foreground_by_tty: std::collections::HashMap::new(),
             calls: RefCell::new(Vec::new()),
             foreground_calls: RefCell::new(Vec::new()),
+            snapshot_captures: std::cell::Cell::new(0),
         }
     }
 
@@ -218,6 +220,7 @@ impl FakeProcessInspector {
             foreground_by_tty: std::collections::HashMap::new(),
             calls: RefCell::new(Vec::new()),
             foreground_calls: RefCell::new(Vec::new()),
+            snapshot_captures: std::cell::Cell::new(0),
         }
     }
 
@@ -259,6 +262,10 @@ impl FakeProcessInspector {
         self.calls.borrow().clone()
     }
 
+    fn snapshot_captures(&self) -> u32 {
+        self.snapshot_captures.get()
+    }
+
     fn foreground_calls(&self) -> Vec<String> {
         self.foreground_calls.borrow().clone()
     }
@@ -277,6 +284,7 @@ impl proc::ProcessInspector for FakeProcessInspector {
     type Snapshot<'a> = &'a FakeProcessInspector;
 
     fn snapshot(&self) -> &FakeProcessInspector {
+        self.snapshot_captures.set(self.snapshot_captures.get() + 1);
         self
     }
 }

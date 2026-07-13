@@ -64,9 +64,12 @@ pub(super) fn provider_match_from_proc_evidence(
 
     // Ordered arg-path providers. Order is significant (it decides the winner when a
     // process's argv matches more than one pattern set), and it stays after the Claude
-    // checks above so Claude keeps priority over Gemini. Adding a provider here is one
-    // row plus its `*_ARG_PATTERNS` const.
-    for &(provider, patterns) in PROVIDER_ARG_PATTERN_TABLE {
+    // checks above so Claude keeps priority over Gemini. Adding a provider is one row
+    // in the right segment plus its `*_ARG_PATTERNS` const. The table is split around
+    // the OpenCode env check to preserve the historic precedence exactly: an inherited
+    // OpenCode environment outranks the Copilot/Pi/Hermes argv paths but not the
+    // Gemini/OpenCode ones.
+    for &(provider, patterns) in PRE_OPENCODE_ENV_ARG_PATTERN_TABLE {
         if let Some(arg) = find_provider_arg(process, &normalized_args, patterns) {
             return Some(proc_provider_arg_match(provider, source_reason_prefix, arg));
         }
@@ -80,6 +83,12 @@ pub(super) fn provider_match_from_proc_evidence(
         ));
     }
 
+    for &(provider, patterns) in POST_OPENCODE_ENV_ARG_PATTERN_TABLE {
+        if let Some(arg) = find_provider_arg(process, &normalized_args, patterns) {
+            return Some(proc_provider_arg_match(provider, source_reason_prefix, arg));
+        }
+    }
+
     if process_has_pi_env(process) {
         return Some(proc_provider_env_match(
             Provider::Pi,
@@ -91,14 +100,18 @@ pub(super) fn provider_match_from_proc_evidence(
     None
 }
 
-/// Ordered table of providers identified purely by an argv path pattern. The order is a
-/// classification contract: the first matching row wins, so it mirrors the historic
-/// hand-ordered if-chain. Providers with extra signals (Aider's Python entrypoints, Claude's
-/// binary shape and reason handling, and the OpenCode/Pi env checks) stay as explicit checks
-/// around this loop rather than joining the table.
-const PROVIDER_ARG_PATTERN_TABLE: &[(Provider, &ProcArgPathPatterns)] = &[
+/// Ordered tables of providers identified purely by an argv path pattern. The order is a
+/// classification contract: the first matching row wins, and the split around the OpenCode
+/// env check mirrors the historic hand-ordered if-chain exactly. Providers with extra
+/// signals (Aider's Python entrypoints, Claude's binary shape and reason handling, and the
+/// OpenCode/Pi env checks) stay as explicit checks around these loops rather than joining
+/// the tables.
+const PRE_OPENCODE_ENV_ARG_PATTERN_TABLE: &[(Provider, &ProcArgPathPatterns)] = &[
     (Provider::Gemini, &GEMINI_ARG_PATTERNS),
     (Provider::Opencode, &OPENCODE_ARG_PATTERNS),
+];
+
+const POST_OPENCODE_ENV_ARG_PATTERN_TABLE: &[(Provider, &ProcArgPathPatterns)] = &[
     (Provider::Copilot, &COPILOT_ARG_PATTERNS),
     (Provider::Pi, &PI_ARG_PATTERNS),
     (Provider::Hermes, &HERMES_ARG_PATTERNS),

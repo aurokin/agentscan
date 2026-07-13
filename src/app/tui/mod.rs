@@ -110,6 +110,9 @@ fn spawn_subscription_bridge(
         daemon::AutoStartPolicy::from_args(auto_start),
         subscription_tx,
         cancel.clone(),
+        // The TUI renders from the snapshot alone and discards picker rows;
+        // skipping row assembly avoids a tmux subprocess per daemon update.
+        daemon::SubscriptionRowMode::Skip,
     );
     std::thread::spawn(move || {
         while !cancel.load(Ordering::Relaxed) {
