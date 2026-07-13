@@ -1,6 +1,22 @@
 use super::*;
 
+/// Builds a per-scan [`ProcessSnapshot`]. Enumerating the process table is done
+/// once via [`ProcessInspector::snapshot`]; the returned snapshot answers every
+/// pane's foreground/descendant query from the prebuilt index rather than
+/// re-scanning all PIDs per pane.
 pub(crate) trait ProcessInspector {
+    type Snapshot<'a>: ProcessSnapshot
+    where
+        Self: 'a;
+
+    fn snapshot(&self) -> Self::Snapshot<'_>;
+}
+
+/// A single enumeration of the process table, indexed so per-pane foreground and
+/// descendant lookups need no further table-wide scans. Expensive per-PID detail
+/// (argv/env via `KERN_PROCARGS2` on macOS, `/proc/<pid>/{cmdline,environ}` on
+/// Linux) stays lazy: it is fetched only for the PIDs a query actually matches.
+pub(crate) trait ProcessSnapshot {
     fn descendant_processes(&self, root_pid: u32) -> Result<Vec<ProcessEvidence>>;
 
     fn foreground_processes(&self, pane_tty: &str) -> Result<Vec<ProcessEvidence>> {
@@ -26,12 +42,133 @@ const SELECTED_ENV_KEYS: &[&str] = &[
 pub(crate) struct ProcProcessInspector;
 
 impl ProcessInspector for ProcProcessInspector {
+    type Snapshot<'a> = ProcTableSnapshot;
+
+    fn snapshot(&self) -> ProcTableSnapshot {
+        ProcTableSnapshot::capture()
+    }
+}
+
+/// Prebuilt indexes over one process-table enumeration:
+/// - `foreground_by_tty`: tty device id -> PIDs whose process group is that
+///   tty's foreground group (the per-pane foreground lookup).
+/// - `children_by_ppid`: parent PID -> child PIDs (the descendant walk).
+#[derive(Default)]
+pub(crate) struct ProcTableSnapshot {
+    foreground_by_tty: std::collections::HashMap<u64, Vec<u32>>,
+    children_by_ppid: std::collections::HashMap<u32, Vec<u32>>,
+}
+
+impl ProcessSnapshot for ProcTableSnapshot {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn descendant_processes(&self, root_pid: u32) -> Result<Vec<ProcessEvidence>> {
-        descendant_processes(root_pid)
+        const MAX_PROCESSES: usize = 64;
+
+        let mut processes = Vec::new();
+        let mut queue = vec![root_pid];
+        let mut visited = std::collections::HashSet::new();
+
+        while let Some(pid) = queue.pop() {
+            if !visited.insert(pid) || visited.len() > MAX_PROCESSES {
+                continue;
+            }
+
+            if let Some(process) = process_evidence_for_pid(pid) {
+                processes.push(process);
+            }
+
+            if let Some(children) = self.children_by_ppid.get(&pid) {
+                queue.extend(children.iter().copied());
+            }
+        }
+
+        Ok(processes)
     }
 
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    fn descendant_processes(&self, _root_pid: u32) -> Result<Vec<ProcessEvidence>> {
+        Ok(Vec::new())
+    }
+
+    #[cfg(target_os = "linux")]
     fn foreground_processes(&self, pane_tty: &str) -> Result<Vec<ProcessEvidence>> {
-        foreground_processes(pane_tty)
+        let Some(tty_device) = linux_tty_device_id(pane_tty) else {
+            return Ok(Vec::new());
+        };
+        Ok(self.evidence_for_foreground_tty(tty_device))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn foreground_processes(&self, pane_tty: &str) -> Result<Vec<ProcessEvidence>> {
+        let Some(tty_device) = macos_tty_device_id(pane_tty) else {
+            return Ok(Vec::new());
+        };
+        Ok(self.evidence_for_foreground_tty(u64::from(tty_device)))
+    }
+}
+
+impl ProcTableSnapshot {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn evidence_for_foreground_tty(&self, tty_device: u64) -> Vec<ProcessEvidence> {
+        self.foreground_by_tty
+            .get(&tty_device)
+            .into_iter()
+            .flatten()
+            .filter_map(|pid| process_evidence_for_pid(*pid))
+            .collect()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn capture() -> Self {
+        let mut snapshot = Self::default();
+        for stat in linux_list_all_pids()
+            .into_iter()
+            .filter_map(linux_process_stat_for_pid)
+        {
+            snapshot
+                .children_by_ppid
+                .entry(stat.parent_pid)
+                .or_default()
+                .push(stat.pid);
+            if let Ok(tty_device) = u64::try_from(stat.tty_device)
+                && stat.is_foreground_on_tty(tty_device)
+            {
+                snapshot
+                    .foreground_by_tty
+                    .entry(tty_device)
+                    .or_default()
+                    .push(stat.pid);
+            }
+        }
+        snapshot
+    }
+
+    #[cfg(target_os = "macos")]
+    fn capture() -> Self {
+        let mut snapshot = Self::default();
+        for info in macos_list_all_pids()
+            .into_iter()
+            .filter_map(macos_process_info_for_pid)
+        {
+            snapshot
+                .children_by_ppid
+                .entry(info.parent_pid)
+                .or_default()
+                .push(info.pid);
+            if info.is_foreground_on_tty(info.tty_device) {
+                snapshot
+                    .foreground_by_tty
+                    .entry(u64::from(info.tty_device))
+                    .or_default()
+                    .push(info.pid);
+            }
+        }
+        snapshot
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    fn capture() -> Self {
+        Self::default()
     }
 }
 
@@ -108,53 +245,6 @@ fn selected_env_from_nul_separated_bytes(bytes: &[u8]) -> Vec<(String, String)> 
         .collect()
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn descendant_processes(root_pid: u32) -> Result<Vec<ProcessEvidence>> {
-    const MAX_PROCESSES: usize = 64;
-
-    let mut processes = Vec::new();
-    let mut queue = vec![root_pid];
-    let mut visited = std::collections::HashSet::new();
-
-    while let Some(pid) = queue.pop() {
-        if !visited.insert(pid) || visited.len() > MAX_PROCESSES {
-            continue;
-        }
-
-        if let Some(process) = process_evidence_for_pid(pid) {
-            processes.push(process);
-        }
-
-        queue.extend(children_for_pid(pid)?);
-    }
-
-    Ok(processes)
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn descendant_processes(_root_pid: u32) -> Result<Vec<ProcessEvidence>> {
-    Ok(Vec::new())
-}
-
-#[cfg(target_os = "linux")]
-fn foreground_processes(pane_tty: &str) -> Result<Vec<ProcessEvidence>> {
-    let Some(tty_device) = linux_tty_device_id(pane_tty) else {
-        return Ok(Vec::new());
-    };
-
-    Ok(linux_list_all_pids()
-        .into_iter()
-        .filter_map(linux_process_stat_for_pid)
-        .filter(|process| process.is_foreground_on_tty(tty_device))
-        .filter_map(|process| process_evidence_for_pid(process.pid))
-        .collect())
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn foreground_processes(_pane_tty: &str) -> Result<Vec<ProcessEvidence>> {
-    Ok(Vec::new())
-}
-
 #[cfg(target_os = "linux")]
 fn linux_tty_device_id(pane_tty: &str) -> Option<u64> {
     use std::os::unix::fs::MetadataExt;
@@ -167,6 +257,7 @@ fn linux_tty_device_id(pane_tty: &str) -> Option<u64> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct LinuxProcessStat {
     pid: u32,
+    parent_pid: u32,
     process_group_id: i64,
     tty_device: i64,
     tty_process_group_id: i64,
@@ -220,23 +311,11 @@ fn linux_process_stat_from_line(line: &str) -> Option<LinuxProcessStat> {
 
     Some(LinuxProcessStat {
         pid,
+        parent_pid: fields.get(1)?.parse().ok()?,
         process_group_id: fields.get(2)?.parse().ok()?,
         tty_device: fields.get(4)?.parse().ok()?,
         tty_process_group_id: fields.get(5)?.parse().ok()?,
     })
-}
-
-#[cfg(target_os = "linux")]
-fn children_for_pid(pid: u32) -> Result<Vec<u32>> {
-    let path = format!("/proc/{pid}/task/{pid}/children");
-    let Ok(contents) = fs::read_to_string(path) else {
-        return Ok(Vec::new());
-    };
-
-    Ok(contents
-        .split_whitespace()
-        .filter_map(|value| value.parse::<u32>().ok())
-        .collect())
 }
 
 #[cfg(target_os = "linux")]
@@ -283,34 +362,16 @@ fn command_from_comm(pid: u32) -> Option<String> {
 }
 
 #[cfg(target_os = "macos")]
-fn children_for_pid(pid: u32) -> Result<Vec<u32>> {
-    Ok(macos_list_child_pids(pid))
-}
-
-#[cfg(target_os = "macos")]
 fn process_evidence_for_pid(pid: u32) -> Option<ProcessEvidence> {
     let process = macos_process_info_for_pid(pid)?;
     process_evidence_from_macos_info(process)
 }
 
 #[cfg(target_os = "macos")]
-fn foreground_processes(pane_tty: &str) -> Result<Vec<ProcessEvidence>> {
-    let Some(tty_device) = macos_tty_device_id(pane_tty) else {
-        return Ok(Vec::new());
-    };
-
-    Ok(macos_list_all_pids()
-        .into_iter()
-        .filter_map(macos_process_info_for_pid)
-        .filter(|process| process.is_foreground_on_tty(tty_device))
-        .filter_map(process_evidence_from_macos_info)
-        .collect())
-}
-
-#[cfg(target_os = "macos")]
 #[derive(Clone, Debug)]
 struct MacProcessInfo {
     pid: u32,
+    parent_pid: u32,
     process_group_id: u32,
     tty_device: u32,
     tty_process_group_id: u32,
@@ -368,17 +429,11 @@ fn macos_process_info_for_pid(pid: u32) -> Option<MacProcessInfo> {
     let bsd = info.pbsd;
     Some(MacProcessInfo {
         pid: bsd.pbi_pid,
+        parent_pid: bsd.pbi_ppid,
         process_group_id: bsd.pbi_pgid,
         tty_device: bsd.e_tdev,
         tty_process_group_id: bsd.e_tpgid,
         command: c_char_array_to_string(&bsd.pbi_comm),
-    })
-}
-
-#[cfg(target_os = "macos")]
-fn macos_list_child_pids(pid: u32) -> Vec<u32> {
-    macos_pid_list(16, |buffer, bytes| unsafe {
-        libc::proc_listchildpids(pid as libc::pid_t, buffer, bytes)
     })
 }
 
@@ -557,7 +612,9 @@ mod tests {
             .spawn()
             .expect("spawn sleep process");
 
-        let processes = descendant_processes(child.id()).expect("collect process evidence");
+        let processes = ProcTableSnapshot::capture()
+            .descendant_processes(child.id())
+            .expect("collect process evidence");
 
         let _ = child.kill();
         let _ = child.wait();
@@ -580,6 +637,7 @@ mod tests {
             stat,
             LinuxProcessStat {
                 pid: 1234,
+                parent_pid: 1,
                 process_group_id: 42,
                 tty_device: 34820,
                 tty_process_group_id: 42,
@@ -677,6 +735,7 @@ mod tests {
     fn macos_foreground_match_requires_tty_and_foreground_group() {
         let process = MacProcessInfo {
             pid: 123,
+            parent_pid: 1,
             process_group_id: 42,
             tty_device: 7,
             tty_process_group_id: 42,

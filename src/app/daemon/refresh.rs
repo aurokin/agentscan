@@ -426,7 +426,8 @@ fn recover_targeted_pane_provider_with_inspector(
     if pane.provider.is_some() {
         return;
     }
-    classify::apply_proc_fallback_with_options(pane, inspector, disable_proc_fallback);
+    let snapshot = inspector.snapshot();
+    classify::apply_proc_fallback_with_options(pane, &snapshot, disable_proc_fallback);
 }
 
 fn agent_metadata_from_row(row: &TmuxPaneRow) -> AgentMetadata {

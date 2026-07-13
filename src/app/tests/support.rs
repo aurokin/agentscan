@@ -274,6 +274,14 @@ fn process_evidence(pid: u32, command: &str, argv: &[&str]) -> proc::ProcessEvid
 }
 
 impl proc::ProcessInspector for FakeProcessInspector {
+    type Snapshot<'a> = &'a FakeProcessInspector;
+
+    fn snapshot(&self) -> &FakeProcessInspector {
+        self
+    }
+}
+
+impl proc::ProcessSnapshot for &FakeProcessInspector {
     fn descendant_processes(&self, root_pid: u32) -> anyhow::Result<Vec<proc::ProcessEvidence>> {
         self.calls.borrow_mut().push(root_pid);
         Ok(self

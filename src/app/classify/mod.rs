@@ -102,10 +102,13 @@ pub(crate) fn panes_from_rows_with_proc_fallback_options(
     inspector: &impl proc::ProcessInspector,
     disable_proc_fallback: bool,
 ) -> Vec<PaneRecord> {
+    // Enumerate the process table once per scan; every pane's fallback consults
+    // this prebuilt index instead of re-scanning all PIDs per candidate pane.
+    let snapshot = inspector.snapshot();
     rows.into_iter()
         .map(|row| {
             let mut pane = pane_from_row(row);
-            apply_proc_fallback_with_options(&mut pane, inspector, disable_proc_fallback);
+            apply_proc_fallback_with_options(&mut pane, &snapshot, disable_proc_fallback);
             pane
         })
         .collect()
