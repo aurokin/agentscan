@@ -1,4 +1,23 @@
 #[test]
+fn derived_pane_format_matches_frozen_literal() {
+    // Contract: `PANE_FORMAT` is derived from the ordered pane-field table in
+    // `src/app/pane_field.rs`. This frozen literal is the byte-for-byte string
+    // every `list-panes -F` call and snapshot fixture depends on; the derivation
+    // must reproduce it exactly. `\\037` here is the escaped `\037` unit
+    // separator, matching the original `concat!(..., r"\037", ...)` layout.
+    const FROZEN_PANE_FORMAT: &str = "#{session_name}\\037#{window_index}\\037#{pane_index}\\037#{pane_id}\\037#{pane_pid}\\037#{pane_current_command}\\037#{pane_title}\\037#{pane_tty}\\037#{pane_current_path}\\037#{window_name}\\037#{session_id}\\037#{window_id}\\037#{@agent.provider}\\037#{@agent.label}\\037#{@agent.cwd}\\037#{@agent.state}\\037#{@agent.session_id}\\037#{pane_active}\\037#{window_active}";
+    assert_eq!(PANE_FORMAT, FROZEN_PANE_FORMAT);
+}
+
+#[test]
+fn derived_subscription_format_matches_frozen_literal() {
+    // Contract: `DAEMON_SUBSCRIPTION_FORMAT` is derived from the same table.
+    // This frozen literal is the exact single-brace payload sent to tmux.
+    const FROZEN_SUBSCRIPTION_FORMAT: &str = "agentscan:%*:#{pane_id}:#{pane_current_command}:#{pane_title}:#{@agent.provider}:#{@agent.label}:#{@agent.cwd}:#{@agent.state}:#{@agent.session_id}:#{pane_active}:#{window_active}";
+    assert_eq!(DAEMON_SUBSCRIPTION_FORMAT, FROZEN_SUBSCRIPTION_FORMAT);
+}
+
+#[test]
 fn parses_tmux_output_into_rows() {
     let input = concat!(
         "dotfiles\x1f1\x1f1\x1f%50\x1f438455\x1fcodex\x1f(bront) .dotfiles: codex\x1f/dev/pts/55\x1f/home/auro/.dotfiles\x1feditor\x1f1\x1f1\n",

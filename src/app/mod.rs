@@ -22,6 +22,7 @@ mod ipc;
 mod live;
 mod model;
 mod output;
+mod pane_field;
 mod path;
 mod picker;
 mod proc;
@@ -38,6 +39,7 @@ pub use commands::run;
 pub(crate) use config::*;
 pub(crate) use live::*;
 pub(crate) use model::*;
+pub(crate) use pane_field::*;
 pub(crate) use path::*;
 pub(crate) use provider::*;
 
@@ -53,64 +55,8 @@ const CLAUDE_SPINNER_GLYPHS: &[char] = &[
     '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷',
 ];
 const IDLE_GLYPHS: &[char] = &['✳'];
-const PANE_FORMAT: &str = concat!(
-    "#{session_name}",
-    r"\037",
-    "#{window_index}",
-    r"\037",
-    "#{pane_index}",
-    r"\037",
-    "#{pane_id}",
-    r"\037",
-    "#{pane_pid}",
-    r"\037",
-    "#{pane_current_command}",
-    r"\037",
-    "#{pane_title}",
-    r"\037",
-    "#{pane_tty}",
-    r"\037",
-    "#{pane_current_path}",
-    r"\037",
-    "#{window_name}",
-    r"\037",
-    "#{session_id}",
-    r"\037",
-    "#{window_id}",
-    r"\037",
-    "#{@agent.provider}",
-    r"\037",
-    "#{@agent.label}",
-    r"\037",
-    "#{@agent.cwd}",
-    r"\037",
-    "#{@agent.state}",
-    r"\037",
-    "#{@agent.session_id}",
-    r"\037",
-    "#{pane_active}",
-    r"\037",
-    "#{window_active}"
-);
-// This string is sent to tmux verbatim (inserted as a `writeln!` named argument,
-// not reprocessed), so the format directives use single braces `#{...}` exactly
-// as tmux expects. Doubling them produced a subscription whose every field
-// rendered as a literal `}`, so the payload was constant and `%subscription-changed`
-// never fired on real field changes — detection silently relied on the reconcile
-// poll and on `%output`/`%window-renamed` notifications instead.
-const DAEMON_SUBSCRIPTION_FORMAT: &str = concat!(
-    "agentscan:%*:",
-    "#{pane_id}:",
-    "#{pane_current_command}:",
-    "#{pane_title}:",
-    "#{@agent.provider}:",
-    "#{@agent.label}:",
-    "#{@agent.cwd}:",
-    "#{@agent.state}:",
-    "#{@agent.session_id}:",
-    "#{pane_active}:",
-    "#{window_active}"
-);
+// `PANE_FORMAT` and `DAEMON_SUBSCRIPTION_FORMAT` are derived from the single
+// ordered pane-field table in `pane_field` and re-exported above.
 // Keep output activity separate from identity and metadata changes. `window_activity` is a
 // second-resolution timestamp and is the only usable tmux signal for providers whose busy/idle
 // state appears solely in captured pane output (including alternate-screen TUIs). It is also
