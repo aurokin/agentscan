@@ -145,16 +145,14 @@ and gap-recovery sync. Interval summary (broker active):
 The daemon stays on the active interval (rather than relaxing to the 300s
 self-heal) whenever it is not fully event-driven: when subscriber coverage is
 incomplete (more sessions than the cap, a failed/dead subscriber, or a
-session-enumeration failure). **Trade-off to be aware of:** with
-`disable_reconcile = true` and `%output` paused, a provider whose status is
-derived from captured pane output (`status.source = "pane_output"`, e.g. a
-footer/prompt-based busy/idle with no title or pane-metadata signal) only
-refreshes on a snapshot-changing event or a reconcile pass. Such a provider's
-status can therefore lag by up to the self-heal interval (300s) when its
-busy/idle changes without any tmux event. Providers driven by pane metadata or
-tmux titles are unaffected (those are event-driven). Set
-`disable_reconcile = false` to restore 30s status refresh for pane-output
-providers.
+session-enumeration failure). Pane-output status does not depend on that poll:
+the daemon keeps metadata and output activity in separate tmux subscriptions.
+Metadata changes refresh every pane, while `window_activity` refreshes only
+panes whose current status path can require captured output. A short
+settle re-check catches the following busy-to-idle transition. Providers driven
+by pane metadata or tmux titles remain on the cheaper metadata path. Set
+`disable_reconcile = false` only when the 30s redundancy meter is wanted; it is
+not required for normal pane-output responsiveness.
 
 Reconcile materiality ignores timestamp-only differences and cache-origin churn
 so telemetry can show whether the poll is finding actual missed state. Run with

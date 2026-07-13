@@ -1,5 +1,5 @@
 use super::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 pub(super) fn apply_control_event_batch(
     snapshot: &mut SnapshotEnvelope,
@@ -66,12 +66,27 @@ pub(super) fn apply_control_event_batch(
     }
 
     let pane_scopes_after_scope_refresh = pane_scopes_by_id(snapshot);
-    for pane_id in batch.panes.keys() {
+    let activity_panes = batch
+        .activities
+        .keys()
+        .filter(|pane_id| {
+            snapshot
+                .panes
+                .iter()
+                .find(|pane| pane.pane_id == pane_id.as_str())
+                .is_some_and(classify::pane_output_status_activity_candidate)
+        })
+        .cloned()
+        .collect::<HashSet<_>>();
+    let mut pane_ids = batch.panes.keys().cloned().collect::<BTreeSet<_>>();
+    pane_ids.extend(activity_panes.iter().cloned());
+    for pane_id in &pane_ids {
         let title_override = title_override_after_latest_refresh(
             batch,
             &pane_scopes_before_refresh,
             &pane_scopes_after_scope_refresh,
             pane_id,
+            activity_panes.contains(pane_id),
         );
         let has_title_override = title_override.is_some();
         if refresh_context.refresh_pane_with_title(snapshot, pane_id, title_override)? {
@@ -89,10 +104,14 @@ pub(super) fn apply_control_event_batch(
             &pane_scopes_before_refresh,
             &pane_scopes_after_scope_refresh,
             pane_id,
+            activity_panes.contains(pane_id),
         ) else {
             continue;
         };
         if batch.panes.contains_key(pane_id) {
+            continue;
+        }
+        if activity_panes.contains(pane_id) {
             continue;
         }
         if refresh_context.refresh_pane_with_title(snapshot, pane_id, Some(title))? {
@@ -132,12 +151,18 @@ fn title_override_after_latest_refresh<'a>(
     pane_scopes_before_refresh: &HashMap<String, (Option<String>, Option<String>)>,
     pane_scopes_after_scope_refresh: &HashMap<String, (Option<String>, Option<String>)>,
     pane_id: &str,
+    activity_refresh: bool,
 ) -> Option<&'a str> {
     let title = batch.titles.get(pane_id)?;
     let mut latest_refresh_sequence = batch
         .resnapshot_sequence
         .into_iter()
         .chain(batch.panes.get(pane_id).copied())
+        .chain(
+            activity_refresh
+                .then(|| batch.activities.get(pane_id).copied())
+                .flatten(),
+        )
         .max();
 
     for pane_scopes in [

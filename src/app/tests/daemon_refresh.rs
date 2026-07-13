@@ -469,6 +469,102 @@ fn daemon_control_event_batch_ignores_raw_output_without_reads() {
 }
 
 #[test]
+fn daemon_activity_event_skips_provider_without_pane_output_status() {
+    let row = daemon_refresh_row("%1", "$1", "@1", 0, "unchanged");
+    let mut snapshot = daemon_refresh_snapshot(vec![row.clone()]);
+    snapshot.panes[0].provider = Some(Provider::Aider);
+    let mut provider = FakeTmuxReadProvider::default().with_pane("%1", Some(row));
+    let lines = vec![
+        "%subscription-changed agentscan-activity $1 @1 0 %1 : %1:1783956107"
+            .to_string(),
+    ];
+
+    let (
+        changed,
+        full_snapshot_refresh,
+        fallback_to_full,
+        _targeted_title_updates,
+        targeted_pane_refreshes,
+        _targeted_scope_refreshes,
+    ) = daemon::test_apply_control_event_lines_with_provider_counts(
+        &mut snapshot,
+        &mut provider,
+        &lines,
+    )
+    .expect("irrelevant activity should be discarded without a tmux read");
+
+    assert!(!changed);
+    assert!(!full_snapshot_refresh);
+    assert!(!fallback_to_full);
+    assert_eq!(targeted_pane_refreshes, 0);
+    assert_eq!(provider.list_pane_count, 0);
+}
+
+#[test]
+fn daemon_activity_event_skips_provider_with_concrete_title_status() {
+    let row = daemon_refresh_row("%1", "$1", "@1", 0, "Codex | Working");
+    let mut snapshot = daemon_refresh_snapshot(vec![row.clone()]);
+    assert_eq!(snapshot.panes[0].provider, Some(Provider::Codex));
+    snapshot.panes[0].status = PaneStatus::title(StatusKind::Busy);
+    let mut provider = FakeTmuxReadProvider::default().with_pane("%1", Some(row));
+    let lines = vec![
+        "%subscription-changed agentscan-activity $1 @1 0 %1 : %1:1783956107"
+            .to_string(),
+    ];
+
+    let (
+        changed,
+        _full_snapshot_refresh,
+        _fallback_to_full,
+        _targeted_title_updates,
+        targeted_pane_refreshes,
+        _targeted_scope_refreshes,
+    ) = daemon::test_apply_control_event_lines_with_provider_counts(
+        &mut snapshot,
+        &mut provider,
+        &lines,
+    )
+    .expect("title-driven status should ignore output activity");
+
+    assert!(!changed);
+    assert_eq!(targeted_pane_refreshes, 0);
+    assert_eq!(provider.list_pane_count, 0);
+}
+
+#[test]
+fn daemon_activity_event_refreshes_provider_with_pane_output_status() {
+    let row = daemon_refresh_row("%1", "$1", "@1", 0, "unchanged");
+    let mut snapshot = daemon_refresh_snapshot(vec![row.clone()]);
+    assert_eq!(snapshot.panes[0].provider, Some(Provider::Codex));
+    snapshot.panes[0].status = PaneStatus::pane_output(StatusKind::Idle);
+    let mut provider = FakeTmuxReadProvider::default().with_pane("%1", Some(row));
+    let lines = vec![
+        "%subscription-changed agentscan-activity $1 @1 0 %1 : %1:1783956107"
+            .to_string(),
+    ];
+
+    let (
+        changed,
+        full_snapshot_refresh,
+        fallback_to_full,
+        _targeted_title_updates,
+        targeted_pane_refreshes,
+        _targeted_scope_refreshes,
+    ) = daemon::test_apply_control_event_lines_with_provider_counts(
+        &mut snapshot,
+        &mut provider,
+        &lines,
+    )
+    .expect("pane-output provider activity should refresh the pane");
+
+    assert!(changed);
+    assert!(!full_snapshot_refresh);
+    assert!(!fallback_to_full);
+    assert_eq!(targeted_pane_refreshes, 1);
+    assert_eq!(provider.list_pane_count, 1);
+}
+
+#[test]
 fn daemon_control_event_batch_coalesces_latest_title_per_pane() {
     let row = daemon_refresh_row("%1", "$1", "@1", 0, "stale");
     let mut snapshot = daemon_refresh_snapshot(vec![row.clone()]);
@@ -503,6 +599,42 @@ fn daemon_control_event_batch_coalesces_latest_title_per_pane() {
     assert_eq!(provider.list_target_count, 0);
     assert_eq!(provider.list_pane_count, 1);
     assert_eq!(snapshot.panes[0].tmux.pane_title_raw, "second");
+}
+
+#[test]
+fn discarded_activity_does_not_suppress_newer_title_during_metadata_refresh() {
+    let row = daemon_refresh_row("%1", "$1", "@1", 0, "stale");
+    let mut snapshot = daemon_refresh_snapshot(vec![row.clone()]);
+    snapshot.panes[0].provider = Some(Provider::Aider);
+    let mut provider = FakeTmuxReadProvider::default().with_pane("%1", Some(row));
+    let lines = vec![
+        "%subscription-changed agentscan $1 @1 0 %1 : %1:aider:stale::::".to_string(),
+        "%output %1 \\033]0;from-control-mode\\007".to_string(),
+        "%subscription-changed agentscan-activity $1 @1 0 %1 : %1:1783956107".to_string(),
+    ];
+
+    let (
+        changed,
+        full_snapshot_refresh,
+        fallback_to_full,
+        targeted_title_updates,
+        targeted_pane_refreshes,
+        targeted_scope_refreshes,
+    ) = daemon::test_apply_control_event_lines_with_provider_counts(
+        &mut snapshot,
+        &mut provider,
+        &lines,
+    )
+    .expect("discarded activity must not make the earlier title stale");
+
+    assert!(changed);
+    assert!(!full_snapshot_refresh);
+    assert!(!fallback_to_full);
+    assert_eq!(targeted_title_updates, 1);
+    assert_eq!(targeted_pane_refreshes, 1);
+    assert_eq!(targeted_scope_refreshes, 0);
+    assert_eq!(provider.list_pane_count, 1);
+    assert_eq!(snapshot.panes[0].tmux.pane_title_raw, "from-control-mode");
 }
 
 #[test]

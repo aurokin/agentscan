@@ -60,6 +60,22 @@ fn subscription_changed_notifications_expose_pane_id() {
 }
 
 #[test]
+fn activity_subscription_changes_are_distinct_from_metadata_changes() {
+    assert_eq!(
+        daemon::test_control_event_pane_kind(
+            "%subscription-changed agentscan-activity $174 @251 1 %251 : %251:1783956107"
+        ),
+        Some(("activity", "%251".to_string()))
+    );
+    assert_eq!(
+        daemon::test_control_event_pane_kind(
+            "%subscription-changed agentscan $174 @251 1 %251 : %251:codex:Working"
+        ),
+        Some(("metadata", "%251".to_string()))
+    );
+}
+
+#[test]
 fn output_notifications_expose_title_change_pane_id() {
     assert_eq!(
         daemon::output_title_change_pane_id(
@@ -266,9 +282,9 @@ fn daemon_subscription_format_includes_wrapper_metadata_fields() {
     assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{@agent.provider}"));
     assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{@agent.state}"));
     assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{@agent.session_id}"));
-    // window_activity drives re-capture for pane-output-only providers (busy/idle that never
-    // touches tmux metadata), so the subscription must fire on pane output activity.
-    assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{window_activity}"));
+    assert!(!DAEMON_SUBSCRIPTION_FORMAT.contains("#{window_activity}"));
+    assert!(DAEMON_ACTIVITY_SUBSCRIPTION_FORMAT.contains("#{window_activity}"));
+    assert!(DAEMON_ACTIVITY_SUBSCRIPTION_FORMAT.starts_with("agentscan-activity:%*:"));
     // Explicitly reject the doubled-brace form that broke the subscription.
     assert!(!DAEMON_SUBSCRIPTION_FORMAT.contains("#{{"));
 }
@@ -281,4 +297,3 @@ fn detects_notification_names() {
     );
     assert_eq!(daemon::notification_name("plain output"), None);
 }
-

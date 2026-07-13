@@ -24,6 +24,10 @@ pub(crate) fn pane_output_status_fallback_candidate(pane: &PaneRecord) -> bool {
             || pane_output_status_refinement_candidate(pane))
 }
 
+pub(crate) fn pane_output_status_activity_candidate(pane: &PaneRecord) -> bool {
+    pane.status.source == StatusSource::PaneOutput || pane_output_status_fallback_candidate(pane)
+}
+
 pub(crate) fn apply_pane_output_status_fallback(pane: &mut PaneRecord, output: &str) {
     let can_fill_unknown =
         pane.status.kind == StatusKind::Unknown && pane.status.source == StatusSource::NotChecked;

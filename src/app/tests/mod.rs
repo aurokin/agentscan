@@ -24,10 +24,11 @@ const TMUX_AMBIGUOUS_FIXTURE: &str = include_str!(concat!(
 
 #[allow(unused_imports)]
 use super::{
-    CACHE_SCHEMA_VERSION, CLAUDE_SPINNER_GLYPHS, Cli, DAEMON_SUBSCRIPTION_FORMAT, ICONS_ENV_VAR,
-    IDLE_GLYPHS, IconMode, LiveClientEvent, OutputFormat, PANE_FORMAT, PaneRecord, PaneStatus,
-    ProcFallbackOutcome, Provider, SnapshotEnvelope, SourceKind, StatusKind, TMUX_SOCKET_ENV_VAR,
-    TmuxMetadataField, classify, config, daemon, ipc, output, proc, snapshot, tmux,
+    CACHE_SCHEMA_VERSION, CLAUDE_SPINNER_GLYPHS, Cli, DAEMON_ACTIVITY_SUBSCRIPTION_FORMAT,
+    DAEMON_SUBSCRIPTION_FORMAT, ICONS_ENV_VAR, IDLE_GLYPHS, IconMode, LiveClientEvent,
+    OutputFormat, PANE_FORMAT, PaneRecord, PaneStatus, ProcFallbackOutcome, Provider,
+    SnapshotEnvelope, SourceKind, StatusKind, TMUX_SOCKET_ENV_VAR, TmuxMetadataField, classify,
+    config, daemon, ipc, output, proc, snapshot, tmux,
 };
 
 include!("support.rs");

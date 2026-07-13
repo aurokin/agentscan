@@ -1175,7 +1175,13 @@ fn configure_started_tmux_control_mode_client(
         .take()
         .context("tmux control-mode client did not provide stdin")?;
     wait_for_control_mode_startup_response(&mut stdout_reader, "tmux control-mode attach")?;
-    writeln!(stdin, "refresh-client -B '{DAEMON_SUBSCRIPTION_FORMAT}'")
+    // tmux accepts repeated `-B` values and iterates them all in one
+    // `refresh-client` invocation. Keep setup atomic and wait for one command
+    // response before accepting subscription events.
+    writeln!(
+        stdin,
+        "refresh-client -B '{DAEMON_SUBSCRIPTION_FORMAT}' -B '{DAEMON_ACTIVITY_SUBSCRIPTION_FORMAT}'"
+    )
         .context("failed to subscribe to pane and metadata updates")?;
     stdin
         .flush()

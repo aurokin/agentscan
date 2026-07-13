@@ -45,11 +45,13 @@ use events::{
     ControlEvent, ControlEventBatch, ControlEventOutcome, batch_changed_session_set,
     control_event_from_line, is_control_exit_line,
 };
+// Test-only parser helpers stay behind this gate; production builds must not
+// expose or resolve the `#[cfg(test)]` definitions in the child modules.
 #[cfg(test)]
 pub(crate) use events::{
     notification_name, output_title_change_pane_id, output_title_change_title,
     session_notification_target, should_resnapshot_from_notification, subscription_changed_pane_id,
-    window_notification_target,
+    test_control_event_pane_kind, window_notification_target,
 };
 pub(crate) use lifecycle::{
     AutoStartPolicy, DaemonSnapshotError, LifecycleQuery, daemon_restart, daemon_run, daemon_start,
@@ -339,9 +341,14 @@ impl RuntimeTelemetry {
     }
 
     fn record_control_event_kinds(&mut self, batch: &ControlEventBatch) {
-        self.control_event_pane_count = self
-            .control_event_pane_count
-            .saturating_add(batch.panes.len().try_into().unwrap_or(u64::MAX));
+        self.control_event_pane_count = self.control_event_pane_count.saturating_add(
+            batch
+                .panes
+                .len()
+                .saturating_add(batch.activities.len())
+                .try_into()
+                .unwrap_or(u64::MAX),
+        );
         self.control_event_title_count = self
             .control_event_title_count
             .saturating_add(batch.titles.len().try_into().unwrap_or(u64::MAX));
@@ -1182,9 +1189,8 @@ impl<S: StartupActions> DaemonRuntime<S> {
         let previous_snapshot = batch
             .can_refresh_full_snapshot()
             .then(|| self.snapshot.clone());
-        // Captured for the publish gate below: a `window_activity` tick fires a control event
-        // (and a targeted refresh) whenever any pane in the window writes output — including a
-        // spinner redraw or a log tail — but that often leaves every `PaneRecord` materially
+        // Captured for the publish gate below: a relevant `window_activity` tick can drive a
+        // targeted refresh for a pane-output provider yet leave its `PaneRecord` materially
         // unchanged. Comparing against this pre-refresh snapshot lets us skip publishing an
         // identical snapshot, matching the settle and reconcile paths.
         let snapshot_before_refresh = self.snapshot.clone();
@@ -1243,8 +1249,8 @@ impl<S: StartupActions> DaemonRuntime<S> {
                 SnapshotPublishContext::new("reconcile").with_detail("broker_reconnect"),
             )
         } else if snapshots_are_materially_equal(&snapshot_before_refresh, &self.snapshot) {
-            // The refresh ran but produced no material change (e.g. a window_activity tick on a
-            // pane whose status/title/metadata is unchanged); skip the redundant publish.
+            // The refresh ran but produced no material change (for example, a pane-output
+            // activity tick whose status stayed busy); skip the redundant publish.
             self.update_runtime_telemetry();
             RefreshOutcome::no_publish()
         } else {

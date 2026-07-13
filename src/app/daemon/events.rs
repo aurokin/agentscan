@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum ControlEvent {
     PaneChanged(String),
+    PaneActivity(String),
     TitleChanged { pane_id: String, title: String },
     WindowChanged(String),
     SessionChanged(String),
@@ -35,6 +36,7 @@ pub(super) struct ControlEventBatch {
     pub(super) sessions: BTreeMap<String, u64>,
     pub(super) windows: BTreeMap<String, u64>,
     pub(super) panes: BTreeMap<String, u64>,
+    pub(super) activities: BTreeMap<String, u64>,
     pub(super) titles: BTreeMap<String, SequencedTitle>,
     pub(super) control_sources: Vec<ipc::ControlModeSourceFrame>,
 }
@@ -118,6 +120,9 @@ impl ControlEventBatch {
             ControlEvent::PaneChanged(pane_id) => {
                 self.panes.insert(pane_id, sequence);
             }
+            ControlEvent::PaneActivity(pane_id) => {
+                self.activities.insert(pane_id, sequence);
+            }
             ControlEvent::TitleChanged { pane_id, title } => {
                 self.titles
                     .insert(pane_id, SequencedTitle { sequence, title });
@@ -137,6 +142,7 @@ impl ControlEventBatch {
         let event_count = self.sessions.len()
             + self.windows.len()
             + self.panes.len()
+            + self.activities.len()
             + self
                 .titles
                 .keys()
@@ -156,6 +162,9 @@ impl ControlEventBatch {
         if let Some((pane_id, _)) = self.panes.iter().next() {
             return ControlEvent::PaneChanged(pane_id.clone()).publish_context();
         }
+        if let Some((pane_id, _)) = self.activities.iter().next() {
+            return ControlEvent::PaneActivity(pane_id.clone()).publish_context();
+        }
         if let Some((pane_id, title)) = self.titles.iter().next() {
             return ControlEvent::TitleChanged {
                 pane_id: pane_id.clone(),
@@ -173,6 +182,7 @@ impl ControlEventBatch {
             || !self.sessions.is_empty()
             || !self.windows.is_empty()
             || !self.panes.is_empty()
+            || !self.activities.is_empty()
             || !self.titles.is_empty()
     }
 
@@ -183,7 +193,7 @@ impl ControlEventBatch {
         if !self.sessions.is_empty() || !self.windows.is_empty() {
             return "targeted_scope";
         }
-        if !self.panes.is_empty() || !self.titles.is_empty() {
+        if !self.panes.is_empty() || !self.activities.is_empty() || !self.titles.is_empty() {
             return "targeted_pane";
         }
         "none"
@@ -193,8 +203,11 @@ impl ControlEventBatch {
         if self.resnapshot_sequence.is_some() {
             return ObservabilityDetail::Static("resnapshot");
         }
-        let event_count =
-            self.sessions.len() + self.windows.len() + self.panes.len() + self.titles.len();
+        let event_count = self.sessions.len()
+            + self.windows.len()
+            + self.panes.len()
+            + self.activities.len()
+            + self.titles.len();
         if event_count > 1 {
             return ObservabilityDetail::Static("batch");
         }
@@ -206,6 +219,9 @@ impl ControlEventBatch {
         }
         if let Some(pane_id) = self.panes.keys().next() {
             return ObservabilityDetail::Owned(format!("pane:{pane_id}"));
+        }
+        if let Some(pane_id) = self.activities.keys().next() {
+            return ObservabilityDetail::Owned(format!("activity:{pane_id}"));
         }
         if let Some(pane_id) = self.titles.keys().next() {
             return ObservabilityDetail::Owned(format!("title:{pane_id}"));
@@ -222,6 +238,10 @@ impl ControlEvent {
         match self {
             ControlEvent::PaneChanged(pane_id) => Some(
                 SnapshotPublishContext::new("control_event").with_detail(format!("pane:{pane_id}")),
+            ),
+            ControlEvent::PaneActivity(pane_id) => Some(
+                SnapshotPublishContext::new("control_event")
+                    .with_detail(format!("activity:{pane_id}")),
             ),
             ControlEvent::TitleChanged { pane_id, .. } => Some(
                 SnapshotPublishContext::new("control_event")
@@ -268,8 +288,12 @@ pub(super) fn control_event_from_line(line: &str) -> ControlEvent {
         return ControlEvent::Exit;
     }
 
-    if let Some(pane_id) = subscription_changed_pane_id(line) {
-        return ControlEvent::PaneChanged(pane_id.to_string());
+    if let Some((subscription_name, pane_id)) = subscription_changed_pane(line) {
+        return match subscription_name {
+            "agentscan" => ControlEvent::PaneChanged(pane_id.to_string()),
+            "agentscan-activity" => ControlEvent::PaneActivity(pane_id.to_string()),
+            _ => ControlEvent::Ignored,
+        };
     }
 
     if let Some(change) = output_title_change(line) {
@@ -292,6 +316,15 @@ pub(super) fn control_event_from_line(line: &str) -> ControlEvent {
     }
 
     ControlEvent::Ignored
+}
+
+#[cfg(test)]
+pub(crate) fn test_control_event_pane_kind(line: &str) -> Option<(&'static str, String)> {
+    match control_event_from_line(line) {
+        ControlEvent::PaneChanged(pane_id) => Some(("metadata", pane_id)),
+        ControlEvent::PaneActivity(pane_id) => Some(("activity", pane_id)),
+        _ => None,
+    }
 }
 
 // True when a batch contains a notification indicating the set of sessions on
@@ -321,17 +354,24 @@ pub(crate) fn should_resnapshot_from_notification(line: &str) -> bool {
     )
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn subscription_changed_pane_id(line: &str) -> Option<&str> {
+    subscription_changed_pane(line).map(|(_, pane_id)| pane_id)
+}
+
+fn subscription_changed_pane(line: &str) -> Option<(&str, &str)> {
     let mut fields = line.split_whitespace();
     if fields.next()? != "%subscription-changed" {
         return None;
     }
-    let _subscription_name = fields.next()?;
+    let subscription_name = fields.next()?;
     let _session = fields.next()?;
     let _window = fields.next()?;
     let _flags = fields.next()?;
     let pane_id = fields.next()?;
-    pane_id.starts_with('%').then_some(pane_id)
+    pane_id
+        .starts_with('%')
+        .then_some((subscription_name, pane_id))
 }
 
 #[cfg_attr(not(test), allow(dead_code))]

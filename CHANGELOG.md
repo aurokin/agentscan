@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixed
+
+- Split tmux metadata and output-activity subscriptions so noisy panes only
+  trigger targeted reads when their current status path can require pane output;
+  agent identity and metadata changes remain event-driven for every pane.
+
 ## 0.7.6 - 2026-06-29
 
 ### Added

@@ -135,17 +135,20 @@ Implications:
   trace only when `AGENTSCAN_TRACE_CONTROL_LINES=1` is set.
 - **pane-output providers** (status read only from captured pane output, never from
   tmux metadata — e.g. pi without the `titlebar-spinner` extension, droid) are kept
-  responsive without the `%output` pty firehose. The daemon subscription includes
-  `window_activity`, so pane output fires a `%subscription-changed` event that drives a
-  cache-throttled re-capture (idle→busy, event-driven). Because an idle transition emits
-  no activity, the daemon also arms a single **settle re-check** deadline (~2.2s) while any
-  pane-output pane reads busy and re-reads those panes when it fires (busy→idle); the
-  deadline is armed once and not pushed out by unrelated panes' activity, so the re-check
-  is not starved. This preserves the `no-output` flat-cost invariant (no per-byte pty
-  stream) while making non-metadata providers event-responsive. Where a provider *does*
-  publish state in tmux metadata (claude/codex/grok titles; pi's `titlebar-spinner`
-  extension), that cheaper title-driven path is preferred automatically by the layered
-  detection — both paths are supported, selected by cost.
+  responsive without the `%output` pty firehose. A separate activity subscription includes
+  `window_activity`, so pane output fires a distinct `%subscription-changed` event. The daemon
+  turns that into a cache-throttled re-capture only when the pane's current status path can require
+  captured output; noisy unknown panes and metadata-driven providers do not trigger a targeted
+  tmux read. Identity and metadata remain in their own all-pane subscription, so new
+  agents are still discovered immediately. Because an idle transition emits no activity, the
+  daemon also arms a single **settle re-check** deadline (~2.2s) while any pane-output pane
+  reads busy and re-reads those panes when it fires (busy→idle); the deadline is armed once and
+  not pushed out by unrelated panes' activity, so the re-check is not starved. This preserves
+  the `no-output` flat-cost invariant (no per-byte pty stream) while making non-metadata
+  providers event-responsive. Where a provider *does* publish state in tmux metadata
+  (claude/codex/grok titles; pi's `titlebar-spinner` extension), that cheaper title-driven path
+  is preferred automatically by the layered detection — both paths are supported, selected by
+  cost.
 
 ### Snapshot Contract
 
