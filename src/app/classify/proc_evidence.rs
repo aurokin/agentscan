@@ -31,11 +31,12 @@ pub(super) fn provider_match_from_proc_evidence(
         ));
     }
 
-    if let Some(arg) = process
-        .argv
-        .iter()
-        .find(|arg| aider_arg_has_known_package_path(arg))
-    {
+    // Normalize every argv entry exactly once; the arg-pattern checks below (aider
+    // package path, the Claude package path, and the provider table) all match against
+    // these normalized entries instead of re-normalizing the argv per provider.
+    let normalized_args = normalized_proc_args(process);
+
+    if let Some(arg) = find_provider_arg(process, &normalized_args, &AIDER_PACKAGE_ARG_PATTERNS) {
         return Some(proc_provider_arg_match(
             Provider::Aider,
             source_reason_prefix,
@@ -43,14 +44,7 @@ pub(super) fn provider_match_from_proc_evidence(
         ));
     }
 
-    if process.argv.first().is_some_and(|arg| {
-        claude_argv0_has_binary_shape(arg)
-            || command_basename(arg).is_some_and(|command| command.eq_ignore_ascii_case("claude"))
-    }) || process
-        .argv
-        .iter()
-        .any(|arg| claude_arg_has_known_package_path(arg))
-    {
+    if process_has_claude_proc_shape(process, &normalized_args) {
         return Some(ProviderMatch::single_reason(
             Provider::Claude,
             ClassificationMatchKind::ProcProcessTree,
@@ -68,28 +62,14 @@ pub(super) fn provider_match_from_proc_evidence(
         ));
     }
 
-    if let Some(arg) = process
-        .argv
-        .iter()
-        .find(|arg| gemini_arg_has_known_package_path(arg))
-    {
-        return Some(proc_provider_arg_match(
-            Provider::Gemini,
-            source_reason_prefix,
-            arg,
-        ));
-    }
-
-    if let Some(arg) = process
-        .argv
-        .iter()
-        .find(|arg| opencode_arg_has_known_package_path(arg))
-    {
-        return Some(proc_provider_arg_match(
-            Provider::Opencode,
-            source_reason_prefix,
-            arg,
-        ));
+    // Ordered arg-path providers. Order is significant (it decides the winner when a
+    // process's argv matches more than one pattern set), and it stays after the Claude
+    // checks above so Claude keeps priority over Gemini. Adding a provider here is one
+    // row plus its `*_ARG_PATTERNS` const.
+    for &(provider, patterns) in PROVIDER_ARG_PATTERN_TABLE {
+        if let Some(arg) = find_provider_arg(process, &normalized_args, patterns) {
+            return Some(proc_provider_arg_match(provider, source_reason_prefix, arg));
+        }
     }
 
     if process_has_opencode_env(process) {
@@ -97,42 +77,6 @@ pub(super) fn provider_match_from_proc_evidence(
             Provider::Opencode,
             source_reason_prefix,
             "OPENCODE",
-        ));
-    }
-
-    if let Some(arg) = process
-        .argv
-        .iter()
-        .find(|arg| copilot_arg_has_known_package_path(arg))
-    {
-        return Some(proc_provider_arg_match(
-            Provider::Copilot,
-            source_reason_prefix,
-            arg,
-        ));
-    }
-
-    if let Some(arg) = process
-        .argv
-        .iter()
-        .find(|arg| pi_arg_has_known_package_path(arg))
-    {
-        return Some(proc_provider_arg_match(
-            Provider::Pi,
-            source_reason_prefix,
-            arg,
-        ));
-    }
-
-    if let Some(arg) = process
-        .argv
-        .iter()
-        .find(|arg| hermes_arg_has_known_package_path(arg))
-    {
-        return Some(proc_provider_arg_match(
-            Provider::Hermes,
-            source_reason_prefix,
-            arg,
         ));
     }
 
@@ -145,6 +89,53 @@ pub(super) fn provider_match_from_proc_evidence(
     }
 
     None
+}
+
+/// Ordered table of providers identified purely by an argv path pattern. The order is a
+/// classification contract: the first matching row wins, so it mirrors the historic
+/// hand-ordered if-chain. Providers with extra signals (Aider's Python entrypoints, Claude's
+/// binary shape and reason handling, and the OpenCode/Pi env checks) stay as explicit checks
+/// around this loop rather than joining the table.
+const PROVIDER_ARG_PATTERN_TABLE: &[(Provider, &ProcArgPathPatterns)] = &[
+    (Provider::Gemini, &GEMINI_ARG_PATTERNS),
+    (Provider::Opencode, &OPENCODE_ARG_PATTERNS),
+    (Provider::Copilot, &COPILOT_ARG_PATTERNS),
+    (Provider::Pi, &PI_ARG_PATTERNS),
+    (Provider::Hermes, &HERMES_ARG_PATTERNS),
+];
+
+fn normalized_proc_args(process: &proc::ProcessEvidence) -> Vec<String> {
+    process
+        .argv
+        .iter()
+        .map(|arg| normalize_proc_arg(arg))
+        .collect()
+}
+
+/// Returns the first argv entry whose normalized form matches `patterns`, reported as the
+/// original (un-normalized) argv string so diagnostics keep the process's real path.
+fn find_provider_arg<'a>(
+    process: &'a proc::ProcessEvidence,
+    normalized_args: &[String],
+    patterns: &ProcArgPathPatterns,
+) -> Option<&'a str> {
+    normalized_args
+        .iter()
+        .zip(process.argv.iter())
+        .find(|(normalized, _raw)| arg_matches_patterns(normalized, patterns))
+        .map(|(_normalized, raw)| raw.as_str())
+}
+
+fn process_has_claude_proc_shape(
+    process: &proc::ProcessEvidence,
+    normalized_args: &[String],
+) -> bool {
+    process.argv.first().is_some_and(|arg| {
+        claude_argv0_has_binary_shape(arg)
+            || command_basename(arg).is_some_and(|command| command.eq_ignore_ascii_case("claude"))
+    }) || normalized_args
+        .iter()
+        .any(|arg| arg_matches_patterns(arg, &CLAUDE_ARG_PATTERNS))
 }
 
 fn provider_match_from_proc_command(
@@ -452,39 +443,9 @@ fn claude_arg_has_known_package_path(arg: &str) -> bool {
     arg_matches_patterns(&lower, &CLAUDE_ARG_PATTERNS)
 }
 
-fn gemini_arg_has_known_package_path(arg: &str) -> bool {
-    let lower = normalize_proc_arg(arg);
-    arg_matches_patterns(&lower, &GEMINI_ARG_PATTERNS)
-}
-
-fn pi_arg_has_known_package_path(arg: &str) -> bool {
-    let lower = normalize_proc_arg(arg);
-    arg_matches_patterns(&lower, &PI_ARG_PATTERNS)
-}
-
-fn hermes_arg_has_known_package_path(arg: &str) -> bool {
-    let lower = normalize_proc_arg(arg);
-    arg_matches_patterns(&lower, &HERMES_ARG_PATTERNS)
-}
-
-fn aider_arg_has_known_package_path(arg: &str) -> bool {
-    let lower = normalize_proc_arg(arg);
-    arg_matches_patterns(&lower, &AIDER_PACKAGE_ARG_PATTERNS)
-}
-
 fn aider_arg_has_console_script_path(arg: &str) -> bool {
     let lower = normalize_proc_arg(arg);
     arg_matches_patterns(&lower, &AIDER_CONSOLE_SCRIPT_PATTERNS)
-}
-
-fn opencode_arg_has_known_package_path(arg: &str) -> bool {
-    let lower = normalize_proc_arg(arg);
-    arg_matches_patterns(&lower, &OPENCODE_ARG_PATTERNS)
-}
-
-fn copilot_arg_has_known_package_path(arg: &str) -> bool {
-    let lower = normalize_proc_arg(arg);
-    arg_matches_patterns(&lower, &COPILOT_ARG_PATTERNS)
 }
 
 fn normalize_proc_arg(arg: &str) -> String {
@@ -613,7 +574,7 @@ fn process_command_is_python(process: &proc::ProcessEvidence) -> bool {
             .is_some_and(|command| command_is_python(&command))
 }
 
-fn command_is_python(command: &str) -> bool {
+pub(super) fn command_is_python(command: &str) -> bool {
     let command = command.trim().to_ascii_lowercase();
     let command = match command_basename(&command) {
         Some(basename) => basename,

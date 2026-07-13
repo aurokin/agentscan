@@ -1,4 +1,4 @@
-use super::{PaneRecord, PaneStatus, Provider, StatusKind, StatusSource};
+use super::{PaneRecord, PaneStatus, Provider, StatusKind, StatusSource, is_version_like_command};
 
 mod antigravity;
 mod claude;
@@ -96,12 +96,4 @@ fn trim_trailing_blank_lines(output: &str) -> &str {
         }
     }
     &output[..end]
-}
-
-fn dotted_version_token(token: &str) -> bool {
-    let segments: Vec<&str> = token.split('.').collect();
-    segments.len() >= 3
-        && segments
-            .iter()
-            .all(|segment| !segment.is_empty() && segment.chars().all(|ch| ch.is_ascii_digit()))
 }

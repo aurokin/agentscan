@@ -1,4 +1,4 @@
-use super::{PaneOutputFrame, StatusKind, dotted_version_token};
+use super::{PaneOutputFrame, StatusKind, is_version_like_command};
 
 pub(super) fn status(output: &str) -> Option<StatusKind> {
     let frame = PaneOutputFrame::new(output);
@@ -121,7 +121,7 @@ fn grok_version_footer_line(line: &str) -> bool {
     let Some((first, rest)) = tokens.split_first() else {
         return false;
     };
-    dotted_version_token(first)
+    is_version_like_command(first)
         && rest.len() <= 2
         && rest.iter().all(|t| grok_release_channel_word(t))
 }
