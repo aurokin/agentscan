@@ -1,3 +1,7 @@
+// Only the macOS-gated items reference parent names (`Command`, `Path`); the
+// test-visible helpers are self-contained. An ungated glob is an unused import
+// on non-macOS builds (lib and test alike), which CI rejects via `-D warnings`.
+#[cfg(target_os = "macos")]
 use super::*;
 
 #[cfg(any(test, target_os = "macos"))]
