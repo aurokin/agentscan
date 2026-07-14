@@ -462,6 +462,42 @@ fn daemon_refresh_scope_shares_one_process_snapshot_across_candidate_panes() {
     assert_eq!(inspector.snapshot_captures(), 1);
 }
 
+// A focus event for a pane that moved sessions while the snapshot was stale:
+// the stale-session refresh drops the pane, so the handler must fall back to a
+// full reconcile to rediscover it under its new session.
+#[test]
+fn daemon_refresh_focus_falls_back_to_full_reconcile_for_moved_pane() {
+    let stale_row = daemon_refresh_row("%1", "$1", "@1", 0, "moved");
+    let moved_row = daemon_refresh_row("%1", "$2", "@2", 0, "moved");
+    let mut snapshot = daemon_refresh_snapshot(vec![stale_row]);
+    let mut provider = FakeTmuxReadProvider::default()
+        .with_target_panes("$1", Some(Vec::new()))
+        .with_all_panes(vec![moved_row]);
+
+    daemon::test_refresh_snapshot_for_focused_pane_with_provider(&mut snapshot, &mut provider, "%1")
+        .expect("focus refresh should succeed");
+
+    assert_eq!(snapshot.panes.len(), 1);
+    assert_eq!(snapshot.panes[0].pane_id, "%1");
+    assert_eq!(snapshot.panes[0].tmux.session_id.as_deref(), Some("$2"));
+    assert_eq!(provider.list_all_count, 1);
+}
+
+#[test]
+fn daemon_refresh_focus_stays_session_scoped_when_pane_still_present() {
+    let row = daemon_refresh_row("%1", "$1", "@1", 0, "focused");
+    let mut snapshot = daemon_refresh_snapshot(vec![row.clone()]);
+    let mut provider =
+        FakeTmuxReadProvider::default().with_target_panes("$1", Some(vec![row]));
+
+    daemon::test_refresh_snapshot_for_focused_pane_with_provider(&mut snapshot, &mut provider, "%1")
+        .expect("focus refresh should succeed");
+
+    assert_eq!(snapshot.panes.len(), 1);
+    assert_eq!(provider.target_scopes, vec![tmux::PaneListScope::Session]);
+    assert_eq!(provider.list_all_count, 0);
+}
+
 #[test]
 fn daemon_full_reconcile_replaces_snapshot_from_provider() {
     let old_row = daemon_refresh_row("%1", "$1", "@1", 0, "old");

@@ -904,13 +904,23 @@ pub(super) fn build_diff_broadcast(
     current: &Arc<SnapshotEnvelope>,
 ) -> Result<DaemonBroadcast> {
     let diff = super::refresh::snapshot_wire_diff(previous, current);
-    let primary = encode_diff_frame(seq, current, diff.changed_panes, diff.removed_pane_ids)?;
-    Ok(DaemonBroadcast::new(
-        primary,
-        current.clone(),
-        seq,
-        diff.omitted_pane_growth,
-    ))
+    match encode_diff_frame(seq, current, diff.changed_panes, diff.removed_pane_ids) {
+        Ok(primary) => Ok(DaemonBroadcast::new(
+            primary,
+            current.clone(),
+            seq,
+            diff.omitted_pane_growth,
+        )),
+        // A diff carries changed panes plus removed ids, so it can exceed the
+        // frame limit even when the current snapshot's full frame fits (e.g. a
+        // near-limit replacement that also removes many panes). Failing the
+        // publish here would strand subscribers on the old snapshot forever —
+        // the daemon's runtime state has already moved on and materially-equal
+        // checks suppress a retry. Fall back to the absolute full frame; if
+        // that is oversized too, the error propagates and the store correctly
+        // keeps the last good snapshot.
+        Err(_) => build_full_broadcast(seq, current),
+    }
 }
 
 /// Builds a full-frame broadcast (no prior snapshot to diff against). The primary

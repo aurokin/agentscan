@@ -73,7 +73,7 @@ pub(crate) use lifecycle::{
 };
 use refresh::{
     apply_control_event_batch, reconcile_full_snapshot, reconcile_refresh_outcome,
-    refresh_snapshot_pane_with_title, refresh_snapshot_session, snapshot_diff,
+    refresh_snapshot_for_focused_pane, refresh_snapshot_pane_with_title, snapshot_diff,
     snapshots_are_materially_equal,
 };
 #[cfg(test)]
@@ -82,6 +82,7 @@ pub(crate) use refresh::{
     test_apply_control_event_lines_with_provider_counts,
     test_apply_resnapshot_control_event_with_provider, test_reconcile_full_snapshot_with_provider,
     test_recover_targeted_pane_provider_with_inspector,
+    test_refresh_snapshot_for_focused_pane_with_provider,
     test_refresh_snapshot_pane_title_with_provider, test_refresh_snapshot_pane_with_provider,
     test_refresh_snapshot_session_with_inspector, test_refresh_snapshot_session_with_provider,
     test_refresh_snapshot_window_with_provider,
@@ -1378,36 +1379,15 @@ impl<S: StartupActions> DaemonRuntime<S> {
                         &owned_previous
                     }
                 };
-                // A focus change flips `pane_active`/`window_active` within the focused pane's
-                // session only (each session tracks its own active window and per-window active
-                // pane, independent of other sessions), and it can move focus across windows in
-                // that session. Refreshing the whole session is the narrowest scope that keeps
-                // every affected active flag correct — including the previously-focused pane —
-                // instead of a full list-panes over every session on each rapid focus event. If
-                // the focused pane is not in the snapshot, fall back to a full reconcile.
-                let session_id = self
-                    .snapshot
-                    .panes
-                    .iter()
-                    .find(|pane| pane.pane_id == *pane_id)
-                    .and_then(|pane| pane.tmux.session_id.clone());
                 let mut event_tmux_reads = self.control_mode.read_provider();
-                match session_id.as_deref() {
-                    Some(session_id) => refresh_snapshot_session(
-                        &mut self.snapshot,
-                        &mut event_tmux_reads,
-                        session_id,
-                        &mut self.pane_output_cache,
-                        self.disable_proc_fallback,
-                    )?,
-                    None => reconcile_full_snapshot(
-                        &mut self.snapshot,
-                        &mut event_tmux_reads,
-                        self.tmux_version.as_deref(),
-                        &mut self.pane_output_cache,
-                        self.disable_proc_fallback,
-                    )?,
-                }
+                refresh_snapshot_for_focused_pane(
+                    &mut self.snapshot,
+                    &mut event_tmux_reads,
+                    pane_id,
+                    self.tmux_version.as_deref(),
+                    &mut self.pane_output_cache,
+                    self.disable_proc_fallback,
+                )?;
                 self.telemetry
                     .record_reconcile_result(previous_snapshot, &self.snapshot);
                 self.recover_broker_and_reconcile_if_needed()?;

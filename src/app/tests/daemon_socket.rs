@@ -1115,6 +1115,57 @@ fn daemon_socket_rejects_diff_that_grows_snapshot_past_frame_limit() {
     );
 }
 
+// A diff frame carries changed panes plus removed pane ids, so it can exceed
+// the wire limit even when the new snapshot's full frame fits (a near-limit
+// replacement that also removes many panes). The publish must fall back to a
+// full-frame broadcast instead of failing — the daemon's runtime state has
+// already adopted the new snapshot, so a failed publish strands clients on the
+// old one forever.
+#[test]
+fn daemon_socket_publishes_full_frame_when_diff_alone_exceeds_frame_limit() {
+    let state = daemon::DaemonSocketState::new();
+    // Bootstrap: many panes whose ids alone total ~2 MiB, so the ids reappear
+    // in the next diff's `removed_pane_ids`.
+    let mut initial = empty_socket_snapshot("2026-05-03T00:00:00Z");
+    for index in 0..40 {
+        let long_id = format!("%prev-{index}-{}", "x".repeat(50 * 1024));
+        let mut pane = socket_frame_limit_pane(&long_id, index, 8);
+        pane.display.label = format!("p{index}");
+        initial.panes.push(pane);
+    }
+    state
+        .publish_initial_snapshot(initial)
+        .expect("bootstrap snapshot should publish");
+
+    // Replacement: one large pane (~3.5 MiB full frame, fits) while removing
+    // every bootstrap pane (~2 MiB of removed ids): the diff frame (~5.5 MiB)
+    // exceeds the limit even though the full frame does not.
+    let mut replacement = empty_socket_snapshot("2026-05-03T00:00:01Z");
+    replacement.source.daemon_generated_at = Some("2026-05-03T00:00:01Z".to_string());
+    replacement.panes.push(socket_frame_limit_pane(
+        "%new",
+        0,
+        3 * 1024 * 1024 + 512 * 1024,
+    ));
+    assert!(state.publish_later_snapshot(replacement.clone()));
+
+    // A fresh snapshot query serves the replacement, proving the store adopted it.
+    let frames = exchange_daemon_frames(state, socket_hello(ipc::ClientMode::Snapshot));
+    assert_eq!(
+        frames,
+        vec![
+            ipc::DaemonFrame::HelloAck {
+                protocol_version: ipc::WIRE_PROTOCOL_VERSION,
+                snapshot_schema_version: CACHE_SCHEMA_VERSION,
+            },
+            ipc::DaemonFrame::Snapshot {
+                seq: 2,
+                snapshot: replacement
+            },
+        ]
+    );
+}
+
 // `snapshot_wire_diff` omits panes whose only change is the volatile
 // `diagnostics.cache_origin`, but full frames still serialize that field: the
 // store's size bound must count the omitted growth or a cache_origin-only

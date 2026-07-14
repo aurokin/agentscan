@@ -589,6 +589,59 @@ pub(super) fn refresh_snapshot_session(
     finalize_snapshot(snapshot)
 }
 
+// A focus change flips `pane_active`/`window_active` within the focused pane's
+// session only (each session tracks its own active window and per-window active
+// pane, independent of other sessions), and it can move focus across windows in
+// that session. Refreshing the whole session is the narrowest scope that keeps
+// every affected active flag correct — including the previously-focused pane —
+// instead of a full list-panes over every session on each rapid focus event. If
+// the focused pane is not in the snapshot, fall back to a full reconcile.
+pub(super) fn refresh_snapshot_for_focused_pane(
+    snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &mut impl TmuxReadProvider,
+    pane_id: &str,
+    tmux_version: Option<&str>,
+    pane_output_cache: &mut scanner::PaneOutputStatusCache,
+    disable_proc_fallback: bool,
+) -> Result<()> {
+    let session_id = snapshot
+        .panes
+        .iter()
+        .find(|pane| pane.pane_id == pane_id)
+        .and_then(|pane| pane.tmux.session_id.clone());
+    let Some(session_id) = session_id.as_deref() else {
+        return reconcile_full_snapshot(
+            snapshot,
+            tmux_reads,
+            tmux_version,
+            pane_output_cache,
+            disable_proc_fallback,
+        );
+    };
+    refresh_snapshot_session(
+        snapshot,
+        tmux_reads,
+        session_id,
+        pane_output_cache,
+        disable_proc_fallback,
+    )?;
+    // The session id came from our (possibly stale) snapshot. If the focused
+    // pane moved to another session before this event was applied, the
+    // old-session refresh just dropped it without re-adding it anywhere; only
+    // a full reconcile rediscovers it.
+    let focused_pane_missing = !snapshot.panes.iter().any(|pane| pane.pane_id == pane_id);
+    if focused_pane_missing {
+        reconcile_full_snapshot(
+            snapshot,
+            tmux_reads,
+            tmux_version,
+            pane_output_cache,
+            disable_proc_fallback,
+        )?;
+    }
+    Ok(())
+}
+
 // Refresh every pane in a session/window scope without sorting/marking the snapshot; the
 // control-event batch finalizes once after all scope and pane refreshes are applied.
 fn refresh_snapshot_scope_no_finalize(
@@ -1092,6 +1145,23 @@ pub(crate) fn test_refresh_snapshot_window_with_provider(
         snapshot,
         tmux_reads,
         window_id,
+        &mut pane_output_cache,
+        false,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn test_refresh_snapshot_for_focused_pane_with_provider(
+    snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &mut impl TmuxReadProvider,
+    pane_id: &str,
+) -> Result<()> {
+    let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
+    refresh_snapshot_for_focused_pane(
+        snapshot,
+        tmux_reads,
+        pane_id,
+        None,
         &mut pane_output_cache,
         false,
     )
