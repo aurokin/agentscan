@@ -54,6 +54,22 @@
   "or", "of") as model names.
 - Wrapper-published labels now surface as activity labels for every resolved
   provider instead of silently defaulting to none for unlisted providers.
+- Session-scoped refreshes (pane focus events) now list panes with `-s`, so
+  panes in the focused session's other windows are no longer dropped from the
+  snapshot and published as removed on every focus action.
+- A focus event for a pane that moved sessions falls back to a full reconcile
+  instead of leaving the pane missing until self-heal.
+- Oversized `snapshot_diff` frames fall back to a full-frame broadcast instead
+  of failing the publish and leaving clients on a stale snapshot; the store's
+  full-frame size bound also accounts for volatile pane fields omitted from
+  diffs, so it never commits a snapshot whose full frame no longer encodes.
+- Busy connection refusals are capped and both accept paths spawn threads
+  fallibly, so a connect storm degrades to dropped connections instead of
+  unbounded threads or an acceptor panic that kills the daemon.
+- TUI terminal setup that fails partway now leaves the alternate screen
+  instead of stranding the user's terminal on it.
+- Targeted daemon refreshes share one lazily-captured process-table snapshot
+  per pass instead of paying a full capture per unresolved candidate pane.
 
 ## 0.7.6 - 2026-06-29
 
