@@ -83,7 +83,8 @@ pub(crate) use refresh::{
     test_apply_resnapshot_control_event_with_provider, test_reconcile_full_snapshot_with_provider,
     test_recover_targeted_pane_provider_with_inspector,
     test_refresh_snapshot_pane_title_with_provider, test_refresh_snapshot_pane_with_provider,
-    test_refresh_snapshot_session_with_provider, test_refresh_snapshot_window_with_provider,
+    test_refresh_snapshot_session_with_inspector, test_refresh_snapshot_session_with_provider,
+    test_refresh_snapshot_window_with_provider,
 };
 use snapshot_store::SnapshotStore;
 pub(crate) use socket_server::DaemonSocketState;
@@ -1163,6 +1164,10 @@ impl<S: StartupActions> DaemonRuntime<S> {
             }
         };
         let mut tmux_reads = self.control_mode.read_provider();
+        // One lazily-captured process table for the whole settle pass, matching
+        // the control-event batch path.
+        let proc_inspector = proc::ProcProcessInspector;
+        let proc_snapshot = proc::LazyProcessSnapshot::new(&proc_inspector);
         for pane_id in &busy_ids {
             self.pane_output_cache.invalidate(pane_id);
             refresh_snapshot_pane_with_title(
@@ -1171,6 +1176,7 @@ impl<S: StartupActions> DaemonRuntime<S> {
                 pane_id,
                 None,
                 &mut self.pane_output_cache,
+                &proc_snapshot,
                 self.disable_proc_fallback,
             )?;
         }

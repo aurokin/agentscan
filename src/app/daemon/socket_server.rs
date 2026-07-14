@@ -128,7 +128,11 @@ impl DaemonSocketServer {
                         }
                         let state = state.clone();
                         if let Some(pending_handshake) = state.try_acquire_pending_handshake() {
-                            std::thread::spawn(move || {
+                            // `Builder::spawn` instead of `thread::spawn`: a spawn
+                            // failure under thread exhaustion must drop the client
+                            // (releasing its handshake slot via `PendingHandshake`'s
+                            // `Drop`), not panic the acceptor and kill the daemon.
+                            let spawned = std::thread::Builder::new().spawn(move || {
                                 if let Err(error) = handle_daemon_socket_client_with_pending(
                                     stream,
                                     &state,
@@ -137,11 +141,13 @@ impl DaemonSocketServer {
                                     eprintln!("agentscan: daemon socket client failed: {error:#}");
                                 }
                             });
+                            if let Err(error) = spawned {
+                                eprintln!(
+                                    "agentscan: failed to spawn daemon client thread, dropping connection: {error}"
+                                );
+                            }
                         } else {
-                            // Offload the busy refusal to a short-lived thread like the
-                            // success path: writing it inline would let one non-reading
-                            // client stall the whole acceptor for the write timeout.
-                            std::thread::spawn(move || refuse_server_busy(stream));
+                            spawn_bounded_busy_refusal(stream);
                         }
                     }
                     Err(error)
@@ -1306,6 +1312,32 @@ fn handle_daemon_socket_client_with_pending(
                 .flush()
                 .context("failed to flush daemon socket frame")
         }
+    }
+}
+
+/// In-flight busy-refusal writer threads. Refusals past this cap drop the
+/// connection instead — a close is still a refusal signal, and the courtesy
+/// `ServerBusy` frame is not worth unbounded thread spawns under a connect storm.
+const MAX_BUSY_REFUSAL_THREADS: usize = 8;
+static BUSY_REFUSAL_THREADS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+// Offloads the busy refusal to a short-lived thread like the success path:
+// writing it inline would let one non-reading client stall the whole acceptor
+// for the write timeout. Unlike handshake slots, refusal threads have no
+// client-side bound, so this path is capped separately and degrades to a plain
+// close rather than panicking the acceptor on spawn failure.
+fn spawn_bounded_busy_refusal(stream: UnixStream) {
+    if BUSY_REFUSAL_THREADS.fetch_add(1, Ordering::AcqRel) >= MAX_BUSY_REFUSAL_THREADS {
+        BUSY_REFUSAL_THREADS.fetch_sub(1, Ordering::AcqRel);
+        return;
+    }
+    let spawned = std::thread::Builder::new().spawn(move || {
+        refuse_server_busy(stream);
+        BUSY_REFUSAL_THREADS.fetch_sub(1, Ordering::AcqRel);
+    });
+    if spawned.is_err() {
+        BUSY_REFUSAL_THREADS.fetch_sub(1, Ordering::AcqRel);
     }
 }
 

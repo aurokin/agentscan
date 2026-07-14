@@ -227,10 +227,17 @@ fn latest_refresh_sequence_for_scopes(
     latest_refresh_sequence
 }
 
+// Shared borrow target for per-pass lazy process snapshots; the inspector is a
+// stateless unit, so a `'static` borrow keeps `RefreshContext` lifetime-free.
+static PROC_INSPECTOR: proc::ProcProcessInspector = proc::ProcProcessInspector;
+
 struct RefreshContext<'a, TmuxReads> {
     tmux_reads: &'a mut TmuxReads,
     pane_output_cache: &'a mut scanner::PaneOutputStatusCache,
     disable_proc_fallback: bool,
+    // One lazily-captured process table shared by every targeted refresh in
+    // the batch: K unresolved candidate panes cost one capture, not K.
+    proc_snapshot: proc::LazyProcessSnapshot<'static, proc::ProcProcessInspector>,
 }
 
 impl<'a, TmuxReads: TmuxReadProvider> RefreshContext<'a, TmuxReads> {
@@ -243,6 +250,7 @@ impl<'a, TmuxReads: TmuxReadProvider> RefreshContext<'a, TmuxReads> {
             tmux_reads,
             pane_output_cache,
             disable_proc_fallback,
+            proc_snapshot: proc::LazyProcessSnapshot::new(&PROC_INSPECTOR),
         }
     }
 
@@ -258,6 +266,7 @@ impl<'a, TmuxReads: TmuxReadProvider> RefreshContext<'a, TmuxReads> {
             pane_id,
             title_override,
             self.pane_output_cache,
+            &self.proc_snapshot,
             self.disable_proc_fallback,
         )
     }
@@ -269,6 +278,7 @@ impl<'a, TmuxReads: TmuxReadProvider> RefreshContext<'a, TmuxReads> {
             TargetScope::Window,
             window_id,
             self.pane_output_cache,
+            &self.proc_snapshot,
             self.disable_proc_fallback,
         )
     }
@@ -280,6 +290,7 @@ impl<'a, TmuxReads: TmuxReadProvider> RefreshContext<'a, TmuxReads> {
             TargetScope::Session,
             session_id,
             self.pane_output_cache,
+            &self.proc_snapshot,
             self.disable_proc_fallback,
         )
     }
@@ -318,6 +329,7 @@ pub(super) fn refresh_snapshot_pane_with_title(
     pane_id: &str,
     title_override: Option<&str>,
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
+    proc_snapshot: &impl proc::ProcessSnapshot,
     disable_proc_fallback: bool,
 ) -> Result<bool> {
     let changed = refresh_snapshot_pane_with_title_no_finalize(
@@ -326,6 +338,7 @@ pub(super) fn refresh_snapshot_pane_with_title(
         pane_id,
         title_override,
         pane_output_cache,
+        proc_snapshot,
         disable_proc_fallback,
     )?;
     if changed {
@@ -343,6 +356,7 @@ pub(super) fn refresh_snapshot_pane_with_title_no_finalize(
     pane_id: &str,
     title_override: Option<&str>,
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
+    proc_snapshot: &impl proc::ProcessSnapshot,
     disable_proc_fallback: bool,
 ) -> Result<bool> {
     let previous = snapshot
@@ -359,6 +373,7 @@ pub(super) fn refresh_snapshot_pane_with_title_no_finalize(
             row,
             previous.as_ref(),
             allow_title_change_for_identity,
+            proc_snapshot,
             disable_proc_fallback,
         );
         scanner::apply_pane_output_status_fallbacks_with_cache(
@@ -408,6 +423,7 @@ fn pane_from_targeted_row_preserving_provider_identity(
     mut row: TmuxPaneRow,
     previous: Option<&PaneRecord>,
     allow_title_change_for_identity: bool,
+    proc_snapshot: &impl proc::ProcessSnapshot,
     disable_proc_fallback: bool,
 ) -> PaneRecord {
     let should_preserve = previous.is_some_and(|previous| {
@@ -431,7 +447,7 @@ fn pane_from_targeted_row_preserving_provider_identity(
         }
         preserve_provider_identity_for_targeted_update(&mut pane, previous);
     }
-    recover_targeted_pane_provider_via_proc(&mut pane, disable_proc_fallback);
+    recover_targeted_pane_provider(&mut pane, proc_snapshot, disable_proc_fallback);
     pane
 }
 
@@ -451,17 +467,9 @@ fn pane_from_targeted_row_preserving_provider_identity(
 // panes cost nothing, and once a pane resolves it is no longer a candidate. It does
 // revisit the "targeted refreshes avoid process inspection" stance, but only for the
 // ambiguous-agent panes that the metadata-only path cannot otherwise see.
-fn recover_targeted_pane_provider_via_proc(pane: &mut PaneRecord, disable_proc_fallback: bool) {
-    recover_targeted_pane_provider_with_inspector(
-        pane,
-        &proc::ProcProcessInspector,
-        disable_proc_fallback,
-    );
-}
-
-fn recover_targeted_pane_provider_with_inspector(
+fn recover_targeted_pane_provider(
     pane: &mut PaneRecord,
-    inspector: &impl proc::ProcessInspector,
+    proc_snapshot: &impl proc::ProcessSnapshot,
     disable_proc_fallback: bool,
 ) {
     // Only ambiguous panes that the metadata path could not identify. A pane that
@@ -471,11 +479,10 @@ fn recover_targeted_pane_provider_with_inspector(
     if pane.provider.is_some() {
         return;
     }
-    // Lazy: non-candidate panes (which `apply_proc_fallback_with_options`
-    // rejects before querying) and disabled fallback never pay for a
-    // process-table capture on this per-control-event path.
-    let snapshot = proc::LazyProcessSnapshot::new(inspector);
-    classify::apply_proc_fallback_with_options(pane, &snapshot, disable_proc_fallback);
+    // The caller threads one lazily-captured process snapshot through the whole
+    // refresh pass: non-candidate panes and disabled fallback never pay for a
+    // capture, and every candidate in the pass shares a single one.
+    classify::apply_proc_fallback_with_options(pane, proc_snapshot, disable_proc_fallback);
 }
 
 fn agent_metadata_from_row(row: &TmuxPaneRow) -> AgentMetadata {
@@ -498,7 +505,7 @@ fn agent_metadata_from_row(row: &TmuxPaneRow) -> AgentMetadata {
 // that came only from the old title (or a stable wrapper command) must NOT be made
 // sticky here, or a non-agent pane — or an agent that exited under a stable shell —
 // would keep a stale provider after its title changes away from the provider name.
-// Those panes instead fall through to `recover_targeted_pane_provider_via_proc`,
+// Those panes instead fall through to `recover_targeted_pane_provider`,
 // which consults the process tree and clears or corrects the match. The process
 // tree is the source of truth; this preservation is only the cheap fast path for
 // identities the process tree already confirmed.
@@ -549,12 +556,14 @@ pub(super) fn refresh_snapshot_window(
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
     disable_proc_fallback: bool,
 ) -> Result<()> {
+    let proc_snapshot = proc::LazyProcessSnapshot::new(&PROC_INSPECTOR);
     refresh_snapshot_scope_no_finalize(
         snapshot,
         tmux_reads,
         TargetScope::Window,
         window_id,
         pane_output_cache,
+        &proc_snapshot,
         disable_proc_fallback,
     )?;
     finalize_snapshot(snapshot)
@@ -567,12 +576,14 @@ pub(super) fn refresh_snapshot_session(
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
     disable_proc_fallback: bool,
 ) -> Result<()> {
+    let proc_snapshot = proc::LazyProcessSnapshot::new(&PROC_INSPECTOR);
     refresh_snapshot_scope_no_finalize(
         snapshot,
         tmux_reads,
         TargetScope::Session,
         session_id,
         pane_output_cache,
+        &proc_snapshot,
         disable_proc_fallback,
     )?;
     finalize_snapshot(snapshot)
@@ -586,6 +597,7 @@ fn refresh_snapshot_scope_no_finalize(
     scope: TargetScope,
     target_id: &str,
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
+    proc_snapshot: &impl proc::ProcessSnapshot,
     disable_proc_fallback: bool,
 ) -> Result<()> {
     let rows = tmux_reads.list_target_panes(scope.pane_list_scope(), target_id)?;
@@ -620,6 +632,7 @@ fn refresh_snapshot_scope_no_finalize(
                     row,
                     previous,
                     false,
+                    proc_snapshot,
                     disable_proc_fallback,
                 )
             })
@@ -975,12 +988,14 @@ pub(crate) fn test_refresh_snapshot_pane_with_provider(
     pane_id: &str,
 ) -> Result<()> {
     let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
+    let proc_snapshot = proc::LazyProcessSnapshot::new(&PROC_INSPECTOR);
     refresh_snapshot_pane_with_title(
         snapshot,
         tmux_reads,
         pane_id,
         None,
         &mut pane_output_cache,
+        &proc_snapshot,
         false,
     )
     .map(|_| ())
@@ -1041,7 +1056,8 @@ pub(crate) fn test_recover_targeted_pane_provider_with_inspector(
     pane: &mut PaneRecord,
     inspector: &impl proc::ProcessInspector,
 ) {
-    recover_targeted_pane_provider_with_inspector(pane, inspector, false);
+    let proc_snapshot = proc::LazyProcessSnapshot::new(inspector);
+    recover_targeted_pane_provider(pane, &proc_snapshot, false);
 }
 
 #[cfg(test)]
@@ -1052,12 +1068,14 @@ pub(crate) fn test_refresh_snapshot_pane_title_with_provider(
     title_override: &str,
 ) -> Result<()> {
     let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
+    let proc_snapshot = proc::LazyProcessSnapshot::new(&PROC_INSPECTOR);
     refresh_snapshot_pane_with_title(
         snapshot,
         tmux_reads,
         pane_id,
         Some(title_override),
         &mut pane_output_cache,
+        &proc_snapshot,
         false,
     )
     .map(|_| ())
@@ -1077,6 +1095,27 @@ pub(crate) fn test_refresh_snapshot_window_with_provider(
         &mut pane_output_cache,
         false,
     )
+}
+
+#[cfg(test)]
+pub(crate) fn test_refresh_snapshot_session_with_inspector(
+    snapshot: &mut SnapshotEnvelope,
+    tmux_reads: &mut impl TmuxReadProvider,
+    session_id: &str,
+    inspector: &impl proc::ProcessInspector,
+) -> Result<()> {
+    let mut pane_output_cache = scanner::PaneOutputStatusCache::new(PANE_OUTPUT_STATUS_CACHE_TTL);
+    let proc_snapshot = proc::LazyProcessSnapshot::new(inspector);
+    refresh_snapshot_scope_no_finalize(
+        snapshot,
+        tmux_reads,
+        TargetScope::Session,
+        session_id,
+        &mut pane_output_cache,
+        &proc_snapshot,
+        false,
+    )?;
+    finalize_snapshot(snapshot)
 }
 
 #[cfg(test)]

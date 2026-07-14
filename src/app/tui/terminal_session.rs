@@ -26,6 +26,9 @@ impl TerminalSession {
         terminal::enable_raw_mode().context("failed to enable terminal raw mode")?;
         let mut stdout = stdout();
         if let Err(error) = execute!(stdout, EnterAlternateScreen, Hide) {
+            // `EnterAlternateScreen` may have been emitted before `Hide` failed;
+            // leaving is a harmless no-op sequence when it was not.
+            let _ = execute!(stdout, LeaveAlternateScreen, Show);
             let _ = terminal::disable_raw_mode();
             return Err(error).context("failed to prepare TUI terminal state");
         }

@@ -436,6 +436,32 @@ fn daemon_refresh_session_retains_panes_across_windows() {
     assert_eq!(provider.target_scopes, vec![tmux::PaneListScope::Session]);
 }
 
+// Unresolved fallback-candidate panes in one scope refresh must share a single
+// lazily-captured process table; a capture per pane would pay K full process
+// enumerations per control-event batch.
+#[test]
+fn daemon_refresh_scope_shares_one_process_snapshot_across_candidate_panes() {
+    let mut launcher_a = daemon_refresh_row("%1", "$1", "@1", 0, "npm start");
+    launcher_a.pane_current_command = "node".to_string();
+    let mut launcher_b = daemon_refresh_row("%2", "$1", "@1", 1, "npm start");
+    launcher_b.pane_current_command = "node".to_string();
+    let mut snapshot = daemon_refresh_snapshot(Vec::new());
+    let mut provider = FakeTmuxReadProvider::default()
+        .with_target_panes("$1", Some(vec![launcher_a, launcher_b]));
+    let inspector = FakeProcessInspector::new([(42_000, vec!["node".to_string()])]);
+
+    daemon::test_refresh_snapshot_session_with_inspector(
+        &mut snapshot,
+        &mut provider,
+        "$1",
+        &inspector,
+    )
+    .expect("session refresh should succeed");
+
+    assert_eq!(snapshot.panes.len(), 2);
+    assert_eq!(inspector.snapshot_captures(), 1);
+}
+
 #[test]
 fn daemon_full_reconcile_replaces_snapshot_from_provider() {
     let old_row = daemon_refresh_row("%1", "$1", "@1", 0, "old");
