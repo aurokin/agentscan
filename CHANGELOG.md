@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0 - 2026-07-14
+
 ### Added
 
 - Added snapshot diff frames to the daemon wire protocol (now v2): subscribers
@@ -70,6 +72,11 @@
   instead of stranding the user's terminal on it.
 - Targeted daemon refreshes share one lazily-captured process-table snapshot
   per pass instead of paying a full capture per unresolved candidate pane.
+- The desktop live client now auto-recovers from daemon protocol/schema
+  version mismatches with a slow retry instead of parking on "Live client
+  failed" until a manual reconnect, and reports a host running an outdated
+  agentscan as "update agentscan on the host" instead of generic invalid JSON
+  (also on the slow retry, ending the once-per-second SSH subscribe churn).
 
 ## 0.7.6 - 2026-06-29
 
