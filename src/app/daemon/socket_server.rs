@@ -975,6 +975,12 @@ impl DaemonBroadcast {
         }
     }
 
+    /// Encoded size of the primary frame, used by the snapshot store's running
+    /// full-frame size bound.
+    pub(super) fn primary_len(&self) -> usize {
+        self.primary.len()
+    }
+
     #[cfg(test)]
     pub(crate) fn test_diff(
         primary: EncodedDaemonFrame,

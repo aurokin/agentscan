@@ -54,12 +54,18 @@ impl Drop for TerminalSession {
     fn drop(&mut self) {
         // Remove our panic hook and reinstall the previous one so it does not
         // leak past the session. Dropping our hook releases its `Arc` clone,
-        // leaving us as the sole owner to reclaim.
-        let _ = panic::take_hook();
-        if let Some(previous_hook) = self.previous_hook.take()
-            && let Ok(previous_hook) = Arc::try_unwrap(previous_hook)
-        {
-            panic::set_hook(previous_hook);
+        // leaving us as the sole owner to reclaim. Skipped while unwinding:
+        // `take_hook`/`set_hook` panic on a panicking thread, which would turn
+        // an ordinary panic into a double-panic abort — the hook (which has
+        // already restored the terminal via `claim_restore`) stays installed
+        // for the dying process instead.
+        if !std::thread::panicking() {
+            let _ = panic::take_hook();
+            if let Some(previous_hook) = self.previous_hook.take()
+                && let Ok(previous_hook) = Arc::try_unwrap(previous_hook)
+            {
+                panic::set_hook(previous_hook);
+            }
         }
         restore_terminal(&self.restored);
     }

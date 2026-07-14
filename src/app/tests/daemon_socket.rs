@@ -1037,6 +1037,83 @@ fn daemon_socket_oversized_later_snapshot_preserves_last_good_frame() {
 }
 
 #[test]
+fn daemon_socket_rejects_diff_that_grows_snapshot_past_frame_limit() {
+    fn bulk_pane(pane_id: &str, pane_index: u32, title_len: usize) -> PaneRecord {
+        PaneRecord {
+            pane_id: pane_id.to_string(),
+            location: super::PaneLocation {
+                session_name: "bulk".to_string(),
+                window_index: 0,
+                pane_index,
+                window_name: "win".to_string(),
+            },
+            tmux: super::TmuxPaneMetadata {
+                pane_pid: 100,
+                pane_tty: "/dev/ttys000".to_string(),
+                pane_current_path: "/tmp".to_string(),
+                pane_current_command: "node".to_string(),
+                pane_title_raw: "x".repeat(title_len),
+                session_id: Some("$1".to_string()),
+                window_id: Some("@1".to_string()),
+                pane_active: false,
+                window_active: false,
+            },
+            display: super::DisplayMetadata {
+                label: pane_id.to_string(),
+                activity_label: None,
+            },
+            provider: None,
+            status: super::PaneStatus::not_checked(),
+            classification: super::PaneClassification {
+                matched_by: None,
+                confidence: None,
+                reasons: Vec::new(),
+            },
+            agent_metadata: super::AgentMetadata::default(),
+            diagnostics: super::PaneDiagnostics {
+                cache_origin: "daemon_snapshot".to_string(),
+                proc_fallback: super::ProcFallbackDiagnostics::default(),
+            },
+        }
+    }
+
+    let state = daemon::DaemonSocketState::new();
+    // Bootstrap just under the wire limit so it publishes and serves fine.
+    let mut initial = empty_socket_snapshot("2026-05-03T00:00:00Z");
+    initial
+        .panes
+        .push(bulk_pane("%1", 0, ipc::DAEMON_FRAME_MAX_BYTES - 64 * 1024));
+    state
+        .publish_initial_snapshot(initial.clone())
+        .expect("near-limit initial snapshot should publish");
+
+    // One small added pane: the diff frame easily fits the wire limit, but the
+    // committed snapshot's FULL frame would not, leaving every later bootstrap
+    // and one-shot query unservable. The publish must be rejected instead.
+    let mut grown = initial.clone();
+    grown.generated_at = "2026-05-03T00:00:01Z".to_string();
+    grown.source.daemon_generated_at = Some("2026-05-03T00:00:01Z".to_string());
+    grown.panes.push(bulk_pane("%2", 1, 128 * 1024));
+    assert!(!state.publish_later_snapshot(grown));
+
+    // The last good snapshot stays authoritative and bootstrap-servable.
+    let frames = exchange_daemon_frames(state, socket_hello(ipc::ClientMode::Snapshot));
+    assert_eq!(
+        frames,
+        vec![
+            ipc::DaemonFrame::HelloAck {
+                protocol_version: ipc::WIRE_PROTOCOL_VERSION,
+                snapshot_schema_version: CACHE_SCHEMA_VERSION,
+            },
+            ipc::DaemonFrame::Snapshot {
+                seq: 1,
+                snapshot: initial
+            },
+        ]
+    );
+}
+
+#[test]
 fn daemon_socket_subscriber_mailbox_single_enqueue_delivers_primary() {
     let mailbox = daemon::SubscriberMailbox::new();
     let snapshot = empty_socket_snapshot("2026-05-03T00:00:01Z");

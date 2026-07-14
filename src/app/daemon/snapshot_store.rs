@@ -3,6 +3,13 @@ use std::sync::Arc;
 use super::socket_server::{DaemonBroadcast, PreparedSnapshot, SnapshotUpdateTelemetry};
 use super::*;
 
+/// Headroom added to the running full-frame size bound. The bound itself is
+/// sound for pane payloads (the diff frame carries every changed pane's full
+/// serialization, so the full frame can grow by at most the diff's bytes); the
+/// slack covers the few bytes of drift the diff does not mirror one-to-one:
+/// `seq` gaining digits and timestamp-width variance in the envelope fields.
+const FULL_FRAME_BOUND_SLACK: usize = 256;
+
 #[derive(Default)]
 pub(super) struct SnapshotStore {
     latest_snapshot: Option<Arc<SnapshotEnvelope>>,
@@ -11,6 +18,13 @@ pub(super) struct SnapshotStore {
     // only when a bootstrap or one-shot snapshot query actually needs it, so the
     // steady-state publish path never re-serializes the whole snapshot.
     latest_full_frame: Option<EncodedDaemonFrame>,
+    // Upper bound on the encoded size of `latest_snapshot`'s full frame,
+    // maintained without encoding it: each committed diff can grow the full
+    // frame by at most the diff frame's own byte count. Reset to the actual
+    // encoded size whenever a real full encode happens. `publish_diff` uses it
+    // to guarantee the committed snapshot always stays bootstrap-encodable
+    // within the wire limit.
+    full_frame_size_bound: usize,
     latest_seq: u64,
     latest_snapshot_update: Option<SnapshotUpdateTelemetry>,
     latest_observability: Option<ipc::SnapshotObservabilityFrame>,
@@ -32,6 +46,7 @@ impl SnapshotStore {
         self.latest_seq = seq;
         self.latest_observability = Some(snapshot_observability(&snapshot));
         self.latest_snapshot = Some(Arc::new(snapshot));
+        self.full_frame_size_bound = frame.len();
         self.latest_full_frame = Some(frame.clone());
         self.latest_snapshot_update = Some(telemetry);
         frame
@@ -40,8 +55,12 @@ impl SnapshotStore {
     /// Post-bootstrap publish: assigns the next seq, encodes a `snapshot_diff`
     /// against the previously published snapshot, and returns the fan-out
     /// broadcast (diff primary + lazy full frame for coalesce safety). Returns
-    /// `Err` only when the diff frame itself exceeds the wire limit, in which case
-    /// the store is left untouched and the previous snapshot stays authoritative.
+    /// `Err` when the diff frame exceeds the wire limit, or when committing the
+    /// snapshot would leave its full frame unencodable within the wire limit (a
+    /// snapshot must never grow past the limit through small diffs, or later
+    /// bootstraps and one-shot queries could never be served again). In both
+    /// cases the store is left untouched and the previous snapshot stays
+    /// authoritative.
     pub(super) fn publish_diff(
         &mut self,
         snapshot: SnapshotEnvelope,
@@ -55,12 +74,27 @@ impl SnapshotStore {
             // full-frame broadcast so there is never a diff without a base.
             None => super::socket_server::build_full_broadcast(seq, &snapshot)?,
         };
+        // Bootstrap-encodability guard: while the running bound stays under the
+        // wire limit, commit without touching the full frame. Once the bound
+        // crosses it, pay for one real encode — if the full frame fits, commit
+        // (keeping the fresh encode as the cache) and reset the bound to the
+        // actual size; if not, reject and keep serving the last good snapshot.
+        let candidate_bound = self
+            .full_frame_size_bound
+            .saturating_add(broadcast.primary_len())
+            .saturating_add(FULL_FRAME_BOUND_SLACK);
+        let (new_bound, full_frame) = if candidate_bound <= ipc::DAEMON_FRAME_MAX_BYTES {
+            (candidate_bound, None)
+        } else {
+            let frame = super::socket_server::encode_full_frame(&snapshot, seq)?;
+            (frame.len(), Some(frame))
+        };
         self.latest_seq = seq;
         self.latest_observability = Some(snapshot_observability(&snapshot));
         self.latest_snapshot = Some(snapshot);
-        // Invalidate the cached full frame; it is re-encoded lazily in
-        // `latest_frame` only if a later bootstrap/query needs it.
-        self.latest_full_frame = None;
+        // Lazily re-encoded in `latest_frame` when `full_frame` is `None`.
+        self.latest_full_frame = full_frame;
+        self.full_frame_size_bound = new_bound;
         self.latest_snapshot_update = Some(telemetry);
         Ok(broadcast)
     }
