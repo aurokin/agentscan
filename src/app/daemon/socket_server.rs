@@ -871,12 +871,12 @@ pub(crate) fn bench_encode_diff_frame_len(
     previous: &SnapshotEnvelope,
     current: &SnapshotEnvelope,
 ) -> Result<usize> {
-    let (changed_panes, removed_pane_ids) = super::refresh::snapshot_wire_diff(previous, current);
+    let diff = super::refresh::snapshot_wire_diff(previous, current);
     encode_diff_frame(
         INITIAL_SNAPSHOT_SEQ + 1,
         current,
-        changed_panes,
-        removed_pane_ids,
+        diff.changed_panes,
+        diff.removed_pane_ids,
     )
     .map(|frame| frame.len())
 }
@@ -897,9 +897,14 @@ pub(super) fn build_diff_broadcast(
     previous: &SnapshotEnvelope,
     current: &Arc<SnapshotEnvelope>,
 ) -> Result<DaemonBroadcast> {
-    let (changed_panes, removed_pane_ids) = super::refresh::snapshot_wire_diff(previous, current);
-    let primary = encode_diff_frame(seq, current, changed_panes, removed_pane_ids)?;
-    Ok(DaemonBroadcast::new(primary, current.clone(), seq))
+    let diff = super::refresh::snapshot_wire_diff(previous, current);
+    let primary = encode_diff_frame(seq, current, diff.changed_panes, diff.removed_pane_ids)?;
+    Ok(DaemonBroadcast::new(
+        primary,
+        current.clone(),
+        seq,
+        diff.omitted_pane_growth,
+    ))
 }
 
 /// Builds a full-frame broadcast (no prior snapshot to diff against). The primary
@@ -956,13 +961,20 @@ fn encode_bounded_frame(frame: &ipc::DaemonFrame, label: &str) -> Result<Encoded
 pub(crate) struct DaemonBroadcast {
     primary: EncodedDaemonFrame,
     full: SharedFullFrame,
+    omitted_pane_growth: usize,
 }
 
 impl DaemonBroadcast {
-    fn new(primary: EncodedDaemonFrame, snapshot: Arc<SnapshotEnvelope>, seq: u64) -> Self {
+    fn new(
+        primary: EncodedDaemonFrame,
+        snapshot: Arc<SnapshotEnvelope>,
+        seq: u64,
+        omitted_pane_growth: usize,
+    ) -> Self {
         Self {
             primary,
             full: SharedFullFrame::new(snapshot, seq),
+            omitted_pane_growth,
         }
     }
 
@@ -972,6 +984,7 @@ impl DaemonBroadcast {
         Self {
             primary: frame.clone(),
             full: SharedFullFrame::from_encoded(frame),
+            omitted_pane_growth: 0,
         }
     }
 
@@ -981,13 +994,20 @@ impl DaemonBroadcast {
         self.primary.len()
     }
 
+    /// Byte growth of volatile pane fields the wire diff omitted (see
+    /// [`super::refresh::SnapshotWireDiff::omitted_pane_growth`]); also part of
+    /// the snapshot store's running full-frame size bound.
+    pub(super) fn omitted_pane_growth(&self) -> usize {
+        self.omitted_pane_growth
+    }
+
     #[cfg(test)]
     pub(crate) fn test_diff(
         primary: EncodedDaemonFrame,
         full_snapshot: SnapshotEnvelope,
         seq: u64,
     ) -> Self {
-        Self::new(primary, Arc::new(full_snapshot), seq)
+        Self::new(primary, Arc::new(full_snapshot), seq, 0)
     }
 }
 

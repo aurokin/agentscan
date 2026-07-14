@@ -588,7 +588,7 @@ fn refresh_snapshot_scope_no_finalize(
     pane_output_cache: &mut scanner::PaneOutputStatusCache,
     disable_proc_fallback: bool,
 ) -> Result<()> {
-    let rows = tmux_reads.list_target_panes(target_id)?;
+    let rows = tmux_reads.list_target_panes(scope.pane_list_scope(), target_id)?;
     let refreshed_pane_ids = rows
         .as_ref()
         .map(|rows| {
@@ -823,6 +823,19 @@ pub(super) fn snapshot_diff(
     diff
 }
 
+/// The exact pane delta for a `snapshot_diff` wire frame, plus the byte growth
+/// of panes the delta intentionally omits (needed to keep the snapshot store's
+/// full-frame size bound sound).
+pub(super) struct SnapshotWireDiff {
+    pub(super) changed_panes: Vec<PaneRecord>,
+    pub(super) removed_pane_ids: Vec<String>,
+    /// Total growth, in encoded-JSON bytes, of volatile fields on panes that
+    /// were omitted from `changed_panes` as materially equal. A full frame
+    /// still serializes those fields, so omitted growth must count toward the
+    /// full-frame size bound even though it never reaches the wire diff.
+    pub(super) omitted_pane_growth: usize,
+}
+
 /// Builds the exact pane delta for a `snapshot_diff` wire frame: full
 /// `PaneRecord`s for every added-or-materially-changed pane, plus the ids of
 /// panes present in `previous` but gone from `current`.
@@ -834,41 +847,56 @@ pub(super) fn snapshot_diff(
 /// (`diagnostics.cache_origin`) are intentionally omitted via
 /// [`pane_is_materially_equal`]: the reconstructed snapshot stays *materially*
 /// equal to a fresh query, which is the daemon's equality contract, while the
-/// wire payload shrinks to genuinely-changed panes.
+/// wire payload shrinks to genuinely-changed panes. Their byte growth is still
+/// reported via [`SnapshotWireDiff::omitted_pane_growth`].
 pub(super) fn snapshot_wire_diff(
     previous: &SnapshotEnvelope,
     current: &SnapshotEnvelope,
-) -> (Vec<PaneRecord>, Vec<String>) {
+) -> SnapshotWireDiff {
     let previous_by_id = previous
         .panes
         .iter()
         .map(|pane| (pane.pane_id.as_str(), pane))
         .collect::<HashMap<_, _>>();
 
-    let changed = current
-        .panes
-        .iter()
-        .filter(|pane| {
-            previous_by_id
-                .get(pane.pane_id.as_str())
-                .is_none_or(|previous_pane| !pane_is_materially_equal(previous_pane, pane))
-        })
-        .cloned()
-        .collect();
+    let mut changed_panes = Vec::new();
+    let mut omitted_pane_growth = 0_usize;
+    for pane in &current.panes {
+        match previous_by_id.get(pane.pane_id.as_str()) {
+            Some(previous_pane) if pane_is_materially_equal(previous_pane, pane) => {
+                omitted_pane_growth = omitted_pane_growth.saturating_add(
+                    json_string_len(&pane.diagnostics.cache_origin)
+                        .saturating_sub(json_string_len(&previous_pane.diagnostics.cache_origin)),
+                );
+            }
+            _ => changed_panes.push(pane.clone()),
+        }
+    }
 
     let current_ids = current
         .panes
         .iter()
         .map(|pane| pane.pane_id.as_str())
         .collect::<HashSet<_>>();
-    let removed = previous
+    let removed_pane_ids = previous
         .panes
         .iter()
         .filter(|pane| !current_ids.contains(pane.pane_id.as_str()))
         .map(|pane| pane.pane_id.clone())
         .collect();
 
-    (changed, removed)
+    SnapshotWireDiff {
+        changed_panes,
+        removed_pane_ids,
+        omitted_pane_growth,
+    }
+}
+
+/// Encoded length of `value` as a JSON string, including quotes and escapes.
+/// (`to_string` cannot fail for a `&str`; the fallback only exists to avoid
+/// unwrapping and assumes an unescaped value.)
+fn json_string_len(value: &str) -> usize {
+    serde_json::to_string(value).map_or_else(|_| value.len().saturating_add(2), |s| s.len())
 }
 
 fn push_bounded(items: &mut Vec<String>, item: String, truncated: &mut bool) {
@@ -1094,6 +1122,13 @@ impl TargetScope {
         match self {
             Self::Window => pane.tmux.window_id.as_deref() == Some(target_id),
             Self::Session => pane.tmux.session_id.as_deref() == Some(target_id),
+        }
+    }
+
+    fn pane_list_scope(self) -> tmux::PaneListScope {
+        match self {
+            Self::Window => tmux::PaneListScope::Window,
+            Self::Session => tmux::PaneListScope::Session,
         }
     }
 }

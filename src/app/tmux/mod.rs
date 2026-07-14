@@ -39,9 +39,27 @@ pub(crate) fn tmux_list_panes() -> Result<Vec<TmuxPaneRow>> {
     parse_pane_rows(&stdout)
 }
 
-pub(crate) fn tmux_list_panes_target(target: &str) -> Result<Option<Vec<TmuxPaneRow>>> {
+/// Scope of a targeted `list-panes` call. Without `-s`, tmux resolves any
+/// target (including a session id) to a single *window*, so session-wide
+/// refreshes must pass `-s` or they silently drop every non-current window.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PaneListScope {
+    Window,
+    Session,
+}
+
+pub(crate) fn tmux_list_panes_target(
+    scope: PaneListScope,
+    target: &str,
+) -> Result<Option<Vec<TmuxPaneRow>>> {
+    let window_args = ["list-panes", "-t", target, "-F", PANE_FORMAT];
+    let session_args = ["list-panes", "-s", "-t", target, "-F", PANE_FORMAT];
+    let args: &[&str] = match scope {
+        PaneListScope::Window => &window_args,
+        PaneListScope::Session => &session_args,
+    };
     let Some(stdout) = run_tmux_text_output(
-        &["list-panes", "-t", target, "-F", PANE_FORMAT],
+        args,
         &format!("tmux list-panes for target {target}"),
         &format!("tmux list-panes -t {target}"),
         tmux_scope_target_is_missing,

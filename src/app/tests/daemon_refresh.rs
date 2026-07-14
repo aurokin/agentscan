@@ -8,6 +8,7 @@ struct FakeTmuxReadProvider {
     list_all_count: usize,
     list_target_count: usize,
     list_pane_count: usize,
+    target_scopes: Vec<tmux::PaneListScope>,
 }
 
 impl FakeTmuxReadProvider {
@@ -39,9 +40,11 @@ impl daemon::TmuxReadProvider for FakeTmuxReadProvider {
 
     fn list_target_panes(
         &mut self,
+        scope: tmux::PaneListScope,
         target: &str,
     ) -> anyhow::Result<Option<Vec<super::TmuxPaneRow>>> {
         self.list_target_count += 1;
+        self.target_scopes.push(scope);
         Ok(self.target_panes.get(target).cloned().unwrap_or(None))
     }
 
@@ -165,6 +168,7 @@ fn daemon_refresh_window_replaces_only_matching_scope() {
         .map(|pane| pane.pane_id.as_str())
         .collect();
     assert_eq!(pane_ids, vec!["%3", "%2"]);
+    assert_eq!(provider.target_scopes, vec![tmux::PaneListScope::Window]);
     assert!(
         snapshot
             .panes
@@ -405,6 +409,31 @@ fn daemon_refresh_session_removes_missing_scope() {
 
     assert_eq!(snapshot.panes.len(), 1);
     assert_eq!(snapshot.panes[0].pane_id, "%2");
+    assert_eq!(provider.target_scopes, vec![tmux::PaneListScope::Session]);
+}
+
+// Session refreshes must list panes session-wide (`list-panes -s`); a
+// window-scoped list would return only the session's current window and drop
+// every other window's panes from the snapshot.
+#[test]
+fn daemon_refresh_session_retains_panes_across_windows() {
+    let current_window_pane = daemon_refresh_row("%1", "$1", "@1", 0, "current-window");
+    let other_window_pane = daemon_refresh_row("%2", "$1", "@2", 0, "other-window");
+    let mut snapshot =
+        daemon_refresh_snapshot(vec![current_window_pane.clone(), other_window_pane.clone()]);
+    let mut provider = FakeTmuxReadProvider::default()
+        .with_target_panes("$1", Some(vec![current_window_pane, other_window_pane]));
+
+    daemon::test_refresh_snapshot_session_with_provider(&mut snapshot, &mut provider, "$1")
+        .expect("session refresh should succeed");
+
+    let pane_ids: Vec<_> = snapshot
+        .panes
+        .iter()
+        .map(|pane| pane.pane_id.as_str())
+        .collect();
+    assert_eq!(pane_ids, vec!["%1", "%2"]);
+    assert_eq!(provider.target_scopes, vec![tmux::PaneListScope::Session]);
 }
 
 #[test]

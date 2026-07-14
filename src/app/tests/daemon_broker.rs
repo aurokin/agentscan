@@ -96,7 +96,7 @@ fn daemon_broker_list_target_records_command_and_parses_rows() {
     ]);
 
     let response = harness
-        .list_target_panes("@1", &expected_id)
+        .list_target_panes(tmux::PaneListScope::Window, "@1", &expected_id)
         .expect("list-target response should parse");
 
     assert_eq!(
@@ -127,12 +127,12 @@ fn daemon_broker_list_target_maps_missing_session_to_none() {
     ]);
 
     let response = harness
-        .list_target_panes("$404", &expected_id)
+        .list_target_panes(tmux::PaneListScope::Session, "$404", &expected_id)
         .expect("missing session should not fail");
 
     assert_eq!(
         harness.written_commands(),
-        &[format!("list-panes -t $404 -F {}", PANE_FORMAT)]
+        &[format!("list-panes -s -t $404 -F {}", PANE_FORMAT)]
     );
     assert!(response.rows.is_none());
     assert_eq!(

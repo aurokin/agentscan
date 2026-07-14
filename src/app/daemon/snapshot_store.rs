@@ -79,9 +79,12 @@ impl SnapshotStore {
         // crosses it, pay for one real encode — if the full frame fits, commit
         // (keeping the fresh encode as the cache) and reset the bound to the
         // actual size; if not, reject and keep serving the last good snapshot.
+        // `omitted_pane_growth` covers volatile pane fields that grow the full
+        // frame without appearing in the diff frame.
         let candidate_bound = self
             .full_frame_size_bound
             .saturating_add(broadcast.primary_len())
+            .saturating_add(broadcast.omitted_pane_growth())
             .saturating_add(FULL_FRAME_BOUND_SLACK);
         let (new_bound, full_frame) = if candidate_bound <= ipc::DAEMON_FRAME_MAX_BYTES {
             (candidate_bound, None)

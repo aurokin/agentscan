@@ -34,18 +34,22 @@ impl TmuxReadProvider for TmuxDaemonReadProvider<'_> {
         }
     }
 
-    fn list_target_panes(&mut self, target: &str) -> Result<Option<Vec<TmuxPaneRow>>> {
+    fn list_target_panes(
+        &mut self,
+        scope: tmux::PaneListScope,
+        target: &str,
+    ) -> Result<Option<Vec<TmuxPaneRow>>> {
         let Some(broker) = self.broker.as_mut() else {
-            return self.fallback.list_target_panes(target);
+            return self.fallback.list_target_panes(scope, target);
         };
 
-        match broker.list_target_panes(target) {
+        match broker.list_target_panes(scope, target) {
             Ok(rows) => Ok(rows),
             Err(error) => {
                 eprintln!(
                     "agentscan: brokered target refresh failed for {target}; falling back to tmux command: {error:#}"
                 );
-                self.fallback.list_target_panes(target)
+                self.fallback.list_target_panes(scope, target)
             }
         }
     }
@@ -85,13 +89,18 @@ impl TmuxControlModeReadBroker<'_> {
         }
     }
 
-    fn list_target_panes(&mut self, target: &str) -> Result<Option<Vec<TmuxPaneRow>>> {
+    fn list_target_panes(
+        &mut self,
+        scope: tmux::PaneListScope,
+        target: &str,
+    ) -> Result<Option<Vec<TmuxPaneRow>>> {
         match control_mode_list_panes_target(
             self.stdin,
             self.line_rx,
+            scope,
             target,
             self.deferred_lines,
-            MissingTargetScope::PaneWindowSession,
+            MissingTargetScope::from_pane_list_scope(scope),
         ) {
             Ok(rows) => Ok(rows),
             Err(error) => {
@@ -105,6 +114,7 @@ impl TmuxControlModeReadBroker<'_> {
         match control_mode_list_panes_target(
             self.stdin,
             self.line_rx,
+            tmux::PaneListScope::Window,
             pane_id,
             self.deferred_lines,
             MissingTargetScope::PaneWindow,
@@ -283,6 +293,13 @@ enum MissingTargetScope {
 }
 
 impl MissingTargetScope {
+    fn from_pane_list_scope(scope: tmux::PaneListScope) -> Self {
+        match scope {
+            tmux::PaneListScope::Window => Self::PaneWindow,
+            tmux::PaneListScope::Session => Self::PaneWindowSession,
+        }
+    }
+
     fn matches(self, message: &str) -> bool {
         tmux::tmux_target_is_missing(message.as_bytes())
             || (self == MissingTargetScope::PaneWindowSession
@@ -1233,6 +1250,15 @@ pub(super) fn control_mode_startup_response_from_line(line: &str, context: &str)
     Ok(line.starts_with("%end"))
 }
 
+// Mirrors the `-s` selection in `tmux::tmux_list_panes_target`: without it,
+// tmux resolves a session target to its current window only.
+fn pane_list_scope_flag(scope: tmux::PaneListScope) -> &'static str {
+    match scope {
+        tmux::PaneListScope::Window => "",
+        tmux::PaneListScope::Session => " -s",
+    }
+}
+
 fn control_mode_list_all_panes(
     stdin: &mut std::process::ChildStdin,
     line_rx: &mpsc::Receiver<Result<ControlModeLine>>,
@@ -1261,12 +1287,17 @@ fn control_mode_list_all_panes(
 fn control_mode_list_panes_target(
     stdin: &mut std::process::ChildStdin,
     line_rx: &mpsc::Receiver<Result<ControlModeLine>>,
+    scope: tmux::PaneListScope,
     target: &str,
     deferred_lines: &mut VecDeque<ControlModeLine>,
     missing_target_scope: MissingTargetScope,
 ) -> Result<Option<Vec<TmuxPaneRow>>> {
-    writeln!(stdin, "list-panes -t {target} -F '{PANE_FORMAT}'")
-        .with_context(|| format!("failed to write brokered tmux list-panes for {target}"))?;
+    let scope_flag = pane_list_scope_flag(scope);
+    writeln!(
+        stdin,
+        "list-panes{scope_flag} -t {target} -F '{PANE_FORMAT}'"
+    )
+    .with_context(|| format!("failed to write brokered tmux list-panes for {target}"))?;
     stdin
         .flush()
         .with_context(|| format!("failed to flush brokered tmux list-panes for {target}"))?;
@@ -1523,6 +1554,7 @@ impl ControlModeBrokerTranscriptHarness {
         expected_id: &ControlModeCommandFrameId,
     ) -> Result<ControlModeBrokerListPaneResponse> {
         let response = self.list_target_panes_with_scope(
+            tmux::PaneListScope::Window,
             pane_id,
             expected_id,
             MissingTargetScope::PaneWindow,
@@ -1535,24 +1567,29 @@ impl ControlModeBrokerTranscriptHarness {
 
     pub(crate) fn list_target_panes(
         &mut self,
+        scope: tmux::PaneListScope,
         target: &str,
         expected_id: &ControlModeCommandFrameId,
     ) -> Result<ControlModeBrokerListTargetResponse> {
         self.list_target_panes_with_scope(
+            scope,
             target,
             expected_id,
-            MissingTargetScope::PaneWindowSession,
+            MissingTargetScope::from_pane_list_scope(scope),
         )
     }
 
     fn list_target_panes_with_scope(
         &mut self,
+        scope: tmux::PaneListScope,
         target: &str,
         expected_id: &ControlModeCommandFrameId,
         missing_target_scope: MissingTargetScope,
     ) -> Result<ControlModeBrokerListTargetResponse> {
-        self.written_commands
-            .push(format!("list-panes -t {target} -F {PANE_FORMAT}"));
+        let scope_flag = pane_list_scope_flag(scope);
+        self.written_commands.push(format!(
+            "list-panes{scope_flag} -t {target} -F {PANE_FORMAT}"
+        ));
 
         let response = match self.collect_command_outcome(expected_id)? {
             ControlModeBrokerCommandOutcome::Response(response) => response,

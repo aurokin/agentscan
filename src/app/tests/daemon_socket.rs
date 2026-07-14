@@ -1036,53 +1036,55 @@ fn daemon_socket_oversized_later_snapshot_preserves_last_good_frame() {
     );
 }
 
+// A pane whose encoded size is dominated by `title_len`, for tests that steer
+// a snapshot toward the wire frame limit.
+fn socket_frame_limit_pane(pane_id: &str, pane_index: u32, title_len: usize) -> PaneRecord {
+    PaneRecord {
+        pane_id: pane_id.to_string(),
+        location: super::PaneLocation {
+            session_name: "bulk".to_string(),
+            window_index: 0,
+            pane_index,
+            window_name: "win".to_string(),
+        },
+        tmux: super::TmuxPaneMetadata {
+            pane_pid: 100,
+            pane_tty: "/dev/ttys000".to_string(),
+            pane_current_path: "/tmp".to_string(),
+            pane_current_command: "node".to_string(),
+            pane_title_raw: "x".repeat(title_len),
+            session_id: Some("$1".to_string()),
+            window_id: Some("@1".to_string()),
+            pane_active: false,
+            window_active: false,
+        },
+        display: super::DisplayMetadata {
+            label: pane_id.to_string(),
+            activity_label: None,
+        },
+        provider: None,
+        status: super::PaneStatus::not_checked(),
+        classification: super::PaneClassification {
+            matched_by: None,
+            confidence: None,
+            reasons: Vec::new(),
+        },
+        agent_metadata: super::AgentMetadata::default(),
+        diagnostics: super::PaneDiagnostics {
+            cache_origin: "daemon_snapshot".to_string(),
+            proc_fallback: super::ProcFallbackDiagnostics::default(),
+        },
+    }
+}
+
 #[test]
 fn daemon_socket_rejects_diff_that_grows_snapshot_past_frame_limit() {
-    fn bulk_pane(pane_id: &str, pane_index: u32, title_len: usize) -> PaneRecord {
-        PaneRecord {
-            pane_id: pane_id.to_string(),
-            location: super::PaneLocation {
-                session_name: "bulk".to_string(),
-                window_index: 0,
-                pane_index,
-                window_name: "win".to_string(),
-            },
-            tmux: super::TmuxPaneMetadata {
-                pane_pid: 100,
-                pane_tty: "/dev/ttys000".to_string(),
-                pane_current_path: "/tmp".to_string(),
-                pane_current_command: "node".to_string(),
-                pane_title_raw: "x".repeat(title_len),
-                session_id: Some("$1".to_string()),
-                window_id: Some("@1".to_string()),
-                pane_active: false,
-                window_active: false,
-            },
-            display: super::DisplayMetadata {
-                label: pane_id.to_string(),
-                activity_label: None,
-            },
-            provider: None,
-            status: super::PaneStatus::not_checked(),
-            classification: super::PaneClassification {
-                matched_by: None,
-                confidence: None,
-                reasons: Vec::new(),
-            },
-            agent_metadata: super::AgentMetadata::default(),
-            diagnostics: super::PaneDiagnostics {
-                cache_origin: "daemon_snapshot".to_string(),
-                proc_fallback: super::ProcFallbackDiagnostics::default(),
-            },
-        }
-    }
-
     let state = daemon::DaemonSocketState::new();
     // Bootstrap just under the wire limit so it publishes and serves fine.
     let mut initial = empty_socket_snapshot("2026-05-03T00:00:00Z");
     initial
         .panes
-        .push(bulk_pane("%1", 0, ipc::DAEMON_FRAME_MAX_BYTES - 64 * 1024));
+        .push(socket_frame_limit_pane("%1", 0, ipc::DAEMON_FRAME_MAX_BYTES - 64 * 1024));
     state
         .publish_initial_snapshot(initial.clone())
         .expect("near-limit initial snapshot should publish");
@@ -1093,7 +1095,47 @@ fn daemon_socket_rejects_diff_that_grows_snapshot_past_frame_limit() {
     let mut grown = initial.clone();
     grown.generated_at = "2026-05-03T00:00:01Z".to_string();
     grown.source.daemon_generated_at = Some("2026-05-03T00:00:01Z".to_string());
-    grown.panes.push(bulk_pane("%2", 1, 128 * 1024));
+    grown.panes.push(socket_frame_limit_pane("%2", 1, 128 * 1024));
+    assert!(!state.publish_later_snapshot(grown));
+
+    // The last good snapshot stays authoritative and bootstrap-servable.
+    let frames = exchange_daemon_frames(state, socket_hello(ipc::ClientMode::Snapshot));
+    assert_eq!(
+        frames,
+        vec![
+            ipc::DaemonFrame::HelloAck {
+                protocol_version: ipc::WIRE_PROTOCOL_VERSION,
+                snapshot_schema_version: CACHE_SCHEMA_VERSION,
+            },
+            ipc::DaemonFrame::Snapshot {
+                seq: 1,
+                snapshot: initial
+            },
+        ]
+    );
+}
+
+// `snapshot_wire_diff` omits panes whose only change is the volatile
+// `diagnostics.cache_origin`, but full frames still serialize that field: the
+// store's size bound must count the omitted growth or a cache_origin-only
+// publish could silently commit a snapshot whose full frame no longer encodes.
+#[test]
+fn daemon_socket_rejects_omitted_pane_growth_past_frame_limit() {
+    let state = daemon::DaemonSocketState::new();
+    let mut initial = empty_socket_snapshot("2026-05-03T00:00:00Z");
+    initial
+        .panes
+        .push(socket_frame_limit_pane("%1", 0, ipc::DAEMON_FRAME_MAX_BYTES - 64 * 1024));
+    state
+        .publish_initial_snapshot(initial.clone())
+        .expect("near-limit initial snapshot should publish");
+
+    // The pane stays materially equal (only cache_origin changes), so the diff
+    // frame is tiny — but the committed FULL frame would exceed the wire limit.
+    let mut grown = initial.clone();
+    grown.generated_at = "2026-05-03T00:00:01Z".to_string();
+    grown.source.daemon_generated_at = Some("2026-05-03T00:00:01Z".to_string());
+    grown.panes[0].diagnostics.cache_origin = "x".repeat(128 * 1024);
     assert!(!state.publish_later_snapshot(grown));
 
     // The last good snapshot stays authoritative and bootstrap-servable.

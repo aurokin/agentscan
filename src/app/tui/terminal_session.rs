@@ -33,6 +33,16 @@ impl TerminalSession {
         // Restore the terminal even if a panic (including on another thread, or
         // under `panic = "abort"`) prevents `Drop` from running. The guard is
         // idempotent, so it is safe when both the hook and `Drop` fire.
+        //
+        // Restoring for *background*-thread panics is deliberate, even though
+        // the UI loop may survive one and then render against a restored
+        // terminal: the hook runs before the panic message prints, so skipping
+        // the restore would hide the message inside the alternate screen; the
+        // restore also re-enables Ctrl+C (raw mode off) so the degraded TUI
+        // stays exitable; and under `panic = "abort"` a background panic kills
+        // the process with no other restore path. Worker threads report
+        // expected failures over channels instead of panicking, so this only
+        // trades rendering fidelity for visible diagnostics in a bug state.
         let restored = Arc::new(AtomicBool::new(false));
         let previous_hook = Arc::new(panic::take_hook());
         let hook_restored = restored.clone();

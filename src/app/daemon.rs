@@ -1647,7 +1647,11 @@ impl StartupActions for DaemonStartup {
 
 pub(crate) trait TmuxReadProvider {
     fn list_all_panes(&mut self) -> Result<Vec<TmuxPaneRow>>;
-    fn list_target_panes(&mut self, target: &str) -> Result<Option<Vec<TmuxPaneRow>>>;
+    fn list_target_panes(
+        &mut self,
+        scope: tmux::PaneListScope,
+        target: &str,
+    ) -> Result<Option<Vec<TmuxPaneRow>>>;
     fn list_pane(&mut self, pane_id: &str) -> Result<Option<TmuxPaneRow>>;
 }
 
@@ -1659,8 +1663,12 @@ impl TmuxReadProvider for TmuxCommandReadProvider {
         tmux::tmux_list_panes()
     }
 
-    fn list_target_panes(&mut self, target: &str) -> Result<Option<Vec<TmuxPaneRow>>> {
-        tmux::tmux_list_panes_target(target)
+    fn list_target_panes(
+        &mut self,
+        scope: tmux::PaneListScope,
+        target: &str,
+    ) -> Result<Option<Vec<TmuxPaneRow>>> {
+        tmux::tmux_list_panes_target(scope, target)
     }
 
     fn list_pane(&mut self, pane_id: &str) -> Result<Option<TmuxPaneRow>> {
