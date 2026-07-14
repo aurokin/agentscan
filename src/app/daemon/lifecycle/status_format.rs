@@ -1,4 +1,7 @@
 use super::*;
+// `writeln!` into the buffered `String` outputs resolves via the parent's
+// `use std::fmt::Write as _`: underscore trait imports propagate through the
+// glob above, so a local import is unnecessary (rustc flags one as unused).
 
 pub(super) fn print_lifecycle_not_running(
     out: &mut String,
