@@ -19,6 +19,7 @@ const LIVE_EPOCH_STORAGE_KEY = "agentscan.liveEpochSeq";
 export type LiveBackoff = {
   readonly recoverable: Duration.Duration;
   readonly noDaemon: Duration.Duration;
+  readonly mismatch: Duration.Duration;
 };
 
 export class LiveConnectionConfig extends Effect.Service<LiveConnectionConfig>()(
@@ -28,6 +29,7 @@ export class LiveConnectionConfig extends Effect.Service<LiveConnectionConfig>()
       backoff: {
         recoverable: Duration.seconds(1),
         noDaemon: Duration.seconds(10),
+        mismatch: Duration.seconds(10),
       } as LiveBackoff,
     },
   },
@@ -38,10 +40,14 @@ export class LiveConnectionConfig extends Effect.Service<LiveConnectionConfig>()
 //   Recoverable — re-arm (latch) after a short backoff
 //   NoDaemon    — no daemon reachable in latch-only mode; offer "Start agentscan",
 //                 keep slow-polling to auto-latch if one appears
+//   Mismatch    — protocol/schema version skew between this desktop and the host's
+//                 agentscan; heals out-of-band (a binary upgrade + daemon restart),
+//                 so keep slow-retrying instead of parking on fatal
 //   Fatal       — unrecoverable (bad binary/config); stop and wait for a manual retry
 type Terminal =
   | { _tag: "Recoverable"; message: string }
   | { _tag: "NoDaemon"; message: string }
+  | { _tag: "Mismatch"; message: string }
   | { _tag: "Fatal"; message: string };
 
 // A terminal frame plus whether the subscription ever reached "online" (a rows
@@ -54,6 +60,16 @@ type ConsumeResult = { readonly terminal: Terminal; readonly online: boolean };
 // subscribe finds no daemon. That is precisely the latch-miss we surface as a
 // "Start agentscan" prompt rather than an error.
 const NO_DAEMON_RE = /auto-start is disabled/i;
+
+// Version skew between this desktop and the host's agentscan. Covers the CLI's
+// handshake rejections ("daemon rejected … (ProtocolMismatch/SchemaMismatch)",
+// "daemon acknowledged incompatible … handshake"), the raw daemon wording
+// ("unsupported IPC protocol/snapshot schema version"), and the Rust worker's
+// own classification of mismatched host output ("Incompatible agentscan …").
+// These conditions heal only when a binary is upgraded and the daemon restarted,
+// so they re-arm on the slow mismatch backoff instead of parking on fatal.
+const MISMATCH_RE =
+  /ProtocolMismatch|SchemaMismatch|unsupported IPC protocol|unsupported snapshot schema|acknowledged incompatible|Incompatible agentscan/i;
 
 type Target = {
   readonly gen: number;
@@ -146,7 +162,9 @@ function foldEvent(
             // own fatal frame or the NoDaemon latch-miss.
             terminal: NO_DAEMON_RE.test(event.message)
               ? { _tag: "NoDaemon", message: event.message }
-              : { _tag: "Recoverable", message: event.message },
+              : MISMATCH_RE.test(event.message)
+                ? { _tag: "Mismatch", message: event.message }
+                : { _tag: "Recoverable", message: event.message },
           };
     case "shutdown":
       // "daemon socket server is closing" — the daemon went away but a fresh latch
@@ -156,7 +174,13 @@ function foldEvent(
       return {
         terminal: NO_DAEMON_RE.test(event.message)
           ? { _tag: "NoDaemon", message: event.message }
-          : { _tag: "Fatal", message: event.message },
+          : MISMATCH_RE.test(event.message)
+            ? // The subscribe CLI reports a handshake version mismatch as fatal
+              // (correct for a one-shot CLI), but the desktop outlives binary
+              // upgrades: the same subscription connects fine once the daemon
+              // restarts on the matching binary, so keep slow-retrying.
+              { _tag: "Mismatch", message: event.message }
+            : { _tag: "Fatal", message: event.message },
       };
   }
 }
@@ -399,7 +423,12 @@ export class LiveConnection extends Effect.Service<LiveConnection>()(
                   target.runnerKey,
                   setConnection({ status: "reconnecting", message: terminal.message }),
                 );
-                yield* Effect.sleep(backoff.recoverable);
+                // Mismatch retries are deliberately slow: each attempt spawns a
+                // full subscribe (over SSH for remote sources) that will keep
+                // failing until someone upgrades a binary and restarts the daemon.
+                yield* Effect.sleep(
+                  terminal._tag === "Mismatch" ? backoff.mismatch : backoff.recoverable,
+                );
               }
               first = false;
             }

@@ -49,13 +49,17 @@ const ROW: PickerRow = {
 // test — it only removes the spurious poll. Tests that DO assert the poll use
 // EagerBackoff instead.
 const StableBackoff = Layer.succeed(LiveConnectionConfig, {
-  backoff: { recoverable: Duration.zero, noDaemon: Duration.minutes(60) },
+  backoff: {
+    recoverable: Duration.zero,
+    noDaemon: Duration.minutes(60),
+    mismatch: Duration.zero,
+  },
 });
 
 // Zero noDaemon backoff so the auto-latch poll re-arms immediately — used only by the
 // test that asserts the poll resumes latch-only after a post-Start daemon loss.
 const EagerBackoff = Layer.succeed(LiveConnectionConfig, {
-  backoff: { recoverable: Duration.zero, noDaemon: Duration.zero },
+  backoff: { recoverable: Duration.zero, noDaemon: Duration.zero, mismatch: Duration.zero },
 });
 
 // A frame as the Rust worker emits it: tagged with the source key (for per-source
@@ -205,6 +209,112 @@ describe("LiveConnection", () => {
         const reconnecting = yield* awaitKeyStatus(lc.states, "k1", "reconnecting");
         expect(reconnecting.connection.status).toBe("reconnecting");
         expect(reconnecting.rows.map((r) => r.pane_id)).toEqual(["%1"]);
+      });
+
+      yield* program.pipe(
+        Effect.provide(
+          LiveConnection.DefaultWithoutDependencies.pipe(
+            Layer.provide(Layer.merge(MockTauri, StableBackoff)),
+          ),
+        ),
+      );
+    }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
+
+  it("keeps retrying on a protocol/schema mismatch instead of parking on fatal", () =>
+    Effect.gen(function* () {
+      // The subscribe CLI reports a handshake version mismatch as a fatal frame,
+      // but the condition heals out-of-band (binary upgraded, daemon restarted).
+      // Parking on fatal wedges the dock behind a manual Reconnect after every
+      // upgrade; a mismatch must re-arm latch-only and connect once versions agree.
+      const startCalls = yield* Queue.unbounded<{ epoch: number; autoStart: boolean }>();
+      const events = yield* Queue.unbounded<LivePickerEnvelope>();
+
+      const MockTauri = Layer.succeed(TauriIpc, {
+        startLivePicker: ({ epoch, autoStart }) =>
+          Queue.offer(startCalls, { epoch, autoStart }).pipe(Effect.asVoid),
+        stopLivePicker: () => Effect.void,
+        loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
+        pollDaemonStatus: () => Effect.succeed({ reachable: true }),
+        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+      });
+
+      const program = Effect.gen(function* () {
+        const lc = yield* LiveConnection;
+
+        const emit = (epoch: number, event: LivePickerEvent) =>
+          Queue.offer(events, envelope("k1", epoch, event));
+
+        yield* lc.configure([{ settings: SETTINGS, runnerKey: "k1", enabled: true }]);
+        const first = yield* Queue.take(startCalls);
+
+        // An old daemon rejects the new client's handshake (the CLI's fatal wording).
+        yield* emit(first.epoch, {
+          kind: "fatal",
+          message:
+            "daemon rejected subscription handshake (ProtocolMismatch): unsupported IPC protocol version 2 (expected 1)",
+          diagnostics: null,
+        });
+
+        // Re-arm on a fresh epoch, latch-only, surfacing "reconnecting" — not fatal.
+        const second = yield* Queue.take(startCalls);
+        expect(second.autoStart).toBe(false);
+        expect(second.epoch).toBeGreaterThan(first.epoch);
+        const reconnecting = yield* awaitKeyStatus(lc.states, "k1", "reconnecting");
+        expect(reconnecting.connection.status).toBe("reconnecting");
+
+        // The daemon was restarted on the matching binary: the retry connects.
+        yield* emit(second.epoch, { kind: "rows", rows: [ROW], snapshot: SNAPSHOT });
+        yield* awaitKeyStatus(lc.states, "k1", "online");
+      });
+
+      yield* program.pipe(
+        Effect.provide(
+          LiveConnection.DefaultWithoutDependencies.pipe(
+            Layer.provide(Layer.merge(MockTauri, StableBackoff)),
+          ),
+        ),
+      );
+    }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
+
+  it("slow-retries an incompatible-host subscribe stream (old remote binary)", () =>
+    Effect.gen(function* () {
+      // A remote host running an old agentscan emits pre-picker-rows frames; the
+      // Rust worker classifies that as "Incompatible agentscan subscribe output".
+      // It must re-arm (the host will eventually be upgraded) rather than park.
+      const startCalls = yield* Queue.unbounded<{ epoch: number; autoStart: boolean }>();
+      const events = yield* Queue.unbounded<LivePickerEnvelope>();
+
+      const MockTauri = Layer.succeed(TauriIpc, {
+        startLivePicker: ({ epoch, autoStart }) =>
+          Queue.offer(startCalls, { epoch, autoStart }).pipe(Effect.asVoid),
+        stopLivePicker: () => Effect.void,
+        loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
+        pollDaemonStatus: () => Effect.succeed({ reachable: true }),
+        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+      });
+
+      const program = Effect.gen(function* () {
+        const lc = yield* LiveConnection;
+
+        const emit = (epoch: number, event: LivePickerEvent) =>
+          Queue.offer(events, envelope("k1", epoch, event));
+
+        yield* lc.configure([{ settings: SETTINGS, runnerKey: "k1", enabled: true }]);
+        const first = yield* Queue.take(startCalls);
+
+        yield* emit(first.epoch, {
+          kind: "offline",
+          message:
+            "Incompatible agentscan subscribe output: the host's agentscan is older than this desktop and does not publish picker rows; update agentscan on the host: missing field `rows`",
+          retrying: false,
+          diagnostics: null,
+        });
+
+        const second = yield* Queue.take(startCalls);
+        expect(second.autoStart).toBe(false);
+        expect(second.epoch).toBeGreaterThan(first.epoch);
+        const reconnecting = yield* awaitKeyStatus(lc.states, "k1", "reconnecting");
+        expect(reconnecting.connection.status).toBe("reconnecting");
       });
 
       yield* program.pipe(

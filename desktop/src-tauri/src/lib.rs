@@ -1386,15 +1386,13 @@ fn run_live_picker_subscription(
         match line {
             Ok(line) if line.trim().is_empty() => {}
             Ok(line) => match serde_json::from_str::<SubscribeFrame>(&line) {
-                Ok(frame) => {
-                    match handle_subscribe_frame(app, runner, frame, source_key, epoch) {
-                        LivePickerWorkerExit::Retry => {}
-                        _ => {
-                            saw_terminal = true;
-                            break;
-                        }
+                Ok(frame) => match handle_subscribe_frame(app, runner, frame, source_key, epoch) {
+                    LivePickerWorkerExit::Retry => {}
+                    _ => {
+                        saw_terminal = true;
+                        break;
                     }
-                }
+                },
                 Err(error) => {
                     let message = classify_desktop_failure(
                         runner,
@@ -1814,6 +1812,17 @@ fn classify_desktop_failure(runner: &AgentscanRunner, operation: &str, message: 
         if lower.contains("client_tty") || lower.contains("client tty") {
             return format!("Remote client tty is invalid or unavailable: {trimmed}");
         }
+    }
+
+    // A `snapshot` subscribe frame without `rows` is the signature of a host
+    // binary older than the picker-rows contract (see `SubscribeFrame::Snapshot`),
+    // not corrupt output: name the fix instead of reporting generic bad JSON.
+    // "Incompatible agentscan" also routes it onto the slow mismatch retry in
+    // LiveConnection instead of a fast reconnect loop.
+    if lower.contains("missing field `rows`") {
+        return format!(
+            "Incompatible agentscan {operation} output: the host's agentscan is older than this desktop and does not publish picker rows; update agentscan on the host: {trimmed}"
+        );
     }
 
     if lower.contains("invalid agentscan")
@@ -3636,6 +3645,16 @@ mod tests {
             classify_desktop_failure(&runner, "hotkeys", "Invalid agentscan hotkeys JSON")
                 .starts_with("Invalid JSON from agentscan hotkeys")
         );
+        // A snapshot frame without `rows` is an old host binary, not corrupt
+        // output: the message must name the upgrade fix (and route onto the
+        // slow mismatch retry) instead of reporting generic invalid JSON.
+        let old_host = classify_desktop_failure(
+            &runner,
+            "subscribe",
+            "Invalid agentscan subscribe frame: missing field `rows` at line 1 column 512",
+        );
+        assert!(old_host.starts_with("Incompatible agentscan subscribe output"));
+        assert!(old_host.contains("update agentscan on the host"));
         assert!(
             classify_desktop_failure(&runner, "focus", "can't find pane: %42")
                 .starts_with("Focus target is stale")
