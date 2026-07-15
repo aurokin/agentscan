@@ -287,9 +287,16 @@ impl TuiState {
             return None;
         }
 
-        let start = self
-            .page_start
-            .min(last_non_empty_page_start(self.panes.len(), page_size));
+        // Mirror the render path's clamp exactly: `page_start` is reclamped only
+        // when it points past the end. A live reanchor can leave it at a
+        // non-page-aligned index inside the final partial page, and clamping it
+        // differently here would make arrow movement act on rows the frame does
+        // not show.
+        let start = if self.page_start >= self.panes.len() {
+            last_non_empty_page_start(self.panes.len(), page_size)
+        } else {
+            self.page_start
+        };
         let end = start.saturating_add(page_size).min(self.panes.len());
         Some(start..end)
     }

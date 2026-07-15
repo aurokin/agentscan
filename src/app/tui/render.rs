@@ -191,8 +191,13 @@ pub(crate) fn render_tui_frame_for_size_with_icons(
     }
 }
 
-// Selection is pane-id anchored so live updates keep it on the same pane; when
-// that pane leaves the visible page the highlight snaps to the first visible row.
+// Selection is pane-id anchored so live updates keep it on the same pane. When
+// the pane is gone — or still exists but a live update pushed it off the visible
+// page — the highlight deliberately snaps to the first visible row rather than
+// re-paging to chase it: the page anchor follows the previously visible rows
+// (`reanchor_page_start`), and moving the page to follow the selection would
+// fight that contract and shift the list under the user. The frame is redrawn on
+// the same update, so Enter always acts on the visibly highlighted row.
 fn reconcile_selection(
     selected_pane_id: &mut Option<String>,
     visible_pane_ids: &[String],
