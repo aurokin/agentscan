@@ -100,10 +100,11 @@ export async function resolveLatestVersion(options: {
   readonly nowMs: number;
 }): Promise<string | null> {
   const cached = readUpdateCheckCache(options.readStorage);
-  if (
-    cached !== null &&
-    options.nowMs - cached.checkedAtMs < UPDATE_CHECK_INTERVAL_MS
-  ) {
+  // A future-dated entry (clock stepped backward since the last check) must
+  // read as stale, or a negative elapsed time would keep it "fresh" until the
+  // clock catches back up — suppressing checks far beyond the day interval.
+  const cacheAgeMs = cached === null ? -1 : options.nowMs - cached.checkedAtMs;
+  if (cached !== null && cacheAgeMs >= 0 && cacheAgeMs < UPDATE_CHECK_INTERVAL_MS) {
     return cached.latestVersion;
   }
 

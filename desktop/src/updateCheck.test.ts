@@ -125,6 +125,26 @@ describe("resolveLatestVersion", () => {
     ]);
   });
 
+  it("treats a future-dated cache as stale and re-checks", async () => {
+    const writes: Array<[string, string]> = [];
+    await expect(
+      resolveLatestVersion({
+        readStorage: () =>
+          // Clock stepped backward since the last check: checkedAtMs > nowMs.
+          JSON.stringify({ checkedAtMs: 100_000, latestVersion: "0.8.9" }),
+        writeStorage: (key, value) => writes.push([key, value]),
+        fetchFn: async () => jsonResponse({ tag_name: "v0.9.1" }),
+        nowMs: 50_000,
+      }),
+    ).resolves.toBe("0.9.1");
+    expect(writes).toEqual([
+      [
+        UPDATE_CHECK_CACHE_KEY,
+        JSON.stringify({ checkedAtMs: 50_000, latestVersion: "0.9.1" }),
+      ],
+    ]);
+  });
+
   it("falls back to a stale cache when the network is unavailable", async () => {
     await expect(
       resolveLatestVersion({
