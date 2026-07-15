@@ -361,6 +361,11 @@ jobs:
           # regexes are written literally, untouched by the shell. Only the
           # __TOKENS__ are substituted afterward via sed (all values are
           # hex/semver/tag — no sed-special characters).
+          #
+          # The formula deliberately has no `version` stanza: Homebrew scans
+          # it from the URL's /vX.Y.Z/ path segment, and `brew audit` rejects
+          # an explicit one as redundant (verified: `brew info` reports the
+          # scanned version and `brew test`'s version assertion passes).
           cat > tap/Formula/agentscan.rb <<'RUBY'
           class Agentscan < Formula
             desc "CLI and daemon for discovering and managing AI agent panes in tmux"
@@ -412,6 +417,9 @@ jobs:
             end
           end
           RUBY
+          # `depends_on :macos` is valid cask DSL — it was introduced by
+          # `brew style --fix` (Homebrew/OSDependsOn autocorrect) and the
+          # cask loads and installs with it (verified against the live tap).
           cat > tap/Casks/agentscan-desktop.rb <<'RUBY'
           cask "agentscan-desktop" do
             version "__VERSION__"
