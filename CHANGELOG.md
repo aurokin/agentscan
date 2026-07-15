@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.1 - 2026-07-14
+
 ### Added
 
 - The TUI picker now shows a highlight bar on the selected row: Up/Down move
