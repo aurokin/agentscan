@@ -7,7 +7,13 @@
     <title>agentscan</title>
     <!-- Resolve the saved theme before styles.css loads so cold start neither
          flashes the WebView's default white nor the wrong theme. Keep the storage
-         key and the background colors in sync with App.tsx / styles.css. -->
+         key and the background colors in sync with App.tsx / styles.css.
+
+         This inline script is compatible with the strict production CSP in
+         tauri.conf.json (script-src 'self'): tauri-codegen hashes inline scripts
+         found in the built HTML and tauri appends those sha256 hashes to
+         script-src at runtime (dangerousDisableAssetCspModification is unset).
+         The inline style below is covered by style-src 'unsafe-inline'. -->
     <script>
       (function () {
         try {
