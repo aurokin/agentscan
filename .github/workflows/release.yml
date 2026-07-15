@@ -295,12 +295,22 @@ jobs:
             fi
             printf '%s' "$h"
           }
+          # Standalone assignments, not $(...) inside echo: a command
+          # substitution that fails inside echo's arguments is swallowed
+          # (echo still exits 0, so set -e never fires) and an empty sha
+          # would be rendered. As a plain assignment, the substitution's
+          # exit status is the command's, so sha_for's exit 1 aborts here.
+          version="${TAG#v}"
+          darwin_arm64="$(sha_for agentscan-aarch64-apple-darwin.tar.gz)"
+          linux_arm64="$(sha_for agentscan-aarch64-unknown-linux-gnu.tar.gz)"
+          linux_amd64="$(sha_for agentscan-x86_64-unknown-linux-gnu.tar.gz)"
+          desktop="$(sha_for agentscan-desktop-aarch64-apple-darwin.zip)"
           {
-            echo "version=${TAG#v}"
-            echo "darwin_arm64=$(sha_for agentscan-aarch64-apple-darwin.tar.gz)"
-            echo "linux_arm64=$(sha_for agentscan-aarch64-unknown-linux-gnu.tar.gz)"
-            echo "linux_amd64=$(sha_for agentscan-x86_64-unknown-linux-gnu.tar.gz)"
-            echo "desktop=$(sha_for agentscan-desktop-aarch64-apple-darwin.zip)"
+            echo "version=${version}"
+            echo "darwin_arm64=${darwin_arm64}"
+            echo "linux_arm64=${linux_arm64}"
+            echo "linux_amd64=${linux_amd64}"
+            echo "desktop=${desktop}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Checkout tap repo
@@ -310,7 +320,33 @@ jobs:
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: tap
 
+      - name: Guard against downgrading the tap
+        id: guard
+        working-directory: tap
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          # The concurrency group serializes bump jobs but does not order
+          # them: if two tags release back-to-back and the newer run finishes
+          # first, the older run would overwrite the tap with older URLs and
+          # checksums. Skip when the tap already carries a strictly newer
+          # version; an equal version proceeds (idempotent re-runs — the
+          # commit step no-ops on an empty diff).
+          current=""
+          if [ -f Casks/agentscan-desktop.rb ]; then
+            current="$(sed -n 's/^  version "\(.*\)"$/\1/p' Casks/agentscan-desktop.rb)"
+          fi
+          if [ -n "$current" ] && [ "$current" != "$VERSION" ] &&
+             [ "$(printf '%s\n%s\n' "$current" "$VERSION" | sort -V | tail -1)" = "$current" ]; then
+            echo "Tap already at ${current} (newer than ${VERSION}); skipping bump."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Render formula and cask
+        if: ${{ steps.guard.outputs.skip != 'true' }}
         env:
           TAG: ${{ github.ref_name }}
           VERSION: ${{ steps.meta.outputs.version }}
@@ -425,6 +461,7 @@ jobs:
             tap/Casks/agentscan-desktop.rb
 
       - name: Commit and push to tap
+        if: ${{ steps.guard.outputs.skip != 'true' }}
         working-directory: tap
         env:
           VERSION: ${{ steps.meta.outputs.version }}
