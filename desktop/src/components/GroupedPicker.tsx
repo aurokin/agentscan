@@ -47,6 +47,14 @@ export function GroupedPicker({
   onSelect: (row: PickerRow) => void;
 }) {
   const rowCount = groups.reduce((total, group) => total + group.rows.length, 0);
+  // DOM id for a row's option element, unique across sources (pane ids collide
+  // across hosts) and safe as an id/aria-activedescendant reference. tmux pane
+  // ids are "%N", so stripping non-id characters keeps them unique per source.
+  const optionId = (paneId: string) =>
+    `agent-option-${sourceKey}-${paneId}`.replace(/[^A-Za-z0-9_-]/g, "-");
+  const selectedRowInThisSource =
+    selectedPaneId !== null &&
+    groups.some((group) => group.rows.some((row) => row.pane_id === selectedPaneId));
 
   if (state.status === "loading" && rowCount === 0) {
     return <p className="empty-note">Loading agents…</p>;
@@ -88,14 +96,29 @@ export function GroupedPicker({
   }
 
   return (
-    <div className="picker-groups">
+    /* One listbox per source, spanning its project groups — the selection
+       cursor moves across groups, so the composite widget is the whole picker,
+       not each <ul>. aria-selected is only valid on selectable roles, hence
+       option items. The listbox is a tab stop whose aria-activedescendant
+       tracks the app-level selection; Arrow Up/Down and Enter already operate
+       it through the window-level key handler (keybinds.ts). */
+    <div
+      className="picker-groups"
+      role="listbox"
+      tabIndex={0}
+      aria-label="Agent panes"
+      aria-activedescendant={
+        selectedRowInThisSource && selectedPaneId !== null ? optionId(selectedPaneId) : undefined
+      }
+    >
       {groups.map((group) => (
-        <section className="picker-group" key={group.key}>
-          <h2 className="group-header">{group.project}</h2>
-          {/* Explicit listbox/option roles: aria-selected is only valid on
-              selectable roles, not on a plain list item. Selection is managed
-              by the app-level keyboard handlers (j/k + Enter), not DOM focus. */}
-          <ul className="agent-list" role="listbox">
+        <section className="picker-group" role="group" aria-label={group.project} key={group.key}>
+          {/* Presentational: the group's accessible name rides the section's
+              aria-label — a heading is not valid inside a listbox. */}
+          <h2 className="group-header" role="presentation">
+            {group.project}
+          </h2>
+          <ul className="agent-list" role="presentation">
             {group.rows.map((row) => {
               const isSelected = row.pane_id === selectedPaneId;
               // The single live pane the user is in. The selection cursor follows
@@ -113,6 +136,7 @@ export function GroupedPicker({
               return (
                 <li
                   role="option"
+                  id={optionId(row.pane_id)}
                   aria-selected={isSelected}
                   aria-current={isFocused ? "true" : undefined}
                   className={`agent-row${isSelected ? " selected" : ""}${

@@ -2010,6 +2010,15 @@ button:disabled {
   background: transparent;
 }
 
+/* The picker listbox is a tab stop (its aria-activedescendant carries the
+   selection for assistive tech); show a ring only for keyboard focus so mouse
+   clicks inside it stay chrome-free. */
+.picker-groups:focus-visible {
+  outline: 2px solid rgba(var(--accent-rgb), 0.55);
+  outline-offset: -2px;
+  border-radius: 8px;
+}
+
 /* Reduced motion: stop the always-on animations while keeping their static
    feedback — the spin/boot icons still render, the pulsing dot holds a mid
    opacity so an in-progress state still reads differently from a steady one,
