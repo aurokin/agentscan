@@ -10,7 +10,8 @@ use crossterm::event::{self, Event};
 use crossterm::terminal;
 
 use super::*;
-use input::{TuiLoopAction, handle_key_event, is_key_press};
+use input::is_key_press;
+pub(crate) use input::{TuiLoopAction, handle_key_event};
 pub(crate) use render::{TuiTerminalSize, render_rows, write_tui_frame};
 #[cfg(test)]
 pub(crate) use render::{

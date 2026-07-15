@@ -926,6 +926,208 @@ fn tui_frame_writer_sanitizes_tmux_controlled_labels() {
 }
 
 #[test]
+fn tui_selection_defaults_to_first_visible_row() {
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes(vec![tui_test_pane(1), tui_test_pane(2)]);
+
+    let frame = super::tui::render_tui_frame_for_size(
+        &mut state,
+        super::tui::TuiTerminalSize {
+            width: 120,
+            height: 10,
+        },
+    );
+
+    assert_eq!(frame.selected_row, Some(0));
+    assert_eq!(state.test_selected_pane_id(), Some("%1"));
+}
+
+#[test]
+fn tui_arrow_selection_moves_within_visible_rows() {
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes(vec![tui_test_pane(1), tui_test_pane(2), tui_test_pane(3)]);
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 10,
+    };
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+
+    assert!(state.select_next());
+    assert_eq!(state.test_selected_pane_id(), Some("%2"));
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(frame.selected_row, Some(1));
+
+    assert!(state.select_next());
+    assert_eq!(state.test_selected_pane_id(), Some("%3"));
+    assert!(!state.select_next());
+    assert_eq!(state.test_selected_pane_id(), Some("%3"));
+
+    assert!(state.select_previous());
+    assert!(state.select_previous());
+    assert_eq!(state.test_selected_pane_id(), Some("%1"));
+    assert!(!state.select_previous());
+    assert_eq!(state.test_selected_pane_id(), Some("%1"));
+}
+
+#[test]
+fn tui_arrow_selection_crosses_page_boundaries() {
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes((1..=8).map(tui_test_pane).collect());
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 6,
+    };
+    let first_frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(first_frame.page_size, 4);
+
+    for _ in 0..3 {
+        assert!(state.select_next());
+    }
+    assert_eq!(state.test_selected_pane_id(), Some("%4"));
+
+    assert!(state.select_next());
+    assert_eq!(state.test_selected_pane_id(), Some("%5"));
+    let second_page_frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(second_page_frame.page_start, 4);
+    assert_eq!(second_page_frame.selected_row, Some(0));
+
+    assert!(state.select_previous());
+    assert_eq!(state.test_selected_pane_id(), Some("%4"));
+    let first_page_frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(first_page_frame.page_start, 0);
+    assert_eq!(first_page_frame.selected_row, Some(3));
+}
+
+#[test]
+fn tui_selection_follows_pane_across_live_updates() {
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes(vec![tui_test_pane(1), tui_test_pane(2), tui_test_pane(3)]);
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 10,
+    };
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert!(state.select_next());
+    assert_eq!(state.test_selected_pane_id(), Some("%2"));
+
+    state.replace_panes(vec![tui_test_pane(2), tui_test_pane(3)]);
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+
+    assert_eq!(state.test_selected_pane_id(), Some("%2"));
+    assert_eq!(frame.selected_row, Some(0));
+}
+
+#[test]
+fn tui_selection_snaps_to_first_visible_when_selected_pane_removed() {
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes(vec![tui_test_pane(1), tui_test_pane(2), tui_test_pane(3)]);
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 10,
+    };
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert!(state.select_next());
+    assert_eq!(state.test_selected_pane_id(), Some("%2"));
+
+    state.replace_panes(vec![tui_test_pane(1), tui_test_pane(3)]);
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+
+    assert_eq!(state.test_selected_pane_id(), Some("%1"));
+    assert_eq!(frame.selected_row, Some(0));
+}
+
+#[test]
+fn tui_selection_clears_when_snapshot_empties() {
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes(vec![tui_test_pane(1)]);
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 10,
+    };
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(state.test_selected_pane_id(), Some("%1"));
+
+    state.replace_panes(Vec::new());
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+
+    assert_eq!(frame.selected_row, None);
+    assert_eq!(state.test_selected_pane_id(), None);
+    assert!(!state.select_next());
+    assert!(!state.select_previous());
+}
+
+#[test]
+fn tui_enter_without_selection_keeps_tui_open() {
+    let mut state = super::tui::TuiState::default();
+
+    let action = super::tui::handle_key_event(
+        &crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ),
+        &mut state,
+    )
+    .expect("enter without selection should not error");
+
+    assert!(matches!(action, super::tui::TuiLoopAction::Continue));
+}
+
+#[test]
+fn tui_arrow_keys_move_selection_and_request_redraw() {
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes(vec![tui_test_pane(1), tui_test_pane(2)]);
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 10,
+    };
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    let key = |code| crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::NONE);
+
+    let down = super::tui::handle_key_event(&key(crossterm::event::KeyCode::Down), &mut state)
+        .expect("down arrow should not error");
+    assert!(matches!(down, super::tui::TuiLoopAction::Redraw));
+    assert_eq!(state.test_selected_pane_id(), Some("%2"));
+
+    let up = super::tui::handle_key_event(&key(crossterm::event::KeyCode::Up), &mut state)
+        .expect("up arrow should not error");
+    assert!(matches!(up, super::tui::TuiLoopAction::Redraw));
+    assert_eq!(state.test_selected_pane_id(), Some("%1"));
+
+    let clamped = super::tui::handle_key_event(&key(crossterm::event::KeyCode::Up), &mut state)
+        .expect("clamped up arrow should not error");
+    assert!(matches!(clamped, super::tui::TuiLoopAction::Continue));
+    assert_eq!(state.test_selected_pane_id(), Some("%1"));
+}
+
+#[test]
+fn tui_frame_writer_highlights_selected_row_across_full_width() {
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes(vec![tui_test_pane(1), tui_test_pane(2)]);
+    let width = 40u16;
+    let frame = super::tui::render_tui_frame_for_size(
+        &mut state,
+        super::tui::TuiTerminalSize { width, height: 10 },
+    );
+    assert_eq!(frame.selected_row, Some(0));
+
+    let mut rendered = Vec::new();
+    super::tui::write_tui_frame(&mut rendered, &frame).expect("frame should serialize");
+    let rendered = String::from_utf8(rendered).expect("frame output should be utf-8");
+
+    let highlight_start = rendered
+        .find("\u{1b}[7m")
+        .expect("selected row should enable reverse video");
+    let highlight_end = rendered
+        .find("\u{1b}[27m")
+        .expect("selected row should disable reverse video");
+    let highlighted = &rendered[highlight_start + "\u{1b}[7m".len()..highlight_end];
+
+    assert!(highlighted.starts_with(frame.lines[0].as_str()));
+    assert_eq!(UnicodeWidthStr::width(highlighted), usize::from(width));
+    assert_eq!(rendered.matches("\u{1b}[7m").count(), 1);
+}
+
+#[test]
 fn tmux_target_is_missing_matches_common_focus_errors() {
     assert!(super::tmux::tmux_target_is_missing(b"can't find pane: %42"));
     assert!(super::tmux::tmux_target_is_missing(

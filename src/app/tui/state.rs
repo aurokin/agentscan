@@ -93,6 +93,7 @@ pub(crate) struct TuiState {
     pub(super) connection: TuiConnectionState,
     pub(super) page_start: usize,
     pub(super) reset_key_targets_on_next_render: bool,
+    pub(super) selected_pane_id: Option<String>,
     last_terminal_size: Option<TuiTerminalSize>,
 }
 
@@ -175,6 +176,7 @@ impl TuiState {
         self.pane_location_labels.clear();
         self.workspace_cache.clear();
         self.page_start = 0;
+        self.selected_pane_id = None;
         self.error_message = Some(message.clone());
         self.connection = TuiConnectionState::unavailable(message);
     }
@@ -199,6 +201,11 @@ impl TuiState {
     #[cfg(test)]
     pub(crate) fn test_retired_key_target(&self, key: char) -> Option<&str> {
         self.retired_key_targets.get(&key).map(String::as_str)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_selected_pane_id(&self) -> Option<&str> {
+        self.selected_pane_id.as_deref()
     }
 
     fn page_size(&self) -> usize {
@@ -237,6 +244,69 @@ impl TuiState {
         self.page_start = self.page_start.saturating_sub(page_size);
         self.key_targets.clear();
         self.retired_key_targets.clear();
+        true
+    }
+
+    pub(crate) fn select_next(&mut self) -> bool {
+        let Some(visible) = self.visible_pane_range() else {
+            return false;
+        };
+
+        match self.selected_visible_index(&visible) {
+            None => self.select_pane_at(visible.start),
+            Some(index) if visible.start + index + 1 < visible.end => {
+                self.select_pane_at(visible.start + index + 1)
+            }
+            Some(_) => self.next_page() && self.select_pane_at(self.page_start),
+        }
+    }
+
+    pub(crate) fn select_previous(&mut self) -> bool {
+        let Some(visible) = self.visible_pane_range() else {
+            return false;
+        };
+
+        match self.selected_visible_index(&visible) {
+            None => self.select_pane_at(visible.start),
+            Some(0) => {
+                if !self.previous_page() {
+                    return false;
+                }
+                match self.visible_pane_range() {
+                    Some(previous_visible) => self.select_pane_at(previous_visible.end - 1),
+                    None => false,
+                }
+            }
+            Some(index) => self.select_pane_at(visible.start + index - 1),
+        }
+    }
+
+    fn visible_pane_range(&self) -> Option<std::ops::Range<usize>> {
+        let page_size = self.page_size();
+        if page_size == 0 || self.panes.is_empty() {
+            return None;
+        }
+
+        let start = self
+            .page_start
+            .min(last_non_empty_page_start(self.panes.len(), page_size));
+        let end = start.saturating_add(page_size).min(self.panes.len());
+        Some(start..end)
+    }
+
+    fn selected_visible_index(&self, visible: &std::ops::Range<usize>) -> Option<usize> {
+        let selected_pane_id = self.selected_pane_id.as_deref()?;
+        self.panes[visible.clone()]
+            .iter()
+            .position(|pane| pane.pane_id == selected_pane_id)
+    }
+
+    fn select_pane_at(&mut self, pane_index: usize) -> bool {
+        let Some(pane) = self.panes.get(pane_index) else {
+            return false;
+        };
+
+        self.selected_pane_id = Some(pane.pane_id.clone());
         true
     }
 }

@@ -2,13 +2,13 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::*;
 
-pub(super) enum TuiLoopAction {
+pub(crate) enum TuiLoopAction {
     Continue,
     Redraw,
     Close,
 }
 
-pub(super) fn handle_key_event(
+pub(crate) fn handle_key_event(
     key_event: &KeyEvent,
     state: &mut TuiState,
 ) -> Result<TuiLoopAction> {
@@ -39,6 +39,29 @@ pub(super) fn handle_key_event(
         });
     }
 
+    if matches!(key_event.code, KeyCode::Up) {
+        return Ok(if state.select_previous() {
+            TuiLoopAction::Redraw
+        } else {
+            TuiLoopAction::Continue
+        });
+    }
+
+    if matches!(key_event.code, KeyCode::Down) {
+        return Ok(if state.select_next() {
+            TuiLoopAction::Redraw
+        } else {
+            TuiLoopAction::Continue
+        });
+    }
+
+    if matches!(key_event.code, KeyCode::Enter) {
+        let Some(target_pane_id) = state.selected_pane_id.clone() else {
+            return Ok(TuiLoopAction::Continue);
+        };
+        return focus_pane_and_close(&target_pane_id);
+    }
+
     let Some(selection) = tui_selection_from_key_event(key_event) else {
         return Ok(TuiLoopAction::Continue);
     };
@@ -51,6 +74,10 @@ pub(super) fn handle_key_event(
         return Ok(TuiLoopAction::Continue);
     };
 
+    focus_pane_and_close(target_pane_id)
+}
+
+fn focus_pane_and_close(target_pane_id: &str) -> Result<TuiLoopAction> {
     let focus_target = tmux::resolve_focus_target(target_pane_id, None)?;
     if focus_target.pane_exists {
         match tmux::focus_tmux_pane(target_pane_id, focus_target.client_tty.as_deref())? {

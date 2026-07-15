@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- The TUI picker now shows a highlight bar on the selected row: Up/Down move
+  the selection across visible rows (continuing across pages at the edges)
+  and Enter focuses the selected pane through the same path as the letter
+  hotkeys, which keep working unchanged. The selection is pane-anchored, so
+  live snapshot updates keep it on the same pane and snap it to the first
+  visible row when that pane disappears. Fuzzy search (`/`) was deliberately
+  split into a follow-up issue.
+
 ### Changed
 
 - Desktop accessibility: the always-on animations (reconnect spinner, pulsing
