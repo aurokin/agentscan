@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.3 - 2026-07-15
+
 ### Added
 
 - agentscan is installable from Homebrew (AUR-685): `brew install
