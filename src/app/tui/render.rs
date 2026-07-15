@@ -19,6 +19,9 @@ pub(crate) struct TuiTerminalSize {
     pub(crate) height: u16,
 }
 
+// Selected-row pointer shown in the one-cell gutter every picker row carries.
+pub(crate) const TUI_SELECTED_POINTER: char = '❯';
+
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct TuiFrame {
     pub(crate) lines: Vec<String>,
@@ -27,7 +30,6 @@ pub(crate) struct TuiFrame {
     pub(crate) page_size: usize,
     pub(crate) page_count: usize,
     pub(crate) selected_row: Option<usize>,
-    pub(crate) width: u16,
 }
 
 pub(crate) fn write_tui_frame<W: Write>(writer: &mut W, frame: &TuiFrame) -> Result<()> {
@@ -35,13 +37,15 @@ pub(crate) fn write_tui_frame<W: Write>(writer: &mut W, frame: &TuiFrame) -> Res
     for (row, line) in frame.lines.iter().enumerate() {
         queue!(writer, MoveTo(0, row as u16)).context("failed to queue tui line")?;
         if frame.selected_row == Some(row) {
-            // The highlight bar is applied at write time so frame lines stay
-            // plain strings; padding extends the bar across the full row width.
+            // The selected row is marked by the gutter pointer (part of the
+            // line string) plus bold weight applied here at write time — no
+            // reverse video or background fill, so the highlight inherits the
+            // terminal theme instead of inverting it.
             queue!(
                 writer,
-                SetAttribute(Attribute::Reverse),
-                crossterm::style::Print(pad_to_width(line, usize::from(frame.width))),
-                SetAttribute(Attribute::NoReverse)
+                SetAttribute(Attribute::Bold),
+                crossterm::style::Print(line),
+                SetAttribute(Attribute::NormalIntensity)
             )
             .context("failed to queue tui line")?;
         } else {
@@ -86,7 +90,6 @@ pub(crate) fn render_tui_frame_for_size_with_icons(
             page_size: 0,
             page_count: 0,
             selected_row: None,
-            width: terminal_size.width,
         };
     }
 
@@ -114,7 +117,6 @@ pub(crate) fn render_tui_frame_for_size_with_icons(
             page_size: 0,
             page_count: 0,
             selected_row: None,
-            width: terminal_size.width,
         };
     }
 
@@ -131,7 +133,6 @@ pub(crate) fn render_tui_frame_for_size_with_icons(
             page_size: 0,
             page_count: 0,
             selected_row: None,
-            width: terminal_size.width,
         };
     }
 
@@ -164,7 +165,6 @@ pub(crate) fn render_tui_frame_for_size_with_icons(
             page_size,
             page_count: 0,
             selected_row: None,
-            width: terminal_size.width,
         };
     }
 
@@ -218,13 +218,26 @@ pub(crate) fn render_tui_frame_for_size_with_icons(
         .map(|pane| pane.pane_id.clone())
         .collect::<Vec<_>>();
     let selected_row = reconcile_selection(&mut state.selected_pane_id, &visible_pane_ids);
+    // Rows leave one cell for the selection gutter: the selected row carries
+    // the pointer there, other rows a space, so text stays aligned as the
+    // selection moves.
     let mut lines = render_rows_for_width_with_location_labels_and_icons(
         &visible_panes,
         &state.key_targets,
-        row_width,
+        row_width.saturating_sub(1),
         &state.pane_location_labels,
         icon_mode,
     );
+    if row_width > 0 {
+        for (row, line) in lines.iter_mut().enumerate() {
+            let gutter = if selected_row == Some(row) {
+                TUI_SELECTED_POINTER
+            } else {
+                ' '
+            };
+            line.insert(0, gutter);
+        }
+    }
     lines.extend(if let Some(query) = state.search_query.as_deref() {
         render_search_footer_lines(
             query,
@@ -252,7 +265,6 @@ pub(crate) fn render_tui_frame_for_size_with_icons(
         page_size,
         page_count: page_count(view.len(), page_size),
         selected_row,
-        width: terminal_size.width,
     }
 }
 
@@ -656,15 +668,6 @@ fn truncate_to_width(input: &str, width: usize) -> String {
     } else {
         format!("{truncated}…")
     }
-}
-
-fn pad_to_width(line: &str, width: usize) -> String {
-    let line_width = display_width(line);
-    if line_width >= width {
-        return line.to_string();
-    }
-
-    format!("{line}{}", " ".repeat(width - line_width))
 }
 
 fn display_width(input: &str) -> usize {

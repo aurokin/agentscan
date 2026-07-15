@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Changed
+
+- The TUI selection highlight no longer uses full-width reverse video, which
+  read as a jarring solid bar on themed terminals. Rows now carry a one-cell
+  gutter where the selected row shows a `❯` pointer and is rendered bold, so
+  the highlight inherits the terminal theme.
+
 ### Added
 
 - The TUI picker now has fuzzy search: `/` enters search mode, typed
