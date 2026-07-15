@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- The TUI picker now has fuzzy search: `/` enters search mode, typed
+  characters filter rows by label and location with case-insensitive
+  subsequence matching, Backspace edits the query, and Esc cancels back to
+  the full list (Ctrl-C still closes). Up/Down, paging keys, and Enter
+  operate on the filtered rows with the existing pane-anchored selection;
+  letter hotkeys are suspended while searching and the footer becomes the
+  query input line with a match count.
+
 ## 0.8.1 - 2026-07-14
 
 ### Added

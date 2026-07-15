@@ -71,6 +71,9 @@ pub(crate) fn render_tui_frame_for_size_with_icons(
         state.key_targets.clear();
         state.retired_key_targets.clear();
         state.selected_pane_id = None;
+        // Search mode exists only while the pane list is on screen; dropping it
+        // on non-list frames keeps Esc's close semantics unambiguous there.
+        state.search_query = None;
         let lines = render_body_with_footer(
             &render_error_frame(error_message),
             &state.connection,
@@ -91,6 +94,7 @@ pub(crate) fn render_tui_frame_for_size_with_icons(
         state.key_targets.clear();
         state.retired_key_targets.clear();
         state.selected_pane_id = None;
+        state.search_query = None;
         state.page_start = 0;
         let body = if state.connection.kind == TuiConnectionKind::Connecting {
             vec![
@@ -119,6 +123,7 @@ pub(crate) fn render_tui_frame_for_size_with_icons(
         state.key_targets.clear();
         state.retired_key_targets.clear();
         state.selected_pane_id = None;
+        state.search_query = None;
         return TuiFrame {
             lines: fit_lines_to_terminal(&render_undersized_frame(), terminal_size),
             visible_pane_ids: Vec::new(),
@@ -130,62 +135,122 @@ pub(crate) fn render_tui_frame_for_size_with_icons(
         };
     }
 
-    if state.page_start >= state.panes.len() {
-        state.page_start = last_non_empty_page_start(state.panes.len(), page_size);
+    let row_width = usize::from(terminal_size.width);
+    let view = state.view_pane_indices();
+
+    // Panes exist but the search query filters them all out.
+    if view.is_empty() {
+        state.page_start = 0;
+        reconcile_selection(&mut state.selected_pane_id, &[]);
+        let query = state.search_query.as_deref().unwrap_or_default();
+        let mut lines = vec![
+            truncate_to_width(&format!("No panes match \"{query}\"."), row_width),
+            truncate_to_width("Backspace edits the query. Esc cancels search.", row_width),
+        ];
+        lines.extend(render_search_footer_lines(
+            query,
+            0,
+            page_size,
+            0,
+            state.panes.len(),
+            &state.connection,
+            row_width,
+        ));
+        lines.truncate(usize::from(terminal_size.height));
+        return TuiFrame {
+            lines,
+            visible_pane_ids: Vec::new(),
+            page_start: 0,
+            page_size,
+            page_count: 0,
+            selected_row: None,
+            width: terminal_size.width,
+        };
     }
 
-    let visible_end = state
-        .page_start
-        .saturating_add(page_size)
-        .min(state.panes.len());
-    let visible_panes = &state.panes[state.page_start..visible_end];
-    let previous_key_targets = state.key_targets.clone();
-    if state.reset_key_targets_on_next_render {
-        state.key_targets.clear();
-        state.reset_key_targets_on_next_render = false;
+    if state.page_start >= view.len() {
+        state.page_start = last_non_empty_page_start(view.len(), page_size);
     }
-    synchronize_key_targets_with_keys(&mut state.key_targets, visible_panes, &state.picker_keys);
-    let current_pane_ids = state
-        .panes
-        .iter()
-        .map(|pane| pane.pane_id.as_str())
-        .collect::<HashSet<_>>();
-    for (key, pane_id) in previous_key_targets {
-        if !state.key_targets.contains_key(&key) && !current_pane_ids.contains(pane_id.as_str()) {
-            state.retired_key_targets.insert(key, pane_id);
+
+    let visible_end = state.page_start.saturating_add(page_size).min(view.len());
+    if state.search_query.is_some() {
+        // Letter hotkeys are suspended while searching: typed characters edit
+        // the query, so rows carry no key labels and no targets are assigned.
+        state.key_targets.clear();
+        state.retired_key_targets.clear();
+        state.reset_key_targets_on_next_render = false;
+    } else {
+        // Outside search mode the view is the identity over `panes`, so the
+        // visible view positions are the same contiguous pane range as before.
+        let visible_panes = &state.panes[state.page_start..visible_end];
+        let previous_key_targets = state.key_targets.clone();
+        if state.reset_key_targets_on_next_render {
+            state.key_targets.clear();
+            state.reset_key_targets_on_next_render = false;
+        }
+        synchronize_key_targets_with_keys(
+            &mut state.key_targets,
+            visible_panes,
+            &state.picker_keys,
+        );
+        let current_pane_ids = state
+            .panes
+            .iter()
+            .map(|pane| pane.pane_id.as_str())
+            .collect::<HashSet<_>>();
+        for (key, pane_id) in previous_key_targets {
+            if !state.key_targets.contains_key(&key) && !current_pane_ids.contains(pane_id.as_str())
+            {
+                state.retired_key_targets.insert(key, pane_id);
+            }
+        }
+        for key in state.key_targets.keys() {
+            state.retired_key_targets.remove(key);
         }
     }
-    for key in state.key_targets.keys() {
-        state.retired_key_targets.remove(key);
-    }
 
+    let visible_panes = view[state.page_start..visible_end]
+        .iter()
+        .map(|&pane_index| &state.panes[pane_index])
+        .collect::<Vec<_>>();
     let visible_pane_ids = visible_panes
         .iter()
         .map(|pane| pane.pane_id.clone())
         .collect::<Vec<_>>();
     let selected_row = reconcile_selection(&mut state.selected_pane_id, &visible_pane_ids);
-    let row_width = usize::from(terminal_size.width);
     let mut lines = render_rows_for_width_with_location_labels_and_icons(
-        visible_panes,
+        &visible_panes,
         &state.key_targets,
         row_width,
         &state.pane_location_labels,
         icon_mode,
     );
-    lines.extend(render_footer_lines(
-        state.page_start,
-        page_size,
-        state.panes.len(),
-        &state.connection,
-        row_width,
-    ));
+    lines.extend(if let Some(query) = state.search_query.as_deref() {
+        render_search_footer_lines(
+            query,
+            state.page_start,
+            page_size,
+            view.len(),
+            state.panes.len(),
+            &state.connection,
+            row_width,
+        )
+    } else {
+        render_footer_lines(
+            state.page_start,
+            page_size,
+            state.panes.len(),
+            &state.connection,
+            row_width,
+        )
+    });
 
     TuiFrame {
         lines,
         visible_pane_ids,
         page_start: state.page_start,
         page_size,
-        page_count: page_count(state.panes.len(), page_size),
+        page_count: page_count(view.len(), page_size),
         selected_row,
         width: terminal_size.width,
     }
@@ -237,7 +302,7 @@ pub(crate) fn render_rows_for_width_with_icons(
     icon_mode: IconMode,
 ) -> Vec<String> {
     render_rows_for_width_with_location_labels_and_icons(
-        panes,
+        &panes.iter().collect::<Vec<_>>(),
         key_targets,
         width,
         &HashMap::new(),
@@ -246,7 +311,7 @@ pub(crate) fn render_rows_for_width_with_icons(
 }
 
 fn render_rows_for_width_with_location_labels_and_icons(
-    panes: &[PaneRecord],
+    panes: &[&PaneRecord],
     key_targets: &BTreeMap<char, String>,
     width: usize,
     location_labels: &HashMap<String, String>,
@@ -300,6 +365,21 @@ fn render_pane_row(
     format_row_with_trailing_label(&prefix, sanitized_label.as_str(), width)
 }
 
+fn footer_page_number(page_start: usize, page_size: usize, total_rows: usize) -> usize {
+    let page_count = page_count(total_rows, page_size);
+    if page_count == 0 {
+        return 0;
+    }
+
+    let last_visible_index = page_start
+        .saturating_add(page_size)
+        .min(total_rows)
+        .saturating_sub(1);
+    (last_visible_index / page_size)
+        .saturating_add(1)
+        .min(page_count)
+}
+
 fn render_footer_lines(
     page_start: usize,
     page_size: usize,
@@ -308,21 +388,11 @@ fn render_footer_lines(
     width: usize,
 ) -> Vec<String> {
     let page_count = page_count(total_panes, page_size);
-    let page_number = if page_count == 0 {
-        0
-    } else {
-        let last_visible_index = page_start
-            .saturating_add(page_size)
-            .min(total_panes)
-            .saturating_sub(1);
-        (last_visible_index / page_size)
-            .saturating_add(1)
-            .min(page_count)
-    };
+    let page_number = footer_page_number(page_start, page_size, total_panes);
     let shown_count = total_panes.saturating_sub(page_start).min(page_size.max(1));
 
     let first_line = footer_line_with_indicator(
-        "Select with key or Up/Down + Enter. Ctrl-B tmux prefix. Esc/Ctrl-C close.",
+        "Select with key or Up/Down + Enter. / search. Ctrl-B tmux prefix. Esc/Ctrl-C close.",
         connection.indicator(),
         width,
     );
@@ -339,6 +409,43 @@ fn render_footer_lines(
     } else {
         footer_line_with_indicator(
             format!("Page 1/1 | {shown_count}/{total_panes} shown").as_str(),
+            connection.message.as_str(),
+            width,
+        )
+    };
+
+    vec![first_line, second_line]
+}
+
+// The search footer keeps the two-line footprint of the normal footer: the
+// first line is the query input line, the second documents the mode and shows
+// how many panes match.
+fn render_search_footer_lines(
+    query: &str,
+    page_start: usize,
+    page_size: usize,
+    matched_count: usize,
+    total_panes: usize,
+    connection: &TuiConnectionState,
+    width: usize,
+) -> Vec<String> {
+    let page_count = page_count(matched_count, page_size);
+    let first_line =
+        footer_line_with_indicator(&format!("/{query}▌"), connection.indicator(), width);
+
+    let second_line = if page_count > 1 {
+        let page_number = footer_page_number(page_start, page_size, matched_count);
+        footer_line_with_indicator(
+            format!(
+                "Page {page_number}/{page_count} | {matched_count}/{total_panes} matched | Enter focus. Esc cancel."
+            )
+            .as_str(),
+            connection.message.as_str(),
+            width,
+        )
+    } else {
+        footer_line_with_indicator(
+            format!("{matched_count}/{total_panes} matched | Enter focus. Esc cancel.").as_str(),
             connection.message.as_str(),
             width,
         )
@@ -444,7 +551,7 @@ fn format_row_with_trailing_label(prefix: &str, label: &str, width: usize) -> St
     format!("{prefix}{}", truncate_to_width(label, remaining_width))
 }
 
-fn sanitize_tui_label(label: &str) -> String {
+pub(super) fn sanitize_tui_label(label: &str) -> String {
     let mut sanitized = String::with_capacity(label.len());
     let mut characters = label.chars().peekable();
     let mut last_was_space = false;
