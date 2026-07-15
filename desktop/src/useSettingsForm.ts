@@ -16,7 +16,11 @@ import { errorMessage } from "./shared";
 // Draft rows carry a render-only identity so React keys survive mid-list
 // removals — an index key makes every row below a deleted entry remount and
 // drop its caret/focus. `normalizeRunnerSettings` rebuilds bare {name, value}
-// rows at the apply boundary, so the id never reaches persistence.
+// rows at the apply boundary, so the id never reaches persistence. The id is
+// also invisible to dirty tracking: `runnerSettingsEqual` (and through it
+// `profileDraftDirty`) compares the name/value fields explicitly rather than
+// whole row objects, so a freshly seeded draft with env rows still reads
+// clean.
 export type EnvironmentVariableDraft = EnvironmentVariable & { id: string };
 export type RunnerSettingsDraft = Omit<RunnerSettings, "env"> & {
   env: EnvironmentVariableDraft[];
