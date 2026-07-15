@@ -218,6 +218,38 @@ fn active_flags_propagate_through_pane_record_and_picker() {
 }
 
 #[test]
+fn focus_recency_propagates_through_picker_rows_and_omits_none() {
+    let row = |pane_id: &str| {
+        tmux_pane_row(1000)
+            .session_name("notes")
+            .pane_id(pane_id)
+            .command("claude")
+            .title("Claude Code")
+            .tty("/dev/pts/1")
+            .current_path("/home/auro/notes")
+            .build()
+    };
+    let mut recent = classify::pane_from_row(row("%1"));
+    recent.last_focus_seq = Some(9);
+    let unstamped = classify::pane_from_row(row("%2"));
+
+    let picker_keys = super::picker::PickerKeySet::default();
+    let rows = super::picker::picker_rows(
+        &[recent, unstamped],
+        None,
+        1,
+        super::picker::PickerGroupBy::Session,
+        &picker_keys,
+    );
+    assert_eq!(rows[0].last_focus_seq, Some(9));
+    assert_eq!(rows[1].last_focus_seq, None);
+
+    // Absent recency stays off the wire; present recency is serialized.
+    let serialized = serde_json::to_string(&rows).expect("rows serialize");
+    assert_eq!(serialized.matches("last_focus_seq").count(), 1);
+}
+
+#[test]
 fn picker_rows_group_by_cwd_basename_and_order_by_group_then_location() {
     let picker_keys = super::picker::PickerKeySet::default();
     let panes = vec![

@@ -90,6 +90,13 @@ from those child commands. This protects destructive fixture operations such as
 `kill-server`, `kill-session`, and `kill-window` from drifting onto the default
 tmux server.
 
+One side effect to design tests around: the TUI's caller-pane hint is gated on
+the `TMUX` env var (`tmux::current_pane_id` returns `None` without it), so an
+`agentscan tui` spawned with only `AGENTSCAN_TMUX_SOCKET` exercises the no-hint
+path. Unit tests inject the hint directly into `TuiState`; a live hint check
+needs the TUI to run *inside* a pane of the harness server (send-keys or a
+nested attach), where tmux sets `TMUX` itself.
+
 Harness commands that exercise implicit daemon auto-start on macOS must use a
 signed binary. Use foreground `agentscan daemon run`, direct `agentscan scan`,
 or refresh-capable command flags for local ad-hoc macOS harness work. Any

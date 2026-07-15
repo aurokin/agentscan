@@ -98,6 +98,17 @@ pub(crate) struct TuiState {
     // (possibly empty). While searching, `page_start` addresses positions in
     // the filtered view rather than `panes` indexes.
     pub(super) search_query: Option<String>,
+    // Caller-pane hint captured at startup (the pane the popup was invoked
+    // over). One-shot: consulted only by the initial-selection seed on the
+    // first populated frame, then dropped. No transport — it never leaves
+    // this process.
+    pub(super) initial_selection_hint: Option<String>,
+    // One-shot latch for the initial-selection seed (caller hint, then focus
+    // recency). Set on the first populated frame that reaches the seed site
+    // regardless of outcome, and by any selection-moving input before it, so
+    // daemon blips that clear `selected_pane_id` can never re-seed and yank
+    // an established view.
+    pub(super) initial_selection_seeded: bool,
     last_terminal_size: Option<TuiTerminalSize>,
 }
 
@@ -270,6 +281,21 @@ impl TuiState {
     }
 
     #[cfg(test)]
+    pub(crate) fn test_set_initial_selection_hint(&mut self, hint: &str) {
+        self.initial_selection_hint = Some(hint.to_string());
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_initial_selection_hint(&self) -> Option<&str> {
+        self.initial_selection_hint.as_deref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_initial_selection_seeded(&self) -> bool {
+        self.initial_selection_seeded
+    }
+
+    #[cfg(test)]
     pub(crate) fn test_selected_pane_id(&self) -> Option<&str> {
         self.selected_pane_id.as_deref()
     }
@@ -284,6 +310,7 @@ impl TuiState {
     }
 
     pub(crate) fn begin_search(&mut self) -> bool {
+        self.cancel_initial_selection_seed();
         if self.search_query.is_some() || self.panes.is_empty() || self.error_message.is_some() {
             return false;
         }
@@ -388,7 +415,63 @@ impl TuiState {
             .unwrap_or_default()
     }
 
+    /// Cancel the one-shot initial-selection seed: the user acted, so the
+    /// highlight must never be yanked to a seed afterwards.
+    pub(super) fn cancel_initial_selection_seed(&mut self) {
+        self.initial_selection_seeded = true;
+        self.initial_selection_hint = None;
+    }
+
+    /// One-shot initial-selection seed, applied on the first populated frame:
+    /// caller-pane hint first, then focus recency (`last_focus_seq` argmax
+    /// over the view), else fall through to the default first-visible-row
+    /// reconciliation. Called from the frame builder after the page clamp,
+    /// where a non-empty view and non-zero page size are structural
+    /// guarantees — connecting/empty/undersized frames exit earlier and can
+    /// never consume the seed.
+    pub(super) fn seed_initial_selection(&mut self, view: &[usize], page_size: usize) {
+        if self.initial_selection_seeded {
+            return;
+        }
+        self.initial_selection_seeded = true;
+        let hint = self.initial_selection_hint.take();
+        if self.selected_pane_id.is_some() || self.search_query.is_some() {
+            return;
+        }
+        let hint_position = hint.as_deref().and_then(|hint_id| {
+            view.iter()
+                .position(|&pane_index| self.panes[pane_index].pane_id == hint_id)
+        });
+        let seed_position =
+            hint_position.or_else(|| self.most_recently_focused_view_position(view));
+        if let Some(position) = seed_position {
+            self.selected_pane_id = Some(self.panes[view[position]].pane_id.clone());
+            // Page-align so the seeded row is on screen: selection
+            // reconciliation only sees the visible page and would otherwise
+            // snap a beyond-page-one seed back to the first row. This
+            // pre-view `page_start` write is sanctioned by the render anchor
+            // contract — the user has not seen a populated frame yet.
+            self.page_start = (position / page_size) * page_size;
+        }
+    }
+
+    /// View position of the pane most recently focused through an agentscan
+    /// focus action. Ordinal comparison only; ties are impossible (the daemon
+    /// issues strictly increasing seqs).
+    fn most_recently_focused_view_position(&self, view: &[usize]) -> Option<usize> {
+        view.iter()
+            .enumerate()
+            .filter_map(|(position, &pane_index)| {
+                self.panes[pane_index]
+                    .last_focus_seq
+                    .map(|seq| (seq, position))
+            })
+            .max_by_key(|&(seq, _)| seq)
+            .map(|(_, position)| position)
+    }
+
     pub(crate) fn next_page(&mut self) -> bool {
+        self.cancel_initial_selection_seed();
         let view_len = self.view_pane_indices().len();
         let page_size = self.page_size();
         if page_size == 0 || view_len == 0 {
@@ -407,6 +490,7 @@ impl TuiState {
     }
 
     pub(crate) fn previous_page(&mut self) -> bool {
+        self.cancel_initial_selection_seed();
         let page_size = self.page_size();
         if page_size == 0 || self.page_start == 0 {
             return false;
@@ -419,6 +503,7 @@ impl TuiState {
     }
 
     pub(crate) fn select_next(&mut self) -> bool {
+        self.cancel_initial_selection_seed();
         let view = self.view_pane_indices();
         let Some(visible) = self.visible_view_range(view.len()) else {
             return false;
@@ -438,6 +523,7 @@ impl TuiState {
     }
 
     pub(crate) fn select_previous(&mut self) -> bool {
+        self.cancel_initial_selection_seed();
         let view = self.view_pane_indices();
         let Some(visible) = self.visible_view_range(view.len()) else {
             return false;

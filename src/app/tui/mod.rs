@@ -49,8 +49,14 @@ pub(crate) fn run(args: &TuiArgs, config: ResolvedConfig) -> Result<()> {
 
 fn run_tui_loop(args: &TuiArgs, config: ResolvedConfig) -> Result<()> {
     let icon_mode = config.icons;
+    // Capture the caller pane before entering raw mode: inside a
+    // display-popup this resolves the pane the popup was opened over, and a
+    // wedged tmux then delays before the alternate screen instead of behind
+    // a blank one. Best-effort — any failure just means no hint.
+    let initial_selection_hint = tmux::current_pane_id().ok().flatten();
     let mut session = TerminalSession::enter()?;
     let mut state = TuiState::with_picker_config(config.picker_keys, config.picker_group_by);
+    state.initial_selection_hint = initial_selection_hint;
     state.set_connecting("connecting to daemon".to_string());
     draw_tui_frame(&mut session.stdout, &mut state, icon_mode)?;
     write_tui_marker_from_env(TUI_READY_PATH_ENV, "")?;

@@ -321,10 +321,55 @@ struct DaemonRuntime<S> {
     // the event stream goes quiet, to catch the idle transition (which emits no event).
     settle_recapture_at: Option<Instant>,
     telemetry: RuntimeTelemetry,
+    pane_focus_recency: PaneFocusRecency,
     deep_control_mode_telemetry: bool,
     disable_reconcile: bool,
     disable_proc_fallback: bool,
     event_trace: Option<DaemonEventTrace>,
+}
+
+/// Focus-recency overlay fed exclusively by explicit `PaneFocus` client
+/// events (every agentscan focus path emits one after tmux focus succeeds).
+/// Overlay invariant: the runtime `snapshot` always holds `last_focus_seq:
+/// None`; stamps are applied only to published clones at the publish
+/// boundary. This keeps every snapshot rebuild site harmless (nothing
+/// in-snapshot to wipe) and means recency can never defeat no-op publication
+/// suppression, whose gates compare runtime snapshots. Any future observed
+/// -transition stamping (AUR-698 v2) must keep publish-boundary stamping.
+#[derive(Debug, Default)]
+struct PaneFocusRecency {
+    /// tmux pane id (`%N`, never reused within a server run) -> ordinal seq.
+    by_pane: HashMap<String, u64>,
+    next_seq: u64,
+}
+
+impl PaneFocusRecency {
+    /// Record a focus of `pane_id`. Repeat focus of the current MRU head is
+    /// a no-op so the common re-focus gesture keeps publishing empty
+    /// `changed_panes` diffs. Returns whether recency changed.
+    fn record(&mut self, pane_id: &str) -> bool {
+        let head = self.by_pane.values().max().copied();
+        if head.is_some() && self.by_pane.get(pane_id).copied() == head {
+            return false;
+        }
+        self.next_seq += 1;
+        self.by_pane.insert(pane_id.to_string(), self.next_seq);
+        true
+    }
+
+    /// Drop entries for panes no longer present, bounding the map by live
+    /// panes ever focused this daemon session.
+    fn prune(&mut self, snapshot: &SnapshotEnvelope) {
+        self.by_pane
+            .retain(|pane_id, _| snapshot.panes.iter().any(|pane| &pane.pane_id == pane_id));
+    }
+
+    /// Stamp recency onto a snapshot clone bound for publication.
+    fn stamp(&self, snapshot: &mut SnapshotEnvelope) {
+        for pane in &mut snapshot.panes {
+            pane.last_focus_seq = self.by_pane.get(&pane.pane_id).copied();
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -882,6 +927,7 @@ impl<S: StartupActions> DaemonRuntime<S> {
             next_subscriber_monitor_at,
             settle_recapture_at: None,
             telemetry,
+            pane_focus_recency: PaneFocusRecency::default(),
             deep_control_mode_telemetry: deep_control_mode_telemetry_enabled(),
             disable_reconcile: runtime_options.disable_reconcile,
             disable_proc_fallback: runtime_options.disable_proc_fallback,
@@ -1393,6 +1439,7 @@ impl<S: StartupActions> DaemonRuntime<S> {
                         &owned_previous
                     }
                 };
+                self.pane_focus_recency.record(pane_id);
                 let mut event_tmux_reads = self.control_mode.read_provider();
                 refresh_snapshot_for_focused_pane(
                     &mut self.snapshot,
@@ -1402,6 +1449,7 @@ impl<S: StartupActions> DaemonRuntime<S> {
                     &mut self.pane_output_cache,
                     self.disable_proc_fallback,
                 )?;
+                self.pane_focus_recency.prune(&self.snapshot);
                 self.telemetry
                     .record_reconcile_result(previous_snapshot, &self.snapshot);
                 self.recover_broker_and_reconcile_if_needed()?;
@@ -1442,8 +1490,12 @@ impl<S: StartupActions> DaemonRuntime<S> {
         // `encode_snapshot_frame` then clones it a second time to build the wire frame. Both
         // clones live behind socket_server (owned by another workstream); collapsing them needs
         // an `Arc<SnapshotEnvelope>` handoff there, not a change here.
+        let mut snapshot = self.snapshot.clone();
+        // Publish boundary: the only place recency reaches a snapshot (see
+        // the PaneFocusRecency overlay invariant).
+        self.pane_focus_recency.stamp(&mut snapshot);
         self.socket_state
-            .publish_later_snapshot_with_context(self.snapshot.clone(), publish_context)
+            .publish_later_snapshot_with_context(snapshot, publish_context)
     }
 
     fn broker_status_frame(&self) -> ipc::ControlModeBrokerStatusFrame {
@@ -2095,4 +2147,102 @@ pub(crate) fn test_runtime_telemetry_after_reconcile_results(
         },
         scanner::PaneOutputCaptureStats::default(),
     )
+}
+
+#[cfg(test)]
+mod pane_focus_recency_tests {
+    use super::*;
+
+    fn snapshot_with_pane_ids(pane_ids: &[&str]) -> SnapshotEnvelope {
+        SnapshotEnvelope {
+            schema_version: CACHE_SCHEMA_VERSION,
+            generated_at: "2026-07-15T00:00:00Z".to_string(),
+            source: SnapshotSource {
+                kind: SourceKind::Daemon,
+                tmux_version: Some("3.4".to_string()),
+                daemon_generated_at: None,
+            },
+            panes: pane_ids
+                .iter()
+                .map(|pane_id| {
+                    classify::pane_from_row(TmuxPaneRow {
+                        session_name: "session".to_string(),
+                        window_index: 0,
+                        pane_index: 0,
+                        pane_id: (*pane_id).to_string(),
+                        pane_pid: 4242,
+                        pane_current_command: "codex".to_string(),
+                        pane_title_raw: "title".to_string(),
+                        pane_tty: "/dev/ttys0".to_string(),
+                        pane_current_path: "/tmp/agentscan".to_string(),
+                        window_name: "window".to_string(),
+                        session_id: Some("$1".to_string()),
+                        window_id: Some("@0".to_string()),
+                        agent_provider: None,
+                        agent_label: None,
+                        agent_cwd: None,
+                        agent_state: None,
+                        agent_session_id: None,
+                        pane_active: false,
+                        window_active: false,
+                    })
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn record_assigns_strictly_increasing_seqs() {
+        let mut recency = PaneFocusRecency::default();
+        assert!(recency.record("%1"));
+        assert!(recency.record("%2"));
+        assert!(recency.by_pane["%2"] > recency.by_pane["%1"]);
+    }
+
+    #[test]
+    fn repeat_focus_of_mru_head_is_a_no_op() {
+        let mut recency = PaneFocusRecency::default();
+        recency.record("%1");
+        recency.record("%2");
+        let head_seq = recency.by_pane["%2"];
+        assert!(
+            !recency.record("%2"),
+            "re-focusing the MRU head must not change recency"
+        );
+        assert_eq!(recency.by_pane["%2"], head_seq);
+    }
+
+    #[test]
+    fn refocusing_an_older_pane_promotes_it_over_the_head() {
+        let mut recency = PaneFocusRecency::default();
+        recency.record("%1");
+        recency.record("%2");
+        assert!(recency.record("%1"));
+        assert!(recency.by_pane["%1"] > recency.by_pane["%2"]);
+    }
+
+    #[test]
+    fn prune_retains_only_live_panes() {
+        let mut recency = PaneFocusRecency::default();
+        recency.record("%1");
+        recency.record("%2");
+        recency.prune(&snapshot_with_pane_ids(&["%2"]));
+        assert!(!recency.by_pane.contains_key("%1"));
+        assert!(recency.by_pane.contains_key("%2"));
+    }
+
+    #[test]
+    fn stamp_writes_only_known_panes_and_leaves_source_map_intact() {
+        let mut recency = PaneFocusRecency::default();
+        recency.record("%2");
+        let mut snapshot = snapshot_with_pane_ids(&["%1", "%2"]);
+        recency.stamp(&mut snapshot);
+        assert_eq!(snapshot.panes[0].last_focus_seq, None);
+        assert_eq!(
+            snapshot.panes[1].last_focus_seq,
+            Some(recency.by_pane["%2"])
+        );
+        // Stamping a stale clone back to None must not corrupt the map.
+        assert_eq!(recency.by_pane.len(), 1);
+    }
 }

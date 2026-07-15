@@ -29,6 +29,7 @@ export type PickerRow = {
   is_active: boolean;
   is_focused?: boolean;
   attached_client_count?: number;
+  last_focus_seq?: number;
 };
 
 export type LiveSnapshotSummary = {

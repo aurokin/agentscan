@@ -16,8 +16,8 @@ use command::{
     tmux_scope_target_is_missing,
 };
 pub(crate) use focus::{
-    FocusTmuxPaneResult, display_tmux_message, focus_tmux_pane, resolve_focus_target,
-    resolve_tmux_target_pane, switch_tmux_client_to_prefix, tmux_focus_state,
+    FocusTmuxPaneResult, current_pane_id, display_tmux_message, focus_tmux_pane,
+    resolve_focus_target, resolve_tmux_target_pane, switch_tmux_client_to_prefix, tmux_focus_state,
 };
 #[cfg(test)]
 pub(crate) use focus::{select_best_client_tty, select_focused_session};

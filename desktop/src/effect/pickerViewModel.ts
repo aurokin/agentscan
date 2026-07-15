@@ -94,6 +94,25 @@ export function focusedPaneIdOf(rows: readonly PickerRow[]): string | null {
   );
 }
 
+// The most recently focused visible pane, by the daemon's focus-recency
+// ordinal (`last_focus_seq`, higher = more recent; valid only within one
+// daemon session and one source — rows here are always per-source, so seqs
+// are never compared across daemons). Rows without the field are excluded,
+// never coerced to 0, mirroring `focusedPaneIdOf`'s schema-degradation
+// pattern: an older or remote agentscan (schema < 6) simply yields null.
+export function mruVisiblePaneId(rows: readonly PickerRow[]): string | null {
+  let best: PickerRow | null = null;
+  for (const row of rows) {
+    if (row.last_focus_seq === undefined) {
+      continue;
+    }
+    if (best === null || row.last_focus_seq > (best.last_focus_seq ?? 0)) {
+      best = row;
+    }
+  }
+  return best?.pane_id ?? null;
+}
+
 // One step of the selection keeper. Fields are PRESENT only when the keeper
 // should act: an absent field means leave that piece of state untouched, while
 // an explicit null means clear it. The applier must therefore check
@@ -162,11 +181,14 @@ export function reconcileSelection(input: {
 
   // Keep a valid, visible selection (initial mount with no pick yet, or the
   // selected row was filtered out / vanished). Prefer the focused pane when
-  // visible, else the first row. A still-valid selection — including a manual
-  // pick made before the keeper first ran — is left untouched. (Truthiness on
+  // visible, then the most recently focused pane (daemon recency, AUR-698),
+  // else the first row. A still-valid selection — including a manual pick
+  // made before the keeper first ran — is left untouched. (Truthiness on
   // purpose: it matches the pre-extraction guard.)
   if (!selectedPaneId || !rows.some((row) => row.pane_id === selectedPaneId)) {
-    step.selectedPaneId = focusedVisible ? focusedPaneId : rows[0].pane_id;
+    step.selectedPaneId = focusedVisible
+      ? focusedPaneId
+      : (mruVisiblePaneId(rows) ?? rows[0].pane_id);
   }
 
   return step;

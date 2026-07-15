@@ -1074,6 +1074,7 @@ fn socket_frame_limit_pane(pane_id: &str, pane_index: u32, title_len: usize) -> 
             cache_origin: "daemon_snapshot".to_string(),
             proc_fallback: super::ProcFallbackDiagnostics::default(),
         },
+        last_focus_seq: None,
     }
 }
 

@@ -641,6 +641,34 @@ fn focus_event_fans_out_snapshot_without_material_pane_change() -> Result<()> {
         panes.contains_key(pane_id.as_str()),
         "focus event subscriber update did not include pane {pane_id}: {update}"
     );
+    // The focus stamps recency onto the published pane (AUR-698).
+    let first_seq = panes[pane_id.as_str()]["last_focus_seq"]
+        .as_u64()
+        .with_context(|| {
+            format!(
+                "focused pane did not carry last_focus_seq: {}",
+                panes[pane_id.as_str()]
+            )
+        })?;
+
+    // Re-focusing the MRU head is a recency no-op: the update still fans out
+    // (the publish is unconditional on client events) but must carry no
+    // changed panes, and the reconstructed recency must not move.
+    harness.agentscan(["focus", "--client-tty", &client.tty, &pane_id])?;
+    let repeat = read_daemon_socket_json_line(&mut reader)?;
+    if repeat["type"] == "snapshot_diff" {
+        assert_eq!(
+            repeat["changed_panes"].as_array().map_or(0, Vec::len),
+            0,
+            "repeat focus of the MRU head published a material pane change: {repeat}"
+        );
+    }
+    apply_wire_frame(&mut panes, &repeat)?;
+    assert_eq!(
+        panes[pane_id.as_str()]["last_focus_seq"].as_u64(),
+        Some(first_seq),
+        "repeat focus of the MRU head moved recency"
+    );
 
     stream
         .shutdown(std::net::Shutdown::Write)
