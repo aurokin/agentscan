@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.0 - 2026-07-15
+
 ### Added
 
 - The terminal TUI auto-selects the pane you opened it from (AUR-698): inside

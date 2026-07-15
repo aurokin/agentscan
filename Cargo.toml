@@ -1,6 +1,6 @@
 [package]
 name = "agentscan"
-version = "0.8.3"
+version = "0.9.0"
 edition = "2024"
 # Floor set by stabilized let-chains (`if let … && …`), used throughout.
 rust-version = "1.88"
