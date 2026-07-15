@@ -89,10 +89,12 @@ pub(crate) fn tmux_list_pane(pane_id: &str) -> Result<Option<TmuxPaneRow>> {
     Ok(rows.pop())
 }
 
-pub(crate) fn tmux_capture_pane_tail(pane_id: &str, line_count: usize) -> Result<Option<String>> {
-    let start = format!("-{}", line_count.max(1));
+// Without `-S`/`-E`, capture-pane returns exactly the visible screen. Status
+// classifiers reason over displayed rows only: pulling scrollback into the
+// capture lets a dismissed prompt higher in history read as current state.
+pub(crate) fn tmux_capture_pane_screen(pane_id: &str) -> Result<Option<String>> {
     run_tmux_text_output(
-        &["capture-pane", "-t", pane_id, "-p", "-S", &start],
+        &["capture-pane", "-t", pane_id, "-p"],
         &format!("tmux capture-pane for {pane_id}"),
         &format!("tmux capture-pane -t {pane_id}"),
         tmux_pane_target_is_missing,

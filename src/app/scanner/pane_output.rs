@@ -2,8 +2,6 @@ use super::super::*;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-const PANE_OUTPUT_STATUS_LINES: usize = 30;
-
 pub(crate) fn apply_pane_output_status_fallbacks(
     panes: &mut [PaneRecord],
 ) -> PaneOutputCaptureStats {
@@ -21,14 +19,14 @@ pub(crate) fn apply_pane_output_status_fallbacks_with_cache(
 }
 
 pub(crate) trait PaneOutputCapture {
-    fn capture_tail(&mut self, pane_id: &str, lines: usize) -> Result<Option<String>>;
+    fn capture_screen(&mut self, pane_id: &str) -> Result<Option<String>>;
 }
 
 struct TmuxPaneOutputCapture;
 
 impl PaneOutputCapture for TmuxPaneOutputCapture {
-    fn capture_tail(&mut self, pane_id: &str, lines: usize) -> Result<Option<String>> {
-        tmux::tmux_capture_pane_tail(pane_id, lines)
+    fn capture_screen(&mut self, pane_id: &str) -> Result<Option<String>> {
+        tmux::tmux_capture_pane_screen(pane_id)
     }
 }
 
@@ -46,7 +44,7 @@ fn apply_pane_output_status_fallbacks_with_capture(
         // Mirror the cached path: a transient capture failure is recorded as an
         // error rather than silently swallowed, so it stays distinguishable from
         // a successful capture that simply produced no status.
-        match capture.capture_tail(&pane.pane_id, PANE_OUTPUT_STATUS_LINES) {
+        match capture.capture_screen(&pane.pane_id) {
             Ok(Some(output)) => classify::apply_pane_output_status_fallback(pane, &output),
             Ok(None) => {}
             Err(_) => {
@@ -111,7 +109,7 @@ impl PaneOutputStatusCache {
             }
 
             self.stats.attempt_count = self.stats.attempt_count.saturating_add(1);
-            let status_kind = match capture.capture_tail(&pane.pane_id, PANE_OUTPUT_STATUS_LINES) {
+            let status_kind = match capture.capture_screen(&pane.pane_id) {
                 Ok(output) => {
                     if let Some(output) = output {
                         classify::apply_pane_output_status_fallback(pane, &output);
@@ -210,7 +208,7 @@ mod tests {
     struct FakePaneOutputCapture {
         outputs: HashMap<String, Option<String>>,
         errors: std::collections::HashSet<String>,
-        calls: Vec<(String, usize)>,
+        calls: Vec<String>,
     }
 
     impl FakePaneOutputCapture {
@@ -231,8 +229,8 @@ mod tests {
     }
 
     impl PaneOutputCapture for FakePaneOutputCapture {
-        fn capture_tail(&mut self, pane_id: &str, lines: usize) -> Result<Option<String>> {
-            self.calls.push((pane_id.to_string(), lines));
+        fn capture_screen(&mut self, pane_id: &str) -> Result<Option<String>> {
+            self.calls.push(pane_id.to_string());
             if self.errors.contains(pane_id) {
                 anyhow::bail!("simulated capture failure for {pane_id}");
             }
@@ -370,15 +368,7 @@ mod tests {
 
         assert_eq!(
             capture.calls,
-            vec![
-                ("%2".to_string(), PANE_OUTPUT_STATUS_LINES),
-                ("%4".to_string(), PANE_OUTPUT_STATUS_LINES),
-                ("%5".to_string(), PANE_OUTPUT_STATUS_LINES),
-                ("%6".to_string(), PANE_OUTPUT_STATUS_LINES),
-                ("%7".to_string(), PANE_OUTPUT_STATUS_LINES),
-                ("%8".to_string(), PANE_OUTPUT_STATUS_LINES),
-                ("%9".to_string(), PANE_OUTPUT_STATUS_LINES)
-            ]
+            vec!["%2", "%4", "%5", "%6", "%7", "%8", "%9"]
         );
         assert_eq!(panes[1].status, PaneStatus::pane_output(StatusKind::Idle));
         assert_eq!(panes[3].status, PaneStatus::pane_output(StatusKind::Busy));

@@ -150,7 +150,11 @@ const CONTROL_MODE_COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
 const CLIENT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
 const CLIENT_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 const SUBSCRIBER_WRITE_TIMEOUT: Duration = Duration::from_millis(250);
-const SUBSCRIBER_MONITOR_POLL_INTERVAL: Duration = Duration::from_millis(250);
+// Health backstop for subscriber clients that die without emitting `%exit`
+// (event-driven exits are handled immediately). 1s keeps idle wakeups rare —
+// the menubar app holds a subscriber open, so this poll runs whenever the
+// desktop is up — while the reconcile self-heal bounds the worst case.
+const SUBSCRIBER_MONITOR_POLL_INTERVAL: Duration = Duration::from_secs(1);
 pub(crate) const MAX_PENDING_HANDSHAKES: usize = 8;
 pub(crate) const MAX_SUBSCRIBERS: usize = 64;
 // Upper bound on per-session control-mode subscriber clients. Each subscriber is

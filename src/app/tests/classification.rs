@@ -2887,7 +2887,7 @@ fn grok_pane_output_marks_running_body_marker_busy() {
 
 #[test]
 fn grok_pane_output_ignores_stale_spinner_above_current_prompt_box() {
-    // The 30-row capture still holds a prior turn's running spinner, but the current bottom
+    // The screen capture still holds a prior turn's running spinner, but the current bottom
     // UI is the idle input box, so the pane is idle — the stale spinner must not force busy.
     let mut grok = pane_output_status_pane(775, Provider::Grok, "grok");
 
@@ -3924,6 +3924,40 @@ fn gemini_pane_output_does_not_infer_idle_from_stale_prompt() {
 }
 
 #[test]
+fn gemini_pane_output_ignores_stale_busy_marker_above_current_frame() {
+    // A dismissed approval modal is still visible higher on the screen, but the
+    // current bottom frame is plain agent output with no live idle prompt. The
+    // stale modal must not read as busy — the honest answer is unknown.
+    let mut gemini = pane_output_status_pane(783, Provider::Gemini, "Gemini CLI");
+
+    classify::apply_pane_output_status_fallback(
+        &mut gemini,
+        "╭──────────────────────────────────────────────────────────────────────────────╮\n\
+         │ Action Required                                                             │\n\
+         │ Apply this change?                                                          │\n\
+         │   1. Yes                                                                    │\n\
+         │   2. No, suggest changes (esc)                                              │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯\n\
+         \n\
+         ✦ Applying the approved change\n\
+         Reading files\n\
+         Preparing answer\n\
+         Updating edits\n\
+         Running tests\n\
+         Collecting output\n\
+         Checking diagnostics\n\
+         Formatting sources\n\
+         Reviewing results\n\
+         Still working\n\
+         More output\n\
+         Current line\n",
+    );
+
+    assert_eq!(gemini.status.kind, StatusKind::Unknown);
+    assert_eq!(gemini.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
 fn pi_pane_output_marks_current_editor_footer_idle_only_after_provider_is_known() {
     let mut pi = pane_output_status_pane(787, Provider::Pi, "π - agentscan");
 
@@ -4153,7 +4187,7 @@ fn opencode_pane_output_uses_current_busy_marker_over_stale_idle_prompt() {
 
 #[test]
 fn opencode_pane_output_does_not_force_busy_from_stale_approval_without_current_anchor() {
-    // The 30-row capture holds an old approval prompt near the top, but the current bottom
+    // The screen capture holds an old approval prompt near the top, but the current bottom
     // frame is plain agent output with no live idle prompt or command bar below it. With no
     // current anchor the stale approval must not force busy — the honest answer is unknown.
     let mut opencode = pane_output_status_pane(795, Provider::Opencode, "OC | Working");

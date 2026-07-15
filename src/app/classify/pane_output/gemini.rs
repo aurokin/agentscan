@@ -19,7 +19,11 @@ pub(super) fn status(output: &str) -> Option<StatusKind> {
     let idle_index = frame.rposition(gemini_idle_input_prompt_line);
     let busy_index = frame.rposition(gemini_current_busy_marker_line);
 
+    // A dismissed approval modal stays visible higher on the screen after the
+    // turn moves on, so a busy marker only counts when it is anchored to the
+    // current bottom frame (same 14-row window as the auth prompt below).
     if let Some(index) = busy_index
+        && frame.is_within_tail(index, 14)
         && idle_index.is_none_or(|idle_index| idle_index < index)
     {
         return Some(StatusKind::Busy);

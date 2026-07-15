@@ -65,8 +65,8 @@ pub(super) fn status(output: &str) -> Option<StatusKind> {
 
 /// Whether a busy marker reflects the current bottom frame rather than stale scrollback.
 ///
-/// The capture is the last 30 rows including scrollback, so an old approval/interrupt line
-/// can sit above a frame that has since scrolled on. A busy marker is current when it is
+/// The capture is the visible screen, and inline-scroll UIs keep prior turns on screen, so
+/// an old approval/interrupt line can sit above a frame that has since scrolled on. A busy marker is current when it is
 /// below the live idle prompt (a new run started under it), pinned in the persistent prompt
 /// footer region (`esc interrupt` rendered just above the command bar or the input box border),
 /// or — when there is no current idle anchor at all — is itself in the current bottom frame. A
@@ -121,7 +121,7 @@ fn opencode_idle_prompt_line(line: &str) -> bool {
 /// Index of the newer build's command bar when its input box is the current prompt.
 ///
 /// The bordered input box sits directly above a `tab agents  ctrl+p commands` command bar.
-/// The capture is the last 30 rows including scrollback, so only opencode's own trailing
+/// Prior turns stay visible on screen above the prompt, so only opencode's own trailing
 /// chrome (blank rows, notices, the bottom status bar) may follow it; a command bar trailed
 /// by real agent output is a stale frame, not the current prompt.
 fn opencode_current_command_bar_index(frame: &PaneOutputFrame<'_>) -> Option<usize> {
