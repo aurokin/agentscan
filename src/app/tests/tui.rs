@@ -926,6 +926,433 @@ fn tui_frame_writer_sanitizes_tmux_controlled_labels() {
 }
 
 #[test]
+fn tui_selection_defaults_to_first_visible_row() {
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes(vec![tui_test_pane(1), tui_test_pane(2)]);
+
+    let frame = super::tui::render_tui_frame_for_size(
+        &mut state,
+        super::tui::TuiTerminalSize {
+            width: 120,
+            height: 10,
+        },
+    );
+
+    assert_eq!(frame.selected_row, Some(0));
+    assert_eq!(state.test_selected_pane_id(), Some("%1"));
+}
+
+#[test]
+fn tui_arrow_selection_moves_within_visible_rows() {
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes(vec![tui_test_pane(1), tui_test_pane(2), tui_test_pane(3)]);
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 10,
+    };
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+
+    assert!(state.select_next());
+    assert_eq!(state.test_selected_pane_id(), Some("%2"));
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(frame.selected_row, Some(1));
+
+    assert!(state.select_next());
+    assert_eq!(state.test_selected_pane_id(), Some("%3"));
+    assert!(!state.select_next());
+    assert_eq!(state.test_selected_pane_id(), Some("%3"));
+
+    assert!(state.select_previous());
+    assert!(state.select_previous());
+    assert_eq!(state.test_selected_pane_id(), Some("%1"));
+    assert!(!state.select_previous());
+    assert_eq!(state.test_selected_pane_id(), Some("%1"));
+}
+
+#[test]
+fn tui_arrow_selection_crosses_page_boundaries() {
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes((1..=8).map(tui_test_pane).collect());
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 6,
+    };
+    let first_frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(first_frame.page_size, 4);
+
+    for _ in 0..3 {
+        assert!(state.select_next());
+    }
+    assert_eq!(state.test_selected_pane_id(), Some("%4"));
+
+    assert!(state.select_next());
+    assert_eq!(state.test_selected_pane_id(), Some("%5"));
+    let second_page_frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(second_page_frame.page_start, 4);
+    assert_eq!(second_page_frame.selected_row, Some(0));
+
+    assert!(state.select_previous());
+    assert_eq!(state.test_selected_pane_id(), Some("%4"));
+    let first_page_frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(first_page_frame.page_start, 0);
+    assert_eq!(first_page_frame.selected_row, Some(3));
+}
+
+#[test]
+fn tui_selection_follows_pane_across_live_updates() {
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes(vec![tui_test_pane(1), tui_test_pane(2), tui_test_pane(3)]);
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 10,
+    };
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert!(state.select_next());
+    assert_eq!(state.test_selected_pane_id(), Some("%2"));
+
+    state.replace_panes(vec![tui_test_pane(2), tui_test_pane(3)]);
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+
+    assert_eq!(state.test_selected_pane_id(), Some("%2"));
+    assert_eq!(frame.selected_row, Some(0));
+}
+
+#[test]
+fn tui_selection_snaps_to_first_visible_when_selected_pane_removed() {
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes(vec![tui_test_pane(1), tui_test_pane(2), tui_test_pane(3)]);
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 10,
+    };
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert!(state.select_next());
+    assert_eq!(state.test_selected_pane_id(), Some("%2"));
+
+    state.replace_panes(vec![tui_test_pane(1), tui_test_pane(3)]);
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+
+    assert_eq!(state.test_selected_pane_id(), Some("%1"));
+    assert_eq!(frame.selected_row, Some(0));
+}
+
+#[test]
+fn tui_selection_clears_when_snapshot_empties() {
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes(vec![tui_test_pane(1)]);
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 10,
+    };
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(state.test_selected_pane_id(), Some("%1"));
+
+    state.replace_panes(Vec::new());
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+
+    assert_eq!(frame.selected_row, None);
+    assert_eq!(state.test_selected_pane_id(), None);
+    assert!(!state.select_next());
+    assert!(!state.select_previous());
+}
+
+#[test]
+fn tui_enter_without_selection_keeps_tui_open() {
+    let mut state = super::tui::TuiState::default();
+
+    let action = super::tui::handle_key_event(
+        &crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ),
+        &mut state,
+    )
+    .expect("enter without selection should not error");
+
+    assert!(matches!(action, super::tui::TuiLoopAction::Continue));
+}
+
+#[test]
+fn tui_arrow_keys_move_selection_and_request_redraw() {
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes(vec![tui_test_pane(1), tui_test_pane(2)]);
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 10,
+    };
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    let key = |code| crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::NONE);
+
+    let down = super::tui::handle_key_event(&key(crossterm::event::KeyCode::Down), &mut state)
+        .expect("down arrow should not error");
+    assert!(matches!(down, super::tui::TuiLoopAction::Redraw));
+    assert_eq!(state.test_selected_pane_id(), Some("%2"));
+
+    let up = super::tui::handle_key_event(&key(crossterm::event::KeyCode::Up), &mut state)
+        .expect("up arrow should not error");
+    assert!(matches!(up, super::tui::TuiLoopAction::Redraw));
+    assert_eq!(state.test_selected_pane_id(), Some("%1"));
+
+    let clamped = super::tui::handle_key_event(&key(crossterm::event::KeyCode::Up), &mut state)
+        .expect("clamped up arrow should not error");
+    assert!(matches!(clamped, super::tui::TuiLoopAction::Continue));
+    assert_eq!(state.test_selected_pane_id(), Some("%1"));
+}
+
+#[test]
+fn tui_arrow_selection_moves_after_reanchor_to_non_aligned_page_start() {
+    // A live update can reanchor page_start to a non-page-aligned index inside
+    // the final partial page (here: index 9 of 10 with page_size 4). Arrow
+    // movement must operate on exactly the rows the frame shows there, so Up
+    // pages back instead of selecting an off-screen row and appearing dead.
+    let pane = |index: u32, cwd: String| {
+        tmux_pane_row(index)
+            .session_name("work")
+            .pane_id(format!("%{index}"))
+            .command("codex")
+            .title(format!("Task {index}"))
+            .current_path(cwd)
+            .pane()
+    };
+    let mut state = super::tui::TuiState::with_picker_config(
+        super::picker::PickerKeySet::default(),
+        super::picker::PickerGroupBy::Cwd,
+    );
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 6,
+    };
+    state.replace_panes(
+        (1..=10)
+            .map(|index| pane(index, format!("/work/p{index:02}")))
+            .collect(),
+    );
+    let first_frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(first_frame.page_size, 4);
+    assert!(state.next_page());
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(state.test_selected_pane_id(), Some("%5"));
+
+    // Only %5 survives from the old visible page and nine new panes sort ahead
+    // of it, so the reanchor lands on the non-aligned index 9.
+    let mut updated = (11..=19)
+        .map(|index| pane(index, format!("/work/a{index:02}")))
+        .collect::<Vec<_>>();
+    updated.push(pane(5, "/work/p05".to_string()));
+    state.replace_panes(updated);
+    let reanchored_frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(reanchored_frame.page_start, 9);
+    assert_eq!(reanchored_frame.visible_pane_ids, vec!["%5"]);
+    assert_eq!(state.test_selected_pane_id(), Some("%5"));
+
+    assert!(state.select_previous());
+    let paged_frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(paged_frame.page_start, 5);
+    let selected_row = paged_frame
+        .selected_row
+        .expect("selection should stay on a visible row");
+    assert_eq!(
+        paged_frame.visible_pane_ids[selected_row].as_str(),
+        state.test_selected_pane_id().expect("selection should exist"),
+        "the highlighted row must be the selected pane"
+    );
+}
+
+#[test]
+fn tui_down_from_last_row_selects_exactly_the_row_below_after_reanchor() {
+    // With a non-aligned page_start near the tail (here 5 of 10, page_size 4),
+    // next_page() clamps to the aligned boundary 8, so Down from the last
+    // visible row used to re-select the already-highlighted row at index 8 and
+    // skip the real next row.
+    let pane = |index: u32, cwd: String| {
+        tmux_pane_row(index)
+            .session_name("work")
+            .pane_id(format!("%{index}"))
+            .command("codex")
+            .title(format!("Task {index}"))
+            .current_path(cwd)
+            .pane()
+    };
+    let mut state = super::tui::TuiState::with_picker_config(
+        super::picker::PickerKeySet::default(),
+        super::picker::PickerGroupBy::Cwd,
+    );
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 6,
+    };
+    state.replace_panes(
+        (1..=10)
+            .map(|index| pane(index, format!("/work/p{index:02}")))
+            .collect(),
+    );
+    let first_frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(first_frame.page_size, 4);
+    assert!(state.next_page());
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(state.test_selected_pane_id(), Some("%5"));
+
+    // Five new panes sort ahead; the previously visible %5..%8 survive with %5
+    // landing at the non-aligned index 5.
+    let mut updated = (11..=15)
+        .map(|index| pane(index, format!("/work/a{index:02}")))
+        .collect::<Vec<_>>();
+    updated.extend((5..=9).map(|index| pane(index, format!("/work/p{index:02}"))));
+    state.replace_panes(updated);
+    let reanchored_frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(reanchored_frame.page_start, 5);
+    assert_eq!(
+        reanchored_frame.visible_pane_ids,
+        vec!["%5", "%6", "%7", "%8"]
+    );
+
+    for _ in 0..3 {
+        assert!(state.select_next());
+    }
+    assert_eq!(state.test_selected_pane_id(), Some("%8"));
+
+    assert!(state.select_next());
+    assert_eq!(state.test_selected_pane_id(), Some("%9"));
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(frame.page_start, 8);
+    assert_eq!(frame.selected_row, Some(1));
+    assert_eq!(frame.visible_pane_ids[1], "%9");
+}
+
+#[test]
+fn tui_up_from_first_row_reveals_exactly_the_row_above_after_reanchor() {
+    // A live insert above the list can reanchor page_start to a small
+    // non-aligned index (here 2). Up from the first visible row must reveal
+    // exactly the row above the window and highlight it — not page back a full
+    // window and select its last row, which was already on screen.
+    let pane = |index: u32, cwd: String| {
+        tmux_pane_row(index)
+            .session_name("work")
+            .pane_id(format!("%{index}"))
+            .command("codex")
+            .title(format!("Task {index}"))
+            .current_path(cwd)
+            .pane()
+    };
+    let mut state = super::tui::TuiState::with_picker_config(
+        super::picker::PickerKeySet::default(),
+        super::picker::PickerGroupBy::Cwd,
+    );
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 6,
+    };
+    state.replace_panes(
+        (1..=8)
+            .map(|index| pane(index, format!("/work/p{index:02}")))
+            .collect(),
+    );
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(state.test_selected_pane_id(), Some("%1"));
+
+    // Two new panes sort ahead of the whole list; %1 (first surviving visible
+    // pane) lands at index 2 and the reanchor keeps it at the window top.
+    let mut updated = (11..=12)
+        .map(|index| pane(index, format!("/work/a{index:02}")))
+        .collect::<Vec<_>>();
+    updated.extend((1..=8).map(|index| pane(index, format!("/work/p{index:02}"))));
+    state.replace_panes(updated);
+    let reanchored_frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(reanchored_frame.page_start, 2);
+    assert_eq!(reanchored_frame.visible_pane_ids[0], "%1");
+    assert_eq!(state.test_selected_pane_id(), Some("%1"));
+
+    assert!(state.select_previous());
+    assert_eq!(state.test_selected_pane_id(), Some("%12"));
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(frame.page_start, 0);
+    assert_eq!(frame.selected_row, Some(1));
+    assert_eq!(frame.visible_pane_ids[1], "%12");
+}
+
+#[test]
+fn tui_selection_snaps_to_first_visible_when_selected_pane_moves_off_page() {
+    // Deliberate contract: when a live update pushes the still-existing selected
+    // pane off the visible page, the highlight snaps to the first visible row
+    // instead of re-paging to chase it (the page anchor follows the previously
+    // visible rows, not the selection).
+    let pane = |index: u32, cwd: String| {
+        tmux_pane_row(index)
+            .session_name("work")
+            .pane_id(format!("%{index}"))
+            .command("codex")
+            .title(format!("Task {index}"))
+            .current_path(cwd)
+            .pane()
+    };
+    let mut state = super::tui::TuiState::with_picker_config(
+        super::picker::PickerKeySet::default(),
+        super::picker::PickerGroupBy::Cwd,
+    );
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 6,
+    };
+    state.replace_panes(
+        (1..=8)
+            .map(|index| pane(index, format!("/work/p{index:02}")))
+            .collect(),
+    );
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert!(state.select_next());
+    assert_eq!(state.test_selected_pane_id(), Some("%2"));
+
+    // %2 moves to a workspace that sorts last; it still exists but leaves page 1.
+    let reordered = (1..=8)
+        .map(|index| {
+            let cwd = if index == 2 {
+                "/work/p99".to_string()
+            } else {
+                format!("/work/p{index:02}")
+            };
+            pane(index, cwd)
+        })
+        .collect::<Vec<_>>();
+    state.replace_panes(reordered);
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+
+    assert!(!frame.visible_pane_ids.contains(&"%2".to_string()));
+    assert_eq!(frame.selected_row, Some(0));
+    assert_eq!(
+        state.test_selected_pane_id(),
+        Some(frame.visible_pane_ids[0].as_str())
+    );
+}
+
+#[test]
+fn tui_frame_writer_highlights_selected_row_across_full_width() {
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes(vec![tui_test_pane(1), tui_test_pane(2)]);
+    let width = 40u16;
+    let frame = super::tui::render_tui_frame_for_size(
+        &mut state,
+        super::tui::TuiTerminalSize { width, height: 10 },
+    );
+    assert_eq!(frame.selected_row, Some(0));
+
+    let mut rendered = Vec::new();
+    super::tui::write_tui_frame(&mut rendered, &frame).expect("frame should serialize");
+    let rendered = String::from_utf8(rendered).expect("frame output should be utf-8");
+
+    let highlight_start = rendered
+        .find("\u{1b}[7m")
+        .expect("selected row should enable reverse video");
+    let highlight_end = rendered
+        .find("\u{1b}[27m")
+        .expect("selected row should disable reverse video");
+    let highlighted = &rendered[highlight_start + "\u{1b}[7m".len()..highlight_end];
+
+    assert!(highlighted.starts_with(frame.lines[0].as_str()));
+    assert_eq!(UnicodeWidthStr::width(highlighted), usize::from(width));
+    assert_eq!(rendered.matches("\u{1b}[7m").count(), 1);
+}
+
+#[test]
 fn tmux_target_is_missing_matches_common_focus_errors() {
     assert!(super::tmux::tmux_target_is_missing(b"can't find pane: %42"));
     assert!(super::tmux::tmux_target_is_missing(

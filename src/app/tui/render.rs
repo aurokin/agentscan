@@ -3,6 +3,7 @@ use std::io::Write;
 
 use crossterm::cursor::MoveTo;
 use crossterm::queue;
+use crossterm::style::{Attribute, SetAttribute};
 use crossterm::terminal::{Clear, ClearType};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -25,18 +26,28 @@ pub(crate) struct TuiFrame {
     pub(crate) page_start: usize,
     pub(crate) page_size: usize,
     pub(crate) page_count: usize,
+    pub(crate) selected_row: Option<usize>,
+    pub(crate) width: u16,
 }
 
 pub(crate) fn write_tui_frame<W: Write>(writer: &mut W, frame: &TuiFrame) -> Result<()> {
     queue!(writer, MoveTo(0, 0), Clear(ClearType::All)).context("failed to clear tui frame")?;
     for (row, line) in frame.lines.iter().enumerate() {
-        queue!(
-            writer,
-            MoveTo(0, row as u16),
-            crossterm::style::Print(line),
-            Clear(ClearType::UntilNewLine)
-        )
-        .context("failed to queue tui line")?;
+        queue!(writer, MoveTo(0, row as u16)).context("failed to queue tui line")?;
+        if frame.selected_row == Some(row) {
+            // The highlight bar is applied at write time so frame lines stay
+            // plain strings; padding extends the bar across the full row width.
+            queue!(
+                writer,
+                SetAttribute(Attribute::Reverse),
+                crossterm::style::Print(pad_to_width(line, usize::from(frame.width))),
+                SetAttribute(Attribute::NoReverse)
+            )
+            .context("failed to queue tui line")?;
+        } else {
+            queue!(writer, crossterm::style::Print(line)).context("failed to queue tui line")?;
+        }
+        queue!(writer, Clear(ClearType::UntilNewLine)).context("failed to queue tui line")?;
     }
     Ok(())
 }
@@ -59,6 +70,7 @@ pub(crate) fn render_tui_frame_for_size_with_icons(
     if let Some(error_message) = state.error_message.as_deref() {
         state.key_targets.clear();
         state.retired_key_targets.clear();
+        state.selected_pane_id = None;
         let lines = render_body_with_footer(
             &render_error_frame(error_message),
             &state.connection,
@@ -70,12 +82,15 @@ pub(crate) fn render_tui_frame_for_size_with_icons(
             page_start: 0,
             page_size: 0,
             page_count: 0,
+            selected_row: None,
+            width: terminal_size.width,
         };
     }
 
     if state.panes.is_empty() {
         state.key_targets.clear();
         state.retired_key_targets.clear();
+        state.selected_pane_id = None;
         state.page_start = 0;
         let body = if state.connection.kind == TuiConnectionKind::Connecting {
             vec![
@@ -94,6 +109,8 @@ pub(crate) fn render_tui_frame_for_size_with_icons(
             page_start: 0,
             page_size: 0,
             page_count: 0,
+            selected_row: None,
+            width: terminal_size.width,
         };
     }
 
@@ -101,12 +118,15 @@ pub(crate) fn render_tui_frame_for_size_with_icons(
     if page_size == 0 {
         state.key_targets.clear();
         state.retired_key_targets.clear();
+        state.selected_pane_id = None;
         return TuiFrame {
             lines: fit_lines_to_terminal(&render_undersized_frame(), terminal_size),
             visible_pane_ids: Vec::new(),
             page_start: state.page_start,
             page_size: 0,
             page_count: 0,
+            selected_row: None,
+            width: terminal_size.width,
         };
     }
 
@@ -143,6 +163,7 @@ pub(crate) fn render_tui_frame_for_size_with_icons(
         .iter()
         .map(|pane| pane.pane_id.clone())
         .collect::<Vec<_>>();
+    let selected_row = reconcile_selection(&mut state.selected_pane_id, &visible_pane_ids);
     let row_width = usize::from(terminal_size.width);
     let mut lines = render_rows_for_width_with_location_labels_and_icons(
         visible_panes,
@@ -165,7 +186,33 @@ pub(crate) fn render_tui_frame_for_size_with_icons(
         page_start: state.page_start,
         page_size,
         page_count: page_count(state.panes.len(), page_size),
+        selected_row,
+        width: terminal_size.width,
     }
+}
+
+// Selection is pane-id anchored so live updates keep it on the same pane. When
+// the pane is gone — or still exists but a live update pushed it off the visible
+// page — the highlight deliberately snaps to the first visible row rather than
+// re-paging to chase it: the page anchor follows the previously visible rows
+// (`reanchor_page_start`), and moving the page to follow the selection would
+// fight that contract and shift the list under the user. The frame is redrawn on
+// the same update, so Enter always acts on the visibly highlighted row.
+fn reconcile_selection(
+    selected_pane_id: &mut Option<String>,
+    visible_pane_ids: &[String],
+) -> Option<usize> {
+    let selected_row = selected_pane_id.as_deref().and_then(|selected| {
+        visible_pane_ids
+            .iter()
+            .position(|pane_id| pane_id == selected)
+    });
+    if selected_row.is_some() {
+        return selected_row;
+    }
+
+    *selected_pane_id = visible_pane_ids.first().cloned();
+    selected_pane_id.as_ref().map(|_| 0)
 }
 
 pub(crate) fn render_rows(
@@ -275,7 +322,7 @@ fn render_footer_lines(
     let shown_count = total_panes.saturating_sub(page_start).min(page_size.max(1));
 
     let first_line = footer_line_with_indicator(
-        "Select with highlighted key. Ctrl-B tmux prefix. Esc/Ctrl-C close.",
+        "Select with key or Up/Down + Enter. Ctrl-B tmux prefix. Esc/Ctrl-C close.",
         connection.indicator(),
         width,
     );
@@ -502,6 +549,15 @@ fn truncate_to_width(input: &str, width: usize) -> String {
     } else {
         format!("{truncated}…")
     }
+}
+
+fn pad_to_width(line: &str, width: usize) -> String {
+    let line_width = display_width(line);
+    if line_width >= width {
+        return line.to_string();
+    }
+
+    format!("{line}{}", " ".repeat(width - line_width))
 }
 
 fn display_width(input: &str) -> usize {
