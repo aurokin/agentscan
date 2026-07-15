@@ -388,7 +388,9 @@ export function SourceSwitcher({
             folder header, and the bar displays just the owner source, so the
             owner's count belongs on its trigger. */}
         {orientation === "horizontal" && triggerShowsSource ? (
-          <MultiClientBadge count={attachedClientCount} host={triggerTitle} />
+          // Host = the trigger's visible source label, NOT triggerTitle — that
+          // is the hover status string ("Local CLI ready"), not a hostname.
+          <MultiClientBadge count={attachedClientCount} host={labelFor(triggerProfile)} />
         ) : null}
       </button>
       {isSourceMenuOpen

@@ -229,7 +229,9 @@ describe("SourceSwitcher", () => {
       ],
       triggerProfile: localProfile,
       triggerTone: "idle",
-      triggerTitle: "koopa",
+      // Deliberately NOT the host label: triggerTitle is the trigger's hover
+      // status string in production, and the badge must not leak it as a host.
+      triggerTitle: "Local CLI ready",
       labelFor: (profile: DesktopProfileConfig) => (profile.id === "local" ? "koopa" : profile.id),
       selectProfile: vi.fn(),
       reorderProfile: vi.fn(),
@@ -243,6 +245,8 @@ describe("SourceSwitcher", () => {
       <SourceSwitcher {...baseProps} triggerShowsSource orientation="horizontal" attachedClientCount={2} />,
     );
     expect(screen.queryByLabelText(", 2 viewers")).not.toBeNull();
+    // The tooltip names the source's host label, not the trigger status text.
+    expect(screen.getByTitle(/2 clients attached to koopa/)).not.toBeNull();
 
     // Vertical strip carries it per folder header instead — no trigger badge.
     rerender(
