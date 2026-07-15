@@ -95,6 +95,28 @@ describe("SourceFolders multi-client badge", () => {
     expect(screen.queryByRole("button", { name: "mander, 3 viewers" })).toBeNull();
   });
 
+  it("badges every open warned source with its own count, owner or not", () => {
+    // Two OPEN sources whose servers both report >1 client: each folder header
+    // carries its own count from its own rows. The non-owner source is not
+    // presented as healthy just because keyboard routing goes to the owner.
+    renderFolders(
+      [
+        { profile: localProfile, runnerKey: "local", isOpen: true, isOwner: true },
+        { profile: sshProfile, runnerKey: "ssh-1", isOpen: true, isOwner: false },
+      ],
+      new Map<string, LiveState>([
+        ["local", liveOnline([row({ pane_id: "%1", attached_client_count: 2 })], "local")],
+        ["ssh-1", liveOnline([row({ pane_id: "%2", attached_client_count: 3 })], "ssh-1")],
+      ]),
+    );
+
+    expect(screen.getByRole("button", { name: "koopa, 2 viewers" })).not.toBeNull();
+    expect(screen.getByRole("button", { name: "mander, 3 viewers" })).not.toBeNull();
+    // The hover explanation names the specific host, not a generic "this server".
+    expect(screen.getByTitle(/2 clients attached to koopa/)).not.toBeNull();
+    expect(screen.getByTitle(/3 clients attached to mander/)).not.toBeNull();
+  });
+
   it("does not badge an open folder whose server has a single client", () => {
     renderFolders(
       [{ profile: localProfile, runnerKey: "local", isOpen: true, isOwner: true }],

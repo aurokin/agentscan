@@ -16,7 +16,7 @@
 // `title`. We deliberately do not announce via a live region — it's a visual
 // heads-up about a visual affordance (the pane highlight), reachable on focus
 // through the button name.
-export function MultiClientBadge({ count }: { count: number }) {
+export function MultiClientBadge({ count, host }: { count: number; host?: string }) {
   if (count <= 1) {
     return null;
   }
@@ -25,7 +25,7 @@ export function MultiClientBadge({ count }: { count: number }) {
       className="client-badge"
       role="img"
       aria-label={`, ${count} viewers`}
-      title={`${count} clients attached to this server — the live-pane highlight follows the most recent one`}
+      title={`${count} clients attached to ${host ?? "this server"} — the live-pane highlight follows the most recent one`}
     >
       <svg
         className="client-badge-icon"

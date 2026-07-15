@@ -125,7 +125,10 @@ export function SourceFolders({
                   count — and the gate also avoids a stale-count flash on the
                   header as a just-closed folder's live state tears down. */}
               {view.isOpen ? (
-                <MultiClientBadge count={view.allRows[0]?.attached_client_count ?? 0} />
+                <MultiClientBadge
+                  count={view.allRows[0]?.attached_client_count ?? 0}
+                  host={labelFor(view.profile)}
+                />
               ) : null}
             </button>
             {view.isOpen ? (

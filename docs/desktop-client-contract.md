@@ -163,8 +163,11 @@ clients (per the resolution rule above), so it reflects the number of real views
 a human could be looking at rather than internal plumbing — otherwise the count
 would never be 1 on a daemon-backed server. `>1` means
 focus-following is best-effort (the highlight tracks the most-recently-active
-client); clients may surface a hint, as the macOS desktop does with a "multiple
-clients attached" banner.
+client); clients may surface a hint. The count is per tmux server, so a
+multi-source client should scope the hint to the source it came from — the
+macOS desktop badges each open source's folder header (and the bar's source
+trigger) with that source's own count, naming the host, rather than showing one
+global banner that cannot say which server it describes.
 
 ## Profiles And Environment
 

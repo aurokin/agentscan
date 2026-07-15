@@ -388,7 +388,7 @@ export function SourceSwitcher({
             folder header, and the bar displays just the owner source, so the
             owner's count belongs on its trigger. */}
         {orientation === "horizontal" && triggerShowsSource ? (
-          <MultiClientBadge count={attachedClientCount} />
+          <MultiClientBadge count={attachedClientCount} host={triggerTitle} />
         ) : null}
       </button>
       {isSourceMenuOpen
