@@ -92,7 +92,10 @@ export function GroupedPicker({
       {groups.map((group) => (
         <section className="picker-group" key={group.key}>
           <h2 className="group-header">{group.project}</h2>
-          <ul className="agent-list">
+          {/* Explicit listbox/option roles: aria-selected is only valid on
+              selectable roles, not on a plain list item. Selection is managed
+              by the app-level keyboard handlers (j/k + Enter), not DOM focus. */}
+          <ul className="agent-list" role="listbox">
             {group.rows.map((row) => {
               const isSelected = row.pane_id === selectedPaneId;
               // The single live pane the user is in. The selection cursor follows
@@ -109,6 +112,7 @@ export function GroupedPicker({
               const logo = providerLogo(row.provider, logoTheme);
               return (
                 <li
+                  role="option"
                   aria-selected={isSelected}
                   aria-current={isFocused ? "true" : undefined}
                   className={`agent-row${isSelected ? " selected" : ""}${

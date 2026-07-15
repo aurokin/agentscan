@@ -4,6 +4,11 @@
 
 ### Changed
 
+- Desktop accessibility: the always-on animations (reconnect spinner, pulsing
+  status dots, boot spinner, settings entrance) respect
+  `prefers-reduced-motion` while keeping static state feedback; the picker
+  rows use valid listbox/option roles for their selection state; and dim
+  metadata text in dark mode now clears WCAG AA contrast.
 - Desktop multi-client badges now name the affected host in their tooltip
   ("2 clients attached to koopa") instead of a generic "this server", on both
   the folder headers and the bar's source trigger.

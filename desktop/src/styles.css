@@ -27,7 +27,9 @@
   --border: rgba(255, 255, 255, calc(0.08 + var(--glass-clear) * 0.13));
   --text: #ededef;
   --text-muted: #9b9ba1;
-  --text-dim: #6c6c73;
+  /* Dim must still clear WCAG AA for the small metadata it carries: #8a8a90 is
+     ~5.1:1 on --bg and ~4.6:1 on --bg-elevated (the old #6c6c73 was ~3.3:1). */
+  --text-dim: #8a8a90;
   /* Accent is driven by --accent-rgb so washes/rings (rgba) and the solid color
      stay in sync; light overrides the rgb only. Dark keeps the warm orange, a
      touch lighter/warmer so it reads as a brighter accent against the dark base. */
@@ -2006,4 +2008,22 @@ button:disabled {
 
 ::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* Reduced motion: stop the always-on animations while keeping their static
+   feedback — the spin/boot icons still render, the pulsing dot holds a mid
+   opacity so an in-progress state still reads differently from a steady one,
+   and the settings sections simply appear in place. User-initiated transitions
+   are short and stay as-is. */
+@media (prefers-reduced-motion: reduce) {
+  .icon-button .spin,
+  .boot-spinner,
+  .settings-section {
+    animation: none;
+  }
+
+  .status-dot.pulsing {
+    animation: none;
+    opacity: 0.7;
+  }
 }
