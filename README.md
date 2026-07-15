@@ -45,9 +45,11 @@ remain unchanged until `agentscan` is ready to replace it.
   `refresh-client -B` subscriptions, introduced in tmux 3.2. On older tmux the
   daemon still starts but never receives live events, so pane status can appear
   stale; `agentscan doctor` warns when the installed tmux is too old.
-- **macOS (Apple Silicon) or Linux (x86_64 / ARM64).** Prebuilt CLI binaries are
-  published for those targets only — on an Intel Mac, build from source. The
-  desktop app is macOS Apple Silicon only.
+- **macOS (Apple Silicon) or Linux (x86_64 / ARM64).** Prebuilt CLI binaries
+  are published for those targets only, as a deliberate distribution decision
+  (not an interim gap): Intel Macs are on Apple's way out and there is no Intel
+  hardware in this project's test fleet to verify artifacts on. On an Intel
+  Mac, build from source. The desktop app is macOS Apple Silicon only.
 
 ## Install
 
@@ -82,6 +84,24 @@ Requires a [Rust toolchain](https://rustup.rs/) (edition 2024):
 ```sh
 cargo build --release
 # binary at target/release/agentscan
+```
+
+### Updating
+
+Updates are manual by design — neither the CLI nor the desktop app modifies
+itself. The desktop app's Settings window shows an "Update available" hint
+when a newer release is published (a day-cached, display-only check against
+GitHub Releases that stays silent offline).
+
+```sh
+mise up                       # if installed via mise/ubi
+# or download the new tarball / desktop zip from GitHub Releases
+```
+
+After updating the CLI, restart the daemon so it runs the new binary:
+
+```sh
+agentscan daemon restart
 ```
 
 ## Quickstart

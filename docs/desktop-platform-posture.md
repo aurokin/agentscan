@@ -75,6 +75,17 @@ Local machine assumptions:
 - SSH mode assumes the remote host owns its own `agentscan`, daemon, tmux
   server, and focus semantics.
 
+Webview network posture:
+
+- The webview CSP's `connect-src` allows exactly one remote origin,
+  `https://api.github.com`, consumed only by the Settings window's
+  display-only update check (`src/updateCheck.ts`) — a day-cached "latest
+  release" lookup that fails silently offline. Decided in AUR-581: an update
+  *hint*, not an auto-updater; neither the CLI nor the app modifies itself.
+- Any new remote origin in the CSP needs its own documented decision here;
+  everything else the webview talks to is local (`ipc:`, the dev server, and
+  bundled assets).
+
 ## Adapter Seams
 
 Local runner:

@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Added
+
+- The desktop Settings window shows the app version and a display-only
+  "Update available" hint, backed by a day-cached GitHub Releases check that
+  fails silently offline. The webview CSP allowlists `https://api.github.com`
+  for exactly this check. Decided in AUR-581: an update hint, not an
+  auto-updater — updates stay manual (`mise up` / GitHub Releases), now
+  documented in the README.
+
+### Changed
+
+- Documented two distribution decisions (AUR-581): prebuilt macOS binaries
+  stay Apple-Silicon-only (a decided posture, not an interim gap; Intel Macs
+  build from source), and release signing keeps hardened runtime with no
+  entitlements, with the CI `codesign`/`spctl` gates as the regression guard
+  (`docs/macos-release-signing.md`).
+
 ## 0.8.2 - 2026-07-15
 
 ### Changed

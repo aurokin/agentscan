@@ -53,7 +53,9 @@ import {
 } from "./effect/prefs";
 import { settingsPreflightCard } from "./effect/settingsViewModel";
 import { readLocalStorage } from "./shared";
+import { isNewerVersion, resolveLatestVersion } from "./updateCheck";
 import { useSettingsForm } from "./useSettingsForm";
+import { version as APP_VERSION } from "../package.json";
 
 // First-paint fallback for debugLogAtom before the runtime resolves it.
 const EMPTY_DEBUG_ENTRIES: ReadonlyArray<DebugEntry> = [];
@@ -157,6 +159,29 @@ function SettingsApp() {
   });
   // Debug log is a diagnostic panel — collapsed by default to keep Settings calm.
   const [isDebugOpen, setIsDebugOpen] = useState(false);
+  // Display-only release hint (AUR-581): the latest published version, from a
+  // day-cached GitHub Releases check that fails silently offline. This window
+  // owns the check because it is where the version is shown; the dock never
+  // makes the request.
+  const [latestVersion, setLatestVersion] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void resolveLatestVersion({
+      readStorage: readLocalStorage,
+      writeStorage: (key, value) => window.localStorage.setItem(key, value),
+      fetchFn: (input, init) => window.fetch(input, init),
+      nowMs: Date.now(),
+    }).then((latest) => {
+      if (!cancelled) {
+        setLatestVersion(latest);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const updateAvailable =
+    latestVersion !== null && isNewerVersion(latestVersion, APP_VERSION);
   // The source card being dragged in the settings rail (HTML5 drag-and-drop);
   // dropping on another card reorders the sources, which keybind ownership follows.
   const [draggedSourceId, setDraggedSourceId] = useState<string | null>(null);
@@ -744,6 +769,22 @@ function SettingsApp() {
             ) : null}
           </div>
           {isDebugOpen ? <DebugLog entries={debugEntries} /> : null}
+        </section>
+
+        <section className="settings-section" aria-label="About">
+          <div className="setting-row">
+            <div className="setting-label">
+              <span>agentscan desktop v{APP_VERSION}</span>
+              {latestVersion === null ? null : updateAvailable ? (
+                <span className="setting-hint">
+                  Update available: v{latestVersion} — see GitHub Releases (CLI:
+                  mise up)
+                </span>
+              ) : (
+                <span className="setting-hint">Up to date</span>
+              )}
+            </div>
+          </div>
         </section>
       </div>
     </main>
