@@ -28,6 +28,12 @@
 
 ### Fixed
 
+- Targeted pane refreshes (subscription, title, and activity events) now select
+  the requested pane from the window listing by id. `list-panes -t <pane>`
+  returns every pane of the containing window, and the previous positional pick
+  took the window's last pane, so any refresh in a multi-pane window replaced
+  the target pane's record with a duplicate of its neighbor and dropped the
+  real pane from the snapshot (AUR-679).
 - The daemon now marks the socket closing before control-mode teardown on
   error exits too, so clients see a clean closing state instead of a dropped
   socket (the error path kills the control-mode children rather than waiting,

@@ -85,8 +85,15 @@ pub(crate) fn tmux_list_pane(pane_id: &str) -> Result<Option<TmuxPaneRow>> {
         return Ok(None);
     };
 
-    let mut rows = parse_pane_rows(&stdout)?;
-    Ok(rows.pop())
+    Ok(pane_row_for_id(parse_pane_rows(&stdout)?, pane_id))
+}
+
+// `list-panes -t <pane>` lists every pane of the containing window, not just the
+// target, so the requested pane must be selected by id. Taking any other row lets
+// a targeted refresh overwrite the pane's record with a neighbor from the same
+// window, duplicating that neighbor and dropping the real pane (AUR-679).
+pub(crate) fn pane_row_for_id(rows: Vec<TmuxPaneRow>, pane_id: &str) -> Option<TmuxPaneRow> {
+    rows.into_iter().find(|row| row.pane_id == pane_id)
 }
 
 // Without `-S`/`-E`, capture-pane returns exactly the visible screen. Status

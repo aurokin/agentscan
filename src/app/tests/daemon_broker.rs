@@ -85,6 +85,45 @@ fn daemon_broker_list_pane_records_command_and_parses_response() {
 }
 
 #[test]
+fn daemon_broker_list_pane_selects_requested_pane_from_window_listing() {
+    // `list-panes -t <pane>` lists every pane of the containing window; the broker
+    // must select the requested pane by id, not any positional row (AUR-679).
+    let expected_id = broker_frame_id("209");
+    let mut harness = daemon::ControlModeBrokerTranscriptHarness::new([
+        daemon::ControlModeBrokerTranscriptStep::line("%begin 1777830000 209 0"),
+        daemon::ControlModeBrokerTranscriptStep::line(broker_pane_row_line("%1")),
+        daemon::ControlModeBrokerTranscriptStep::line(broker_pane_row_line("%2")),
+        daemon::ControlModeBrokerTranscriptStep::line(broker_pane_row_line("%3")),
+        daemon::ControlModeBrokerTranscriptStep::line("%end 1777830000 209 0"),
+    ]);
+
+    let response = harness
+        .list_pane("%1", &expected_id)
+        .expect("list-pane response should parse");
+
+    assert_eq!(response.pane.expect("pane should exist").pane_id, "%1");
+}
+
+#[test]
+fn daemon_broker_list_pane_returns_none_when_pane_missing_from_window_listing() {
+    // A listing that resolves but no longer contains the requested pane must read
+    // as a removal, never as a neighboring pane's row.
+    let expected_id = broker_frame_id("210");
+    let mut harness = daemon::ControlModeBrokerTranscriptHarness::new([
+        daemon::ControlModeBrokerTranscriptStep::line("%begin 1777830000 210 0"),
+        daemon::ControlModeBrokerTranscriptStep::line(broker_pane_row_line("%2")),
+        daemon::ControlModeBrokerTranscriptStep::line(broker_pane_row_line("%3")),
+        daemon::ControlModeBrokerTranscriptStep::line("%end 1777830000 210 0"),
+    ]);
+
+    let response = harness
+        .list_pane("%1", &expected_id)
+        .expect("list-pane response should parse");
+
+    assert!(response.pane.is_none());
+}
+
+#[test]
 fn daemon_broker_list_target_records_command_and_parses_rows() {
     let expected_id = broker_frame_id("213");
     let mut harness = daemon::ControlModeBrokerTranscriptHarness::new([

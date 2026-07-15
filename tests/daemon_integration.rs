@@ -2063,6 +2063,94 @@ fn env_no_auto_start_does_not_disable_daemon_start_command() -> Result<()> {
 }
 
 #[test]
+fn daemon_targeted_refresh_keeps_multi_pane_window_panes_distinct() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let root_pane_id = harness.start_session("multi-pane-refresh", "sleep 300")?;
+    let middle_pane_id = harness.split_window("multi-pane-refresh:0.0", "sleep 300")?;
+    let last_pane_id = harness.split_window("multi-pane-refresh:0.0", "sleep 300")?;
+    for (pane_id, provider, label) in [
+        (&root_pane_id, "claude", "Root Task"),
+        (&middle_pane_id, "codex", "Middle Task"),
+        (&last_pane_id, "gemini", "Last Task"),
+    ] {
+        harness.agentscan([
+            "tmux",
+            "set-metadata",
+            "--pane-id",
+            pane_id,
+            "--provider",
+            provider,
+            "--label",
+            label,
+            "--state",
+            "busy",
+        ])?;
+    }
+    let mut daemon = harness.start_daemon()?;
+    harness.wait_for_daemon_pane(&mut daemon, &root_pane_id, |_| true)?;
+
+    // Trigger a targeted subscription refresh of the window's FIRST pane. tmux's
+    // `list-panes -t <pane>` returns the whole window, so a positional row pick
+    // used to overwrite this pane's record with the window's last pane (AUR-679).
+    harness.agentscan([
+        "tmux",
+        "set-metadata",
+        "--pane-id",
+        &root_pane_id,
+        "--provider",
+        "claude",
+        "--label",
+        "Root Task Updated",
+        "--state",
+        "idle",
+    ])?;
+
+    let snapshot = harness.wait_for_daemon_snapshot(&mut daemon, |snapshot| {
+        snapshot["panes"].as_array().is_some_and(|panes| {
+            panes.iter().any(|pane| {
+                pane["pane_id"].as_str() == Some(root_pane_id.as_str())
+                    && pane["display"]["label"] == "Root Task Updated"
+            })
+        })
+    })?;
+
+    let panes = snapshot["panes"]
+        .as_array()
+        .context("daemon snapshot should contain a pane array")?;
+    let mut pane_ids = panes
+        .iter()
+        .filter_map(|pane| pane["pane_id"].as_str())
+        .collect::<Vec<_>>();
+    pane_ids.sort_unstable();
+    let mut expected_pane_ids = vec![
+        root_pane_id.as_str(),
+        middle_pane_id.as_str(),
+        last_pane_id.as_str(),
+    ];
+    expected_pane_ids.sort_unstable();
+    assert_eq!(
+        pane_ids, expected_pane_ids,
+        "targeted refresh must keep every pane of the window distinct"
+    );
+    for (pane_id, provider) in [
+        (&root_pane_id, "claude"),
+        (&middle_pane_id, "codex"),
+        (&last_pane_id, "gemini"),
+    ] {
+        let pane = panes
+            .iter()
+            .find(|pane| pane["pane_id"].as_str() == Some(pane_id.as_str()))
+            .with_context(|| format!("pane {pane_id} missing from snapshot"))?;
+        assert_eq!(
+            pane["provider"], *provider,
+            "pane {pane_id} should keep its own provider"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
 fn tui_focuses_selected_pane_from_interactive_tmux_pane() -> Result<()> {
     let harness = TestHarness::new()?;
     let root_pane_id = harness.start_session("tui-focus", "sleep 300")?;

@@ -119,7 +119,7 @@ impl TmuxControlModeReadBroker<'_> {
             self.deferred_lines,
             MissingTargetScope::PaneWindow,
         ) {
-            Ok(rows) => Ok(rows.and_then(|mut rows| rows.pop())),
+            Ok(rows) => Ok(rows.and_then(|rows| tmux::pane_row_for_id(rows, pane_id))),
             Err(error) => {
                 self.broker_health.disable_after_error(&error);
                 Err(error)
@@ -1560,7 +1560,9 @@ impl ControlModeBrokerTranscriptHarness {
             MissingTargetScope::PaneWindow,
         )?;
         Ok(ControlModeBrokerListPaneResponse {
-            pane: response.rows.and_then(|mut rows| rows.pop()),
+            pane: response
+                .rows
+                .and_then(|rows| tmux::pane_row_for_id(rows, pane_id)),
             deferred_events: response.deferred_events,
         })
     }
