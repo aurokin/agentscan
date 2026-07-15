@@ -5,6 +5,7 @@ import {
   focusedPaneIdOf,
   footerTriggerView,
   groupRowsByProject,
+  mruVisiblePaneId,
   pickerStateFromLive,
   reconcileSelection,
   type PickerActivation,
@@ -144,6 +145,22 @@ describe("footerTriggerView", () => {
   });
 });
 
+describe("mruVisiblePaneId", () => {
+  it("returns the visible row with the greatest defined last_focus_seq", () => {
+    const rows = [
+      row({ pane_id: "%1", last_focus_seq: 3 }),
+      row({ pane_id: "%2" }),
+      row({ pane_id: "%3", last_focus_seq: 8 }),
+    ];
+    expect(mruVisiblePaneId(rows)).toBe("%3");
+  });
+
+  it("returns null when no row carries the field (schema < 6 / never focused)", () => {
+    expect(mruVisiblePaneId([row({ pane_id: "%1" }), row({ pane_id: "%2" })])).toBeNull();
+    expect(mruVisiblePaneId([])).toBeNull();
+  });
+});
+
 describe("reconcileSelection", () => {
   const rows = (...paneIds: string[]) => paneIds.map((pane_id) => row({ pane_id }));
   const base = {
@@ -223,6 +240,32 @@ describe("reconcileSelection", () => {
       prevFocusedPaneId: "%hidden",
     });
     expect(hidden).toEqual({ selectedPaneId: "%1" });
+  });
+
+  it("repairs an invalid selection to the most recently focused pane before first row", () => {
+    const recencyRows = [
+      row({ pane_id: "%1" }),
+      row({ pane_id: "%2", last_focus_seq: 7 }),
+      row({ pane_id: "%3", last_focus_seq: 2 }),
+    ];
+    // Focus hidden or unknown: recency beats first-row.
+    expect(
+      reconcileSelection({ ...base, rows: recencyRows, selectedPaneId: "%gone" }),
+    ).toEqual({ selectedPaneId: "%2" });
+    // A visible focused pane still outranks recency.
+    expect(
+      reconcileSelection({
+        ...base,
+        rows: recencyRows,
+        selectedPaneId: "%gone",
+        focusedPaneId: "%3",
+        prevFocusedPaneId: "%3",
+      }),
+    ).toEqual({ prevFocusedPaneId: "%3", selectedPaneId: "%3" });
+    // All-undefined seqs fall back to the first row.
+    expect(reconcileSelection({ ...base, selectedPaneId: "%gone" })).toEqual({
+      selectedPaneId: "%1",
+    });
   });
 
   it("keeps a valid selection and the marker while the focused pane is filtered out", () => {

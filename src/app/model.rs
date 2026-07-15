@@ -72,6 +72,15 @@ pub(crate) struct PaneRecord {
     pub(crate) classification: PaneClassification,
     pub(crate) agent_metadata: AgentMetadata,
     pub(crate) diagnostics: PaneDiagnostics,
+    /// Focus-recency ordinal (higher = more recently focused through an
+    /// agentscan focus action). Daemon-session-scoped and server-global:
+    /// ordering is only meaningful among panes of one snapshot from one
+    /// daemon run — never persist it or compare across reconnects/hosts.
+    /// The daemon's runtime snapshot always holds `None`; the value is
+    /// stamped onto published clones at the publish boundary (see
+    /// `PaneFocusRecency`). Absent means "no signal", never zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) last_focus_seq: Option<u64>,
 }
 
 impl PaneRecord {

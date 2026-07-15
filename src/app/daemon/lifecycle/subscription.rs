@@ -933,6 +933,7 @@ mod diff_apply_tests {
                 cache_origin: "daemon_snapshot".to_string(),
                 proc_fallback: ProcFallbackDiagnostics::default(),
             },
+            last_focus_seq: None,
         }
     }
 

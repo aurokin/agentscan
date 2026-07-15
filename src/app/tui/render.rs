@@ -172,6 +172,11 @@ pub(crate) fn render_tui_frame_for_size_with_icons(
         state.page_start = last_non_empty_page_start(view.len(), page_size);
     }
 
+    // One-shot initial-selection seed (caller-pane hint, then focus
+    // recency). Placed after the clamp and before the visible window is
+    // computed so a seed beyond page one repositions `page_start` first.
+    state.seed_initial_selection(&view, page_size);
+
     let visible_end = state.page_start.saturating_add(page_size).min(view.len());
     if state.search_query.is_some() {
         // Letter hotkeys are suspended while searching: typed characters edit
@@ -275,6 +280,12 @@ pub(crate) fn render_tui_frame_for_size_with_icons(
 // (`reanchor_page_start`), and moving the page to follow the selection would
 // fight that contract and shift the list under the user. The frame is redrawn on
 // the same update, so Enter always acts on the visibly highlighted row.
+//
+// One sanctioned exception: the one-shot initial-selection seed
+// (`seed_initial_selection`) writes `page_start` to bring the seeded row on
+// screen. That write happens before the user has seen a populated frame, so
+// the no-repaging contract — which protects an established view — is not in
+// play; do not "fix" the seed's page write to conform to it.
 fn reconcile_selection(
     selected_pane_id: &mut Option<String>,
     visible_pane_ids: &[String],

@@ -795,6 +795,7 @@ fn pane_is_materially_equal(left: &PaneRecord, right: &PaneRecord) -> bool {
         classification: left_classification,
         agent_metadata: left_agent_metadata,
         diagnostics: left_diagnostics,
+        last_focus_seq: left_last_focus_seq,
     } = left;
     let PaneRecord {
         pane_id: right_pane_id,
@@ -806,6 +807,7 @@ fn pane_is_materially_equal(left: &PaneRecord, right: &PaneRecord) -> bool {
         classification: right_classification,
         agent_metadata: right_agent_metadata,
         diagnostics: right_diagnostics,
+        last_focus_seq: right_last_focus_seq,
     } = right;
 
     left_pane_id == right_pane_id
@@ -817,6 +819,11 @@ fn pane_is_materially_equal(left: &PaneRecord, right: &PaneRecord) -> bool {
         && left_classification == right_classification
         && left_agent_metadata == right_agent_metadata
         && diagnostics_are_materially_equal(left_diagnostics, right_diagnostics)
+        // Material: a recency change on a published clone must ship that
+        // pane in the wire diff so subscriber-reconstructed snapshots keep
+        // the field. Runtime snapshots always hold None on both sides, so
+        // this leg can never defeat no-op publication suppression.
+        && left_last_focus_seq == right_last_focus_seq
 }
 
 fn diagnostics_are_materially_equal(left: &PaneDiagnostics, right: &PaneDiagnostics) -> bool {
@@ -1360,6 +1367,9 @@ mod material_equality_tests {
             }),
             ("pane.proc_fallback", |s| {
                 s.panes[0].diagnostics.proc_fallback.outcome = ProcFallbackOutcome::Resolved
+            }),
+            ("pane.last_focus_seq", |s| {
+                s.panes[0].last_focus_seq = Some(7)
             }),
             ("pane_count", |s| {
                 s.panes.pop();

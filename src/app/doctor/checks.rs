@@ -751,6 +751,7 @@ mod tests {
                 cache_origin: "test".to_string(),
                 proc_fallback: ProcFallbackDiagnostics::default(),
             },
+            last_focus_seq: None,
         }
     }
 }

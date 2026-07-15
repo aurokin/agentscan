@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Added
+
+- The terminal TUI auto-selects the pane you opened it from (AUR-698): inside
+  a `tmux display-popup`, the caller pane is captured at startup and seeded as
+  the initial selection when it appears in the list. With `--all` this is
+  deliberate "you are here" semantics — the caller pane is selected even when
+  it is not an agent pane. With multiple attached clients the captured pane is
+  best-effort and only ever affects the highlight, never Enter's client
+  resolution.
+- When the caller pane is not in the list (e.g. the popup was opened from a
+  plain shell), both the TUI and the desktop picker fall back to the most
+  recently used agent pane: the daemon now keeps in-memory focus recency,
+  stamped from the `PaneFocus` events every agentscan focus action already
+  emits, and publishes it as an optional per-pane/per-row `last_focus_seq`
+  ordinal (snapshot schema 5 → 6; recency resets with the daemon; organic
+  tmux navigation does not stamp — see `docs/desktop-client-contract.md`).
+
+### Changed
+
+- Snapshot schema version is now 6. Mixed-version daemon/client pairs reject
+  cleanly at the IPC handshake with the existing stop/upgrade guidance; the
+  wire protocol stays v2.
+
 ## 0.8.3 - 2026-07-15
 
 ### Added

@@ -76,6 +76,29 @@ Reserved behavior:
 - `Enter`, `Tab`, `Backspace`, `Delete`, arrows, function keys, whitespace, and
   control characters are not picker selection keys.
 
+## Initial Selection Precedence
+
+When the first populated frame renders, the highlight seeds once through this
+chain (AUR-698), then never re-seeds:
+
+1. **Caller-pane hint** — the pane the popup was invoked over, captured at
+   startup via `tmux display-message -p '#{pane_id}'` (inside a
+   `display-popup` this resolves the invoking client's active pane; the
+   popup's own `TMUX_PANE` is a hidden pane that appears in no snapshot).
+   With `--all` this is deliberate "you are here" semantics: the caller pane
+   is selected even when it is not an agent pane.
+2. **Focus recency** — the visible pane with the greatest `last_focus_seq`
+   (daemon-stamped MRU of agentscan-driven focus; see
+   `docs/desktop-client-contract.md`, "Focus recency").
+3. **First visible row** — the pre-AUR-698 default.
+
+The seed is one-shot: connecting/empty/undersized frames do not consume it
+(the frame builder exits before the seed site), any selection-moving input
+cancels it, and daemon blips that clear the selection never re-trigger it.
+The seed's `page_start` write (bringing a beyond-page-one row on screen) is a
+sanctioned exception to the render anchor contract — see the comment on
+`reconcile_selection`.
+
 ## Follow-up Notes
 
 ### Repo-local tmux invocation

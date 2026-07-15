@@ -1491,6 +1491,26 @@ fn cache_fixture_deserializes_into_current_schema() {
         snapshot.panes[0].diagnostics.cache_origin,
         "daemon_snapshot"
     );
+    // The fixture predates recency stamping: the absent field reads as None.
+    assert_eq!(snapshot.panes[0].last_focus_seq, None);
+}
+
+#[test]
+fn pane_last_focus_seq_round_trips_and_omits_none() {
+    let snapshot: SnapshotEnvelope =
+        serde_json::from_str(CACHE_SNAPSHOT_FIXTURE).expect("cache fixture should parse");
+    let mut pane = snapshot.panes[0].clone();
+
+    let unstamped = serde_json::to_string(&pane).expect("serialize");
+    assert!(
+        !unstamped.contains("last_focus_seq"),
+        "None must be omitted from the wire form"
+    );
+
+    pane.last_focus_seq = Some(42);
+    let stamped = serde_json::to_string(&pane).expect("serialize");
+    let reparsed: PaneRecord = serde_json::from_str(&stamped).expect("round trip");
+    assert_eq!(reparsed.last_focus_seq, Some(42));
 }
 
 #[test]

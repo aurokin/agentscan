@@ -11,7 +11,13 @@ pub(crate) enum FocusTmuxPaneResult {
     Missing,
 }
 
-fn current_pane_id() -> Result<Option<String>> {
+/// The invoking client's active pane (`None` outside tmux). Two callers:
+/// `tmux set-metadata`/`clear-metadata` target resolution, and the TUI's
+/// startup caller-pane hint — inside a `display-popup` this resolves to the
+/// pane the popup was opened over, because the popup's own hidden pane is
+/// not a resolvable display-message target. Semantic changes must consider
+/// both callers.
+pub(crate) fn current_pane_id() -> Result<Option<String>> {
     if env::var_os("TMUX").is_none() {
         return Ok(None);
     }

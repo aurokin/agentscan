@@ -1939,3 +1939,204 @@ fn tmux_target_is_missing_matches_common_focus_errors() {
         b"unknown command: switch-client"
     ));
 }
+
+#[test]
+fn tui_initial_selection_seeds_to_caller_pane_hint() {
+    let mut state = super::tui::TuiState::default();
+    state.test_set_initial_selection_hint("%2");
+    state.replace_panes(vec![tui_test_pane(1), tui_test_pane(2), tui_test_pane(3)]);
+
+    let frame = super::tui::render_tui_frame_for_size(
+        &mut state,
+        super::tui::TuiTerminalSize {
+            width: 120,
+            height: 10,
+        },
+    );
+
+    assert_eq!(state.test_selected_pane_id(), Some("%2"));
+    assert_eq!(frame.selected_row, Some(1));
+    assert_eq!(state.test_initial_selection_hint(), None);
+    assert!(state.test_initial_selection_seeded());
+}
+
+#[test]
+fn tui_initial_selection_hint_beyond_page_one_repositions_page() {
+    let mut state = super::tui::TuiState::default();
+    state.test_set_initial_selection_hint("%5");
+    state.replace_panes((1..=5).map(tui_test_pane).collect());
+
+    // Height 4 leaves a two-row page; %5 sits at view position 4 (page 3).
+    let frame = super::tui::render_tui_frame_for_size(
+        &mut state,
+        super::tui::TuiTerminalSize {
+            width: 120,
+            height: 4,
+        },
+    );
+
+    assert_eq!(state.test_selected_pane_id(), Some("%5"));
+    assert_eq!(frame.page_start, 4);
+    assert_eq!(frame.selected_row, Some(0));
+    assert_eq!(frame.visible_pane_ids, vec!["%5".to_string()]);
+}
+
+#[test]
+fn tui_initial_selection_hint_missing_is_consumed_and_never_reapplied() {
+    let mut state = super::tui::TuiState::default();
+    state.test_set_initial_selection_hint("%9");
+    state.replace_panes(vec![tui_test_pane(1), tui_test_pane(2)]);
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 10,
+    };
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+
+    // The hint matched nothing: default first-row selection, hint consumed.
+    assert_eq!(state.test_selected_pane_id(), Some("%1"));
+    assert_eq!(state.test_initial_selection_hint(), None);
+
+    // A later snapshot that contains the hinted pane must NOT select it.
+    state.replace_panes(vec![tui_test_pane(1), tui_test_pane(2), tui_test_pane(9)]);
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(state.test_selected_pane_id(), Some("%1"));
+}
+
+#[test]
+fn tui_initial_selection_hint_survives_connecting_and_undersized_frames() {
+    let mut state = super::tui::TuiState::default();
+    state.test_set_initial_selection_hint("%2");
+
+    // Connecting/empty frame: exits before the seed site, hint intact.
+    super::tui::render_tui_frame_for_size(
+        &mut state,
+        super::tui::TuiTerminalSize {
+            width: 120,
+            height: 10,
+        },
+    );
+    assert_eq!(state.test_initial_selection_hint(), Some("%2"));
+    assert!(!state.test_initial_selection_seeded());
+
+    // Undersized frame with panes: also exits before the seed site.
+    state.replace_panes(vec![tui_test_pane(1), tui_test_pane(2)]);
+    super::tui::render_tui_frame_for_size(
+        &mut state,
+        super::tui::TuiTerminalSize {
+            width: 120,
+            height: 2,
+        },
+    );
+    assert_eq!(state.test_initial_selection_hint(), Some("%2"));
+    assert!(!state.test_initial_selection_seeded());
+
+    // The terminal grows: the hint finally applies.
+    let frame = super::tui::render_tui_frame_for_size(
+        &mut state,
+        super::tui::TuiTerminalSize {
+            width: 120,
+            height: 10,
+        },
+    );
+    assert_eq!(state.test_selected_pane_id(), Some("%2"));
+    assert_eq!(frame.selected_row, Some(1));
+}
+
+#[test]
+fn tui_initial_selection_seed_cancelled_by_navigation() {
+    let mut state = super::tui::TuiState::default();
+    state.test_set_initial_selection_hint("%2");
+
+    // The user acts before the first populated frame arrives.
+    state.select_next();
+    assert!(state.test_initial_selection_seeded());
+    assert_eq!(state.test_initial_selection_hint(), None);
+
+    state.replace_panes(vec![tui_test_pane(1), tui_test_pane(2)]);
+    super::tui::render_tui_frame_for_size(
+        &mut state,
+        super::tui::TuiTerminalSize {
+            width: 120,
+            height: 10,
+        },
+    );
+    assert_eq!(state.test_selected_pane_id(), Some("%1"));
+}
+
+#[test]
+fn tui_initial_selection_seeds_to_most_recent_focus_without_hint() {
+    let mut recent = tui_test_pane(4);
+    recent.last_focus_seq = Some(12);
+    let mut older = tui_test_pane(2);
+    older.last_focus_seq = Some(5);
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes(vec![tui_test_pane(1), older, tui_test_pane(3), recent]);
+
+    // Height 4 leaves a two-row page; %4 sits at view position 3 (page 2).
+    let frame = super::tui::render_tui_frame_for_size(
+        &mut state,
+        super::tui::TuiTerminalSize {
+            width: 120,
+            height: 4,
+        },
+    );
+
+    assert_eq!(state.test_selected_pane_id(), Some("%4"));
+    assert_eq!(frame.page_start, 2);
+    assert_eq!(frame.selected_row, Some(1));
+}
+
+#[test]
+fn tui_initial_selection_hint_wins_over_focus_recency() {
+    let mut recent = tui_test_pane(3);
+    recent.last_focus_seq = Some(42);
+    let mut state = super::tui::TuiState::default();
+    state.test_set_initial_selection_hint("%1");
+    state.replace_panes(vec![tui_test_pane(1), tui_test_pane(2), recent]);
+
+    super::tui::render_tui_frame_for_size(
+        &mut state,
+        super::tui::TuiTerminalSize {
+            width: 120,
+            height: 10,
+        },
+    );
+
+    assert_eq!(state.test_selected_pane_id(), Some("%1"));
+}
+
+#[test]
+fn tui_initial_selection_without_hint_or_recency_defaults_to_first_row() {
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes(vec![tui_test_pane(1), tui_test_pane(2)]);
+
+    let frame = super::tui::render_tui_frame_for_size(
+        &mut state,
+        super::tui::TuiTerminalSize {
+            width: 120,
+            height: 10,
+        },
+    );
+
+    assert_eq!(state.test_selected_pane_id(), Some("%1"));
+    assert_eq!(frame.selected_row, Some(0));
+    assert!(state.test_initial_selection_seeded());
+}
+
+#[test]
+fn tui_initial_selection_seed_is_one_shot_after_first_populated_frame() {
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes(vec![tui_test_pane(1), tui_test_pane(2)]);
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 10,
+    };
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(state.test_selected_pane_id(), Some("%1"));
+
+    // A hint arriving after the first populated frame (impossible in
+    // production, but the latch must hold) is ignored.
+    state.test_set_initial_selection_hint("%2");
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(state.test_selected_pane_id(), Some("%1"));
+}

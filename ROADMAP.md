@@ -289,6 +289,25 @@ Implications:
 - raw snapshot-envelope consumers should use `agentscan snapshot --format json`
 - compatibility formatting paths must not be added back to the TUI
 
+### Selection Context Contract
+
+Both picker surfaces share one repair rule for a missing/invalid selection:
+live-focus signal first (TUI: the startup caller-pane hint; desktop: the
+`is_focused` row), then daemon focus recency (`last_focus_seq`, AUR-698), then
+first row. Surface-specific tiers stay surface-specific: the desktop's live
+focus-follow (snapping on focus *moves*) is deliberately desktop-only — in a
+transient popup the focus cannot move while choosing, and with multiple
+clients it would let another terminal yank the highlight mid-keystroke.
+
+Recency is daemon-side, in-memory, and stamped from explicit `PaneFocus`
+client events only (v1). The stamping is an overlay applied at the publish
+boundary: the daemon's runtime snapshot always carries `None`, so recency can
+never defeat no-op publication suppression. A v2 that adds observed-focus
+stamping (active-flag transitions) must keep publish-boundary stamping and
+must gate on unambiguous client resolution (the None-on-tie principle);
+tmux `window_activity` timestamps are rejected as a recency source — output
+activity is not user focus.
+
 ### Integration Boundary
 
 Keep shell as the integration layer and Rust as the discovery and state layer.

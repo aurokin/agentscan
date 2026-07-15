@@ -234,6 +234,12 @@ pub(crate) struct PickerRow {
     /// on every row (the picker output is a flat array, so there is no envelope to
     /// carry it once); `>1` signals best-effort focus and a multiple-clients hint.
     pub(crate) attached_client_count: u32,
+    /// Focus-recency ordinal copied from the pane (see
+    /// `PaneRecord::last_focus_seq`): higher = more recently focused through
+    /// an agentscan focus action, valid only within one daemon session and
+    /// one source. Absent means "no signal".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) last_focus_seq: Option<u64>,
 }
 
 pub(crate) fn picker_rows(
@@ -266,6 +272,7 @@ pub(crate) fn picker_rows(
                 is_focused: is_active
                     && focused_session.is_some_and(|session| session == pane.location.session_name),
                 attached_client_count,
+                last_focus_seq: pane.last_focus_seq,
             }
         })
         .collect()

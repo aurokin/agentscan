@@ -169,6 +169,32 @@ macOS desktop badges each open source's folder header (and the bar's source
 trigger) with that source's own count, naming the host, rather than showing one
 global banner that cannot say which server it describes.
 
+### Focus recency (schema 6+)
+
+Each snapshot pane and picker row may carry `last_focus_seq`: an ordinal
+stamped by the daemon when a pane is focused through an agentscan focus action
+(TUI Enter, `agentscan focus`/`hotkey`, desktop click — all emit the same
+`PaneFocus` client event after tmux confirms the switch). Higher = more
+recently focused. Semantics clients must respect:
+
+- **Ordinal only.** Compare within one snapshot from one daemon session and
+  one source; never persist it, never compare across reconnects or hosts. A
+  daemon restart resets recency.
+- **Absence means "no signal", never zero.** Panes never focused through
+  agentscan omit the field, as do older daemons (schema < 6). Exclude absent
+  rows from recency comparison rather than coercing to 0.
+- **Server-global, not per-client.** The `PaneFocus` event carries no client
+  identity, so with multiple attached clients the recency stream interleaves
+  all of them. This is a deliberate v1 non-goal.
+- **Best-effort, not live focus.** Focus events are fire-and-forget and only
+  cover agentscan-driven focus; organic tmux navigation does not stamp. Use it
+  strictly below the live `is_focused` signal: repair a missing selection to
+  the most-recent visible row, never yank an established one.
+- **Observability caveat.** Recency lives in daemon memory and is stamped onto
+  published snapshots only; `daemon status` output and runtime observability
+  compare unstamped runtime snapshots, so debugging recency requires
+  inspecting a published frame (e.g. `agentscan subscribe --format json`).
+
 ## Profiles And Environment
 
 The local profile can override the `agentscan` binary path and provide
@@ -234,7 +260,7 @@ ssh workbox agentscan daemon status --format json
 If that succeeds and reports non-null `protocol_version` and
 `snapshot_schema_version` values, validate exact compatibility before starting
 the long-lived subscription process. The current compatible values are
-`protocol_version=1` and `snapshot_schema_version=5`.
+`protocol_version=2` and `snapshot_schema_version=6`.
 
 If the daemon is not running, this command reports the normal not-running JSON
 shape without a live daemon protocol/schema to validate. Normal remote
