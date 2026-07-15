@@ -257,7 +257,11 @@ impl TuiState {
             Some(index) if visible.start + index + 1 < visible.end => {
                 self.select_pane_at(visible.start + index + 1)
             }
-            Some(_) => self.next_page() && self.select_pane_at(self.page_start),
+            // Select the row below the current window, not the new page's first
+            // row: next_page() clamps to the page-aligned boundary, so after a
+            // live reanchor leaves `page_start` non-aligned near the tail the
+            // new window can still contain the already-selected row.
+            Some(_) => self.next_page() && self.select_pane_at(visible.end),
         }
     }
 
