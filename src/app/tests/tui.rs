@@ -59,7 +59,7 @@ fn tui_render_frame_includes_workspace_and_full_location_for_cwd_grouping() {
         },
     );
 
-    assert_eq!(frame.lines[0], "[1] 🟡 👾 agentscan notes:4.1 - Working");
+    assert_eq!(frame.lines[0], "❯[1] 🟡 👾 agentscan notes:4.1 - Working");
 }
 
 #[test]
@@ -655,8 +655,8 @@ fn tui_frame_uses_custom_picker_key_order() {
         },
     );
 
-    assert!(frame.lines[0].starts_with("[A]"));
-    assert!(frame.lines[1].starts_with("[S]"));
+    assert!(frame.lines[0].starts_with("❯[A]"));
+    assert!(frame.lines[1].starts_with(" [S]"));
     assert!(frame.lines.iter().any(|line| line.contains("Task 03")));
     assert!(frame.lines.iter().any(|line| line.contains("Page 1/1")));
 }
@@ -788,10 +788,10 @@ fn tui_resize_keeps_visible_keys_stable_for_rows_that_remain_visible() {
         },
     );
     assert_eq!(tall_frame.page_size, 4);
-    assert!(tall_frame.lines[0].starts_with("[1]"));
-    assert!(tall_frame.lines[1].starts_with("[2]"));
-    assert!(tall_frame.lines[2].starts_with("[3]"));
-    assert!(tall_frame.lines[3].starts_with("[4]"));
+    assert!(tall_frame.lines[0].starts_with("❯[1]"));
+    assert!(tall_frame.lines[1].starts_with(" [2]"));
+    assert!(tall_frame.lines[2].starts_with(" [3]"));
+    assert!(tall_frame.lines[3].starts_with(" [4]"));
 
     let short_frame = super::tui::render_tui_frame_for_size(
         &mut state,
@@ -801,9 +801,9 @@ fn tui_resize_keeps_visible_keys_stable_for_rows_that_remain_visible() {
         },
     );
     assert_eq!(short_frame.page_size, 3);
-    assert!(short_frame.lines[0].starts_with("[1]"));
-    assert!(short_frame.lines[1].starts_with("[2]"));
-    assert!(short_frame.lines[2].starts_with("[3]"));
+    assert!(short_frame.lines[0].starts_with("❯[1]"));
+    assert!(short_frame.lines[1].starts_with(" [2]"));
+    assert!(short_frame.lines[2].starts_with(" [3]"));
     assert!(
         short_frame
             .lines
@@ -913,7 +913,7 @@ fn tui_frame_writer_sanitizes_tmux_controlled_labels() {
             height: 3,
         },
     );
-    assert_eq!(frame.lines[0], "[1] 🟡 👾 notes:4.1 - Task next step");
+    assert_eq!(frame.lines[0], "❯[1] 🟡 👾 notes:4.1 - Task next step");
     assert!(!frame.lines[0].contains(['\n', '\r', '\t', '\u{1b}']));
 
     let mut rendered = Vec::new();
@@ -1325,31 +1325,36 @@ fn tui_selection_snaps_to_first_visible_when_selected_pane_moves_off_page() {
 }
 
 #[test]
-fn tui_frame_writer_highlights_selected_row_across_full_width() {
+fn tui_frame_writer_marks_selected_row_with_pointer_and_bold() {
     let mut state = super::tui::TuiState::default();
     state.replace_panes(vec![tui_test_pane(1), tui_test_pane(2)]);
-    let width = 40u16;
     let frame = super::tui::render_tui_frame_for_size(
         &mut state,
-        super::tui::TuiTerminalSize { width, height: 10 },
+        super::tui::TuiTerminalSize {
+            width: 40,
+            height: 10,
+        },
     );
     assert_eq!(frame.selected_row, Some(0));
+    assert!(frame.lines[0].starts_with('❯'));
+    assert!(frame.lines[1].starts_with(' '));
 
     let mut rendered = Vec::new();
     super::tui::write_tui_frame(&mut rendered, &frame).expect("frame should serialize");
     let rendered = String::from_utf8(rendered).expect("frame output should be utf-8");
 
-    let highlight_start = rendered
-        .find("\u{1b}[7m")
-        .expect("selected row should enable reverse video");
-    let highlight_end = rendered
-        .find("\u{1b}[27m")
-        .expect("selected row should disable reverse video");
-    let highlighted = &rendered[highlight_start + "\u{1b}[7m".len()..highlight_end];
-
-    assert!(highlighted.starts_with(frame.lines[0].as_str()));
-    assert_eq!(UnicodeWidthStr::width(highlighted), usize::from(width));
-    assert_eq!(rendered.matches("\u{1b}[7m").count(), 1);
+    // The selected row is emitted bold and reset to normal intensity; no
+    // reverse video or background fill anywhere in the frame.
+    let bold_start = rendered
+        .find("\u{1b}[1m")
+        .expect("selected row should enable bold");
+    let bold_end = rendered
+        .find("\u{1b}[22m")
+        .expect("selected row should reset intensity");
+    let emboldened = &rendered[bold_start + "\u{1b}[1m".len()..bold_end];
+    assert_eq!(emboldened, frame.lines[0].as_str());
+    assert_eq!(rendered.matches("\u{1b}[1m").count(), 1);
+    assert!(!rendered.contains("\u{1b}[7m"));
 }
 
 fn tui_search_pane(index: u32, title: &str) -> PaneRecord {
@@ -1387,7 +1392,7 @@ fn tui_slash_enters_search_mode_and_suspends_key_labels() {
         height: 10,
     };
     let normal_frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
-    assert!(normal_frame.lines[0].starts_with("[1]"));
+    assert!(normal_frame.lines[0].starts_with("❯[1]"));
 
     let action = super::tui::handle_key_event(
         &tui_key_event(crossterm::event::KeyCode::Char('/')),
@@ -1398,7 +1403,7 @@ fn tui_slash_enters_search_mode_and_suspends_key_labels() {
     assert_eq!(state.test_search_query(), Some(""));
 
     let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
-    assert!(frame.lines[0].starts_with("   "));
+    assert!(frame.lines[0].starts_with("❯   "));
     assert_eq!(state.test_key_target('1'), None);
     let input_line = &frame.lines[frame.lines.len() - 2];
     assert!(input_line.starts_with("/▌"));
@@ -1531,7 +1536,7 @@ fn tui_search_backspace_edits_query_and_esc_cancels_to_full_list() {
     assert!(matches!(escape, super::tui::TuiLoopAction::Redraw));
     assert_eq!(state.test_search_query(), None);
     let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
-    assert!(frame.lines[0].starts_with("[1]"));
+    assert!(frame.lines[0].starts_with("❯[1]"));
 
     let close =
         super::tui::handle_key_event(&tui_key_event(crossterm::event::KeyCode::Esc), &mut state)
@@ -1838,7 +1843,8 @@ fn tui_search_cancel_repages_to_keep_selection_visible() {
     assert_eq!(frame.page_start, 4);
     assert_eq!(frame.selected_row, Some(2));
     assert_eq!(frame.visible_pane_ids[2], "%7");
-    assert!(frame.lines[0].starts_with("[1]"));
+    assert!(frame.lines[0].starts_with(" [1]"));
+    assert!(frame.lines[2].starts_with("❯[3]"));
 }
 
 #[test]
@@ -1881,7 +1887,8 @@ fn tui_search_entry_and_cancel_preserve_selection_and_page() {
     assert_eq!(state.test_selected_pane_id(), Some("%6"));
     assert_eq!(frame.page_start, 4);
     assert_eq!(frame.selected_row, Some(1));
-    assert!(frame.lines[0].starts_with("[1]"));
+    assert!(frame.lines[0].starts_with(" [1]"));
+    assert!(frame.lines[1].starts_with("❯[2]"));
 }
 
 #[test]
