@@ -114,6 +114,11 @@ artifact. Configure these repository secrets:
 - `APPLE_APP_SPECIFIC_PASSWORD`: app-specific password for `APPLE_ID`
 - `APPLE_TEAM_ID`: Apple Developer Team ID, for example `79S467K965`
 
+One non-Apple secret also lives in the release workflow: `HOMEBREW_TAP_TOKEN`,
+a fine-grained PAT with Contents read/write on `aurokin/homebrew-tap` only. The
+`bump-homebrew` job uses it to push the updated formula and cask after each
+stable release (the default `GITHUB_TOKEN` cannot write to another repo).
+
 Create the `.p12` secret from an exported Developer ID certificate:
 
 1. Open Keychain Access.
