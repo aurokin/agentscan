@@ -37,6 +37,12 @@ export function GroupedPicker({
   // their <kbd> labels dimmed, as information only.
   keybindsOwned: boolean;
   logoTheme: LogoTheme;
+  // The app-level selection, already scoped to this source by the caller:
+  // SourceFolders passes null to non-owner folders and the horizontal bar
+  // renders only the owner's picker, so at most one rendered GroupedPicker
+  // ever holds a non-null value. Pane ids collide across hosts — callers must
+  // keep that scoping, because a non-null id is treated as this source's own
+  // selection (aria-selected, aria-activedescendant).
   selectedPaneId: string | null;
   // This source's runnerKey; scopes the activation pulse (pane ids collide across hosts).
   sourceKey: string;
