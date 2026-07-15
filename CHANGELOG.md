@@ -4,6 +4,9 @@
 
 ### Changed
 
+- Desktop multi-client badges now name the affected host in their tooltip
+  ("2 clients attached to koopa") instead of a generic "this server", on both
+  the folder headers and the bar's source trigger.
 - Pane-output status captures now read exactly the visible screen instead of
   the last 30 rows including scrollback, so classifiers reason over displayed
   rows only and dismissed prompts in history can no longer read as current
