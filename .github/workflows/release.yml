@@ -366,6 +366,13 @@ jobs:
           # it from the URL's /vX.Y.Z/ path segment, and `brew audit` rejects
           # an explicit one as redundant (verified: `brew info` reports the
           # scanned version and `brew test`'s version assertion passes).
+          #
+          # `livecheck url :stable` + `strategy :git` works with the release
+          # tarball URL: Homebrew preprocesses GitHub release-asset URLs into
+          # the repository git URL before the strategy runs (verified:
+          # `brew livecheck` resolves the current version against the live
+          # tap, debug output shows "Strategy: Git"; mirrors the tprompt
+          # formula in the same tap).
           cat > tap/Formula/agentscan.rb <<'RUBY'
           class Agentscan < Formula
             desc "CLI and daemon for discovering and managing AI agent panes in tmux"
