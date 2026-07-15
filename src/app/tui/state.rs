@@ -237,7 +237,11 @@ impl TuiState {
         }
 
         self.search_query = Some(String::new());
-        self.page_start = 0;
+        // The empty query lists every pane, so keep the current page: resetting
+        // it here would push an off-first-page selection out of view and the
+        // redraw would snap the selection away — making `/` then Esc lossy.
+        // Query edits reset the anchor because they change the view.
+        //
         // Letter hotkeys are suspended while searching; keys now type into the
         // query instead of selecting rows.
         self.key_targets.clear();

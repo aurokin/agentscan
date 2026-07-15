@@ -1739,6 +1739,49 @@ fn tui_search_cancel_repages_to_keep_selection_visible() {
 }
 
 #[test]
+fn tui_search_entry_and_cancel_preserve_selection_and_page() {
+    // `/` immediately followed by Esc must be lossless: the empty query lists
+    // every pane, so entering search keeps the current page and the redraw
+    // must not snap an off-first-page selection away.
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes(
+        (1..=10)
+            .map(|index| tui_search_pane(index, &format!("task {index}")))
+            .collect(),
+    );
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 6,
+    };
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert!(state.next_page());
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert!(state.select_next());
+    assert_eq!(state.test_selected_pane_id(), Some("%6"));
+
+    let action = super::tui::handle_key_event(
+        &tui_key_event(crossterm::event::KeyCode::Char('/')),
+        &mut state,
+    )
+    .expect("slash should not error");
+    assert!(matches!(action, super::tui::TuiLoopAction::Redraw));
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(frame.page_start, 4);
+    assert_eq!(state.test_selected_pane_id(), Some("%6"));
+    assert_eq!(frame.selected_row, Some(1));
+
+    let escape =
+        super::tui::handle_key_event(&tui_key_event(crossterm::event::KeyCode::Esc), &mut state)
+            .expect("esc should not error");
+    assert!(matches!(escape, super::tui::TuiLoopAction::Redraw));
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(state.test_selected_pane_id(), Some("%6"));
+    assert_eq!(frame.page_start, 4);
+    assert_eq!(frame.selected_row, Some(1));
+    assert!(frame.lines[0].starts_with("[1]"));
+}
+
+#[test]
 fn tui_search_enter_without_matches_keeps_tui_open() {
     let mut state = super::tui::TuiState::default();
     state.replace_panes(vec![tui_test_pane(1)]);
