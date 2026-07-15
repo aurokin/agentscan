@@ -269,13 +269,19 @@ impl TuiState {
         match self.selected_visible_index(&visible) {
             None => self.select_pane_at(visible.start),
             Some(0) => {
-                if !self.previous_page() {
+                if visible.start == 0 {
                     return false;
                 }
-                match self.visible_pane_range() {
-                    Some(previous_visible) => self.select_pane_at(previous_visible.end - 1),
-                    None => false,
-                }
+                // Reveal exactly the row above the current window and keep the
+                // highlight on it. A live reanchor can leave `page_start`
+                // non-aligned, so jumping back a whole page and selecting that
+                // window's last row could land on a row that was already on
+                // screen, visually moving the highlight forward.
+                let target = visible.start - 1;
+                self.page_start = target.saturating_add(1).saturating_sub(self.page_size());
+                self.key_targets.clear();
+                self.retired_key_targets.clear();
+                self.select_pane_at(target)
             }
             Some(index) => self.select_pane_at(visible.start + index - 1),
         }

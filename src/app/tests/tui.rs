@@ -1159,6 +1159,57 @@ fn tui_arrow_selection_moves_after_reanchor_to_non_aligned_page_start() {
 }
 
 #[test]
+fn tui_up_from_first_row_reveals_exactly_the_row_above_after_reanchor() {
+    // A live insert above the list can reanchor page_start to a small
+    // non-aligned index (here 2). Up from the first visible row must reveal
+    // exactly the row above the window and highlight it — not page back a full
+    // window and select its last row, which was already on screen.
+    let pane = |index: u32, cwd: String| {
+        tmux_pane_row(index)
+            .session_name("work")
+            .pane_id(format!("%{index}"))
+            .command("codex")
+            .title(format!("Task {index}"))
+            .current_path(cwd)
+            .pane()
+    };
+    let mut state = super::tui::TuiState::with_picker_config(
+        super::picker::PickerKeySet::default(),
+        super::picker::PickerGroupBy::Cwd,
+    );
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 6,
+    };
+    state.replace_panes(
+        (1..=8)
+            .map(|index| pane(index, format!("/work/p{index:02}")))
+            .collect(),
+    );
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(state.test_selected_pane_id(), Some("%1"));
+
+    // Two new panes sort ahead of the whole list; %1 (first surviving visible
+    // pane) lands at index 2 and the reanchor keeps it at the window top.
+    let mut updated = (11..=12)
+        .map(|index| pane(index, format!("/work/a{index:02}")))
+        .collect::<Vec<_>>();
+    updated.extend((1..=8).map(|index| pane(index, format!("/work/p{index:02}"))));
+    state.replace_panes(updated);
+    let reanchored_frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(reanchored_frame.page_start, 2);
+    assert_eq!(reanchored_frame.visible_pane_ids[0], "%1");
+    assert_eq!(state.test_selected_pane_id(), Some("%1"));
+
+    assert!(state.select_previous());
+    assert_eq!(state.test_selected_pane_id(), Some("%12"));
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(frame.page_start, 0);
+    assert_eq!(frame.selected_row, Some(1));
+    assert_eq!(frame.visible_pane_ids[1], "%12");
+}
+
+#[test]
 fn tui_selection_snaps_to_first_visible_when_selected_pane_moves_off_page() {
     // Deliberate contract: when a live update pushes the still-existing selected
     // pane off the visible page, the highlight snaps to the first visible row
