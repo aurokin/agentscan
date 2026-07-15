@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.2 - 2026-07-15
+
 ### Changed
 
 - The TUI selection highlight no longer uses full-width reverse video, which
