@@ -71,6 +71,32 @@ bundle. `scripts/notarize-macos-app.sh` submits a zipped app bundle, waits for
 acceptance, staples the ticket, and validates the staple. Unlike bare CLI
 binaries, notarized `.app` bundles can be stapled.
 
+## Entitlements Posture
+
+Decided (AUR-581): both the CLI binary and the desktop app are signed with
+hardened runtime and **no entitlements**, and no entitlements file exists in
+the repo. Nothing agentscan does requires one — it spawns processes, reads
+tmux state, and serves a local unix socket, none of which hardened runtime
+restricts. JIT, unsigned executable memory, library validation exceptions,
+and Apple-restricted capabilities (camera, mic, keychain sharing) are all
+unused.
+
+Consequences of this posture:
+
+- The desktop app's transparent-window "glass" effect relies on Tauri's
+  `macOSPrivateApi`, not an entitlement. That is compatible with Developer ID
+  direct distribution but would be rejected in Mac App Store review — MAS
+  distribution is out of scope and must not be assumed by future features
+  (see `docs/desktop-platform-posture.md`).
+- Adding any dependency that needs JIT or loads unsigned plugins would break
+  notarization silently at assessment time, not build time. If that happens,
+  the fix is a deliberate entitlements file plus an update to this section,
+  not an ad-hoc signing flag.
+
+The regression guard is CI: the release workflow's `codesign --verify` and
+Gatekeeper `spctl -a` steps fail the release if the no-entitlements signature
+ever stops assessing clean.
+
 ## GitHub Actions Secrets
 
 The release workflow signs and notarizes only the `aarch64-apple-darwin`

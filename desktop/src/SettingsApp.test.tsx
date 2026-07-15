@@ -66,6 +66,11 @@ vi.mock("@tauri-apps/plugin-global-shortcut", () => ({
   unregister: mocks.unregister,
 }));
 
+// The About section's update check calls window.fetch on mount; stub it so the
+// smoke test never touches the network. A failed (ok: false) response exercises
+// the silent-failure path: the version line renders with no update hint.
+window.fetch = vi.fn(async () => ({ ok: false }) as Response);
+
 // jsdom has no matchMedia; the theme effect calls it unguarded.
 window.matchMedia = ((media: string) => ({
   matches: false,
