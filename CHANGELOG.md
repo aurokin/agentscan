@@ -4,6 +4,14 @@
 
 ### Added
 
+- agentscan is installable from Homebrew (AUR-685): `brew install
+  aurokin/tap/agentscan` (CLI formula; Apple Silicon macOS and Linux, Intel
+  macOS redirects to mise/source per the AUR-581 posture) and `brew install
+  --cask aurokin/tap/agentscan-desktop` (signed/notarized desktop app). The
+  release workflow now rewrites the tap's formula and cask from each stable
+  release's `SHA256SUMS` via a `bump-homebrew` job (needs the
+  `HOMEBREW_TAP_TOKEN` repo secret, a fine-grained PAT with contents
+  read/write on `aurokin/homebrew-tap`).
 - The desktop Settings window shows the app version and a display-only
   "Update available" hint, backed by a day-cached GitHub Releases check that
   fails silently offline. The webview CSP allowlists `https://api.github.com`

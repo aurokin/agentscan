@@ -53,6 +53,14 @@ remain unchanged until `agentscan` is ready to replace it.
 
 ## Install
 
+With [Homebrew](https://brew.sh/) (Apple Silicon macOS and Linux; the tap is
+[aurokin/homebrew-tap](https://github.com/aurokin/homebrew-tap)):
+
+```sh
+brew install aurokin/tap/agentscan
+brew install --cask aurokin/tap/agentscan-desktop   # macOS desktop app
+```
+
 With [mise](https://mise.jdx.dev/) (uses [ubi](https://github.com/houseabsolute/ubi)
 under the hood):
 
@@ -94,7 +102,9 @@ when a newer release is published (a day-cached, display-only check against
 GitHub Releases that stays silent offline).
 
 ```sh
-mise up                       # if installed via mise/ubi
+brew upgrade agentscan                        # if installed via Homebrew
+brew upgrade --cask agentscan-desktop         # desktop app via Homebrew
+mise up                                       # if installed via mise/ubi
 # or download the new tarball / desktop zip from GitHub Releases
 ```
 
