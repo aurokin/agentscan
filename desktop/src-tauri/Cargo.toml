@@ -4,6 +4,7 @@ version = "0.8.0"
 description = "Mac-first desktop shell for agentscan"
 authors = ["agentscan"]
 edition = "2024"
+rust-version = "1.88"
 
 [lib]
 name = "agentscan_desktop_lib"

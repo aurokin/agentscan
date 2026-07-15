@@ -2364,10 +2364,21 @@ fn tui_ignores_non_selection_keys_until_escape() -> Result<()> {
     let _daemon = harness.start_daemon()?;
 
     let tui_pane_id = harness.start_agentscan_tui_pane("tui-ignore:0.0", &[])?;
-    sleep(Duration::from_millis(200));
+    // Wait for the TUI to render before sending the key: "A" must provably land
+    // in a live event loop. Sent during startup it would be ignored for the
+    // wrong reason and the pane-exists assertion would pass vacuously.
+    harness.wait_for_pane_contents(&tui_pane_id, |contents| {
+        contents.contains("Press Esc or Ctrl-C to close")
+    })?;
     harness.tmux(["send-keys", "-t", &tui_pane_id, "A"])?;
     sleep(Duration::from_millis(200));
     assert!(harness.pane_exists(&tui_pane_id)?);
+    // Still rendering the TUI (not a dead shell left behind by an exit).
+    let contents = harness.capture_pane(&tui_pane_id)?;
+    assert!(
+        contents.contains("Press Esc or Ctrl-C to close"),
+        "expected the TUI to keep rendering after an ignored key, got:\n{contents}"
+    );
 
     harness.tmux(["send-keys", "-t", &tui_pane_id, "Escape"])?;
     harness.wait_for_pane_closed(&tui_pane_id)?;

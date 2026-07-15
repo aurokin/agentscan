@@ -353,11 +353,20 @@ impl TestHarness {
             return Ok(true);
         }
 
-        Ok(self
+        let supported = self
             .tmux_version()?
             .as_deref()
             .and_then(parse_tmux_version)
-            .is_some_and(|version| version >= (3, 6)))
+            .is_some_and(|version| version >= (3, 6));
+        if !supported {
+            // Say so instead of skipping silently, so a coverage gap (e.g. CI's
+            // tmux 3.4) is visible in the test output rather than reading as a
+            // pass. AGENTSCAN_RUN_DISPLAY_POPUP_TESTS=1 forces the tests on.
+            eprintln!(
+                "skipping display-popup key-injection test: tmux < 3.6                  (set AGENTSCAN_RUN_DISPLAY_POPUP_TESTS=1 to force)"
+            );
+        }
+        Ok(supported)
     }
 
     fn tmux_version(&self) -> Result<Option<String>> {

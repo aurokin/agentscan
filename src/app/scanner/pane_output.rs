@@ -97,7 +97,11 @@ impl PaneOutputStatusCache {
                 continue;
             }
 
-            let key = PaneOutputStatusCacheKey::from_pane(pane);
+            // `fallback_candidate` above implies a provider, but let the type
+            // system enforce it: a providerless pane simply is not cacheable.
+            let Some(key) = PaneOutputStatusCacheKey::from_pane(pane) else {
+                continue;
+            };
             let cacheable = classify::pane_output_status_candidate_cacheable(pane);
             if cacheable && let Some(entry) = self.fresh_entry(&pane.pane_id, &key, now) {
                 let status_kind = entry.status_kind;
@@ -187,16 +191,14 @@ struct PaneOutputStatusCacheKey {
 }
 
 impl PaneOutputStatusCacheKey {
-    fn from_pane(pane: &PaneRecord) -> Self {
-        Self {
-            provider: pane
-                .provider
-                .expect("pane output cache key requires fallback candidate provider"),
+    fn from_pane(pane: &PaneRecord) -> Option<Self> {
+        Some(Self {
+            provider: pane.provider?,
             pane_current_command: pane.tmux.pane_current_command.clone(),
             pane_title_raw: pane.tmux.pane_title_raw.clone(),
             session_id: pane.tmux.session_id.clone(),
             window_id: pane.tmux.window_id.clone(),
-        }
+        })
     }
 }
 

@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+### Changed
+
+- Pane-output status captures now read exactly the visible screen instead of
+  the last 30 rows including scrollback, so classifiers reason over displayed
+  rows only and dismissed prompts in history can no longer read as current
+  state. Gemini busy markers are additionally anchored to the current bottom
+  frame.
+- The desktop close button now hides the dock in both framed and frameless
+  mode (matching Escape and the summonable-dock model); quitting moved to the
+  app menu / Cmd+Q.
+- The desktop webview now ships a restrictive Content Security Policy
+  (previously none).
+- The daemon's subscriber health poll runs at 1s instead of 250ms, cutting
+  idle wakeups; subscriber exits remain event-driven.
+- Declared the minimum supported Rust version (1.88) in both crates.
+
+### Fixed
+
+- The daemon now runs its graceful control-mode teardown even when the runtime
+  loop errors, so subscribers see a clean closing state instead of a dropped
+  socket.
+- The daemon lifecycle client no longer fails when the peer tears the
+  connection down before the write-side close (transient `ENOTCONN` under
+  parallel load).
+- Editing the desktop environment-variable list no longer drops caret focus on
+  a mid-list delete (rows are keyed by stable ids instead of array index).
+- `set_window_glass` no longer blocks its worker thread indefinitely if the
+  main thread never runs the vibrancy closure.
+
 ## 0.8.0 - 2026-07-14
 
 ### Added

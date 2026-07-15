@@ -563,7 +563,7 @@ function SettingsApp() {
                   <p className="env-empty">No variables — agentscan runs with the inherited env.</p>
                 ) : (
                   settingsDraft.env.map((variable, index) => (
-                    <div className="env-row" key={index}>
+                    <div className="env-row" key={variable.id}>
                       <input
                         aria-label="Environment variable name"
                         value={variable.name}

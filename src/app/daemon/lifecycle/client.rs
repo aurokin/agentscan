@@ -116,10 +116,16 @@ fn open_daemon_client_with_frame(
         }
         return Err(error).with_context(|| format!("failed to write daemon {operation} hello"));
     }
-    if close_write {
-        stream
-            .shutdown(std::net::Shutdown::Write)
-            .with_context(|| format!("failed to close daemon {operation} write side"))?;
+    if close_write && let Err(error) = stream.shutdown(std::net::Shutdown::Write) {
+        // The peer may already have torn the connection down (ENOTCONN, seen
+        // under parallel load when an incompatible daemon drops after reading
+        // the hello). The shutdown is only an EOF hint to the server; the
+        // following read reports the real outcome, so a lost race here is not
+        // a failure.
+        if error.kind() != std::io::ErrorKind::NotConnected {
+            return Err(error)
+                .with_context(|| format!("failed to close daemon {operation} write side"));
+        }
     }
     let peer_pid = daemon_socket_peer_pid(&stream);
     Ok(DaemonClientOpen::Connected(DaemonConnection {

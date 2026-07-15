@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  newProfileId,
   normalizeRunnerSettings,
   profileDraftDirty,
   runnerSummary,
@@ -11,6 +12,22 @@ import {
 import type { ApplyRunnerSettingsInput, ApplyRunnerSettingsResult } from "./effect/Profiles";
 import type { DebugEntryInput } from "./effect/DebugLog";
 import { errorMessage } from "./shared";
+
+// Draft rows carry a render-only identity so React keys survive mid-list
+// removals — an index key makes every row below a deleted entry remount and
+// drop its caret/focus. `normalizeRunnerSettings` rebuilds bare {name, value}
+// rows at the apply boundary, so the id never reaches persistence.
+export type EnvironmentVariableDraft = EnvironmentVariable & { id: string };
+export type RunnerSettingsDraft = Omit<RunnerSettings, "env"> & {
+  env: EnvironmentVariableDraft[];
+};
+
+function withEnvRowIds(runner: RunnerSettings): RunnerSettingsDraft {
+  return {
+    ...runner,
+    env: runner.env.map((variable) => ({ ...variable, id: newProfileId("env") })),
+  };
+}
 
 // SettingsApp-only: the settings form's draft state, validation/dirty
 // derivations, the draft-reset and clean-reconcile effects, and the apply/
@@ -44,7 +61,9 @@ export function useSettingsForm({
   applyRunnerSettingsSet: (input: ApplyRunnerSettingsInput) => Promise<ApplyRunnerSettingsResult>;
   reloadProfiles: () => void;
 }) {
-  const [settingsDraft, setSettingsDraft] = useState<RunnerSettings>(() => initialProfile.runner);
+  const [settingsDraft, setSettingsDraft] = useState<RunnerSettingsDraft>(() =>
+    withEnvRowIds(initialProfile.runner),
+  );
   const [sshHostDraft, setSshHostDraft] = useState(() =>
     initialProfile.kind === "ssh" ? initialProfile.host : "",
   );
@@ -73,7 +92,7 @@ export function useSettingsForm({
     // activeProfile object: every service commit re-reads storage (all-new object
     // identities), so an identity key would also fire on commits that don't retarget
     // the form — drag-reorder, open-toggle — and clobber unsaved edits.
-    setSettingsDraft(activeProfile.runner);
+    setSettingsDraft(withEnvRowIds(activeProfile.runner));
     setSshHostDraft(activeProfile.kind === "ssh" ? activeProfile.host : "");
     setSshClientTtyDraft(activeProfile.kind === "ssh" ? activeProfile.clientTty : "");
     // activeProfile is fully determined by (id, runnerKey) where this reads it.
@@ -113,7 +132,7 @@ export function useSettingsForm({
     // service, which merges it onto the latest persisted state, persists, and
     // broadcasts. Validation + the debug log stay here; persistence is the service's.
     const normalized = normalizeRunnerSettings(settingsDraft);
-    setSettingsDraft(normalized);
+    setSettingsDraft(withEnvRowIds(normalized));
     void applyRunnerSettingsSet({
       runner: normalized,
       sshHost: sshHostDraft,
@@ -147,7 +166,7 @@ export function useSettingsForm({
   }
 
   function resetProfileSettings() {
-    setSettingsDraft(activeProfile.runner);
+    setSettingsDraft(withEnvRowIds(activeProfile.runner));
     setSshHostDraft(activeProfile.kind === "ssh" ? activeProfile.host : "");
     setSshClientTtyDraft(activeProfile.kind === "ssh" ? activeProfile.clientTty : "");
   }
@@ -164,7 +183,7 @@ export function useSettingsForm({
   function addEnvironmentVariable() {
     setSettingsDraft((current) => ({
       ...current,
-      env: [...current.env, { name: "", value: "" }],
+      env: [...current.env, { name: "", value: "", id: newProfileId("env") }],
     }));
   }
 

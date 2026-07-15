@@ -521,7 +521,10 @@ fn set_window_glass(
                 let _ = tx.send(outcome);
             })
             .map_err(|error| format!("Unable to schedule glass update: {error}"))?;
-        rx.recv()
+        // Bounded like the other cross-thread waits: if the main thread is wedged
+        // (or the closure is dropped unrun during shutdown), fail the command
+        // instead of parking this worker thread forever.
+        rx.recv_timeout(Duration::from_secs(2))
             .map_err(|error| format!("Glass update did not complete: {error}"))??;
     }
     #[cfg(not(target_os = "macos"))]
@@ -2426,10 +2429,11 @@ fn stderr_or_status(command: &str, stderr: &[u8], status: std::process::ExitStat
 }
 
 /// Bring the main dock window back to the foreground. Shared by the second-launch
-/// (single-instance) handler and the macOS Dock-reopen handler. In frameless mode
-/// the window's close button only hides the window (see `WindowControls.tsx`), so
-/// clicking the Dock icon is the reliable way back when the summon hotkey is
-/// unavailable; without this, a hidden window could only be recovered by force-quit.
+/// (single-instance) handler and the macOS Dock-reopen handler. The window's close
+/// button only hides the window in both framed and frameless mode (see
+/// `DockApp.tsx`/`WindowControls.tsx`), so clicking the Dock icon is the reliable way
+/// back when the summon hotkey is unavailable; without this, a hidden window could
+/// only be recovered by force-quit.
 fn reveal_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
@@ -2475,9 +2479,9 @@ pub fn run() {
         .expect("error while running agentscan desktop")
         .run(|app, event| {
             // macOS fires Reopen when the user clicks the Dock icon while the app is
-            // already running. In frameless mode the close button only hides the
-            // window, so this is the recovery path that reshows it when the summon
-            // hotkey is unavailable — the alternative is a force-quit.
+            // already running. The close button only hides the window, so this is the
+            // recovery path that reshows it when the summon hotkey is unavailable —
+            // the alternative is a force-quit.
             if let tauri::RunEvent::Reopen { .. } = event {
                 reveal_main_window(app);
             }
@@ -2488,6 +2492,43 @@ pub fn run() {
 mod tests {
     use super::*;
     use std::{fs, os::unix::fs::PermissionsExt};
+
+    #[test]
+    fn tauri_window_configs_stay_in_sync_across_conf_overlays() {
+        // tauri.macos.conf.json overlays tauri.conf.json via RFC 7396 merge, and
+        // JSON merge-patch REPLACES arrays wholesale — so its `app.windows` must be
+        // a hand-synced copy of the base list. Assert they match except for the
+        // macOS-only `transparent` flag, so an edit to one file cannot silently
+        // drift from the other.
+        let read_windows = |name: &str| -> Vec<serde_json::Value> {
+            let path = format!("{}/{name}", env!("CARGO_MANIFEST_DIR"));
+            let config: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(&path).expect("read tauri config"))
+                    .expect("parse tauri config");
+            config["app"]["windows"]
+                .as_array()
+                .expect("app.windows array")
+                .clone()
+        };
+
+        let base = read_windows("tauri.conf.json");
+        let overlay = read_windows("tauri.macos.conf.json");
+        assert_eq!(
+            base.len(),
+            overlay.len(),
+            "tauri.conf.json and tauri.macos.conf.json define different window counts"
+        );
+        for (base_window, overlay_window) in base.iter().zip(overlay.iter()) {
+            let mut overlay_window = overlay_window.as_object().expect("window object").clone();
+            overlay_window.remove("transparent");
+            assert_eq!(
+                base_window.as_object().expect("window object"),
+                &overlay_window,
+                "window {:?} drifted between tauri.conf.json and tauri.macos.conf.json                  (only `transparent` may differ)",
+                base_window["label"]
+            );
+        }
+    }
 
     #[test]
     fn local_profile_is_built_in() {

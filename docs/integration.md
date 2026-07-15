@@ -55,6 +55,10 @@ Removed surfaces do not have compatibility aliases:
 
 There is no cache-file IPC replacement. Socket-isolated tests and harnesses
 should use `AGENTSCAN_SOCKET_PATH` when they need a non-default daemon socket.
+That variable scopes agentscan's own IPC only; to point agentscan at a
+non-default tmux server (e.g. a test harness server), set
+`AGENTSCAN_TMUX_SOCKET=<socket>` so every tmux invocation targets that socket —
+see `docs/harness-engineering.md`.
 
 ## Configuration
 

@@ -509,24 +509,17 @@ function DockApp() {
     };
   }, []);
 
-  // Closing the dock means quitting. The settings window is kept warm (hidden, never
-  // self-destroys), so it must be torn down before the dock goes — otherwise that
-  // hidden window keeps the process alive with no visible UI. preventDefault() holds
-  // the dock open until the (awaited) settings teardown finishes, then we force the
-  // dock closed; without it the dock webview can be destroyed mid-IPC and strand the
-  // hidden window. destroy() forces teardown without firing either hide-handler, and
-  // the dock is destroyed even if the settings lookup throws, so the app always exits.
+  // Closing the dock dismisses it, matching Escape, the frameless × control
+  // (WindowControls.tsx), and the summonable-dock model — one close semantic in
+  // both framed and frameless mode. Quitting lives on the app menu / Cmd+Q,
+  // which exits the process outright and takes the kept-warm hidden settings
+  // window down with it. Recovery from hidden: summon hotkey, Dock-icon
+  // Reopen, or a second launch (single-instance reveal).
   useEffect(() => {
     const win = getCurrentWindow();
     const unlistenPromise = win.onCloseRequested(async (event) => {
       event.preventDefault();
-      try {
-        const settings = await WebviewWindow.getByLabel("settings");
-        await settings?.destroy();
-      } catch {
-        // Best-effort; fall through to tear the dock down regardless.
-      }
-      await win.destroy();
+      await win.hide();
     });
     return () => {
       void unlistenPromise.then((unlisten) => unlisten());

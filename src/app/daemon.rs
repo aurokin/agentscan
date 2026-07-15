@@ -290,10 +290,16 @@ fn daemon_run_with_socket_path_and_startup(
         runtime_options,
         DaemonEventTrace::from_socket_path(socket_path),
     )?;
-    runtime.run(&server_handle)?;
+    let run_result = runtime.run(&server_handle);
 
+    // Run the graceful teardown even when the runtime loop errors, so
+    // subscribers see the closing state and a clean control-mode shutdown
+    // instead of an abruptly dropped socket. The run error stays the
+    // primary failure; a teardown error only surfaces when the run was ok.
     closing_guard.mark_closing();
-    runtime.shutdown_control_mode()?;
+    let shutdown_result = runtime.shutdown_control_mode();
+    run_result?;
+    shutdown_result?;
 
     Ok(())
 }
