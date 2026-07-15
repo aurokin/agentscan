@@ -20,9 +20,10 @@
 
 ### Fixed
 
-- The daemon now runs its graceful control-mode teardown even when the runtime
-  loop errors, so subscribers see a clean closing state instead of a dropped
-  socket.
+- The daemon now marks the socket closing before control-mode teardown on
+  error exits too, so clients see a clean closing state instead of a dropped
+  socket (the error path kills the control-mode children rather than waiting,
+  since the tmux server is still alive).
 - The daemon lifecycle client no longer fails when the peer tears the
   connection down before the write-side close (transient `ENOTCONN` under
   parallel load).

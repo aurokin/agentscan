@@ -292,16 +292,20 @@ fn daemon_run_with_socket_path_and_startup(
     )?;
     let run_result = runtime.run(&server_handle);
 
-    // Run the graceful teardown even when the runtime loop errors, so
-    // subscribers see the closing state and a clean control-mode shutdown
-    // instead of an abruptly dropped socket. The run error stays the
-    // primary failure; a teardown error only surfaces when the run was ok.
+    // Mark closing before control-mode teardown on both exits, so clients see
+    // the closing state rather than an abruptly dropped socket. The teardown
+    // itself must differ by exit: after an error the tmux server is usually
+    // still alive, so the graceful path's `wait_for_exit` would block forever
+    // on a healthy client — kill the control-mode children instead (what the
+    // pre-error `Drop` did) and surface the run error.
     closing_guard.mark_closing();
-    let shutdown_result = runtime.shutdown_control_mode();
-    run_result?;
-    shutdown_result?;
-
-    Ok(())
+    match run_result {
+        Ok(()) => runtime.shutdown_control_mode(),
+        Err(error) => {
+            runtime.terminate_control_mode();
+            Err(error)
+        }
+    }
 }
 
 struct DaemonRuntime<S> {
@@ -1457,6 +1461,10 @@ impl<S: StartupActions> DaemonRuntime<S> {
             self.telemetry
                 .frame(&broker_status, self.pane_output_cache.capture_stats()),
         );
+    }
+
+    fn terminate_control_mode(mut self) {
+        self.control_mode.terminate();
     }
 
     fn shutdown_control_mode(mut self) -> Result<()> {
