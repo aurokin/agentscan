@@ -1734,6 +1734,55 @@ fn tui_search_live_inserts_ahead_reanchor_filtered_page_to_visible_rows() {
 }
 
 #[test]
+fn tui_search_inserts_between_window_top_and_selection_snap_selection() {
+    // Deliberate contract (mirrors normal mode): the filtered window anchors
+    // on its first surviving visible row, not the selection. Matches inserted
+    // between the window top and a selection further down push the selection
+    // out of the window, and it snaps to the first visible row on redraw.
+    let pane = |index: u32, cwd: String| {
+        tmux_pane_row(index)
+            .session_name("work")
+            .pane_id(format!("%{index}"))
+            .command("codex")
+            .title(format!("redwood {index}"))
+            .current_path(cwd)
+            .pane()
+    };
+    let mut state = super::tui::TuiState::with_picker_config(
+        super::picker::PickerKeySet::default(),
+        super::picker::PickerGroupBy::Cwd,
+    );
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 6,
+    };
+    state.replace_panes(
+        (1..=4)
+            .map(|index| pane(index, format!("/work/p{index:02}")))
+            .collect(),
+    );
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert!(state.begin_search());
+    type_tui_search_query(&mut state, "red");
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    for _ in 0..3 {
+        assert!(state.select_next());
+    }
+    assert_eq!(state.test_selected_pane_id(), Some("%4"));
+
+    // Three matching panes sort between %1 (window top) and the rest.
+    let mut updated = vec![pane(1, "/work/p01".to_string())];
+    updated.extend((11..=13).map(|index| pane(index, format!("/work/p01-{index}"))));
+    updated.extend((2..=4).map(|index| pane(index, format!("/work/p{index:02}"))));
+    state.replace_panes(updated);
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+
+    assert_eq!(frame.visible_pane_ids, vec!["%1", "%11", "%12", "%13"]);
+    assert_eq!(state.test_selected_pane_id(), Some("%1"));
+    assert_eq!(frame.selected_row, Some(0));
+}
+
+#[test]
 fn tui_search_query_edit_resets_to_first_filtered_page() {
     let mut state = super::tui::TuiState::default();
     state.replace_panes(

@@ -206,6 +206,14 @@ impl TuiState {
     // surviving previously visible filtered row at the top of the window, so
     // live updates that insert or remove matches ahead of the window do not
     // shift the rows on screen (and with them the pane-anchored selection).
+    //
+    // Deliberately anchors on visible rows, not the selection: if an update
+    // inserts matches between the window's first row and a selection further
+    // down, the selection can leave the window and snap to the first visible
+    // row. That is the same contract normal mode follows (see
+    // `reconcile_selection`) — the window tracks what the user was looking
+    // at, and re-paging to chase the selection would shift the list under
+    // them.
     fn reanchor_search_page_start(&self, previous_visible_ids: &[String]) -> usize {
         let view = self.view_pane_indices();
         let page_size = self.page_size();
