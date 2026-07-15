@@ -314,7 +314,10 @@ impl TuiState {
     // Match the text the row actually displays: the sanitized label and the
     // location label used for this grouping mode.
     fn pane_matches_search(&self, pane: &PaneRecord, query: &str) -> bool {
-        if fuzzy_matches(&render::sanitize_tui_label(&pane.display.label), query) {
+        if fuzzy_matches(
+            &super::render::sanitize_tui_label(&pane.display.label),
+            query,
+        ) {
             return true;
         }
         match self.pane_location_labels.get(pane.pane_id.as_str()) {
