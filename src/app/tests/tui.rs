@@ -1680,6 +1680,60 @@ fn tui_search_live_updates_keep_filter_and_selection() {
 }
 
 #[test]
+fn tui_search_live_inserts_ahead_reanchor_filtered_page_to_visible_rows() {
+    // Filtered-view counterpart of the normal-mode reanchor contract: when a
+    // live update inserts matches ahead of the visible filtered window, the
+    // window must follow its previously visible rows so the pane-anchored
+    // selection stays on screen instead of snapping to a different pane.
+    let pane = |index: u32, cwd: String| {
+        tmux_pane_row(index)
+            .session_name("work")
+            .pane_id(format!("%{index}"))
+            .command("codex")
+            .title(format!("redwood {index}"))
+            .current_path(cwd)
+            .pane()
+    };
+    let mut state = super::tui::TuiState::with_picker_config(
+        super::picker::PickerKeySet::default(),
+        super::picker::PickerGroupBy::Cwd,
+    );
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 6,
+    };
+    state.replace_panes(
+        (1..=6)
+            .map(|index| pane(index, format!("/work/p{index:02}")))
+            .collect(),
+    );
+    let first_frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(first_frame.page_size, 4);
+    assert!(state.begin_search());
+    type_tui_search_query(&mut state, "red");
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert!(state.next_page());
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(frame.visible_pane_ids, vec!["%5", "%6"]);
+    assert_eq!(state.test_selected_pane_id(), Some("%5"));
+
+    // Four new matching panes sort ahead of the whole list; without the
+    // filtered reanchor the preserved page_start 4 would now show %1..%4 and
+    // the selection would snap off %5.
+    let mut updated = (11..=14)
+        .map(|index| pane(index, format!("/work/a{index:02}")))
+        .collect::<Vec<_>>();
+    updated.extend((1..=6).map(|index| pane(index, format!("/work/p{index:02}"))));
+    state.replace_panes(updated);
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+
+    assert_eq!(frame.page_start, 8);
+    assert_eq!(frame.visible_pane_ids, vec!["%5", "%6"]);
+    assert_eq!(state.test_selected_pane_id(), Some("%5"));
+    assert_eq!(frame.selected_row, Some(0));
+}
+
+#[test]
 fn tui_search_query_edit_resets_to_first_filtered_page() {
     let mut state = super::tui::TuiState::default();
     state.replace_panes(

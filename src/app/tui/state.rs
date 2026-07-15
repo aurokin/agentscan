@@ -139,12 +139,17 @@ impl TuiState {
         let order_changed = pane_id_order(&self.panes) != pane_id_order(&merged_panes);
         let same_panes_reordered = order_changed && same_pane_id_set(&self.panes, &merged_panes);
         let page_size = self.page_size();
-        let page_start = if self.search_query.is_some() {
-            // While searching, `page_start` addresses the filtered view and the
-            // reanchor helpers below operate on full-list positions. Keep the
-            // current anchor and let the next render clamp it against the
-            // updated filtered view; key targets are suspended in search mode,
-            // so the key-slot bookkeeping below does not apply either.
+        // While searching, `page_start` addresses the filtered view and the
+        // reanchor helpers below operate on full-list positions. Capture the
+        // currently visible filtered rows so the anchor can follow them across
+        // the update (mirroring `reanchor_page_start`) once the merged panes
+        // are in place; key targets are suspended in search mode, so the
+        // key-slot bookkeeping below does not apply either.
+        let search_visible_ids = self
+            .search_query
+            .is_some()
+            .then(|| self.visible_search_pane_ids());
+        let page_start = if search_visible_ids.is_some() {
             self.page_start
         } else if same_panes_reordered {
             reanchor_page_start_to_page_boundary(
@@ -177,9 +182,48 @@ impl TuiState {
         );
         self.panes = merged_panes;
         self.pane_location_labels = pane_location_labels;
-        self.page_start = page_start;
+        self.page_start = match &search_visible_ids {
+            Some(previous_visible_ids) => self.reanchor_search_page_start(previous_visible_ids),
+            None => page_start,
+        };
         self.error_message = None;
         self.connection = TuiConnectionState::connected();
+    }
+
+    // The filtered-view pane ids currently on screen, in row order.
+    fn visible_search_pane_ids(&self) -> Vec<String> {
+        let view = self.view_pane_indices();
+        let Some(visible) = self.visible_view_range(view.len()) else {
+            return Vec::new();
+        };
+        view[visible]
+            .iter()
+            .map(|&pane_index| self.panes[pane_index].pane_id.clone())
+            .collect()
+    }
+
+    // Filtered-view counterpart of `reanchor_page_start`: keep the first
+    // surviving previously visible filtered row at the top of the window, so
+    // live updates that insert or remove matches ahead of the window do not
+    // shift the rows on screen (and with them the pane-anchored selection).
+    fn reanchor_search_page_start(&self, previous_visible_ids: &[String]) -> usize {
+        let view = self.view_pane_indices();
+        let page_size = self.page_size();
+        if view.is_empty() || page_size == 0 {
+            return 0;
+        }
+
+        for previous_id in previous_visible_ids {
+            if let Some(position) = view
+                .iter()
+                .position(|&pane_index| self.panes[pane_index].pane_id == *previous_id)
+            {
+                return position;
+            }
+        }
+
+        self.page_start
+            .min(last_non_empty_page_start(view.len(), page_size))
     }
 
     pub(crate) fn set_unavailable(&mut self, message: String) {
