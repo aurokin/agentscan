@@ -94,6 +94,10 @@ pub(crate) struct TuiState {
     pub(super) page_start: usize,
     pub(super) reset_key_targets_on_next_render: bool,
     pub(super) selected_pane_id: Option<String>,
+    // `Some` while the picker is in search mode; the string is the typed query
+    // (possibly empty). While searching, `page_start` addresses positions in
+    // the filtered view rather than `panes` indexes.
+    pub(super) search_query: Option<String>,
     last_terminal_size: Option<TuiTerminalSize>,
 }
 
@@ -135,7 +139,19 @@ impl TuiState {
         let order_changed = pane_id_order(&self.panes) != pane_id_order(&merged_panes);
         let same_panes_reordered = order_changed && same_pane_id_set(&self.panes, &merged_panes);
         let page_size = self.page_size();
-        let page_start = if same_panes_reordered {
+        // While searching, `page_start` addresses the filtered view and the
+        // reanchor helpers below operate on full-list positions. Capture the
+        // currently visible filtered rows so the anchor can follow them across
+        // the update (mirroring `reanchor_page_start`) once the merged panes
+        // are in place; key targets are suspended in search mode, so the
+        // key-slot bookkeeping below does not apply either.
+        let search_visible_ids = self
+            .search_query
+            .is_some()
+            .then(|| self.visible_search_pane_ids());
+        let page_start = if search_visible_ids.is_some() {
+            self.page_start
+        } else if same_panes_reordered {
             reanchor_page_start_to_page_boundary(
                 &self.panes,
                 &merged_panes,
@@ -145,17 +161,19 @@ impl TuiState {
         } else {
             reanchor_page_start(&self.panes, &merged_panes, self.page_start, page_size)
         };
-        let visible_key_slots_changed = visible_key_slots_changed(
-            &self.panes,
-            &merged_panes,
-            self.page_start,
-            page_start,
-            page_size,
-        );
-        if visible_key_slots_changed
-            && (same_panes_reordered || self.picker_group_by != picker::PickerGroupBy::Session)
-        {
-            self.reset_key_targets_on_next_render = true;
+        if self.search_query.is_none() {
+            let visible_key_slots_changed = visible_key_slots_changed(
+                &self.panes,
+                &merged_panes,
+                self.page_start,
+                page_start,
+                page_size,
+            );
+            if visible_key_slots_changed
+                && (same_panes_reordered || self.picker_group_by != picker::PickerGroupBy::Session)
+            {
+                self.reset_key_targets_on_next_render = true;
+            }
         }
         let pane_location_labels = pane_location_labels(
             &merged_panes,
@@ -164,9 +182,56 @@ impl TuiState {
         );
         self.panes = merged_panes;
         self.pane_location_labels = pane_location_labels;
-        self.page_start = page_start;
+        self.page_start = match &search_visible_ids {
+            Some(previous_visible_ids) => self.reanchor_search_page_start(previous_visible_ids),
+            None => page_start,
+        };
         self.error_message = None;
         self.connection = TuiConnectionState::connected();
+    }
+
+    // The filtered-view pane ids currently on screen, in row order.
+    fn visible_search_pane_ids(&self) -> Vec<String> {
+        let view = self.view_pane_indices();
+        let Some(visible) = self.visible_view_range(view.len()) else {
+            return Vec::new();
+        };
+        view[visible]
+            .iter()
+            .map(|&pane_index| self.panes[pane_index].pane_id.clone())
+            .collect()
+    }
+
+    // Filtered-view counterpart of `reanchor_page_start`: keep the first
+    // surviving previously visible filtered row at the top of the window, so
+    // live updates that insert or remove matches ahead of the window do not
+    // shift the rows on screen (and with them the pane-anchored selection).
+    //
+    // Deliberately anchors on visible rows, not the selection: if an update
+    // inserts matches between the window's first row and a selection further
+    // down, the selection can leave the window and snap to the first visible
+    // row. That is the same contract normal mode follows (see
+    // `reconcile_selection`) — the window tracks what the user was looking
+    // at, and re-paging to chase the selection would shift the list under
+    // them.
+    fn reanchor_search_page_start(&self, previous_visible_ids: &[String]) -> usize {
+        let view = self.view_pane_indices();
+        let page_size = self.page_size();
+        if view.is_empty() || page_size == 0 {
+            return 0;
+        }
+
+        for previous_id in previous_visible_ids {
+            if let Some(position) = view
+                .iter()
+                .position(|&pane_index| self.panes[pane_index].pane_id == *previous_id)
+            {
+                return position;
+            }
+        }
+
+        self.page_start
+            .min(last_non_empty_page_start(view.len(), page_size))
     }
 
     pub(crate) fn set_unavailable(&mut self, message: String) {
@@ -177,6 +242,7 @@ impl TuiState {
         self.workspace_cache.clear();
         self.page_start = 0;
         self.selected_pane_id = None;
+        self.search_query = None;
         self.error_message = Some(message.clone());
         self.connection = TuiConnectionState::unavailable(message);
     }
@@ -208,28 +274,133 @@ impl TuiState {
         self.selected_pane_id.as_deref()
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_search_query(&self) -> Option<&str> {
+        self.search_query.as_deref()
+    }
+
+    pub(crate) fn is_searching(&self) -> bool {
+        self.search_query.is_some()
+    }
+
+    pub(crate) fn begin_search(&mut self) -> bool {
+        if self.search_query.is_some() || self.panes.is_empty() || self.error_message.is_some() {
+            return false;
+        }
+
+        self.search_query = Some(String::new());
+        // The empty query lists every pane, so keep the current page: resetting
+        // it here would push an off-first-page selection out of view and the
+        // redraw would snap the selection away — making `/` then Esc lossy.
+        // Query edits reset the anchor because they change the view.
+        //
+        // Letter hotkeys are suspended while searching; keys now type into the
+        // query instead of selecting rows.
+        self.key_targets.clear();
+        self.retired_key_targets.clear();
+        true
+    }
+
+    pub(crate) fn cancel_search(&mut self) -> bool {
+        if self.search_query.take().is_none() {
+            return false;
+        }
+
+        self.key_targets.clear();
+        self.retired_key_targets.clear();
+        // Bring the selected pane back into view in the full list; searching
+        // may have moved the selection far from the pre-search page.
+        let page_size = self.page_size();
+        let selected_index = self
+            .selected_pane_id
+            .as_deref()
+            .and_then(|selected| self.panes.iter().position(|pane| pane.pane_id == selected));
+        self.page_start = match selected_index {
+            Some(pane_index) if page_size > 0 => (pane_index / page_size) * page_size,
+            _ => 0,
+        };
+        true
+    }
+
+    pub(crate) fn push_search_char(&mut self, character: char) -> bool {
+        let Some(query) = self.search_query.as_mut() else {
+            return false;
+        };
+        if character.is_control() {
+            return false;
+        }
+
+        query.push(character);
+        self.page_start = 0;
+        true
+    }
+
+    pub(crate) fn pop_search_char(&mut self) -> bool {
+        let Some(query) = self.search_query.as_mut() else {
+            return false;
+        };
+        if query.pop().is_none() {
+            return false;
+        }
+
+        self.page_start = 0;
+        true
+    }
+
+    // Indexes into `panes` for the rows the picker currently lists: all panes
+    // normally, only query matches while searching. Paging and selection
+    // operate on positions in this view.
+    pub(super) fn view_pane_indices(&self) -> Vec<usize> {
+        let Some(query) = self
+            .search_query
+            .as_deref()
+            .filter(|query| !query.is_empty())
+        else {
+            return (0..self.panes.len()).collect();
+        };
+
+        self.panes
+            .iter()
+            .enumerate()
+            .filter(|(_, pane)| self.pane_matches_search(pane, query))
+            .map(|(pane_index, _)| pane_index)
+            .collect()
+    }
+
+    // Match the text the row actually displays: the sanitized label and the
+    // location label used for this grouping mode.
+    fn pane_matches_search(&self, pane: &PaneRecord, query: &str) -> bool {
+        if fuzzy_matches(
+            &super::render::sanitize_tui_label(&pane.display.label),
+            query,
+        ) {
+            return true;
+        }
+        match self.pane_location_labels.get(pane.pane_id.as_str()) {
+            Some(location_label) => fuzzy_matches(location_label, query),
+            None => fuzzy_matches(&pane.location.tag(), query),
+        }
+    }
+
     fn page_size(&self) -> usize {
         self.last_terminal_size
             .map(|terminal_size| page_size_for_terminal(terminal_size, &self.picker_keys))
             .unwrap_or_default()
     }
 
-    fn max_page_start(&self) -> usize {
-        last_non_empty_page_start(self.panes.len(), self.page_size())
-    }
-
     pub(crate) fn next_page(&mut self) -> bool {
+        let view_len = self.view_pane_indices().len();
         let page_size = self.page_size();
-        if page_size == 0 || self.panes.is_empty() {
+        if page_size == 0 || view_len == 0 {
             return false;
         }
 
         let next_page_start = self.page_start.saturating_add(page_size);
-        if next_page_start >= self.panes.len() {
+        if next_page_start >= view_len {
             return false;
         }
 
-        self.page_start = next_page_start.min(self.max_page_start());
+        self.page_start = next_page_start.min(last_non_empty_page_start(view_len, page_size));
         self.key_targets.clear();
         self.retired_key_targets.clear();
         true
@@ -248,30 +419,32 @@ impl TuiState {
     }
 
     pub(crate) fn select_next(&mut self) -> bool {
-        let Some(visible) = self.visible_pane_range() else {
+        let view = self.view_pane_indices();
+        let Some(visible) = self.visible_view_range(view.len()) else {
             return false;
         };
 
-        match self.selected_visible_index(&visible) {
-            None => self.select_pane_at(visible.start),
-            Some(index) if visible.start + index + 1 < visible.end => {
-                self.select_pane_at(visible.start + index + 1)
+        match self.selected_view_position(&view, &visible) {
+            None => self.select_view_pane(&view, visible.start),
+            Some(position) if visible.start + position + 1 < visible.end => {
+                self.select_view_pane(&view, visible.start + position + 1)
             }
             // Select the row below the current window, not the new page's first
             // row: next_page() clamps to the page-aligned boundary, so after a
             // live reanchor leaves `page_start` non-aligned near the tail the
             // new window can still contain the already-selected row.
-            Some(_) => self.next_page() && self.select_pane_at(visible.end),
+            Some(_) => self.next_page() && self.select_view_pane(&view, visible.end),
         }
     }
 
     pub(crate) fn select_previous(&mut self) -> bool {
-        let Some(visible) = self.visible_pane_range() else {
+        let view = self.view_pane_indices();
+        let Some(visible) = self.visible_view_range(view.len()) else {
             return false;
         };
 
-        match self.selected_visible_index(&visible) {
-            None => self.select_pane_at(visible.start),
+        match self.selected_view_position(&view, &visible) {
+            None => self.select_view_pane(&view, visible.start),
             Some(0) => {
                 if visible.start == 0 {
                     return false;
@@ -285,15 +458,15 @@ impl TuiState {
                 self.page_start = target.saturating_add(1).saturating_sub(self.page_size());
                 self.key_targets.clear();
                 self.retired_key_targets.clear();
-                self.select_pane_at(target)
+                self.select_view_pane(&view, target)
             }
-            Some(index) => self.select_pane_at(visible.start + index - 1),
+            Some(position) => self.select_view_pane(&view, visible.start + position - 1),
         }
     }
 
-    fn visible_pane_range(&self) -> Option<std::ops::Range<usize>> {
+    fn visible_view_range(&self, view_len: usize) -> Option<std::ops::Range<usize>> {
         let page_size = self.page_size();
-        if page_size == 0 || self.panes.is_empty() {
+        if page_size == 0 || view_len == 0 {
             return None;
         }
 
@@ -302,30 +475,47 @@ impl TuiState {
         // non-page-aligned index inside the final partial page, and clamping it
         // differently here would make arrow movement act on rows the frame does
         // not show.
-        let start = if self.page_start >= self.panes.len() {
-            last_non_empty_page_start(self.panes.len(), page_size)
+        let start = if self.page_start >= view_len {
+            last_non_empty_page_start(view_len, page_size)
         } else {
             self.page_start
         };
-        let end = start.saturating_add(page_size).min(self.panes.len());
+        let end = start.saturating_add(page_size).min(view_len);
         Some(start..end)
     }
 
-    fn selected_visible_index(&self, visible: &std::ops::Range<usize>) -> Option<usize> {
+    fn selected_view_position(
+        &self,
+        view: &[usize],
+        visible: &std::ops::Range<usize>,
+    ) -> Option<usize> {
         let selected_pane_id = self.selected_pane_id.as_deref()?;
-        self.panes[visible.clone()]
+        view[visible.clone()]
             .iter()
-            .position(|pane| pane.pane_id == selected_pane_id)
+            .position(|&pane_index| self.panes[pane_index].pane_id == selected_pane_id)
     }
 
-    fn select_pane_at(&mut self, pane_index: usize) -> bool {
-        let Some(pane) = self.panes.get(pane_index) else {
+    fn select_view_pane(&mut self, view: &[usize], view_position: usize) -> bool {
+        let Some(pane) = view
+            .get(view_position)
+            .and_then(|&pane_index| self.panes.get(pane_index))
+        else {
             return false;
         };
 
         self.selected_pane_id = Some(pane.pane_id.clone());
         true
     }
+}
+
+// Case-insensitive subsequence match: every query character must appear in the
+// haystack in order, though not necessarily adjacent.
+fn fuzzy_matches(haystack: &str, query: &str) -> bool {
+    let mut haystack_chars = haystack.chars().flat_map(char::to_lowercase);
+    query
+        .chars()
+        .flat_map(char::to_lowercase)
+        .all(|query_char| haystack_chars.any(|haystack_char| haystack_char == query_char))
 }
 
 fn reanchor_page_start(

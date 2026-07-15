@@ -1352,6 +1352,576 @@ fn tui_frame_writer_highlights_selected_row_across_full_width() {
     assert_eq!(rendered.matches("\u{1b}[7m").count(), 1);
 }
 
+fn tui_search_pane(index: u32, title: &str) -> PaneRecord {
+    tmux_pane_row(index)
+        .session_name("work")
+        .pane_id(format!("%{index}"))
+        .pane_index(index)
+        .command("codex")
+        .title(title)
+        .current_path("/work/app")
+        .pane()
+}
+
+fn tui_key_event(code: crossterm::event::KeyCode) -> crossterm::event::KeyEvent {
+    crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
+}
+
+fn type_tui_search_query(state: &mut super::tui::TuiState, query: &str) {
+    for character in query.chars() {
+        let action = super::tui::handle_key_event(
+            &tui_key_event(crossterm::event::KeyCode::Char(character)),
+            state,
+        )
+        .expect("typing into search should not error");
+        assert!(matches!(action, super::tui::TuiLoopAction::Redraw));
+    }
+}
+
+#[test]
+fn tui_slash_enters_search_mode_and_suspends_key_labels() {
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes(vec![tui_test_pane(1), tui_test_pane(2)]);
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 10,
+    };
+    let normal_frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert!(normal_frame.lines[0].starts_with("[1]"));
+
+    let action = super::tui::handle_key_event(
+        &tui_key_event(crossterm::event::KeyCode::Char('/')),
+        &mut state,
+    )
+    .expect("slash should not error");
+    assert!(matches!(action, super::tui::TuiLoopAction::Redraw));
+    assert_eq!(state.test_search_query(), Some(""));
+
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert!(frame.lines[0].starts_with("   "));
+    assert_eq!(state.test_key_target('1'), None);
+    let input_line = &frame.lines[frame.lines.len() - 2];
+    assert!(input_line.starts_with("/▌"));
+    let mode_line = &frame.lines[frame.lines.len() - 1];
+    assert!(mode_line.contains("2/2 matched"));
+    assert!(mode_line.contains("Esc cancel."));
+}
+
+#[test]
+fn tui_slash_without_panes_is_ignored() {
+    let mut state = super::tui::TuiState::default();
+
+    let action = super::tui::handle_key_event(
+        &tui_key_event(crossterm::event::KeyCode::Char('/')),
+        &mut state,
+    )
+    .expect("slash should not error");
+
+    assert!(matches!(action, super::tui::TuiLoopAction::Continue));
+    assert_eq!(state.test_search_query(), None);
+}
+
+#[test]
+fn tui_search_filters_rows_by_label_fuzzily_and_case_insensitively() {
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes(vec![
+        tui_search_pane(1, "redwood 1"),
+        tui_search_pane(2, "bluebell 2"),
+        tui_search_pane(3, "redwood 3"),
+        tui_search_pane(4, "bluebell 4"),
+    ]);
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 10,
+    };
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    super::tui::handle_key_event(
+        &tui_key_event(crossterm::event::KeyCode::Char('/')),
+        &mut state,
+    )
+    .expect("slash should not error");
+
+    type_tui_search_query(&mut state, "RED");
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(frame.visible_pane_ids, vec!["%1", "%3"]);
+    let input_line = &frame.lines[frame.lines.len() - 2];
+    assert!(input_line.starts_with("/RED▌"));
+    let mode_line = &frame.lines[frame.lines.len() - 1];
+    assert!(mode_line.contains("2/4 matched"));
+
+    // Fuzzy subsequence: characters must appear in order, not adjacently.
+    for _ in 0..3 {
+        assert!(state.pop_search_char());
+    }
+    type_tui_search_query(&mut state, "rd3");
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(frame.visible_pane_ids, vec!["%3"]);
+}
+
+#[test]
+fn tui_search_matches_location_labels() {
+    let pane = |index: u32, session: &str| {
+        tmux_pane_row(index)
+            .session_name(session)
+            .pane_id(format!("%{index}"))
+            .pane_index(index)
+            .command("codex")
+            .title(format!("shared title {index}"))
+            .current_path("/work/app")
+            .pane()
+    };
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes(vec![pane(1, "alpha"), pane(2, "beta")]);
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 10,
+    };
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert!(state.begin_search());
+
+    type_tui_search_query(&mut state, "beta");
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(frame.visible_pane_ids, vec!["%2"]);
+}
+
+#[test]
+fn tui_search_backspace_edits_query_and_esc_cancels_to_full_list() {
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes(vec![tui_test_pane(1), tui_test_pane(2)]);
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 10,
+    };
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert!(state.begin_search());
+
+    type_tui_search_query(&mut state, "z/");
+    assert_eq!(state.test_search_query(), Some("z/"));
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert!(frame.lines[0].contains("No panes match \"z/\"."));
+    assert!(frame.visible_pane_ids.is_empty());
+    assert_eq!(frame.selected_row, None);
+    assert_eq!(state.test_selected_pane_id(), None);
+
+    let backspace = super::tui::handle_key_event(
+        &tui_key_event(crossterm::event::KeyCode::Backspace),
+        &mut state,
+    )
+    .expect("backspace should not error");
+    assert!(matches!(backspace, super::tui::TuiLoopAction::Redraw));
+    assert_eq!(state.test_search_query(), Some("z"));
+    assert!(state.pop_search_char());
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(frame.visible_pane_ids, vec!["%1", "%2"]);
+
+    // Backspace on an empty query stays in search mode without redrawing.
+    let empty_backspace = super::tui::handle_key_event(
+        &tui_key_event(crossterm::event::KeyCode::Backspace),
+        &mut state,
+    )
+    .expect("backspace should not error");
+    assert!(matches!(
+        empty_backspace,
+        super::tui::TuiLoopAction::Continue
+    ));
+
+    let escape =
+        super::tui::handle_key_event(&tui_key_event(crossterm::event::KeyCode::Esc), &mut state)
+            .expect("esc should not error");
+    assert!(matches!(escape, super::tui::TuiLoopAction::Redraw));
+    assert_eq!(state.test_search_query(), None);
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert!(frame.lines[0].starts_with("[1]"));
+
+    let close =
+        super::tui::handle_key_event(&tui_key_event(crossterm::event::KeyCode::Esc), &mut state)
+            .expect("esc should not error");
+    assert!(matches!(close, super::tui::TuiLoopAction::Close));
+}
+
+#[test]
+fn tui_search_ctrl_c_still_closes() {
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes(vec![tui_test_pane(1)]);
+    super::tui::render_tui_frame_for_size(
+        &mut state,
+        super::tui::TuiTerminalSize {
+            width: 120,
+            height: 10,
+        },
+    );
+    assert!(state.begin_search());
+
+    let action = super::tui::handle_key_event(
+        &crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('c'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ),
+        &mut state,
+    )
+    .expect("ctrl-c should not error");
+
+    assert!(matches!(action, super::tui::TuiLoopAction::Close));
+}
+
+#[test]
+fn tui_search_suspends_letter_hotkeys() {
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes(vec![tui_test_pane(1), tui_test_pane(2)]);
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 10,
+    };
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(state.test_key_target('2'), Some("%2"));
+    assert!(state.begin_search());
+
+    // '2' focused %2 in normal mode; in search mode it types into the query
+    // (and would have returned Close if the hotkey path had fired).
+    let action = super::tui::handle_key_event(
+        &tui_key_event(crossterm::event::KeyCode::Char('2')),
+        &mut state,
+    )
+    .expect("typing should not error");
+    assert!(matches!(action, super::tui::TuiLoopAction::Redraw));
+    assert_eq!(state.test_search_query(), Some("2"));
+
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(frame.visible_pane_ids, vec!["%2"]);
+}
+
+#[test]
+fn tui_search_arrows_navigate_filtered_rows_across_pages() {
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes(
+        (1..=10)
+            .map(|index| {
+                let title = if index % 2 == 1 {
+                    format!("redwood {index}")
+                } else {
+                    format!("bluebell {index}")
+                };
+                tui_search_pane(index, &title)
+            })
+            .collect(),
+    );
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 6,
+    };
+    let first_frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(first_frame.page_size, 4);
+    assert!(state.begin_search());
+    type_tui_search_query(&mut state, "red");
+
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(frame.visible_pane_ids, vec!["%1", "%3", "%5", "%7"]);
+    assert_eq!(frame.selected_row, Some(0));
+    assert_eq!(frame.page_count, 2);
+
+    for _ in 0..3 {
+        assert!(state.select_next());
+    }
+    assert_eq!(state.test_selected_pane_id(), Some("%7"));
+
+    assert!(state.select_next());
+    assert_eq!(state.test_selected_pane_id(), Some("%9"));
+    let second_page_frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(second_page_frame.page_start, 4);
+    assert_eq!(second_page_frame.visible_pane_ids, vec!["%9"]);
+    assert_eq!(second_page_frame.selected_row, Some(0));
+    let mode_line = &second_page_frame.lines[second_page_frame.lines.len() - 1];
+    assert!(mode_line.contains("Page 2/2"));
+    assert!(mode_line.contains("5/10 matched"));
+
+    assert!(state.select_previous());
+    assert_eq!(state.test_selected_pane_id(), Some("%7"));
+    let first_page_frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(first_page_frame.page_start, 0);
+    assert_eq!(first_page_frame.selected_row, Some(3));
+}
+
+#[test]
+fn tui_search_live_updates_keep_filter_and_selection() {
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes(vec![
+        tui_search_pane(1, "redwood 1"),
+        tui_search_pane(2, "bluebell 2"),
+    ]);
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 10,
+    };
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert!(state.begin_search());
+    type_tui_search_query(&mut state, "red");
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(state.test_selected_pane_id(), Some("%1"));
+
+    state.replace_panes(vec![
+        tui_search_pane(1, "redwood 1"),
+        tui_search_pane(2, "bluebell 2"),
+        tui_search_pane(3, "redwood 3"),
+    ]);
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(state.test_search_query(), Some("red"));
+    assert_eq!(frame.visible_pane_ids, vec!["%1", "%3"]);
+    assert_eq!(state.test_selected_pane_id(), Some("%1"));
+    let mode_line = &frame.lines[frame.lines.len() - 1];
+    assert!(mode_line.contains("2/3 matched"));
+
+    state.replace_panes(vec![
+        tui_search_pane(2, "bluebell 2"),
+        tui_search_pane(3, "redwood 3"),
+    ]);
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(frame.visible_pane_ids, vec!["%3"]);
+    assert_eq!(state.test_selected_pane_id(), Some("%3"));
+}
+
+#[test]
+fn tui_search_live_inserts_ahead_reanchor_filtered_page_to_visible_rows() {
+    // Filtered-view counterpart of the normal-mode reanchor contract: when a
+    // live update inserts matches ahead of the visible filtered window, the
+    // window must follow its previously visible rows so the pane-anchored
+    // selection stays on screen instead of snapping to a different pane.
+    let pane = |index: u32, cwd: String| {
+        tmux_pane_row(index)
+            .session_name("work")
+            .pane_id(format!("%{index}"))
+            .command("codex")
+            .title(format!("redwood {index}"))
+            .current_path(cwd)
+            .pane()
+    };
+    let mut state = super::tui::TuiState::with_picker_config(
+        super::picker::PickerKeySet::default(),
+        super::picker::PickerGroupBy::Cwd,
+    );
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 6,
+    };
+    state.replace_panes(
+        (1..=6)
+            .map(|index| pane(index, format!("/work/p{index:02}")))
+            .collect(),
+    );
+    let first_frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(first_frame.page_size, 4);
+    assert!(state.begin_search());
+    type_tui_search_query(&mut state, "red");
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert!(state.next_page());
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(frame.visible_pane_ids, vec!["%5", "%6"]);
+    assert_eq!(state.test_selected_pane_id(), Some("%5"));
+
+    // Four new matching panes sort ahead of the whole list; without the
+    // filtered reanchor the preserved page_start 4 would now show %1..%4 and
+    // the selection would snap off %5.
+    let mut updated = (11..=14)
+        .map(|index| pane(index, format!("/work/a{index:02}")))
+        .collect::<Vec<_>>();
+    updated.extend((1..=6).map(|index| pane(index, format!("/work/p{index:02}"))));
+    state.replace_panes(updated);
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+
+    assert_eq!(frame.page_start, 8);
+    assert_eq!(frame.visible_pane_ids, vec!["%5", "%6"]);
+    assert_eq!(state.test_selected_pane_id(), Some("%5"));
+    assert_eq!(frame.selected_row, Some(0));
+}
+
+#[test]
+fn tui_search_inserts_between_window_top_and_selection_snap_selection() {
+    // Deliberate contract (mirrors normal mode): the filtered window anchors
+    // on its first surviving visible row, not the selection. Matches inserted
+    // between the window top and a selection further down push the selection
+    // out of the window, and it snaps to the first visible row on redraw.
+    let pane = |index: u32, cwd: String| {
+        tmux_pane_row(index)
+            .session_name("work")
+            .pane_id(format!("%{index}"))
+            .command("codex")
+            .title(format!("redwood {index}"))
+            .current_path(cwd)
+            .pane()
+    };
+    let mut state = super::tui::TuiState::with_picker_config(
+        super::picker::PickerKeySet::default(),
+        super::picker::PickerGroupBy::Cwd,
+    );
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 6,
+    };
+    state.replace_panes(
+        (1..=4)
+            .map(|index| pane(index, format!("/work/p{index:02}")))
+            .collect(),
+    );
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert!(state.begin_search());
+    type_tui_search_query(&mut state, "red");
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    for _ in 0..3 {
+        assert!(state.select_next());
+    }
+    assert_eq!(state.test_selected_pane_id(), Some("%4"));
+
+    // Three matching panes sort between %1 (window top) and the rest.
+    let mut updated = vec![pane(1, "/work/p01".to_string())];
+    updated.extend((11..=13).map(|index| pane(index, format!("/work/p01-{index}"))));
+    updated.extend((2..=4).map(|index| pane(index, format!("/work/p{index:02}"))));
+    state.replace_panes(updated);
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+
+    assert_eq!(frame.visible_pane_ids, vec!["%1", "%11", "%12", "%13"]);
+    assert_eq!(state.test_selected_pane_id(), Some("%1"));
+    assert_eq!(frame.selected_row, Some(0));
+}
+
+#[test]
+fn tui_search_query_edit_resets_to_first_filtered_page() {
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes(
+        (1..=10)
+            .map(|index| tui_search_pane(index, &format!("redwood {index}")))
+            .collect(),
+    );
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 6,
+    };
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert!(state.begin_search());
+    type_tui_search_query(&mut state, "red");
+    assert!(state.next_page());
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(frame.page_start, 4);
+
+    type_tui_search_query(&mut state, "w");
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(frame.page_start, 0);
+    assert_eq!(frame.visible_pane_ids.len(), 4);
+}
+
+#[test]
+fn tui_search_cancel_repages_to_keep_selection_visible() {
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes(
+        (1..=10)
+            .map(|index| {
+                let title = if index == 7 {
+                    "target task".to_string()
+                } else {
+                    format!("filler {index}")
+                };
+                tui_search_pane(index, &title)
+            })
+            .collect(),
+    );
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 6,
+    };
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert!(state.begin_search());
+    type_tui_search_query(&mut state, "target");
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(frame.visible_pane_ids, vec!["%7"]);
+    assert_eq!(state.test_selected_pane_id(), Some("%7"));
+
+    assert!(state.cancel_search());
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(frame.page_start, 4);
+    assert_eq!(frame.selected_row, Some(2));
+    assert_eq!(frame.visible_pane_ids[2], "%7");
+    assert!(frame.lines[0].starts_with("[1]"));
+}
+
+#[test]
+fn tui_search_entry_and_cancel_preserve_selection_and_page() {
+    // `/` immediately followed by Esc must be lossless: the empty query lists
+    // every pane, so entering search keeps the current page and the redraw
+    // must not snap an off-first-page selection away.
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes(
+        (1..=10)
+            .map(|index| tui_search_pane(index, &format!("task {index}")))
+            .collect(),
+    );
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 6,
+    };
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert!(state.next_page());
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert!(state.select_next());
+    assert_eq!(state.test_selected_pane_id(), Some("%6"));
+
+    let action = super::tui::handle_key_event(
+        &tui_key_event(crossterm::event::KeyCode::Char('/')),
+        &mut state,
+    )
+    .expect("slash should not error");
+    assert!(matches!(action, super::tui::TuiLoopAction::Redraw));
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(frame.page_start, 4);
+    assert_eq!(state.test_selected_pane_id(), Some("%6"));
+    assert_eq!(frame.selected_row, Some(1));
+
+    let escape =
+        super::tui::handle_key_event(&tui_key_event(crossterm::event::KeyCode::Esc), &mut state)
+            .expect("esc should not error");
+    assert!(matches!(escape, super::tui::TuiLoopAction::Redraw));
+    let frame = super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(state.test_selected_pane_id(), Some("%6"));
+    assert_eq!(frame.page_start, 4);
+    assert_eq!(frame.selected_row, Some(1));
+    assert!(frame.lines[0].starts_with("[1]"));
+}
+
+#[test]
+fn tui_search_enter_without_matches_keeps_tui_open() {
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes(vec![tui_test_pane(1)]);
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 10,
+    };
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert!(state.begin_search());
+    type_tui_search_query(&mut state, "zzz");
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(state.test_selected_pane_id(), None);
+
+    let action =
+        super::tui::handle_key_event(&tui_key_event(crossterm::event::KeyCode::Enter), &mut state)
+            .expect("enter without matches should not error");
+    assert!(matches!(action, super::tui::TuiLoopAction::Continue));
+}
+
+#[test]
+fn tui_search_drops_when_frame_leaves_the_pane_list() {
+    let mut state = super::tui::TuiState::default();
+    state.replace_panes(vec![tui_test_pane(1)]);
+    let terminal_size = super::tui::TuiTerminalSize {
+        width: 120,
+        height: 10,
+    };
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert!(state.begin_search());
+
+    // Snapshot empties: the empty frame drops search mode so Esc closes again.
+    state.replace_panes(Vec::new());
+    super::tui::render_tui_frame_for_size(&mut state, terminal_size);
+    assert_eq!(state.test_search_query(), None);
+    assert!(!state.is_searching());
+}
+
 #[test]
 fn tmux_target_is_missing_matches_common_focus_errors() {
     assert!(super::tmux::tmux_target_is_missing(b"can't find pane: %42"));

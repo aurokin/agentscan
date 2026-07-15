@@ -2234,6 +2234,46 @@ fn tui_arrow_navigation_focuses_selected_pane_with_enter() -> Result<()> {
 }
 
 #[test]
+fn tui_search_filters_rows_and_enter_focuses_matched_pane() -> Result<()> {
+    let harness = TestHarness::new()?;
+    let root_pane_id = harness.start_session("tui-search-focus", "sleep 300")?;
+    let split_pane_id = harness.split_window("tui-search-focus:0.0", "sleep 300")?;
+    for (pane_id, provider, label) in [
+        (&root_pane_id, "codex", "Alpha Build"),
+        (&split_pane_id, "claude", "Beta Deploy"),
+    ] {
+        harness.agentscan([
+            "tmux",
+            "set-metadata",
+            "--pane-id",
+            pane_id,
+            "--provider",
+            provider,
+            "--label",
+            label,
+            "--state",
+            "idle",
+        ])?;
+    }
+    let mut daemon = harness.start_daemon()?;
+    harness.wait_for_daemon_pane(&mut daemon, &split_pane_id, |_| true)?;
+    let mut client = harness.attach_client("tui-search-focus")?;
+
+    let tui_pane_id = harness.start_agentscan_tui_pane("tui-search-focus:0.0", &[])?;
+    harness.wait_for_pane_contents(&tui_pane_id, |contents| contents.contains("Beta Deploy"))?;
+    // Without search, Enter would focus the first row (Alpha Build); the query
+    // must narrow the list to the Beta pane before Enter fires.
+    harness.tmux(["send-keys", "-t", &tui_pane_id, "-l", "/deploy"])?;
+    harness.wait_for_pane_contents(&tui_pane_id, |contents| {
+        contents.contains("/deploy") && contents.contains("1/2 matched")
+    })?;
+    harness.tmux(["send-keys", "-t", &tui_pane_id, "Enter"])?;
+    harness.wait_for_client_pane(&mut client, &split_pane_id)?;
+
+    Ok(())
+}
+
+#[test]
 fn display_popup_focuses_selected_pane_from_attached_client() -> Result<()> {
     let harness = TestHarness::new()?;
     if !harness.supports_display_popup_key_injection()? {
