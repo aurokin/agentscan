@@ -68,6 +68,43 @@ describe("GroupedPicker", () => {
     expect(container.querySelector('[role="group"][aria-label="proj-b"]')).not.toBeNull();
   });
 
+  it("derives collision-free option ids and keeps non-owner pickers out of the tab order", () => {
+    const groups: PickerGroup[] = [
+      {
+        key: "proj-a",
+        project: "proj-a",
+        rows: [
+          {
+            key: "1",
+            pane_id: "%1",
+            provider: "claude",
+            status: { kind: "idle" },
+            display_label: "agent 1",
+            location_tag: "main:1",
+            is_active: false,
+          },
+        ],
+      },
+    ];
+    const state: PickerState = { status: "ready", rows: [] };
+
+    // Source keys differing only in a sanitized character must not produce the
+    // same option id for the same pane number (the escape is injective).
+    const a = renderPicker({ groups, state, totalRows: 1, sourceKey: "ssh-a.b" });
+    const b = renderPicker({ groups, state, totalRows: 1, sourceKey: "ssh-a-b" });
+    const idA = a.container.querySelector('[role="option"]')?.id;
+    const idB = b.container.querySelector('[role="option"]')?.id;
+    expect(idA).toBeTruthy();
+    expect(idA).not.toBe(idB);
+
+    // Keys always drive the keybind owner's selection, so only the owner's
+    // listbox is a tab stop; a non-owner picker must not take keyboard focus.
+    const nonOwner = renderPicker({ groups, state, totalRows: 1, keybindsOwned: false });
+    expect(
+      nonOwner.container.querySelector('[role="listbox"]')?.hasAttribute("tabindex"),
+    ).toBe(false);
+  });
+
   it("omits aria-activedescendant when the selection lives in another source", () => {
     const groups: PickerGroup[] = [
       {

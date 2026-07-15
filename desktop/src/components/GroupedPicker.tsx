@@ -54,10 +54,13 @@ export function GroupedPicker({
 }) {
   const rowCount = groups.reduce((total, group) => total + group.rows.length, 0);
   // DOM id for a row's option element, unique across sources (pane ids collide
-  // across hosts) and safe as an id/aria-activedescendant reference. tmux pane
-  // ids are "%N", so stripping non-id characters keeps them unique per source.
-  const optionId = (paneId: string) =>
-    `agent-option-${sourceKey}-${paneId}`.replace(/[^A-Za-z0-9_-]/g, "-");
+  // across hosts) and safe as an id/aria-activedescendant reference. The escape
+  // is injective — every char outside [A-Za-z0-9-] (including "_", the escape
+  // introducer) becomes _hex_ — so distinct source keys like "ssh-a.b" and
+  // "ssh-a-b" can never produce the same id.
+  const idSafe = (value: string) =>
+    value.replace(/[^A-Za-z0-9-]/g, (ch) => `_${ch.codePointAt(0)?.toString(16) ?? ""}_`);
+  const optionId = (paneId: string) => `agent-option-${idSafe(sourceKey)}-${idSafe(paneId)}`;
   const selectedRowInThisSource =
     selectedPaneId !== null &&
     groups.some((group) => group.rows.some((row) => row.pane_id === selectedPaneId));
@@ -111,7 +114,11 @@ export function GroupedPicker({
     <div
       className="picker-groups"
       role="listbox"
-      tabIndex={0}
+      // Only the keybind owner's picker is a tab stop: the window-level key
+      // handler always drives the OWNER's selection, so focusing a non-owner
+      // listbox would advertise keyboard control it does not have. Non-owner
+      // pickers stay browsable to assistive tech without taking focus.
+      tabIndex={keybindsOwned ? 0 : undefined}
       aria-label="Agent panes"
       aria-activedescendant={
         selectedRowInThisSource && selectedPaneId !== null ? optionId(selectedPaneId) : undefined
