@@ -24,7 +24,7 @@ export function LiveStrip({
 
   return (
     <div className={className} aria-live="polite">
-      <span className="status-dot" data-tone={tone === "error" ? "error" : "busy"} />
+      <span className="status-dot host" data-tone={tone === "error" ? "error" : "busy"} />
       <span className="live-label">{liveStateLabel(status)}</span>
       {/* noDaemon's detail message is boilerplate ("daemon auto-start is disabled…")
           that just truncates to noise beside the Start button — the label + button

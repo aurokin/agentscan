@@ -378,7 +378,7 @@ export function SourceSwitcher({
         }
       >
         {triggerShowsSource ? (
-          <span className="status-dot" data-tone={triggerTone} aria-hidden="true" />
+          <span className="status-dot host" data-tone={triggerTone} aria-hidden="true" />
         ) : null}
         <span className="source-label">
           {triggerShowsSource ? labelFor(triggerProfile) : "Manage sources"}

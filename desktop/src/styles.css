@@ -842,6 +842,34 @@ p {
   background: var(--dot-unknown);
 }
 
+/* Host-level indicators (folder headers, the footer source trigger, connection
+   strips): a hollow ring on the same 8px footprint, so a filled disc always
+   means "agent" (AUR-701 — host and agent dots blended on the shared rail).
+   The base rule sits after the tone fills so `background: transparent` wins
+   their equal specificity; currentColor carries the tone into the stroke. A
+   healthy connection arrives as data-tone="idle" (connectionTone: online →
+   idle) and deliberately stays on the neutral base color rather than green —
+   green/amber are agent-exclusive so busy-vs-idle agents can be counted at a
+   glance. */
+.status-dot.host {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px currentColor;
+  color: var(--dot-unknown);
+}
+
+/* Host-attention states keep their hue as rings (amber = daemon missing;
+   .pulsing animates opacity, so a connecting ring pulses unchanged)... */
+.status-dot.host[data-tone="busy"] {
+  color: var(--dot-busy);
+}
+
+/* ...but a down host must not whisper: error fills solid red, matching the
+   agent error treatment. */
+.status-dot.host[data-tone="error"] {
+  background: var(--dot-error);
+  box-shadow: none;
+}
+
 .status-dot.pulsing {
   animation: pulse 1.1s ease-in-out infinite;
 }
