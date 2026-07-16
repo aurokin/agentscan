@@ -70,7 +70,7 @@ export function SourceFolders({
         // the boot screen is suppressed, so without this strip its failure has
         // no surface at all. Same recovery shape as the in-folder strip.
         <div className="live-strip error" aria-live="polite">
-          <span className="status-dot" data-tone="error" />
+          <span className="status-dot host" data-tone="error" />
           <span className="live-label">{labelFor(activeProfile)}</span>
           <span className="live-message">{preflightError}</span>
           <button className="live-action" type="button" onClick={onOpenSettings}>
@@ -97,7 +97,7 @@ export function SourceFolders({
               }
             >
               <span
-                className={`status-dot${
+                className={`status-dot host${
                   folderPreflightError === null &&
                   view.isOpen &&
                   (view.live.connection.status === "connecting" ||
@@ -140,7 +140,7 @@ export function SourceFolders({
                   // recovery path; LiveStrip's Start/Reconnect can't fix a
                   // preflight failure, so it doesn't render here.
                   <div className="live-strip error" aria-live="polite">
-                    <span className="status-dot" data-tone="error" />
+                    <span className="status-dot host" data-tone="error" />
                     <span className="live-label">Unavailable</span>
                     <span className="live-message">{folderPreflightError}</span>
                     <button className="live-action" type="button" onClick={onOpenSettings}>
