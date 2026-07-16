@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.9.1 - 2026-07-16
+
+### Changed
+
+- Desktop host-level status indicators (folder headers, the source trigger,
+  and connection strips) now render as hollow neutral rings, making filled
+  green and amber dots exclusive to agents and easier to count at a glance.
+  Down hosts remain solid red so connection failures stay prominent (AUR-701).
+
 ## 0.9.0 - 2026-07-15
 
 ### Added
