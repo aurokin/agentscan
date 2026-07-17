@@ -79,6 +79,7 @@ fn provider_display_marker_uses_emoji_by_default() {
             (Provider::Hermes, "⚕️"),
             (Provider::Opencode, "🔲"),
             (Provider::Droid, "🏭"),
+            (Provider::KimiCode, "🌙"),
         ],
     );
     assert_eq!(super::provider_display_marker(None, IconMode::Emoji), "?");
@@ -101,6 +102,7 @@ fn provider_display_marker_supports_nerd_font_mode() {
             (Provider::Hermes, "⚕"),
             (Provider::Opencode, "\u{f0168}"),
             (Provider::Droid, "\u{f020f}"),
+            (Provider::KimiCode, "\u{f0594}"),
         ],
     );
 }
@@ -122,6 +124,7 @@ fn provider_display_marker_supports_nerd_font_patched_mode() {
             (Provider::Hermes, "\u{100045}"),
             (Provider::Opencode, "\u{100043}"),
             (Provider::Droid, "\u{100056}"),
+            (Provider::KimiCode, "\u{100057}"),
         ],
     );
 }

@@ -10,6 +10,7 @@ mod frame;
 mod gemini;
 mod grok;
 mod hermes;
+mod kimi_code;
 mod opencode;
 mod pi;
 
@@ -78,6 +79,7 @@ fn classifier_for(provider: Provider) -> Option<PaneOutputClassifier> {
         Provider::Pi => Some(pi::status),
         Provider::Antigravity => Some(antigravity::status),
         Provider::Droid => Some(droid::status),
+        Provider::KimiCode => Some(kimi_code::status),
     }
 }
 

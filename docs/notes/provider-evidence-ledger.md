@@ -35,6 +35,25 @@ optional enrichment, not prerequisites.
 | Hermes | metadata, command/path aliases | current prompt fallback and wrapper-published labels | Title text alone is not provider identity. |
 | Aider | metadata, exact `aider` command, `python -m aider`, known `aider-chat` package paths, Python console-script invocations | unknown unless explicit metadata publishes state | Upstream prompt is a generic `> ` shape, so pane output is not a durable status source. |
 | Factory Droid | metadata, exact `droid` command | current Droid prompt/footer fallback | `⛬ ...` titles are display labels only after identity is known. |
+| Kimi Code | metadata, exact `kimi` command | current input box and moon-phase spinner fallback | `Kimi Code` startup title is a generic display label, never identity; unprobed UI states stay unknown. |
+
+## Strictness Calibration
+
+Pane-output matchers are judged by failure mode, not precision alone. Provider
+TUIs restyle between releases, so a matcher that is precise today and wrong
+tomorrow is worse than one that goes quiet:
+
+- Every check must degrade toward `unknown` when its assumption breaks. A
+  broken anchor may withhold status; it must never silently flip busy/idle.
+- Anchor on durable primitives: glyph ranges tied to branding, box/border
+  shapes, and frame geometry with slack built into windows and tail bounds.
+- Exact decorative strings (separators, hints, rotating tips) are
+  corroborators only. Their presence may upgrade confidence (e.g. moon glyph
+  plus ` · ` separator confirms a live Kimi spinner); their absence routes to
+  `unknown`, never to the opposite answer.
+- When evidence for a state is ambiguous — a shape that could be live UI or
+  echoed output — report `unknown` and record the ambiguity in the provider's
+  support note rather than encoding a guess.
 
 ## Rejected Or Supporting-Only Signals
 

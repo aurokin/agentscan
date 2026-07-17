@@ -28,6 +28,8 @@ import opencodeLight from "./assets/providers/opencode-light.svg";
 import opencodeDark from "./assets/providers/opencode-dark.svg";
 import piLight from "./assets/providers/pi-light.svg";
 import piDark from "./assets/providers/pi-dark.svg";
+import kimiCodeLight from "./assets/providers/kimi_code-light.svg";
+import kimiCodeDark from "./assets/providers/kimi_code-dark.svg";
 
 export type LogoTheme = "light" | "dark";
 
@@ -45,6 +47,7 @@ const PROVIDER_LOGOS: Record<string, LogoEntry> = {
   droid: { light: droidLight, dark: droidDark },
   grok: { light: grokLight, dark: grokDark },
   hermes: { light: hermesLight, dark: hermesDark },
+  kimi_code: { light: kimiCodeLight, dark: kimiCodeDark },
   opencode: { light: opencodeLight, dark: opencodeDark },
   pi: { light: piLight, dark: piDark },
 };

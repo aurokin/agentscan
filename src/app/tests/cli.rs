@@ -590,6 +590,9 @@ fn tmux_set_metadata_accepts_provider_aliases() {
         ("hermes-agent", Provider::Hermes),
         ("droid", Provider::Droid),
         ("factory-droid", Provider::Droid),
+        ("kimi_code", Provider::KimiCode),
+        ("kimi-code", Provider::KimiCode),
+        ("kimi", Provider::KimiCode),
     ] {
         let cli = <Cli as clap::Parser>::parse_from([
             "agentscan",

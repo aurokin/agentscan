@@ -299,6 +299,8 @@ Closed-source queue:
   `docs/notes/copilot-cursor-closed-source-probing.md`.
 - Factory Droid CLI: probed locally through `droid` and documented in
   `docs/notes/droid-cli-support.md`.
+- Kimi Code (Moonshot Kimi CLI): probed locally through `kimi` on macOS and
+  Linux and documented in `docs/notes/kimi-code-support.md`.
 
 Closed-source probing should produce a written evidence matrix before code
 changes. If a signal is weak, agentscan should prefer `unknown` over a richer

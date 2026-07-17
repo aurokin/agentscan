@@ -272,6 +272,12 @@ const PROVIDER_TITLE_SPECS: &[ProviderTitleSpec] = &[
         title_status: no_title_status,
         normalized_label: no_spec_label,
     },
+    ProviderTitleSpec {
+        provider: Provider::KimiCode,
+        detect_hint: no_hint,
+        title_status: no_title_status,
+        normalized_label: no_spec_label,
+    },
 ];
 
 fn provider_title_spec(provider: Provider) -> Option<&'static ProviderTitleSpec> {

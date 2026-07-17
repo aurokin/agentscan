@@ -27,6 +27,8 @@ pub(crate) enum Provider {
     Hermes,
     #[value(alias = "factory-droid")]
     Droid,
+    #[value(name = "kimi_code", alias = "kimi-code", alias = "kimi")]
+    KimiCode,
 }
 
 impl fmt::Display for Provider {
@@ -252,6 +254,17 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
         title_prefixes: &["⛬ "],
         title_aliases: &[],
         generic_display_labels: &["Droid", "New Session"],
+    },
+    ProviderInfo {
+        provider: Provider::KimiCode,
+        canonical_name: "kimi_code",
+        // Patched glyph reuses the manifest's `kimi` entry — Kimi CLI has no distinct mark.
+        icons: ProviderIconSet::new("🌙", "\u{f0594}", "\u{100057}"),
+        metadata_aliases: &["kimi_code", "kimi-code", "kimi code", "kimi"],
+        command_aliases: &[ProviderCommandAlias::new("kimi", false)],
+        title_prefixes: &[],
+        title_aliases: &[],
+        generic_display_labels: &["Kimi Code"],
     },
 ];
 

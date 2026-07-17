@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Added
+
+- Kimi Code (Moonshot Kimi CLI) provider support: panes are classified from
+  the exact `kimi` command or explicit metadata aliases, the `Kimi Code`
+  startup title is treated as a generic display label, and busy/idle status
+  falls back to the current Kimi input box and moon-phase spinner
+  (`status.source="pane_output"`) once identity is established. Includes
+  emoji/Nerd Font/patched icons (the patched glyph reuses the manifest's
+  `kimi` mark at `U+100057`) and desktop light/dark logos. Evidence is
+  documented in `docs/notes/kimi-code-support.md`.
+
 ## 0.9.1 - 2026-07-16
 
 ### Changed

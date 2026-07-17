@@ -34,6 +34,7 @@
 - Do not add a permanent `fast` vs `full` split; the target behavior is one fast path.
 - Treat `/proc` inspection as fallback for ambiguous panes, not the primary detection path.
 - Treat pane output parsing as provider-scoped status fallback only after provider identity is already established. It must anchor to current prompt/footer/status shapes, avoid stale scrollback, and report provenance as `status.source="pane_output"`.
+- Calibrate matcher strictness by failure mode, not by precision alone. Provider TUIs restyle between releases, so every check must degrade toward `unknown` when its assumption breaks — never silently flip busy/idle. Anchor on durable primitives (glyph ranges, box/border shapes, geometry with slack in windows and tails); treat exact decorative strings (separators, hints, tips) as corroborators that upgrade confidence, and route their absence to `unknown` rather than letting it invert the answer.
 - Prefer explicit pane metadata via tmux user options when wrappers can publish it.
 - When adding features or tests that spawn `tmux` or `agentscan` subprocesses, consider tmux server isolation explicitly: live integration tests must use the harness socket and temp `TMUX_TMPDIR`, and `agentscan` subprocesses that should target the harness server must receive `AGENTSCAN_TMUX_SOCKET`. See `docs/harness-engineering.md`.
 - Keep output formats stable; preserve machine-readable commands even if display labels change.

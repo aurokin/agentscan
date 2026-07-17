@@ -147,6 +147,44 @@ fn droid_title_text_alone_does_not_classify_provider() {
 }
 
 #[test]
+fn classifies_kimi_code_from_command_and_metadata_aliases() {
+    let command = classify::classify_provider(None, "kimi", "").expect("should match kimi");
+    assert_eq!(command.provider, Provider::KimiCode);
+    assert_eq!(
+        command.matched_by,
+        super::ClassificationMatchKind::PaneCurrentCommand
+    );
+    assert_eq!(command.confidence, super::ClassificationConfidence::High);
+
+    for alias in ["kimi_code", "kimi-code", "kimi code", "kimi"] {
+        let metadata = classify::classify_provider(Some(alias), "zsh", "custom title")
+            .expect("metadata should match kimi code");
+        assert_eq!(metadata.provider, Provider::KimiCode, "metadata alias: {alias}");
+        assert_eq!(
+            metadata.matched_by,
+            super::ClassificationMatchKind::PaneMetadata
+        );
+    }
+}
+
+#[test]
+fn kimi_suffixed_commands_do_not_classify_provider() {
+    assert!(
+        classify::classify_provider(None, "kimi-helper", "").is_none(),
+        "kimi suffix should not classify as KimiCode"
+    );
+    assert!(
+        classify::classify_provider(None, "kimi-code", "").is_none(),
+        "kimi-code is the kernel comm, not a pane_current_command value"
+    );
+}
+
+#[test]
+fn kimi_code_title_text_alone_does_not_classify_provider() {
+    assert!(classify::classify_provider(None, "zsh", "Kimi Code").is_none());
+}
+
+#[test]
 fn classifies_pi_from_specific_command_and_title() {
     let command = classify::classify_provider(None, "pi-coding-agent", "")
         .expect("should match pi coding agent");
@@ -434,6 +472,10 @@ fn provider_metadata_table_covers_aliases_commands_and_summary_order() {
         ("droid", Provider::Droid),
         ("factory-droid", Provider::Droid),
         ("factory droid", Provider::Droid),
+        ("kimi_code", Provider::KimiCode),
+        ("kimi-code", Provider::KimiCode),
+        ("kimi code", Provider::KimiCode),
+        ("kimi", Provider::KimiCode),
     ] {
         assert_eq!(
             super::provider_from_metadata(Some(alias)),
@@ -480,6 +522,15 @@ fn provider_metadata_table_covers_aliases_commands_and_summary_order() {
         "generic provider names should not accept suffixed binaries"
     );
     assert_eq!(
+        super::provider_from_command("kimi"),
+        Some((Provider::KimiCode, true))
+    );
+    assert_eq!(
+        super::provider_from_command("kimi-helper"),
+        None,
+        "kimi should not accept suffixed binaries"
+    );
+    assert_eq!(
         super::provider_summary_order().collect::<Vec<_>>(),
         vec![
             Provider::Codex,
@@ -494,6 +545,7 @@ fn provider_metadata_table_covers_aliases_commands_and_summary_order() {
             Provider::Grok,
             Provider::Hermes,
             Provider::Droid,
+            Provider::KimiCode,
         ]
     );
 }
@@ -506,6 +558,7 @@ fn provider_summaries_expose_display_markers_and_aliases() {
     assert_codex_provider_summary(&summaries);
     assert_aider_provider_summary(&summaries);
     assert_droid_provider_summary(&summaries);
+    assert_kimi_code_provider_summary(&summaries);
 }
 
 fn assert_codex_provider_summary(summaries: &[super::ProviderSummary]) {
@@ -579,6 +632,34 @@ fn assert_droid_provider_summary(summaries: &[super::ProviderSummary]) {
     assert!(droid.metadata_aliases.contains(&"factory-droid"));
 }
 
+fn assert_kimi_code_provider_summary(summaries: &[super::ProviderSummary]) {
+    let kimi = summaries
+        .iter()
+        .find(|summary| summary.provider == Provider::KimiCode)
+        .expect("kimi code summary should be present");
+    assert_eq!(kimi.name, "kimi_code");
+    assert_eq!(kimi.display_marker, "\u{f0594}");
+    assert_eq!(kimi.display_marker_codepoints, ["U+F0594"]);
+    assert_eq!(kimi.active_icon_mode, IconMode::Emoji);
+    assert_eq!(kimi.active_marker, "🌙");
+    assert_eq!(kimi.active_marker_codepoints, ["U+1F319"]);
+    assert_eq!(kimi.icons.emoji.marker, "🌙");
+    assert_eq!(kimi.icons.emoji.codepoints, ["U+1F319"]);
+    assert_eq!(kimi.icons.nerd_font.marker, "\u{f0594}");
+    assert_eq!(kimi.icons.nerd_font.codepoints, ["U+F0594"]);
+    assert_eq!(kimi.icons.nerd_font_patched.marker, "\u{100057}");
+    assert_eq!(kimi.icons.nerd_font_patched.codepoints, ["U+100057"]);
+    assert_eq!(
+        kimi.metadata_aliases,
+        ["kimi_code", "kimi-code", "kimi code", "kimi"]
+    );
+    assert!(
+        kimi.command_aliases
+            .iter()
+            .any(|alias| alias.name == "kimi" && !alias.allow_suffix)
+    );
+}
+
 #[test]
 fn patched_provider_icons_follow_agent_icons_v9_manifest() {
     let expected = [
@@ -594,6 +675,8 @@ fn patched_provider_icons_follow_agent_icons_v9_manifest() {
         (Provider::Grok, "\u{100051}", ["U+100051"]),
         (Provider::Hermes, "\u{100045}", ["U+100045"]),
         (Provider::Droid, "\u{100056}", ["U+100056"]),
+        // KimiCode intentionally reuses the manifest's `kimi` glyph — no distinct CLI mark.
+        (Provider::KimiCode, "\u{100057}", ["U+100057"]),
     ];
 
     let summaries = super::provider_summaries(IconMode::NerdFontPatched);

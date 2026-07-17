@@ -71,6 +71,9 @@ This repo uses progressively disclosed documentation.
   - `docs/notes/droid-cli-support.md`
     Factory Droid CLI probing evidence, accepted signals, and baseline
     detection/status behavior.
+  - `docs/notes/kimi-code-support.md`
+    Kimi Code (Moonshot Kimi CLI) probing evidence, accepted signals, and
+    baseline detection/status behavior.
   - `docs/notes/daemon-redesign-brief.md`
     Prepared target shape, migration slices, and harness risks for the future
     daemon redesign.
