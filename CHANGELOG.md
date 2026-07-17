@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0 - 2026-07-17
+
 ### Added
 
 - Kimi Code (Moonshot Kimi CLI) provider support: panes are classified from
