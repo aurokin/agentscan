@@ -46,11 +46,20 @@ pub(super) fn status(output: &str) -> Option<StatusKind> {
 
     // Spinnerless busy: the footer below the current box carries the running-task
     // chip or the turn-in-progress hint while a turn executes tools in the
-    // background. The box tail bound already proves these rows are current UI.
-    if frame
-        .lines_from(box_index)
-        .is_some_and(|lines| lines.iter().any(|line| kimi_footer_busy_line(line)))
-    {
+    // background. Scan only past the box's closing border so typed prompt text
+    // inside the box can never masquerade as footer chrome; the box tail bound
+    // already proves these rows are current UI.
+    let footer_busy = frame.lines_from(box_index).is_some_and(|lines| {
+        lines
+            .iter()
+            .position(|line| kimi_box_bottom_border_line(line))
+            .is_some_and(|offset| {
+                lines[offset + 1..]
+                    .iter()
+                    .any(|line| kimi_footer_busy_line(line))
+            })
+    });
+    if footer_busy {
         return Some(StatusKind::Busy);
     }
 
@@ -71,6 +80,10 @@ pub(super) fn status(output: &str) -> Option<StatusKind> {
 
 fn kimi_input_box_line(line: &str) -> bool {
     line.trim_start().starts_with(INPUT_BOX_MARKER)
+}
+
+fn kimi_box_bottom_border_line(line: &str) -> bool {
+    line.trim_start().starts_with('╰')
 }
 
 // Busy evidence in the status footer: the turn-in-progress hint, or a
@@ -176,6 +189,24 @@ mod tests {
         );
 
         assert_eq!(kimi.status.kind, StatusKind::Busy);
+    }
+
+    #[test]
+    fn kimi_code_pane_output_ignores_task_running_text_typed_into_the_box() {
+        // Chip/hint text inside the input box is user input, not footer chrome;
+        // the footer scan must start past the closing border.
+        let mut kimi = pane_output_status_pane(836, Provider::KimiCode, "notes");
+
+        classify::apply_pane_output_status_fallback(
+            &mut kimi,
+            "╭──────────────────────────────────────────────────────────╮\n\
+         │ > why does it say [1 task running] without waiting for   │\n\
+         │   the turn to finish?                                    │\n\
+         ╰──────────────────────────────────────────────────────────╯\n\
+         K3 thinking: max  ~/code/proj  main\n",
+        );
+
+        assert_eq!(kimi.status.kind, StatusKind::Idle);
     }
 
     #[test]
