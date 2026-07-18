@@ -1,0 +1,10 @@
+provider = "pi"
+cli_version = "unversioned"
+captured = "2026-07-17"
+cols = 60
+rows = 6
+expected_status = "idle"
+expected_source = "pane_output"
+origin = "hand-seeded"
+corroborators = ["0.0%/200k"]
+allow_other_providers = []

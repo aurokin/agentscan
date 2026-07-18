@@ -1,0 +1,10 @@
+provider = "claude"
+cli_version = "unversioned"
+captured = "2026-07-17"
+cols = 42
+rows = 4
+expected_status = "busy"
+expected_source = "pane_output"
+origin = "hand-seeded"
+corroborators = ["esc to interrupt"]
+allow_other_providers = ["opencode"]

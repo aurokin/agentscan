@@ -46,3 +46,4 @@ include!("tui.rs");
 include!("cli.rs");
 include!("ipc.rs");
 include!("config.rs");
+include!("corpus.rs");

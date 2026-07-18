@@ -1,0 +1,4 @@
+│ Build finished
+╹  Ask anything... "Fix a TODO in the codebase"
+   Build · gpt-5.1 OpenAI
+~/code/app                                                    /status

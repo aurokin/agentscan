@@ -1,0 +1,10 @@
+provider = "opencode"
+cli_version = "unversioned"
+captured = "2026-07-17"
+cols = 34
+rows = 4
+expected_status = "waiting"
+expected_source = "pane_output"
+origin = "hand-seeded"
+corroborators = ["Permission required", "Allow once", "Allow always"]
+allow_other_providers = []

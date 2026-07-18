@@ -1,0 +1,10 @@
+provider = "codex"
+cli_version = "unversioned"
+captured = "2026-07-17"
+cols = 78
+rows = 3
+expected_status = "idle"
+expected_source = "pane_output"
+origin = "hand-seeded"
+corroborators = ["tab to queue message", "context left"]
+allow_other_providers = []

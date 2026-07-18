@@ -1,0 +1,5 @@
+╭─ task ─╮
+│ working │
+╰─────────╯
+⚕ gpt-5.5 │ 65.4K/272K │ [██░░░░░░░░] 24% │ 2m │ ⏱ 1m 19s
+⚕ ❯ msg=interrupt · /queue · /bg · /steer · Ctrl+C cancel

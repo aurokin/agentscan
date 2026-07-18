@@ -1,0 +1,10 @@
+provider = "antigravity"
+cli_version = "1.0.1"
+captured = "2026-07-17"
+cols = 63
+rows = 12
+expected_status = "idle"
+expected_source = "pane_output"
+origin = "hand-seeded"
+corroborators = ["? for shortcuts"]
+allow_other_providers = []

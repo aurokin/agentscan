@@ -1,0 +1,10 @@
+provider = "droid"
+cli_version = "unversioned"
+captured = "2026-07-17"
+cols = 80
+rows = 5
+expected_status = "idle"
+expected_source = "pane_output"
+origin = "hand-seeded"
+corroborators = ["? for help"]
+allow_other_providers = ["kimi_code"]

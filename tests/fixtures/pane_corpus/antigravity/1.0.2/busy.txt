@@ -1,0 +1,8 @@
+● Read(/Users/auro/code/agentscan/src/app/proc.rs) (ctrl+o to expand)
+⡿ Generating...
+────────────────────────────────────────────────
+>
+────────────────────────────────────────────────
+esc to cancel                         Gemini 3.5 Flash (Medium)
+
+

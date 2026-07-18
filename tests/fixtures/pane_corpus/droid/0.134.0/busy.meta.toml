@@ -1,0 +1,10 @@
+provider = "droid"
+cli_version = "0.134.0"
+captured = "2026-07-17"
+cols = 80
+rows = 12
+expected_status = "busy"
+expected_source = "pane_output"
+origin = "hand-seeded"
+corroborators = ["Press ESC to stop"]
+allow_other_providers = ["kimi_code"]

@@ -1,0 +1,9 @@
+     ◆ Search "disable_reconcile" in src (28 matches)
+
+⠹ Thinking… 0.4s                              42s ⇣80.3k [✗]
+
+╭────────────────────────────────────────────────╮
+│ ❯                                                │
+╰──────────────── Grok Build · always-approve ─╯
+
+Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+Enter:interject  │  Ctrl+.:shortcuts

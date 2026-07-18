@@ -83,6 +83,11 @@ fn classifier_for(provider: Provider) -> Option<PaneOutputClassifier> {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn classify_output(provider: Provider, output: &str) -> Option<StatusKind> {
+    classifier_for(provider).and_then(|classifier| classifier(trim_trailing_blank_lines(output)))
+}
+
 /// Returns `output` with trailing blank (whitespace-only) lines removed.
 ///
 /// Only trailing *blank* rows are dropped; blank rows between content and trailing rendered

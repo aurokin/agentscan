@@ -1,0 +1,10 @@
+provider = "kimi_code"
+cli_version = "0.27.0"
+captured = "2026-07-17"
+cols = 80
+rows = 13
+expected_status = "idle"
+expected_source = "pane_output"
+origin = "hand-seeded"
+corroborators = []
+allow_other_providers = ["droid"]

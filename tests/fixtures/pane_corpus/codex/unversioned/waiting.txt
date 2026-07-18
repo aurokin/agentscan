@@ -1,0 +1,7 @@
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Run command?                                                                  │
+│                                                                              │
+│ › 1. Yes, proceed (y)                                                        │
+│   2. No, and tell Codex what to do differently                               │
+╰──────────────────────────────────────────────────────────────────────────────╯
+  Press enter to confirm or esc to cancel
