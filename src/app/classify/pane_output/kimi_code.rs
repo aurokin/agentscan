@@ -20,6 +20,14 @@ const SPINNER_WINDOW: usize = 12;
 // or two appearing in future releases. A box further up is stale scrollback (e.g.
 // above an approval dialog that replaced the prompt) and must not drive status.
 const INPUT_BOX_TAIL: usize = 8;
+// Newer kimi releases render long tool/task turns with a Todo panel above the box and
+// NO spinner; the busy evidence moves to the status footer below the box: a bracketed
+// `[N task(s) running]` chip and a guidance hint ending "without waiting for the turn
+// to finish" (observed live on K3, 2026-07-18). Both are scanned only below the
+// current box, where echoed agent output cannot appear.
+const TASK_RUNNING_CHIP: &str = "task running";
+const TASKS_RUNNING_CHIP: &str = "tasks running";
+const TURN_IN_PROGRESS_HINT: &str = "without waiting for the turn to finish";
 
 pub(super) fn status(output: &str) -> Option<StatusKind> {
     let frame = PaneOutputFrame::new(output);
@@ -32,6 +40,16 @@ pub(super) fn status(output: &str) -> Option<StatusKind> {
     if current_prompt_lines
         .iter()
         .any(|line| kimi_moon_spinner_line(line))
+    {
+        return Some(StatusKind::Busy);
+    }
+
+    // Spinnerless busy: the footer below the current box carries the running-task
+    // chip or the turn-in-progress hint while a turn executes tools in the
+    // background. The box tail bound already proves these rows are current UI.
+    if frame
+        .lines_from(box_index)
+        .is_some_and(|lines| lines.iter().any(|line| kimi_footer_busy_line(line)))
     {
         return Some(StatusKind::Busy);
     }
@@ -53,6 +71,30 @@ pub(super) fn status(output: &str) -> Option<StatusKind> {
 
 fn kimi_input_box_line(line: &str) -> bool {
     line.trim_start().starts_with(INPUT_BOX_MARKER)
+}
+
+// Busy evidence in the status footer: the turn-in-progress hint, or a
+// `[N task(s) running]` chip. The chip match is bracket-scoped so bracketed
+// prose elsewhere in the footer row cannot trip it accidentally.
+fn kimi_footer_busy_line(line: &str) -> bool {
+    if line.contains(TURN_IN_PROGRESS_HINT) {
+        return true;
+    }
+
+    let mut rest = line;
+    while let Some(start) = rest.find('[') {
+        let after = &rest[start + 1..];
+        let Some(end) = after.find(']') else {
+            break;
+        };
+        let inside = &after[..end];
+        if inside.contains(TASK_RUNNING_CHIP) || inside.contains(TASKS_RUNNING_CHIP) {
+            return true;
+        }
+        rest = &after[end + 1..];
+    }
+
+    false
 }
 
 fn kimi_moon_spinner_line(line: &str) -> bool {
@@ -98,6 +140,61 @@ mod tests {
         pane_output_status_pane,
     };
     use crate::app::{Provider, StatusKind};
+
+    #[test]
+    fn kimi_code_pane_output_marks_spinnerless_task_running_footer_busy() {
+        // Mirrors a real K3 frame (luma, 2026-07-18): a long tool turn renders a Todo
+        // panel above the box with NO spinner; busy evidence is the footer's
+        // `[1 task running]` chip and turn-in-progress hint below the box.
+        let mut kimi = pane_output_status_pane(833, Provider::KimiCode, "Go through this");
+
+        classify::apply_pane_output_status_fallback(
+            &mut kimi,
+            "  Todo\n\
+         ✓ Item 3: dedupe rows\n\
+         ● Item 5: adoption run, 70 min\n\
+         ╭──────────────────────────────────────────────╮\n\
+         │ >                                            │\n\
+         ╰──────────────────────────────────────────────╯\n\
+         yolo  K3 thinking: max  [1 task running]  ~/code/proj  main\n",
+        );
+
+        assert_eq!(kimi.status.kind, StatusKind::Busy);
+        assert_eq!(kimi.status.source, crate::app::StatusSource::PaneOutput);
+    }
+
+    #[test]
+    fn kimi_code_pane_output_marks_turn_in_progress_hint_busy() {
+        let mut kimi = pane_output_status_pane(834, Provider::KimiCode, "Go through this");
+
+        classify::apply_pane_output_status_fallback(
+            &mut kimi,
+            "╭──────────────────────────────────────────────╮\n\
+         │ >                                            │\n\
+         ╰──────────────────────────────────────────────╯\n\
+         ctrl-s to add guidance without waiting for the turn to finish\n",
+        );
+
+        assert_eq!(kimi.status.kind, StatusKind::Busy);
+    }
+
+    #[test]
+    fn kimi_code_pane_output_ignores_task_running_prose_above_the_box() {
+        // Bracketed chip text echoed in agent output above the box is content,
+        // not footer chrome; the pane stays idle.
+        let mut kimi = pane_output_status_pane(835, Provider::KimiCode, "notes");
+
+        classify::apply_pane_output_status_fallback(
+            &mut kimi,
+            "● The dashboard shows [1 task running] when the worker is live.\n\n\
+         ╭──────────────────────────────────────────────╮\n\
+         │ >                                            │\n\
+         ╰──────────────────────────────────────────────╯\n\
+         K3 thinking: max  ~/code/proj  main\n",
+        );
+
+        assert_eq!(kimi.status.kind, StatusKind::Idle);
+    }
 
     #[test]
     fn kimi_code_pane_output_marks_current_streaming_prompt_busy() {

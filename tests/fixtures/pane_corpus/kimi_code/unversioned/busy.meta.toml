@@ -1,0 +1,14 @@
+provider = "kimi_code"
+cli_version = "unversioned"
+captured = "2026-07-18"
+cols = 140
+rows = 17
+expected_status = "busy"
+expected_source = "pane_output"
+origin = "hand-seeded"
+# Structure sanitized from a live K3 frame (luma). No corroborator mutations:
+# the footer chip/hint ARE the busy evidence in this spinnerless style — their
+# removal yields the genuine idle frame (box + clean footer), not an ambiguous
+# variant, so a degrade-to-unknown mutation assertion does not apply.
+corroborators = []
+allow_other_providers = ["droid"]

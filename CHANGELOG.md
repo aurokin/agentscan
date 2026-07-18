@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Fixed
+
+- Kimi panes running long tool/task turns without the moon spinner (newer K3
+  frames render a Todo panel instead) no longer read as idle: the status
+  footer's `[N task(s) running]` chip and turn-in-progress hint below the
+  current input box now count as busy evidence, with a matching corpus
+  fixture captured from a live session.
+
 ### Added
 
 - Added a distinct `waiting` agent status for panes blocked on human input,
