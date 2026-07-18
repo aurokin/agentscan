@@ -182,7 +182,7 @@ Implications:
   live PID, and executable checks pass; this path parses only stable sidecar
   identity fields so older sidecar shapes can still be stopped safely
 - one-shot commands read a full snapshot frame and disconnect
-- TSV is an output adapter only, not the canonical store
+- TSV output was removed; the versioned JSON snapshot envelope is canonical
 - persisted cache JSON is not a supported IPC boundary
 - schema 5 added per-pane tmux active flags (`tmux.pane_active`,
   `tmux.window_active`) and the derived picker `is_active`

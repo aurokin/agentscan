@@ -64,10 +64,10 @@ pub(super) fn env_has_utf8_locale(read: impl Fn(&str) -> Option<String>) -> bool
 pub(super) fn run_tmux_output(args: &[&str], context: &str) -> Result<std::process::Output> {
     let mut command = tmux_command();
     let program_used = command.get_program().to_os_string();
-    let output = command
-        .args(args)
-        .output()
-        .with_context(|| format!("failed to execute {context}"))?;
+    let output = command.args(args).output().map_err(|error| {
+        let failure_context = tmux_execution_failure_context(context, error.kind());
+        anyhow::Error::new(error).context(failure_context)
+    })?;
     if output.status.success()
         || !tmux_dropped_fresh_client(&String::from_utf8_lossy(&output.stderr))
     {
@@ -94,6 +94,16 @@ pub(super) fn run_tmux_output(args: &[&str], context: &str) -> Result<std::proce
         .args(args)
         .output()
         .with_context(|| format!("failed to execute {context} (compatible-tmux retry)"))
+}
+
+fn tmux_execution_failure_context(context: &str, error_kind: std::io::ErrorKind) -> String {
+    if error_kind == std::io::ErrorKind::NotFound {
+        format!(
+            "failed to execute {context} — is tmux installed and on PATH? (`agentscan doctor` can check)"
+        )
+    } else {
+        format!("failed to execute {context}")
+    }
 }
 
 // The tmux client's words for "the server closed my connection during the
@@ -201,7 +211,7 @@ pub(super) fn run_tmux_text_output(
         if stderr.is_empty() {
             bail!("{failure_context} failed with status {}", output.status);
         }
-        bail!("{failure_context} failed: {stderr}");
+        bail!(tmux_failure_message(failure_context, &stderr));
     }
 
     String::from_utf8(output.stdout)
@@ -219,17 +229,28 @@ pub(super) fn run_tmux_status(args: &[&str], context: &str, failure_context: &st
     if stderr.is_empty() {
         bail!("{failure_context} failed with status {}", output.status);
     }
-    bail!("{failure_context} failed: {stderr}");
+    bail!(tmux_failure_message(failure_context, &stderr));
+}
+
+fn tmux_failure_message(failure_context: &str, stderr: &str) -> String {
+    if tmux_no_server_running(stderr) {
+        "no tmux server is running — start tmux and re-run (`agentscan doctor` can check your setup)"
+            .to_string()
+    } else {
+        format!("{failure_context} failed: {stderr}")
+    }
 }
 
 fn tmux_stderr(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stderr).trim().to_string()
 }
 
-// tmux prints "no server running on <socket>" when no server is up, which means
-// there are simply zero sessions rather than a failure.
+// tmux prints either "no server running on <socket>" or, before its socket
+// directory exists, "error connecting to <socket> (No such file or directory)"
+// when no server is up. Both mean there are simply zero sessions.
 pub(super) fn tmux_no_server_running(stderr: &str) -> bool {
     stderr.contains("no server running")
+        || (stderr.contains("error connecting to ") && stderr.contains("No such file or directory"))
 }
 
 pub(super) fn tmux_scope_target_is_missing(stderr: &str) -> bool {
@@ -349,7 +370,8 @@ pub(crate) fn list_session_ids() -> Result<Vec<String>> {
 mod tests {
     use super::{
         env_has_utf8_locale, refresh_compatible_tmux_with, resolve_compatible_tmux,
-        tmux_command_from_env, tmux_dropped_fresh_client, tmux_no_server_running,
+        tmux_command_from_env, tmux_dropped_fresh_client, tmux_execution_failure_context,
+        tmux_failure_message, tmux_no_server_running,
     };
     use crate::app::{TMUX_BIN_ENV_VAR, TMUX_SOCKET_ENV_VAR};
     use std::ffi::OsString;
@@ -462,10 +484,43 @@ mod tests {
         assert!(tmux_no_server_running(
             "no server running on /tmp/tmux-501/default"
         ));
+        assert!(tmux_no_server_running(
+            "error connecting to /private/var/folders/x/tmux-501/default (No such file or directory)"
+        ));
         // Real failures must not be mistaken for "zero sessions".
+        assert!(!tmux_no_server_running(
+            "error connecting to /tmp/x (Connection refused)"
+        ));
         assert!(!tmux_no_server_running("error connecting to server"));
         assert!(!tmux_no_server_running("can't find session: foo"));
         assert!(!tmux_no_server_running(""));
+    }
+
+    #[test]
+    fn no_server_failure_message_is_actionable() {
+        assert_eq!(
+            tmux_failure_message(
+                "tmux list-panes",
+                "error connecting to /tmp/tmux-501/default (No such file or directory)",
+            ),
+            "no tmux server is running — start tmux and re-run (`agentscan doctor` can check your setup)"
+        );
+        assert_eq!(
+            tmux_failure_message("tmux list-panes", "permission denied"),
+            "tmux list-panes failed: permission denied"
+        );
+    }
+
+    #[test]
+    fn missing_tmux_execution_context_includes_install_hint() {
+        assert_eq!(
+            tmux_execution_failure_context("tmux list-panes", std::io::ErrorKind::NotFound),
+            "failed to execute tmux list-panes — is tmux installed and on PATH? (`agentscan doctor` can check)"
+        );
+        assert_eq!(
+            tmux_execution_failure_context("tmux list-panes", std::io::ErrorKind::PermissionDenied),
+            "failed to execute tmux list-panes"
+        );
     }
 
     fn read_from<'a>(entries: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {

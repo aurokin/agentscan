@@ -170,9 +170,19 @@ jobs:
       - name: Package
         run: |
           mkdir -p dist
-          tar -C target/${{ matrix.target }}/release \
+          # Runner arch matches the target on every matrix row, so the built
+          # binary is runnable here to generate shell completions.
+          stage="$RUNNER_TEMP/package"
+          mkdir -p "$stage/completions"
+          cp target/${{ matrix.target }}/release/agentscan "$stage/"
+          cp LICENSE "$stage/"
+          binary="$stage/agentscan"
+          "$binary" completions bash > "$stage/completions/agentscan.bash"
+          "$binary" completions zsh > "$stage/completions/_agentscan"
+          "$binary" completions fish > "$stage/completions/agentscan.fish"
+          tar -C "$stage" \
               -czf dist/agentscan-${{ matrix.target }}.tar.gz \
-              agentscan
+              agentscan LICENSE completions
 
       - name: Package desktop app
         if: ${{ matrix.target == 'aarch64-apple-darwin' }}
@@ -377,6 +387,7 @@ jobs:
           class Agentscan < Formula
             desc "CLI and daemon for discovering and managing AI agent panes in tmux"
             homepage "https://github.com/aurokin/agentscan"
+            license "MIT"
 
             livecheck do
               url :stable
@@ -410,6 +421,9 @@ jobs:
 
             def install
               bin.install "agentscan"
+              bash_completion.install "completions/agentscan.bash"
+              zsh_completion.install "completions/_agentscan"
+              fish_completion.install "completions/agentscan.fish"
             end
 
             def caveats

@@ -75,12 +75,25 @@ fn dispatch() -> Result<()> {
             deny_root(&root_list_args, "doctor", RootFlags::NONE)?;
             command_doctor(&args)
         }
+        Some(Commands::Completions(args)) => {
+            deny_root(&root_list_args, "completions", RootFlags::NONE)?;
+            command_completions(&args, &mut std::io::stdout())
+        }
         None => command_list(&root_list_args),
     }
 }
 
 fn command_doctor(args: &DoctorArgs) -> Result<()> {
     doctor::run_doctor(*args)
+}
+
+pub(super) fn command_completions(
+    args: &CompletionsArgs,
+    writer: &mut dyn std::io::Write,
+) -> Result<()> {
+    let mut command = <Cli as clap::CommandFactory>::command();
+    clap_complete::generate(args.shell, &mut command, "agentscan", writer);
+    Ok(())
 }
 
 /// Which root-level (implicit-list) flags a subcommand accepts before its name.
