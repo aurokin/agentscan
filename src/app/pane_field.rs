@@ -31,6 +31,9 @@ enum PaneFieldId {
     AgentCwd,
     AgentState,
     AgentSessionId,
+    AgentPid,
+    AgentVersion,
+    AgentModel,
     PaneActive,
     WindowActive,
 }
@@ -97,6 +100,9 @@ const PANE_FIELDS: &[PaneField] = &[
     entry(AgentCwd, Agent, "#{@agent.cwd}", true),
     entry(AgentState, Agent, "#{@agent.state}", true),
     entry(AgentSessionId, Agent, "#{@agent.session_id}", true),
+    entry(AgentPid, Agent, "#{@agent.pid}", true),
+    entry(AgentVersion, Agent, "#{@agent.v}", true),
+    entry(AgentModel, Agent, "#{@agent.model}", true),
     entry(PaneActive, Active, "#{pane_active}", true),
     entry(WindowActive, Active, "#{window_active}", true),
 ];
@@ -177,6 +183,9 @@ pub(crate) const AGENT_CWD_OFFSET: usize = offset_within_block(AgentCwd, AgentPr
 pub(crate) const AGENT_STATE_OFFSET: usize = offset_within_block(AgentState, AgentProvider);
 pub(crate) const AGENT_SESSION_ID_OFFSET: usize =
     offset_within_block(AgentSessionId, AgentProvider);
+pub(crate) const AGENT_PID_OFFSET: usize = offset_within_block(AgentPid, AgentProvider);
+pub(crate) const AGENT_VERSION_OFFSET: usize = offset_within_block(AgentVersion, AgentProvider);
+pub(crate) const AGENT_MODEL_OFFSET: usize = offset_within_block(AgentModel, AgentProvider);
 
 pub(crate) const ACTIVE_PANE_OFFSET: usize = offset_within_block(PaneActive, PaneActive);
 pub(crate) const ACTIVE_WINDOW_OFFSET: usize = offset_within_block(WindowActive, PaneActive);

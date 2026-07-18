@@ -499,16 +499,18 @@ fn provider_counts_json(snapshot: &SnapshotEnvelope) -> Value {
 
 fn status_kind_counts_json(snapshot: &SnapshotEnvelope) -> Value {
     let mut busy = 0;
+    let mut waiting = 0;
     let mut idle = 0;
     let mut unknown = 0;
     for pane in &snapshot.panes {
         match pane.status.kind {
             StatusKind::Busy => busy += 1,
+            StatusKind::Waiting => waiting += 1,
             StatusKind::Idle => idle += 1,
             StatusKind::Unknown => unknown += 1,
         }
     }
-    json!({ "busy": busy, "idle": idle, "unknown": unknown })
+    json!({ "busy": busy, "waiting": waiting, "idle": idle, "unknown": unknown })
 }
 
 fn status_source_counts_json(snapshot: &SnapshotEnvelope) -> Value {
@@ -597,6 +599,11 @@ mod tests {
             PaneStatus::pane_output(StatusKind::Busy),
             Some(Provider::Codex),
         ));
+        snapshot.panes.push(pane_with_status(
+            "%5",
+            PaneStatus::pane_output(StatusKind::Waiting),
+            Some(Provider::Opencode),
+        ));
         snapshot
             .panes
             .push(pane_with_status("%4", PaneStatus::not_checked(), None));
@@ -604,13 +611,20 @@ mod tests {
         let tally = status_source_counts_json(&snapshot);
         assert_eq!(tally["pane_metadata"], json!(1));
         assert_eq!(tally["tmux_title"], json!(1));
-        assert_eq!(tally["pane_output"], json!(1));
+        assert_eq!(tally["pane_output"], json!(2));
         assert_eq!(tally["not_checked"], json!(1));
 
         let providers = provider_counts_json(&snapshot);
         assert_eq!(providers["codex"], json!(2));
         assert_eq!(providers["claude"], json!(1));
-        assert_eq!(agent_pane_count(&snapshot), 3);
+        assert_eq!(providers["opencode"], json!(1));
+        assert_eq!(agent_pane_count(&snapshot), 4);
+
+        let status_kinds = status_kind_counts_json(&snapshot);
+        assert_eq!(status_kinds["busy"], json!(2));
+        assert_eq!(status_kinds["waiting"], json!(1));
+        assert_eq!(status_kinds["idle"], json!(1));
+        assert_eq!(status_kinds["unknown"], json!(1));
     }
 
     #[test]

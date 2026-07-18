@@ -35,6 +35,25 @@ fn tui_render_rows_include_location_status_and_key_labels() {
 }
 
 #[test]
+fn tui_render_rows_give_waiting_a_distinct_status_glyph() {
+    let mut pane = tmux_pane_row(324027)
+        .session_name("notes")
+        .window_index(4)
+        .pane_id("%42")
+        .command("claude")
+        .title("Claude Code")
+        .current_path("/home/auro/notes")
+        .pane();
+    pane.status = PaneStatus::metadata(StatusKind::Waiting);
+
+    let mut key_targets = std::collections::BTreeMap::new();
+    super::tui::synchronize_key_targets(&mut key_targets, std::slice::from_ref(&pane));
+
+    let lines = super::tui::render_rows(&[pane], &key_targets);
+    assert_eq!(lines, vec!["[1] 🟠 👾 notes:4.1 - Claude Code"]);
+}
+
+#[test]
 fn tui_render_frame_includes_workspace_and_full_location_for_cwd_grouping() {
     let pane = tmux_pane_row(324026)
         .session_name("notes")
@@ -903,6 +922,9 @@ fn tui_frame_writer_sanitizes_tmux_controlled_labels() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        agent_pid: None,
+        agent_version: None,
+        agent_model: None,
         pane_active: false,
         window_active: false,
     });

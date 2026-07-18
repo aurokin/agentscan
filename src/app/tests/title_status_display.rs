@@ -416,6 +416,9 @@ fn cursor_cli_generic_titles_fall_back_to_window_name_for_display() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        agent_pid: None,
+        agent_version: None,
+        agent_model: None,
         pane_active: false,
         window_active: false,
     });
@@ -451,6 +454,9 @@ fn cursor_cli_title_only_panes_stay_unknown_from_bare_cursor_titles() {
             agent_cwd: None,
             agent_state: None,
             agent_session_id: None,
+            agent_pid: None,
+            agent_version: None,
+            agent_model: None,
             pane_active: false,
             window_active: false,
         });
@@ -487,6 +493,9 @@ fn cursor_cli_generic_status_titles_fall_back_for_display() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        agent_pid: None,
+        agent_version: None,
+        agent_model: None,
         pane_active: false,
         window_active: false,
     });
@@ -513,6 +522,9 @@ fn cursor_cli_generic_status_titles_fall_back_for_display() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        agent_pid: None,
+        agent_version: None,
+        agent_model: None,
         pane_active: false,
         window_active: false,
     });
@@ -542,6 +554,9 @@ fn cursor_cli_task_titles_still_drive_display_label() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        agent_pid: None,
+        agent_version: None,
+        agent_model: None,
         pane_active: false,
         window_active: false,
     });
@@ -575,6 +590,9 @@ fn cursor_cli_metadata_alias_classifies_generic_shell_panes() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        agent_pid: None,
+        agent_version: None,
+        agent_model: None,
         pane_active: false,
         window_active: false,
     });
@@ -609,6 +627,9 @@ fn cursor_agent_prefixed_task_titles_still_drive_display_label() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        agent_pid: None,
+        agent_version: None,
+        agent_model: None,
         pane_active: false,
         window_active: false,
     });
@@ -675,22 +696,61 @@ fn pi_default_titles_do_not_invent_activity_labels() {
 }
 
 #[test]
-fn metadata_state_fills_unknown_status_without_overriding_title_signal() {
+fn metadata_state_precedes_title_status_and_unknown_falls_through() {
     let unknown_from_title = classify::infer_title_status(
         Some(Provider::Codex),
         Some(super::ClassificationMatchKind::PaneTitle),
         "(bront) repo: codex",
     );
-    let busy_from_metadata = classify::infer_status(unknown_from_title, Some("busy"));
+    let busy_from_metadata = classify::infer_status(unknown_from_title.clone(), Some("busy"));
     assert_eq!(busy_from_metadata.kind, StatusKind::Busy);
+
+    let waiting_from_metadata =
+        classify::infer_status(unknown_from_title.clone(), Some(" WAITING "));
+    assert_eq!(waiting_from_metadata.kind, StatusKind::Waiting);
+    assert_eq!(waiting_from_metadata.source, super::StatusSource::PaneMetadata);
+
+    let absent_metadata = classify::infer_status(unknown_from_title.clone(), None);
+    assert_eq!(absent_metadata.kind, StatusKind::Unknown);
+    assert_eq!(absent_metadata.source, super::StatusSource::NotChecked);
+
+    let unrecognized_from_metadata = classify::infer_status(unknown_from_title, Some("blocked"));
+    assert_eq!(unrecognized_from_metadata.kind, StatusKind::Unknown);
+    assert_eq!(
+        unrecognized_from_metadata.source,
+        super::StatusSource::NotChecked
+    );
 
     let idle_from_title = classify::infer_title_status(
         Some(Provider::Codex),
         Some(super::ClassificationMatchKind::PaneTitle),
         "Ready",
     );
-    let still_idle = classify::infer_status(idle_from_title, Some("busy"));
-    assert_eq!(still_idle.kind, StatusKind::Idle);
+    let metadata_busy = classify::infer_status(idle_from_title.clone(), Some("busy"));
+    assert_eq!(metadata_busy.kind, StatusKind::Busy);
+    assert_eq!(metadata_busy.source, super::StatusSource::PaneMetadata);
+
+    let explicit_unknown = classify::infer_status(idle_from_title, Some("unknown"));
+    assert_eq!(explicit_unknown.kind, StatusKind::Idle);
+    assert_eq!(explicit_unknown.source, super::StatusSource::TmuxTitle);
+}
+
+#[test]
+fn title_status_heuristics_never_emit_waiting() {
+    let cases = [
+        (Provider::Claude, "Claude Code | Waiting"),
+        (Provider::Codex, "Working"),
+        (Provider::Opencode, "OC | Action Required"),
+    ];
+
+    for (provider, title) in cases {
+        let status = classify::infer_title_status(
+            Some(provider),
+            Some(super::ClassificationMatchKind::PaneTitle),
+            title,
+        );
+        assert_ne!(status.kind, StatusKind::Waiting, "title: {title}");
+    }
 }
 
 #[test]

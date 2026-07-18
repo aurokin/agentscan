@@ -57,7 +57,12 @@ pub(super) fn status(output: &str) -> Option<StatusKind> {
             input_box_index,
         )
     {
-        return Some(StatusKind::Busy);
+        let kind = if frame.line(index).is_some_and(opencode_waiting_marker_line) {
+            StatusKind::Waiting
+        } else {
+            StatusKind::Busy
+        };
+        return Some(kind);
     }
 
     idle_index.map(|_| StatusKind::Idle)
@@ -289,6 +294,11 @@ fn opencode_current_busy_marker_line(line: &str) -> bool {
     opencode_interrupt_hint_line(line)
         || opencode_permission_prompt_line(line)
         || opencode_question_prompt_line(line)
+}
+
+fn opencode_waiting_marker_line(line: &str) -> bool {
+    let line = line.trim();
+    opencode_permission_prompt_line(line) || line.contains(OPENCODE_WAITING_QUESTION_MARKER)
 }
 
 fn opencode_interrupt_hint_line(line: &str) -> bool {

@@ -29,14 +29,14 @@ pub(super) fn infer_title_status_from_analysis(
 }
 
 pub(crate) fn infer_status(title_status: PaneStatus, published_state: Option<&str>) -> PaneStatus {
-    if title_status.kind != StatusKind::Unknown {
-        return title_status;
-    }
-
     match published_state.map(|value| value.trim().to_ascii_lowercase()) {
         Some(state) if state == "busy" => PaneStatus::metadata(StatusKind::Busy),
         Some(state) if state == "idle" => PaneStatus::metadata(StatusKind::Idle),
-        Some(state) if state == "unknown" => PaneStatus::metadata(StatusKind::Unknown),
+        Some(state) if state == "waiting" => PaneStatus::metadata(StatusKind::Waiting),
+        // A trusted literal `unknown` is explicit but intentionally yields to
+        // heuristics: the publisher has no answer, while the title or current
+        // pane output may still provide a useful status.
+        Some(state) if state == "unknown" => title_status,
         _ => title_status,
     }
 }

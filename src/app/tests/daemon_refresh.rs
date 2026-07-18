@@ -83,6 +83,9 @@ fn daemon_refresh_row(
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        agent_pid: None,
+        agent_version: None,
+        agent_model: None,
         pane_active: false,
         window_active: false,
     }
@@ -839,6 +842,9 @@ fn targeted_proc_recovery_resolves_unprovidered_agent_candidate() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        agent_pid: None,
+        agent_version: None,
+        agent_model: None,
         pane_active: false,
         window_active: false,
     });

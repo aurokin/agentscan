@@ -276,6 +276,8 @@ export function statusTone(kind: string): string {
       return "busy";
     case "idle":
       return "idle";
+    case "waiting":
+      return "waiting";
     case "error":
       return "error";
     default:

@@ -80,8 +80,9 @@ fn print_list_text(panes: &[PaneRecord], icon_mode: IconMode) -> Result<()> {
         let provider = provider_display_marker(pane.provider, icon_mode);
 
         lines.push(format!(
-            "{} {}:{}.{} - {}",
+            "{} [{}] {}:{}.{} - {}",
             provider,
+            pane.status.kind.as_str(),
             pane.location.session_name,
             pane.location.window_index,
             pane.location.pane_index,
@@ -213,6 +214,9 @@ pub(super) fn inspect_text(pane: &PaneRecord) -> String {
         || pane.agent_metadata.cwd.is_some()
         || pane.agent_metadata.state.is_some()
         || pane.agent_metadata.session_id.is_some()
+        || pane.agent_metadata.pid.is_some()
+        || pane.agent_metadata.v.is_some()
+        || pane.agent_metadata.model.is_some()
     {
         lines.extend([
             "agent_metadata:".to_string(),
@@ -245,6 +249,21 @@ pub(super) fn inspect_text(pane: &PaneRecord) -> String {
                 "  session_id: {}",
                 default_if_empty(
                     pane.agent_metadata.session_id.as_deref().unwrap_or(""),
+                    "<empty>"
+                )
+            ),
+            format!(
+                "  pid: {}",
+                default_if_empty(pane.agent_metadata.pid.as_deref().unwrap_or(""), "<empty>")
+            ),
+            format!(
+                "  v: {}",
+                default_if_empty(pane.agent_metadata.v.as_deref().unwrap_or(""), "<empty>")
+            ),
+            format!(
+                "  model: {}",
+                default_if_empty(
+                    pane.agent_metadata.model.as_deref().unwrap_or(""),
                     "<empty>"
                 )
             ),

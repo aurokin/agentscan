@@ -297,7 +297,7 @@ export const appearanceAtom = Atom.keepAlive(
   runtime.subscriptionRef(Effect.map(Appearance, (a) => a.state)),
 );
 
-// The opt-in agent-finished notification preference both windows observe. Transition
+// The opt-in agent-finished/needs-you notification preference both windows observe. Transition
 // detection and native delivery stay in DockApp so Settings never consumes live state.
 export const notificationsAtom = Atom.keepAlive(
   runtime.subscriptionRef(Effect.map(Notifications, (n) => n.state)),

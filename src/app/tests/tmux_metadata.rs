@@ -7,6 +7,9 @@ fn tmux_metadata_updates_emit_expected_option_values() {
         cwd: Some("/tmp/notes".to_string()),
         state: Some(StatusKind::Busy),
         session_id: Some("sess-123".to_string()),
+        pid: Some(" 4242 ".to_string()),
+        contract_version: Some(" 1 ".to_string()),
+        model: Some(" claude-opus-4-1 ".to_string()),
     };
 
     let updates = tmux::tmux_metadata_updates(&args);
@@ -18,6 +21,9 @@ fn tmux_metadata_updates_emit_expected_option_values() {
             ("@agent.cwd", "/tmp/notes".to_string()),
             ("@agent.state", "busy".to_string()),
             ("@agent.session_id", "sess-123".to_string()),
+            ("@agent.pid", "4242".to_string()),
+            ("@agent.v", "1".to_string()),
+            ("@agent.model", "claude-opus-4-1".to_string()),
         ]
     );
 }
@@ -32,6 +38,9 @@ fn tmux_metadata_fields_to_clear_defaults_to_all_fields() {
             "@agent.cwd",
             "@agent.state",
             "@agent.session_id",
+            "@agent.pid",
+            "@agent.v",
+            "@agent.model",
         ]
     );
 }
@@ -43,8 +52,17 @@ fn tmux_metadata_fields_to_clear_maps_selected_fields() {
             TmuxMetadataField::Provider,
             TmuxMetadataField::State,
             TmuxMetadataField::SessionId,
+            TmuxMetadataField::Pid,
+            TmuxMetadataField::V,
+            TmuxMetadataField::Model,
         ]),
-        vec!["@agent.provider", "@agent.state", "@agent.session_id"]
+        vec![
+            "@agent.provider",
+            "@agent.state",
+            "@agent.session_id",
+            "@agent.pid",
+            "@agent.v",
+            "@agent.model"
+        ]
     );
 }
-

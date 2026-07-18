@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### Added
+
+- Added a distinct `waiting` agent status for panes blocked on human input,
+  sourced only from published `@agent.state=waiting` metadata and current
+  Claude Code, OpenCode, or Codex approval/question markers in pane output.
+- Added a distinct orange waiting dot to the desktop picker for agents blocked
+  on human input.
+- Desktop notifications now report agents that are waiting on you, and report
+  when waiting agents finish, under the existing agent-finished preference.
+- Added `@agent.pid`, `@agent.v`, and `@agent.model` pane metadata, including
+  optional model enrichment in schema-7 snapshots and inspect output.
+- Extended `tmux set-metadata` and `tmux clear-metadata` with `pid`, `v`, and
+  `model` fields.
+
+### Changed
+
+- Snapshot schema version is now 7 to add the `waiting` status wire value;
+  the versioned doctor report schema is now 2 so its status counts can expose
+  `waiting` distinctly as well.
+- Trusted explicit `@agent.state` values now take precedence over title
+  heuristics, and panes with a concrete metadata status skip pane-output
+  capture fallback.
+- When `@agent.pid` is published, agentscan now trusts the entire `@agent.*`
+  block only while that positive pid is live in the pane's process tree;
+  stale, unrelated, or malformed pid metadata is ignored as a whole. Pid-less
+  metadata keeps the existing v0 compatibility behavior.
+
 ## 0.10.0 - 2026-07-17
 
 ### Added

@@ -1170,49 +1170,50 @@ impl<S: StartupActions> DaemonRuntime<S> {
             self.next_reconcile_at = Instant::now() + self.reconcile_interval();
         }
         // Re-arm (or clear) the settle deadline from the current snapshot: any refresh that
-        // leaves a pane-output provider busy means we must re-read it once the event stream
-        // goes quiet. Activity-bearing refreshes keep pushing the deadline out; the pass only
-        // fires after the turn's output stops.
+        // leaves a pane-output provider busy or waiting means we must re-read it once the event
+        // stream goes quiet. Activity-bearing refreshes keep pushing the deadline out; the pass
+        // only fires after the turn's output stops.
         self.update_settle_deadline();
         Ok(outcome.should_exit)
     }
 
     /// Maintain `settle_recapture_at` as a steady re-check deadline whenever any pane reads
-    /// busy from captured pane output. Such a status has no tmux event to refresh it when the
-    /// turn ends, so the daemon polls it: the deadline is armed once when a busy pane-output
-    /// pane appears and is left alone while set, so unrelated panes' activity cannot push it
-    /// out (which would starve the re-check). It is re-armed after each fire and cleared once
-    /// no pane-output pane is busy.
+    /// busy or waiting from captured pane output. Such a status has no tmux event to refresh it
+    /// when the turn ends, so the daemon polls it: the deadline is armed once when an active
+    /// pane-output pane appears and is left alone while set, so unrelated panes' activity cannot
+    /// push it out (which would starve the re-check). It is re-armed after each fire and cleared
+    /// once no pane-output pane is busy or waiting.
     fn update_settle_deadline(&mut self) {
-        let has_busy_pane_output = self.snapshot.panes.iter().any(|pane| {
-            pane.status.source == StatusSource::PaneOutput && pane.status.kind == StatusKind::Busy
+        let has_active_pane_output = self.snapshot.panes.iter().any(|pane| {
+            pane.status.source == StatusSource::PaneOutput
+                && matches!(pane.status.kind, StatusKind::Busy | StatusKind::Waiting)
         });
         self.settle_recapture_at = next_settle_deadline(
-            has_busy_pane_output,
+            has_active_pane_output,
             self.settle_recapture_at,
             Instant::now(),
             PANE_OUTPUT_SETTLE_DELAY,
         );
     }
 
-    /// Re-read pane-output providers currently believed busy, to catch an idle transition that
-    /// emitted no tmux event. The cache entry is invalidated first so the re-read forces a
-    /// fresh capture (a `Busy` pane is otherwise not a fallback candidate).
+    /// Re-read pane-output providers currently believed busy or waiting, to catch an idle
+    /// transition that emitted no tmux event. The cache entry is invalidated first so the
+    /// re-read forces a fresh capture (these panes are otherwise not fallback candidates).
     fn apply_settle_recapture_refresh(
         &mut self,
         pre_refresh: Option<&SnapshotEnvelope>,
     ) -> Result<RefreshOutcome> {
-        let busy_ids: Vec<String> = self
+        let active_ids: Vec<String> = self
             .snapshot
             .panes
             .iter()
             .filter(|pane| {
                 pane.status.source == StatusSource::PaneOutput
-                    && pane.status.kind == StatusKind::Busy
+                    && matches!(pane.status.kind, StatusKind::Busy | StatusKind::Waiting)
             })
             .map(|pane| pane.pane_id.clone())
             .collect();
-        if busy_ids.is_empty() {
+        if active_ids.is_empty() {
             return Ok(RefreshOutcome::no_publish());
         }
 
@@ -1229,7 +1230,7 @@ impl<S: StartupActions> DaemonRuntime<S> {
         // the control-event batch path.
         let proc_inspector = proc::ProcProcessInspector;
         let proc_snapshot = proc::LazyProcessSnapshot::new(&proc_inspector);
-        for pane_id in &busy_ids {
+        for pane_id in &active_ids {
             self.pane_output_cache.invalidate(pane_id);
             refresh_snapshot_pane_with_title(
                 &mut self.snapshot,
@@ -2183,6 +2184,9 @@ mod pane_focus_recency_tests {
                         agent_cwd: None,
                         agent_state: None,
                         agent_session_id: None,
+                        agent_pid: None,
+                        agent_version: None,
+                        agent_model: None,
                         pane_active: false,
                         window_active: false,
                     })

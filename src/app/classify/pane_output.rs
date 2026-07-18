@@ -49,7 +49,7 @@ pub(crate) fn apply_pane_output_status_fallback(pane: &mut PaneRecord, output: &
     let output = trim_trailing_blank_lines(output);
 
     if let Some(kind) = classifier(output)
-        && (can_fill_unknown || kind == StatusKind::Busy)
+        && (can_fill_unknown || matches!(kind, StatusKind::Busy | StatusKind::Waiting))
     {
         pane.status = PaneStatus::pane_output(kind);
     }

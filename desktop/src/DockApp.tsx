@@ -43,11 +43,11 @@ import type { PreflightState } from "./effect/Preflight";
 import { loadAppearance } from "./effect/appearanceModel";
 import {
   detectStatusTransitions,
-  idleTransitions,
+  notificationTransitions,
   NOTIFY_ON_IDLE_STORAGE_KEY,
   parseNotifyOnIdle,
 } from "./effect/notificationsModel";
-import { notifyAgentFinished } from "./effect/notify";
+import { notifyAgentFinished, notifyAgentWaiting } from "./effect/notify";
 import {
   commandPrefix,
   committedProfileValidation,
@@ -194,8 +194,10 @@ function DockApp() {
     const transitions = detectStatusTransitions(previousLiveStatesRef.current, liveStates);
     previousLiveStatesRef.current = liveStates;
 
-    if (notifyOnIdle) {
-      for (const transition of idleTransitions(transitions)) {
+    for (const transition of notificationTransitions(transitions, notifyOnIdle)) {
+      if (transition.notification === "waiting") {
+        void notifyAgentWaiting(transition.provider, transition.label);
+      } else {
         void notifyAgentFinished(transition.provider, transition.label);
       }
     }

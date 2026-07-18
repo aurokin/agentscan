@@ -6,7 +6,7 @@
       "pane_id": "%41",
       "provider": "claude",
       "status": {
-        "kind": "busy",
+        "kind": "waiting",
         "source": "pane_metadata"
       },
       "display": {

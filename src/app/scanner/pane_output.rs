@@ -405,6 +405,24 @@ mod tests {
     }
 
     #[test]
+    fn trusted_explicit_status_skips_pane_output_capture() {
+        let mut panes = vec![pane(
+            "%1",
+            Some(Provider::Codex),
+            PaneStatus::metadata(StatusKind::Busy),
+        )];
+        panes[0].agent_metadata.state = Some("busy".to_string());
+        panes[0].agent_metadata.pid = Some("100".to_string());
+        let mut capture = FakePaneOutputCapture::default().with_output("%1", codex_idle_output());
+
+        let stats = apply_pane_output_status_fallbacks_with_capture(&mut panes, &mut capture);
+
+        assert_eq!(capture.call_count(), 0);
+        assert_eq!(stats.attempt_count, 0);
+        assert_eq!(panes[0].status, PaneStatus::metadata(StatusKind::Busy));
+    }
+
+    #[test]
     fn pane_output_cache_reuses_recent_status_for_matching_key() {
         let now = Instant::now();
         let mut cache = PaneOutputStatusCache::new(Duration::from_secs(2));

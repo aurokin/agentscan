@@ -28,7 +28,15 @@ pub(super) fn status(output: &str) -> Option<StatusKind> {
             claude_busy_marker_is_near_current_prompt(&frame, index, prompt_index)
         })
     {
-        return Some(StatusKind::Busy);
+        let kind = if frame
+            .line(index)
+            .is_some_and(claude_waiting_permission_line)
+        {
+            StatusKind::Waiting
+        } else {
+            StatusKind::Busy
+        };
+        return Some(kind);
     }
 
     prompt_index

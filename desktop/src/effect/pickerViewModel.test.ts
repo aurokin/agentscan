@@ -8,6 +8,7 @@ import {
   mruVisiblePaneId,
   pickerStateFromLive,
   reconcileSelection,
+  statusTone,
   type PickerActivation,
 } from "./pickerViewModel";
 import type { LiveStates } from "./LiveConnection";
@@ -30,6 +31,15 @@ const liveOnline = (rows: PickerRow[], rowsRunnerKey: string | null): LiveState 
 });
 
 const IDLE: PickerActivation = { status: "idle" };
+
+describe("statusTone", () => {
+  it("renders waiting distinctly and keeps unknown kinds tolerant", () => {
+    expect(statusTone("busy")).toBe("busy");
+    expect(statusTone("idle")).toBe("idle");
+    expect(statusTone("waiting")).toBe("waiting");
+    expect(statusTone("future-status")).toBe("unknown");
+  });
+});
 
 describe("pickerStateFromLive", () => {
   it("keeps showing the last rows while reconnecting (no skeleton flash)", () => {

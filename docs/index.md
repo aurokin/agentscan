@@ -15,6 +15,10 @@ This repo uses progressively disclosed documentation.
   Runtime model, daemon/socket contract, command families, and architectural guardrails.
 - `docs/integration.md`
   Wrapper metadata contract, daemon-backed automation surfaces, shell boundary, and migration posture.
+- `docs/metadata-contract.md`
+  Canonical `@agent.*` pane metadata specification for agent CLI and wrapper
+  authors: transport, fields, state semantics, the pid trust rule, precedence,
+  and emitter recipes.
 - `docs/daemon-operations.md`
   Daemon auto-start, status JSON, telemetry, broker fallback, and operational
   troubleshooting.

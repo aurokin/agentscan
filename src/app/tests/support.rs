@@ -24,6 +24,9 @@ impl TmuxPaneRowBuilder {
                 agent_cwd: None,
                 agent_state: None,
                 agent_session_id: None,
+                agent_pid: None,
+                agent_version: None,
+                agent_model: None,
                 pane_active: false,
                 window_active: false,
             },
@@ -97,6 +100,31 @@ impl TmuxPaneRowBuilder {
 
     fn agent_cwd(mut self, agent_cwd: impl Into<String>) -> Self {
         self.row.agent_cwd = Some(agent_cwd.into());
+        self
+    }
+
+    fn agent_state(mut self, agent_state: impl Into<String>) -> Self {
+        self.row.agent_state = Some(agent_state.into());
+        self
+    }
+
+    fn agent_pid(mut self, agent_pid: impl Into<String>) -> Self {
+        self.row.agent_pid = Some(agent_pid.into());
+        self
+    }
+
+    fn agent_version(mut self, agent_version: impl Into<String>) -> Self {
+        self.row.agent_version = Some(agent_version.into());
+        self
+    }
+
+    fn agent_model(mut self, agent_model: impl Into<String>) -> Self {
+        self.row.agent_model = Some(agent_model.into());
+        self
+    }
+
+    fn agent_session_id(mut self, agent_session_id: impl Into<String>) -> Self {
+        self.row.agent_session_id = Some(agent_session_id.into());
         self
     }
 

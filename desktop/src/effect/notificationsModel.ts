@@ -23,6 +23,10 @@ export type StatusTransition = {
   to: string;
 };
 
+export type StatusNotification = StatusTransition & {
+  notification: "finished" | "waiting";
+};
+
 export function detectStatusTransitions(
   prev: ReadonlyMap<string, LiveState> | LiveStates,
   next: LiveStates,
@@ -54,5 +58,33 @@ export function detectStatusTransitions(
   return transitions;
 }
 
+const isIdleTransition = ({ from, to }: StatusTransition): boolean =>
+  (from === "busy" || from === "waiting") && to === "idle";
+
+const isWaitingTransition = ({ from, to }: StatusTransition): boolean =>
+  from !== "waiting" && to === "waiting";
+
 export const idleTransitions = (transitions: StatusTransition[]): StatusTransition[] =>
-  transitions.filter(({ from, to }) => from === "busy" && to === "idle");
+  transitions.filter(isIdleTransition);
+
+export const waitingTransitions = (transitions: StatusTransition[]): StatusTransition[] =>
+  transitions.filter(isWaitingTransition);
+
+export function notificationTransitions(
+  transitions: StatusTransition[],
+  enabled: boolean,
+): StatusNotification[] {
+  if (!enabled) {
+    return [];
+  }
+
+  return transitions.flatMap((transition): StatusNotification[] => {
+    if (isWaitingTransition(transition)) {
+      return [{ ...transition, notification: "waiting" }];
+    }
+    if (isIdleTransition(transition)) {
+      return [{ ...transition, notification: "finished" }];
+    }
+    return [];
+  });
+}

@@ -14,6 +14,7 @@ pub(crate) enum SourceKind {
 pub(crate) enum StatusKind {
     Idle,
     Busy,
+    Waiting,
     Unknown,
 }
 
@@ -212,6 +213,12 @@ pub(crate) struct AgentMetadata {
     pub(crate) cwd: Option<String>,
     pub(crate) state: Option<String>,
     pub(crate) session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) pid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) v: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) model: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -248,6 +255,9 @@ pub(crate) struct TmuxPaneRow {
     pub(crate) agent_cwd: Option<String>,
     pub(crate) agent_state: Option<String>,
     pub(crate) agent_session_id: Option<String>,
+    pub(crate) agent_pid: Option<String>,
+    pub(crate) agent_version: Option<String>,
+    pub(crate) agent_model: Option<String>,
     pub(crate) pane_active: bool,
     pub(crate) window_active: bool,
 }
@@ -299,6 +309,7 @@ impl StatusKind {
         match self {
             Self::Idle => "idle",
             Self::Busy => "busy",
+            Self::Waiting => "waiting",
             Self::Unknown => "unknown",
         }
     }
