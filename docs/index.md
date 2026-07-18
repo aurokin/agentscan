@@ -5,7 +5,8 @@ This repo uses progressively disclosed documentation.
 ## Where To Read
 
 - `README.md`
-  Operator-facing overview, current scope, quality baseline, and primary commands.
+  Consumer-facing overview: what agentscan does, install, quickstart, privacy
+  posture, configuration, and primary commands.
 - `ROADMAP.md`
   Durable product direction, boundaries, and decision log.
 - `CHANGELOG.md`
@@ -79,6 +80,15 @@ This repo uses progressively disclosed documentation.
     daemon redesign.
   - `docs/notes/daemon-redesign-decisions.md`
     Running implementation decision log for daemon redesign slices.
+  - `docs/notes/shipped-scope.md`
+    Detailed capability inventory and architecture summary relocated from the
+    README.
+  - `docs/notes/automation-migration.md`
+    Automation contract summary and migration guidance off removed
+    machine-readable surfaces, relocated from the README.
+  - `docs/notes/reference-shell-workflow.md`
+    Historical `~/.dotfiles` shell-workflow context and reference-behavior
+    design inputs, relocated from the README.
   - `docs/notes/desktop-spike-closeout.md`
     Stop/go decision, evidence, known gaps, and follow-up backlog map for the
     first macOS desktop spike.
