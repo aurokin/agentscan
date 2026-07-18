@@ -2732,6 +2732,43 @@ fn kimi_code_pane_output_withholds_status_from_bare_moon_line_near_prompt() {
 }
 
 #[test]
+fn kimi_code_pane_output_withholds_idle_from_braille_spinner_shape() {
+    let mut kimi = pane_output_status_pane(838, Provider::KimiCode, "reply with exactly OK");
+
+    classify::apply_pane_output_status_fallback(
+        &mut kimi,
+        "● Still working.\n\n\
+         ⠋ · Tip: use @ to include files\n\n\
+         ╭──────────────────────────────────────────────────────────────────────────────╮\n\
+         │ >                                                                            │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯\n\
+         K2.7 Coding thinking  ~/code/agentscan  main                    ctrl+c: cancel\n\
+         context: 9% (22k/256k)\n",
+    );
+
+    assert_eq!(kimi.status.kind, StatusKind::Unknown);
+    assert_eq!(kimi.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn kimi_code_pane_output_withholds_status_from_unknown_spinner_glyph() {
+    let mut kimi = pane_output_status_pane(839, Provider::KimiCode, "reply with exactly OK");
+
+    classify::apply_pane_output_status_fallback(
+        &mut kimi,
+        "◆ · Tip: future spinner style\n\n\
+         ╭──────────────────────────────────────────────────────────────────────────────╮\n\
+         │ >                                                                            │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯\n\
+         K2.7 Coding thinking  ~/code/agentscan  main                    ctrl+c: cancel\n\
+         context: 9% (22k/256k)\n",
+    );
+
+    assert_eq!(kimi.status.kind, StatusKind::Unknown);
+    assert_eq!(kimi.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
 fn kimi_code_pane_output_ignores_stale_input_box_above_replacement_ui() {
     // When an approval dialog (or another alternate UI) replaces the prompt, the last
     // input box survives in scrollback well above the bottom of the frame. The stale box
@@ -3955,6 +3992,42 @@ fn cursor_cli_pane_output_marks_run_everything_footer_idle() {
 }
 
 #[test]
+fn cursor_cli_pane_output_marks_restyled_prompt_idle_from_footer_chrome() {
+    let mut cursor = pane_output_status_pane(761, Provider::CursorCli, "Cursor Agent");
+
+    classify::apply_pane_output_status_fallback(
+        &mut cursor,
+        "  Cursor Agent\n\
+         \n\
+         ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄\n\
+          → Ask Cursor anything\n\
+         ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+          Composer 2.5                                                   Auto-run -- INSERT --\n\
+          /private/tmp/agentscan-cursor-smoke · main\n",
+    );
+
+    assert_eq!(cursor.status.kind, StatusKind::Idle);
+    assert_eq!(cursor.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn cursor_cli_pane_output_withholds_status_without_current_prompt_chrome() {
+    let mut cursor = pane_output_status_pane(762, Provider::CursorCli, "Cursor Agent");
+
+    classify::apply_pane_output_status_fallback(
+        &mut cursor,
+        "  Cursor Agent\n\
+         \n\
+           → Ask Cursor anything\n\
+         \n\
+         response text with no current composer or path footer\n",
+    );
+
+    assert_eq!(cursor.status.kind, StatusKind::Unknown);
+    assert_eq!(cursor.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
 fn cursor_cli_pane_output_marks_borderless_stop_hint_busy() {
     let mut cursor = pane_output_status_pane(759, Provider::CursorCli, "Command Runner");
 
@@ -4237,6 +4310,36 @@ fn gemini_pane_output_marks_action_required_busy() {
 
     assert_eq!(gemini.status.kind, StatusKind::Busy);
     assert_eq!(gemini.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn gemini_pane_output_ignores_chromeless_action_required_prose() {
+    let mut gemini = pane_output_status_pane(784, Provider::Gemini, "Gemini CLI");
+
+    classify::apply_pane_output_status_fallback(
+        &mut gemini,
+        ">   Type your message or @path/to/file\n\
+         Workspace   Sandbox    Model\n\
+         The phrase Action Required can appear in generated documentation.\n",
+    );
+
+    assert_eq!(gemini.status.kind, StatusKind::Idle);
+    assert_eq!(gemini.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn gemini_pane_output_withholds_status_from_chromeless_busy_marker() {
+    let mut gemini = pane_output_status_pane(785, Provider::Gemini, "Gemini CLI");
+
+    classify::apply_pane_output_status_fallback(
+        &mut gemini,
+        "Generated copy follows.\n\
+         Apply this change? is an example confirmation message.\n\
+         No modal is currently displayed.\n",
+    );
+
+    assert_eq!(gemini.status.kind, StatusKind::Unknown);
+    assert_eq!(gemini.status.source, super::StatusSource::NotChecked);
 }
 
 #[test]
