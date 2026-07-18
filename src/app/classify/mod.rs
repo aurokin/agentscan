@@ -76,8 +76,7 @@ pub(crate) fn trusted_agent_metadata(
         return AgentMetadata::default();
     };
     let trusted = process_snapshot
-        .and_then(|snapshot| snapshot.descendant_processes(row.pane_pid).ok())
-        .is_some_and(|processes| processes.iter().any(|process| process.pid == published_pid));
+        .is_some_and(|snapshot| snapshot.is_descendant_process(row.pane_pid, published_pid));
 
     if trusted {
         metadata

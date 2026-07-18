@@ -19,10 +19,12 @@ const OPENCODE_REJECT_PERMISSION_MARKER: &str = "Reject permission";
 const OPENCODE_ALLOW_ONCE_MARKER: &str = "Allow once";
 const OPENCODE_ALLOW_ALWAYS_MARKER: &str = "Allow always";
 const OPENCODE_PERMISSION_MARKER: &str = "Permission";
-// opencode question-prompt copy shown while awaiting the user.
+// opencode question-prompt copy shown while awaiting the user. The modal also
+// renders a `# Questions` heading, but that is ordinary Markdown any agent can
+// emit in its own output — only the action rows below it are chrome-specific
+// enough to carry status evidence.
 const OPENCODE_REJECT_QUESTION_MARKER: &str = "Reject question";
 const OPENCODE_WAITING_QUESTION_MARKER: &str = "Waiting for question event";
-const OPENCODE_QUESTIONS_MARKER: &str = "# Questions";
 
 pub(super) fn status(output: &str) -> Option<StatusKind> {
     let frame = PaneOutputFrame::new(output);
@@ -226,7 +228,6 @@ fn opencode_permission_prompt_line(line: &str) -> bool {
 fn opencode_question_prompt_line(line: &str) -> bool {
     line.contains(OPENCODE_REJECT_QUESTION_MARKER)
         || line.contains(OPENCODE_WAITING_QUESTION_MARKER)
-        || line.contains(OPENCODE_QUESTIONS_MARKER)
 }
 
 fn opencode_prompt_is_near_current_footer(
@@ -366,6 +367,25 @@ mod tests {
 
         assert_eq!(opencode.status.kind, StatusKind::Waiting);
         assert_eq!(opencode.status.source, crate::app::StatusSource::PaneOutput);
+    }
+
+    #[test]
+    fn opencode_pane_output_ignores_bare_questions_heading_in_agent_output() {
+        // `# Questions` is ordinary Markdown an agent can print in its own
+        // response; without the chrome-specific action rows it must not read
+        // as a question prompt (busy or waiting).
+        let mut opencode = pane_output_status_pane(815, Provider::Opencode, "OC | Notes");
+
+        classify::apply_pane_output_status_fallback(
+            &mut opencode,
+            "Here is the summary you asked for.\n\
+         \n\
+         # Questions\n\
+         - Should we ship this week?\n",
+        );
+
+        assert_eq!(opencode.status.kind, StatusKind::Unknown);
+        assert_eq!(opencode.status.source, crate::app::StatusSource::NotChecked);
     }
 
     #[test]

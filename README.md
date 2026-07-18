@@ -63,7 +63,9 @@ it against `SHA256SUMS` before extracting:
 
 ```sh
 # in the directory holding the downloaded tarball and SHA256SUMS
-sha256sum --check SHA256SUMS
+# (--ignore-missing skips manifest entries you did not download)
+shasum -a 256 --ignore-missing --check SHA256SUMS     # macOS
+sha256sum --ignore-missing --check SHA256SUMS         # Linux
 tar -xzf agentscan-aarch64-apple-darwin.tar.gz   # pick the tarball for your platform
 ```
 

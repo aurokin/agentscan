@@ -32,6 +32,8 @@ process.stdout.write(version[1]);
 NODE
 )"
 
+# `sort -V` is supported by both GNU sort and the BSD sort shipped with macOS
+# (verified on the primary release machine) — no coreutils dependency here.
 if [[ "$version" == "$current_version" || "$(printf '%s\n%s\n' "$current_version" "$version" | sort -V | tail -n 1)" != "$version" ]]; then
   echo "Error: release version $version must be strictly greater than current version $current_version" >&2
   exit 1

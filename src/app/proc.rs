@@ -23,6 +23,19 @@ pub(crate) trait ProcessSnapshot {
         let _ = pane_tty;
         Ok(Vec::new())
     }
+
+    /// Whether `pid` is `root_pid` or one of its live descendants. This is a
+    /// pure membership check for the metadata pid trust rule; unlike
+    /// `descendant_processes`, real implementations must not bound it by the
+    /// evidence-collection cap — a wrapper-published pid deeper than the cap
+    /// would otherwise silently untrust the whole `@agent.*` block.
+    fn is_descendant_process(&self, root_pid: u32, pid: u32) -> bool {
+        pid == root_pid
+            || self
+                .descendant_processes(root_pid)
+                .map(|processes| processes.iter().any(|process| process.pid == pid))
+                .unwrap_or(false)
+    }
 }
 
 /// Defers the process-table enumeration until a gated fallback candidate
@@ -55,6 +68,10 @@ impl<'a, I: ProcessInspector> ProcessSnapshot for LazyProcessSnapshot<'a, I> {
 
     fn foreground_processes(&self, pane_tty: &str) -> Result<Vec<ProcessEvidence>> {
         self.get().foreground_processes(pane_tty)
+    }
+
+    fn is_descendant_process(&self, root_pid: u32, pid: u32) -> bool {
+        self.get().is_descendant_process(root_pid, pid)
     }
 }
 
@@ -116,6 +133,28 @@ impl ProcessSnapshot for ProcTableSnapshot {
         }
 
         Ok(processes)
+    }
+
+    // Uncapped override: this is a pure walk over the prebuilt child index —
+    // no per-PID argv/env collection — so the evidence cap does not apply.
+    // The visited set guards against pathological parent-link cycles.
+    fn is_descendant_process(&self, root_pid: u32, pid: u32) -> bool {
+        let mut queue = vec![root_pid];
+        let mut visited = std::collections::HashSet::new();
+
+        while let Some(current) = queue.pop() {
+            if !visited.insert(current) {
+                continue;
+            }
+            if current == pid {
+                return true;
+            }
+            if let Some(children) = self.children_by_ppid.get(&current) {
+                queue.extend(children.iter().copied());
+            }
+        }
+
+        false
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -656,6 +695,25 @@ mod tests {
             processes.iter().any(|process| process.pid == child.id()),
             "expected root process evidence, got {processes:?}"
         );
+    }
+
+    #[test]
+    fn descendant_membership_is_not_bounded_by_the_evidence_cap() {
+        // A linear chain of 200 processes: pid N is the child of pid N-1. The
+        // deepest pid sits far past the 64-process evidence cap, but the pid
+        // trust rule must still recognize it as a descendant of the root.
+        let mut snapshot = ProcTableSnapshot {
+            children_by_ppid: std::collections::HashMap::new(),
+            foreground_by_tty: std::collections::HashMap::new(),
+        };
+        for pid in 1u32..200 {
+            snapshot.children_by_ppid.insert(pid, vec![pid + 1]);
+        }
+
+        assert!(snapshot.is_descendant_process(1, 200));
+        assert!(snapshot.is_descendant_process(1, 1));
+        assert!(!snapshot.is_descendant_process(1, 201));
+        assert!(!snapshot.is_descendant_process(2, 1));
     }
 
     #[cfg(target_os = "linux")]

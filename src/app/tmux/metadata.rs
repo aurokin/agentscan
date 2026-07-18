@@ -33,10 +33,10 @@ pub(crate) fn tmux_metadata_updates(args: &TmuxSetMetadataArgs) -> Vec<(&'static
     {
         updates.push(("@agent.session_id", session_id.to_string()));
     }
-    if let Some(pid) = trimmed_nonempty(args.pid.as_deref()) {
+    if let Some(pid) = args.pid {
         updates.push(("@agent.pid", pid.to_string()));
     }
-    if let Some(version) = trimmed_nonempty(args.contract_version.as_deref()) {
+    if let Some(version) = args.contract_version {
         updates.push(("@agent.v", version.to_string()));
     }
     if let Some(model) = trimmed_nonempty(args.model.as_deref()) {

@@ -7,8 +7,8 @@ fn tmux_metadata_updates_emit_expected_option_values() {
         cwd: Some("/tmp/notes".to_string()),
         state: Some(StatusKind::Busy),
         session_id: Some("sess-123".to_string()),
-        pid: Some(" 4242 ".to_string()),
-        contract_version: Some(" 1 ".to_string()),
+        pid: Some(4242),
+        contract_version: Some(1),
         model: Some(" claude-opus-4-1 ".to_string()),
     };
 

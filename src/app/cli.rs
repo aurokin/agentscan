@@ -295,13 +295,16 @@ pub(crate) struct TmuxSetMetadataArgs {
     #[arg(long)]
     pub(crate) session_id: Option<String>,
 
-    /// Publishing process id used to reject stale metadata.
-    #[arg(long)]
-    pub(crate) pid: Option<String>,
+    /// Publishing process id used to reject stale metadata. The scanner drops
+    /// the whole metadata block when this is not a live pane descendant, so a
+    /// non-numeric or zero value would silently untrust every field — reject
+    /// it here instead of writing it.
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+    pub(crate) pid: Option<u32>,
 
     /// Metadata contract version.
-    #[arg(long = "v")]
-    pub(crate) contract_version: Option<String>,
+    #[arg(long = "v", value_parser = clap::value_parser!(u32))]
+    pub(crate) contract_version: Option<u32>,
 
     /// Agent model identifier.
     #[arg(long)]
