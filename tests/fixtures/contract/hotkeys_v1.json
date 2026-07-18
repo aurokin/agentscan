@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "rows": [
+    {
+      "key": "1",
+      "pane_id": "%41",
+      "provider": "claude",
+      "status": {
+        "kind": "busy",
+        "source": "pane_metadata"
+      },
+      "display": {
+        "label": "Contract Query",
+        "activity_label": "Query"
+      },
+      "display_label": "Contract Query",
+      "location": {
+        "session_name": "notes",
+        "window_index": 4,
+        "pane_index": 2,
+        "window_name": "agents"
+      },
+      "location_tag": "notes:4.2",
+      "workspace": {
+        "id": "session:notes",
+        "label": "notes",
+        "source": "session"
+      },
+      "is_active": true,
+      "is_focused": true,
+      "attached_client_count": 2,
+      "last_focus_seq": 9
+    }
+  ]
+}

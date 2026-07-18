@@ -1,0 +1,4 @@
+{
+  "type": "shutdown",
+  "message": "agentscan daemon shut down"
+}

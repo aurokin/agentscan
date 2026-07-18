@@ -9,8 +9,15 @@ on:
   pull_request:
 
 jobs:
+  # macos-14 is in the matrix because the process-inspection fallback has
+  # macOS-only code paths (libproc/sysctl) that ubuntu never compiles or tests;
+  # without it the first CI compile of that code would be the release build.
   rust:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout
@@ -35,6 +42,26 @@ jobs:
 
       - name: Test
         run: cargo test
+
+  # Keeps the `rust-version = "1.88"` claim in Cargo.toml honest: CI otherwise
+  # only exercises `stable`, so the MSRV floor could silently rot. A compile
+  # check is enough — behavior is covered by the stable-toolchain test jobs.
+  msrv:
+    name: MSRV check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust 1.88 toolchain
+        uses: dtolnay/rust-toolchain@1.88
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check
+        run: cargo check --all-targets
 
   # The desktop crate (desktop/src-tauri) is a standalone crate, not a member of
   # the root workspace, so the `rust` job's `cargo fmt --all`/clippy/test never

@@ -1,0 +1,65 @@
+{
+  "schema_version": 6,
+  "generated_at": "2026-04-15T00:00:00Z",
+  "source": {
+    "kind": "daemon",
+    "tmux_version": "3.4",
+    "daemon_generated_at": "2026-04-15T00:00:00Z"
+  },
+  "panes": [
+    {
+      "pane_id": "%41",
+      "location": {
+        "session_name": "notes",
+        "window_index": 4,
+        "pane_index": 2,
+        "window_name": "agents"
+      },
+      "tmux": {
+        "pane_pid": 324026,
+        "pane_tty": "/dev/pts/44",
+        "pane_current_path": "/home/auro/notes",
+        "pane_current_command": "claude",
+        "pane_title_raw": "Claude Code | Query",
+        "session_id": "$7",
+        "window_id": "@9",
+        "pane_active": true,
+        "window_active": true
+      },
+      "display": {
+        "label": "Contract Query",
+        "activity_label": "Query"
+      },
+      "provider": "claude",
+      "status": {
+        "kind": "busy",
+        "source": "pane_metadata"
+      },
+      "classification": {
+        "matched_by": "pane_metadata",
+        "confidence": "high",
+        "reasons": [
+          "explicit contract metadata"
+        ]
+      },
+      "agent_metadata": {
+        "provider": "claude",
+        "label": "Contract Query",
+        "cwd": "/home/auro/notes",
+        "state": "busy",
+        "session_id": "agent-session-123"
+      },
+      "diagnostics": {
+        "cache_origin": "contract_fixture",
+        "proc_fallback": {
+          "outcome": "resolved",
+          "reason": "fixed contract evidence",
+          "commands": [
+            "claude --resume agent-session-123"
+          ]
+        }
+      },
+      "last_focus_seq": 9
+    }
+  ]
+}
