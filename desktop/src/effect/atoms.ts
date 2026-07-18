@@ -4,6 +4,7 @@ import { LiveConnection, type ConfigureInput } from "./LiveConnection";
 import { Profiles, type ApplyRunnerSettingsInput } from "./Profiles";
 import { Preflight, type PreflightTarget } from "./Preflight";
 import { Appearance } from "./Appearance";
+import { Notifications } from "./Notifications";
 import { SummonHotkey } from "./SummonHotkey";
 import { Activation, type ActivateInput } from "./Activation";
 import { DebugLog, type DebugEntryInput } from "./DebugLog";
@@ -24,6 +25,7 @@ const runtime = Atom.runtime(
     Profiles.Default,
     Preflight.Default,
     Appearance.Default,
+    Notifications.Default,
     SummonHotkey.Default,
     // Activation and HostnameEnrichment also depend on services merged above
     // (LiveConnection; plus Profiles/Preflight for enrichment); layer
@@ -293,6 +295,19 @@ export const configureSummonHotkeyAtom = runtime.fn(
 // PrefsBridge persist across StrictMode remounts. React keeps the DOM/Tauri apply effects.
 export const appearanceAtom = Atom.keepAlive(
   runtime.subscriptionRef(Effect.map(Appearance, (a) => a.state)),
+);
+
+// The opt-in agent-finished notification preference both windows observe. Transition
+// detection and native delivery stay in DockApp so Settings never consumes live state.
+export const notificationsAtom = Atom.keepAlive(
+  runtime.subscriptionRef(Effect.map(Notifications, (n) => n.state)),
+);
+
+export const setNotifyOnIdleAtom = runtime.fn(
+  Effect.fnUntraced(function* (enabled: boolean) {
+    const notifications = yield* Notifications;
+    yield* notifications.setNotifyOnIdle(enabled);
+  }),
 );
 
 export const setThemeAtom = runtime.fn(

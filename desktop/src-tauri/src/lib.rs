@@ -24,6 +24,7 @@ pub fn run() {
 
     builder
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             commands::focus_picker_row,
             commands::local_host_label,

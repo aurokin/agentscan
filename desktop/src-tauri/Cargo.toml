@@ -23,6 +23,7 @@ serde_json = "1.0.150"
 # direct distribution; would risk Mac App Store review (not our channel).
 tauri = { version = "2.9.4", features = ["macos-private-api"] }
 tauri-plugin-global-shortcut = "2.3.1"
+tauri-plugin-notification = "2.3.3"
 tauri-plugin-single-instance = "2.4.2"
 
 # Glass effect (NSVisualEffectView) is macOS-only; don't build it elsewhere.
