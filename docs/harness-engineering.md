@@ -138,7 +138,10 @@ prompt so echoed input cannot be mistaken for a completed response.
 
 Artifacts are written under `target/provider-e2e/<run-id>/<provider>/`,
 including timeline frames, pane tails, inspect JSON, tmux rows, daemon logs, and
-redacted runner metadata. Each provider also writes `outcome.json`.
+redacted runner metadata. Each provider also writes `outcome.json`. Captured
+pane frames can be promoted into the regression corpus with
+`scripts/promote-e2e-frames.sh`; see
+[Pane Snapshot Corpus](adding-a-provider.md#pane-snapshot-corpus).
 
 Provider outcomes start as `unknown` and are promoted only when the runner has
 evidence:

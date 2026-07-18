@@ -15,6 +15,9 @@
   optional model enrichment in schema-7 snapshots and inspect output.
 - Extended `tmux set-metadata` and `tmux clear-metadata` with `pid`, `v`, and
   `model` fields.
+- Added a pane-snapshot fixture corpus and data-driven walker for pane-output
+  matcher regressions, cross-provider confusion, and safe degrade-to-unknown
+  mutations, plus a script for promoting real-agent e2e frames into fixtures.
 
 ### Changed
 
@@ -31,6 +34,10 @@
   block only while that positive pid is live in the pane's process tree;
   stale, unrelated, or malformed pid metadata is ignored as a whole. Pid-less
   metadata keeps the existing v0 compatibility behavior.
+- Internal refactor with no behavior change: moved provider, proc-fallback,
+  daemon, and TUI unit tests inline next to their subjects (deleting the
+  cfg(test) wrapper/re-export plumbing) and split the daemon module root into
+  `daemon/runtime.rs` and `daemon/telemetry.rs`.
 
 ## 0.10.0 - 2026-07-17
 

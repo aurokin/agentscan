@@ -91,6 +91,57 @@ Cover, using the existing patterns in `src/app/tests/classification.rs` and
 - icon/display registration touchpoints (`src/app/tests/cli.rs`,
   `src/app/tests/tui.rs`) as the Kimi change did.
 
+### Pane Snapshot Corpus
+
+`tests/fixtures/pane_corpus/` is the regression corpus for provider-scoped
+pane-output matchers. Its data-driven walker checks that each captured screen
+still produces its expected status, that another provider's matcher does not
+claim it accidentally, and that removing or blanking named corroborators can
+only preserve the status or degrade it to `unknown` — never invert it.
+
+Each fixture is a text screen and TOML sidecar at:
+
+```text
+tests/fixtures/pane_corpus/<provider>/<cli-version>/<state>.txt
+tests/fixtures/pane_corpus/<provider>/<cli-version>/<state>.meta.toml
+```
+
+`<provider>` must be a registered provider name, `<cli-version>` is the probed
+CLI version (use `unversioned` only when it is genuinely unknown), and `<state>`
+is `idle`, `busy`, or `waiting`. The sidecar records `provider`, `cli_version`,
+capture date (`captured`), terminal geometry (`cols` and `rows`),
+`expected_status`, `expected_source = "pane_output"`, `origin`,
+`corroborators`, and `allow_other_providers`. Its provider, version, and status
+must agree with the directory and filename. Geometry is checked using terminal
+display width, not byte length.
+
+To hand-seed a fixture, save the current prompt/footer region as `<state>.txt`,
+write the matching sidecar using an existing fixture as the template, and run
+`cargo test pane_snapshot_corpus`. Keep enough current TUI chrome to support
+the matcher, but do not preserve unrelated or sensitive scrollback. Set
+`origin = "hand-seeded"` and record the real CLI version and geometry.
+
+`corroborators` lists exact strings present in the screen whose removal and
+same-width blanking the walker mutates independently. Choose decorative chrome
+that upgrades confidence; the mutation must return the original status or
+`unknown`, never the opposite status. `allow_other_providers` is an explicit,
+two-way-checked exception for a screen that legitimately matches another
+provider: every named provider must still match, and every unlisted provider
+must not. Prefer making matchers more specific over adding an exception.
+
+Frames captured by the real-agent harness can be promoted with:
+
+```bash
+scripts/promote-e2e-frames.sh <run-id> <provider> <frame-file> <state> <cli-version>
+```
+
+`<frame-file>` may be a pane-tail artifact name such as
+`pane-tail-busy.txt` or a path relative to that provider's artifact directory.
+The script copies it into the corpus and prefills the sidecar; it refuses to
+overwrite existing fixtures unless `--force` is passed first. Review the
+screen, fill in `corroborators`, adjust the byte-derived `cols` prefill if its
+terminal display width differs, and run `cargo test pane_snapshot_corpus`.
+
 ## Step 6: E2E Catalog Entry
 
 Add a `[providers.<name>]` entry to `tests/provider_e2e/catalog.toml` (command,
