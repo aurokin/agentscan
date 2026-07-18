@@ -1,0 +1,10 @@
+provider = "codex"
+cli_version = "unversioned"
+captured = "2026-07-17"
+cols = 81
+rows = 7
+expected_status = "waiting"
+expected_source = "pane_output"
+origin = "hand-seeded"
+corroborators = ["Yes, proceed", "Press enter to confirm or esc to cancel"]
+allow_other_providers = []

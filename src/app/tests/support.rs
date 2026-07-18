@@ -1,5 +1,5 @@
 #[derive(Clone)]
-struct TmuxPaneRowBuilder {
+pub(crate) struct TmuxPaneRowBuilder {
     row: super::TmuxPaneRow,
 }
 
@@ -33,7 +33,7 @@ impl TmuxPaneRowBuilder {
         }
     }
 
-    fn session_name(mut self, session_name: impl Into<String>) -> Self {
+    pub(crate) fn session_name(mut self, session_name: impl Into<String>) -> Self {
         self.row.session_name = session_name.into();
         self
     }
@@ -48,17 +48,17 @@ impl TmuxPaneRowBuilder {
         self
     }
 
-    fn pane_id(mut self, pane_id: impl Into<String>) -> Self {
+    pub(crate) fn pane_id(mut self, pane_id: impl Into<String>) -> Self {
         self.row.pane_id = pane_id.into();
         self
     }
 
-    fn command(mut self, command: impl Into<String>) -> Self {
+    pub(crate) fn command(mut self, command: impl Into<String>) -> Self {
         self.row.pane_current_command = command.into();
         self
     }
 
-    fn title(mut self, title: impl Into<String>) -> Self {
+    pub(crate) fn title(mut self, title: impl Into<String>) -> Self {
         self.row.pane_title_raw = title.into();
         self
     }
@@ -68,7 +68,7 @@ impl TmuxPaneRowBuilder {
         self
     }
 
-    fn current_path(mut self, current_path: impl Into<String>) -> Self {
+    pub(crate) fn current_path(mut self, current_path: impl Into<String>) -> Self {
         self.row.pane_current_path = current_path.into();
         self
     }
@@ -88,7 +88,7 @@ impl TmuxPaneRowBuilder {
         self
     }
 
-    fn agent_provider(mut self, agent_provider: impl Into<String>) -> Self {
+    pub(crate) fn agent_provider(mut self, agent_provider: impl Into<String>) -> Self {
         self.row.agent_provider = Some(agent_provider.into());
         self
     }
@@ -142,13 +142,41 @@ impl TmuxPaneRowBuilder {
         self.row
     }
 
-    fn pane(self) -> PaneRecord {
+    pub(crate) fn pane(self) -> PaneRecord {
         classify::pane_from_row(self.build())
     }
 }
 
-fn tmux_pane_row(pane_pid: u32) -> TmuxPaneRowBuilder {
+pub(crate) fn tmux_pane_row(pane_pid: u32) -> TmuxPaneRowBuilder {
     TmuxPaneRowBuilder::new(pane_pid)
+}
+
+pub(crate) fn tui_test_pane(pane_index: u32) -> PaneRecord {
+    let command = if pane_index.is_multiple_of(2) {
+        "claude"
+    } else {
+        "codex"
+    };
+
+    tmux_pane_row(pane_index)
+        .session_name("alpha")
+        .pane_index(pane_index)
+        .command(command)
+        .title(format!("Task {pane_index:02}"))
+        .current_path("/tmp/alpha")
+        .window_name("editor")
+        .pane()
+}
+
+pub(crate) fn tui_search_pane(index: u32, title: &str) -> PaneRecord {
+    tmux_pane_row(index)
+        .session_name("work")
+        .pane_id(format!("%{index}"))
+        .pane_index(index)
+        .command("codex")
+        .title(title)
+        .current_path("/work/app")
+        .pane()
 }
 
 fn custom_picker_key_values() -> Vec<String> {
@@ -170,18 +198,22 @@ fn custom_picker_keys_expected() -> [char; 16] {
     ]
 }
 
-fn proc_fallback_pane(pid: u32, command: &str, title: &str) -> PaneRecord {
+pub(crate) fn proc_fallback_pane(pid: u32, command: &str, title: &str) -> PaneRecord {
     tmux_pane_row(pid).command(command).title(title).pane()
 }
 
-fn pane_output_status_pane(pid: u32, provider: Provider, title: &str) -> PaneRecord {
+pub(crate) fn pane_output_status_pane(
+    pid: u32,
+    provider: Provider,
+    title: &str,
+) -> PaneRecord {
     let mut pane = proc_fallback_pane(pid, "node", title);
     pane.provider = Some(provider);
     pane.status = PaneStatus::not_checked();
     pane
 }
 
-fn assert_pane_output_status(
+pub(crate) fn assert_pane_output_status(
     pid: u32,
     provider: Provider,
     title: &str,
@@ -196,7 +228,12 @@ fn assert_pane_output_status(
     assert_eq!(pane.status.source, expected_source);
 }
 
-fn assert_unprovidered_pane_output_unchanged(pid: u32, command: &str, title: &str, output: &str) {
+pub(crate) fn assert_unprovidered_pane_output_unchanged(
+    pid: u32,
+    command: &str,
+    title: &str,
+    output: &str,
+) {
     let mut pane = proc_fallback_pane(pid, command, title);
     classify::apply_pane_output_status_fallback(&mut pane, output);
 
@@ -205,7 +242,7 @@ fn assert_unprovidered_pane_output_unchanged(pid: u32, command: &str, title: &st
     assert_eq!(pane.status.source, super::StatusSource::NotChecked);
 }
 
-struct FakeProcessInspector {
+pub(crate) struct FakeProcessInspector {
     processes_by_pid: std::collections::HashMap<u32, Vec<proc::ProcessEvidence>>,
     foreground_by_tty: std::collections::HashMap<String, Vec<proc::ProcessEvidence>>,
     calls: RefCell<Vec<u32>>,
@@ -214,7 +251,7 @@ struct FakeProcessInspector {
 }
 
 impl FakeProcessInspector {
-    fn new(entries: impl IntoIterator<Item = (u32, Vec<String>)>) -> Self {
+    pub(crate) fn new(entries: impl IntoIterator<Item = (u32, Vec<String>)>) -> Self {
         Self {
             processes_by_pid: entries
                 .into_iter()
@@ -240,7 +277,7 @@ impl FakeProcessInspector {
         }
     }
 
-    fn with_processes(
+    pub(crate) fn with_processes(
         entries: impl IntoIterator<Item = (u32, Vec<proc::ProcessEvidence>)>,
     ) -> Self {
         Self {
@@ -252,7 +289,7 @@ impl FakeProcessInspector {
         }
     }
 
-    fn with_single_process(
+    pub(crate) fn with_single_process(
         root_pid: u32,
         process_pid: u32,
         command: &str,
@@ -261,7 +298,7 @@ impl FakeProcessInspector {
         Self::with_processes([(root_pid, vec![process_evidence(process_pid, command, argv)])])
     }
 
-    fn with_foreground(
+    pub(crate) fn with_foreground(
         descendants: impl IntoIterator<Item = (u32, Vec<String>)>,
         foreground: impl IntoIterator<Item = (String, Vec<String>)>,
     ) -> Self {
@@ -286,15 +323,15 @@ impl FakeProcessInspector {
         inspector
     }
 
-    fn calls(&self) -> Vec<u32> {
+    pub(crate) fn calls(&self) -> Vec<u32> {
         self.calls.borrow().clone()
     }
 
-    fn snapshot_captures(&self) -> u32 {
+    pub(crate) fn snapshot_captures(&self) -> u32 {
         self.snapshot_captures.get()
     }
 
-    fn foreground_calls(&self) -> Vec<String> {
+    pub(crate) fn foreground_calls(&self) -> Vec<String> {
         self.foreground_calls.borrow().clone()
     }
 }
@@ -575,7 +612,7 @@ fn pane_by_id<'a>(panes: &'a [PaneRecord], pane_id: &str) -> &'a PaneRecord {
         .unwrap_or_else(|| panic!("missing pane fixture entry {pane_id}"))
 }
 
-fn assert_unresolved_ambiguous_pane(pane: &PaneRecord, expected_label: &str) {
+pub(crate) fn assert_unresolved_ambiguous_pane(pane: &PaneRecord, expected_label: &str) {
     assert_eq!(pane.provider, None, "pane_id: {}", pane.pane_id);
     assert_eq!(
         pane.status.kind,

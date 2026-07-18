@@ -1,0 +1,12 @@
+   Analyze this entire codebase and tell me about it
+
+Plan · 0/7
+┃ ● Explore project structure and core files
+
+⠟ Invoking tools...  (Press ESC to stop)
+
+Auto (High) - allow all commands            Droid Core (Kimi K2.6) (High)
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ > Enter to steer                                                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+[⏱ 38s] ? for help                                                         IDE ◌

@@ -1,0 +1,10 @@
+provider = "copilot"
+cli_version = "1.0.65"
+captured = "2026-07-17"
+cols = 84
+rows = 5
+expected_status = "idle"
+expected_source = "pane_output"
+origin = "hand-seeded"
+corroborators = ["/ commands", "? help"]
+allow_other_providers = []

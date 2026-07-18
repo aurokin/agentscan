@@ -168,3 +168,265 @@ fn copilot_current_trust_prompt_visible(frame: &PaneOutputFrame<'_>) -> bool {
             .iter()
             .any(|line| line.contains(TRUST_MODAL_QUESTION))
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::app::classify;
+    use crate::app::tests::{
+        assert_pane_output_status, assert_unprovidered_pane_output_unchanged,
+        pane_output_status_pane,
+    };
+    use crate::app::{Provider, StatusKind};
+
+    #[test]
+    fn copilot_pane_output_marks_busy_only_after_provider_is_known() {
+        let output = "❯ Review patch\n\n\
+         ● Thinking (Esc to cancel · 616 B)\n\
+         /tmp/probe [main]\n\
+         ────────────────────\n\
+         ❯\n\
+         ────────────────────\n\
+         / commands · ? help\n";
+        assert_pane_output_status(
+            745,
+            Provider::Copilot,
+            "GitHub Copilot",
+            output,
+            StatusKind::Busy,
+            crate::app::StatusSource::PaneOutput,
+        );
+        assert_unprovidered_pane_output_unchanged(746, "node", "custom title", output);
+    }
+
+    #[test]
+    fn copilot_pane_output_marks_current_working_footer_busy() {
+        let output = "~/code/agentscan [⎇ aur-550]\n\
+         ──────────────────────────────────────────────────────────────────────────\n\
+         ❯\n\
+         ──────────────────────────────────────────────────────────────────────────\n\
+         ◉ Working esc cancel                                      GPT-5 mini\n";
+
+        assert_pane_output_status(
+            817,
+            Provider::Copilot,
+            "GitHub Copilot",
+            output,
+            StatusKind::Busy,
+            crate::app::StatusSource::PaneOutput,
+        );
+        assert_unprovidered_pane_output_unchanged(818, "node", "custom title", output);
+    }
+
+    #[test]
+    fn copilot_pane_output_marks_bordered_prompt_idle() {
+        // Observed from Copilot v1.0.65: the ready prompt renders as a bordered empty input box
+        // instead of the older standalone `❯` line.
+        let mut copilot = pane_output_status_pane(822, Provider::Copilot, "GitHub Copilot");
+
+        classify::apply_pane_output_status_fallback(
+            &mut copilot,
+            "~/code/agentscan [⎇ main*%]                                      Session: 0 AIC used\n\
+         ╻▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄\n\
+         ┃\n\
+         ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+          / commands · ? help · tab next tab                                         GPT-5.5\n",
+        );
+
+        assert_eq!(copilot.status.kind, StatusKind::Idle);
+        assert_eq!(copilot.status.source, crate::app::StatusSource::PaneOutput);
+    }
+
+    #[test]
+    fn copilot_pane_output_marks_bordered_prompt_with_draft_text_idle() {
+        // When the user has typed but not submitted text, Copilot swaps the idle footer from
+        // `/ commands · ? help` to attachment hints. The pane is still available for input.
+        let mut copilot = pane_output_status_pane(825, Provider::Copilot, "GitHub Copilot");
+
+        classify::apply_pane_output_status_fallback(
+            &mut copilot,
+            "~/code/agentscan [⎇ main*%]                                      Session: 0 AIC used\n\
+         ╻▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄\n\
+         ┃ 3\n\
+         ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+          @ files · # issues                                                            GPT-5.5\n",
+        );
+
+        assert_eq!(copilot.status.kind, StatusKind::Idle);
+        assert_eq!(copilot.status.source, crate::app::StatusSource::PaneOutput);
+    }
+
+    #[test]
+    fn copilot_pane_output_marks_bordered_working_footer_busy() {
+        let mut copilot = pane_output_status_pane(823, Provider::Copilot, "GitHub Copilot");
+
+        classify::apply_pane_output_status_fallback(
+            &mut copilot,
+            "~/code/agentscan [⎇ main*%]                                      Session: 0 AIC used\n\
+         ╻▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄\n\
+         ┃\n\
+         ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+         ◉ Working esc cancel                                                           GPT-5.5\n",
+        );
+
+        assert_eq!(copilot.status.kind, StatusKind::Busy);
+        assert_eq!(copilot.status.source, crate::app::StatusSource::PaneOutput);
+    }
+
+    #[test]
+    fn copilot_pane_output_ignores_stale_bordered_prompt() {
+        let mut copilot = pane_output_status_pane(824, Provider::Copilot, "GitHub Copilot");
+
+        classify::apply_pane_output_status_fallback(
+            &mut copilot,
+            "~/code/agentscan [⎇ main*%]                                      Session: 0 AIC used\n\
+         ╻▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄\n\
+         ┃\n\
+         ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+         Reading files\n",
+        );
+
+        assert_eq!(copilot.status.kind, StatusKind::Unknown);
+        assert_eq!(copilot.status.source, crate::app::StatusSource::NotChecked);
+    }
+
+    #[test]
+    fn copilot_pane_output_ignores_stale_thinking_lines() {
+        let mut copilot = pane_output_status_pane(748, Provider::Copilot, "GitHub Copilot");
+
+        classify::apply_pane_output_status_fallback(
+            &mut copilot,
+            "● Thinking (Esc to cancel · 616 B)\n\
+         ● Done! Created result.txt.\n\
+         \n\
+         /tmp/probe [main]\n\
+         ────────────────────\n\
+         ❯\n\
+         ────────────────────\n\
+         / commands · ? help\n",
+        );
+
+        assert_eq!(copilot.status.kind, StatusKind::Idle);
+        assert_eq!(copilot.status.source, crate::app::StatusSource::PaneOutput);
+    }
+
+    #[test]
+    fn copilot_pane_output_marks_current_trust_prompt_busy() {
+        let mut copilot = pane_output_status_pane(749, Provider::Copilot, "GitHub Copilot");
+
+        classify::apply_pane_output_status_fallback(
+            &mut copilot,
+            "╭──────────────────────────────────────────────────────────────────────────────╮\n\
+         │ Confirm folder trust                                                         │\n\
+         │ Do you trust the files in this folder?                                       │\n\
+         │ ❯ 1. Yes                                                                     │\n\
+         │   2. Yes, and remember this folder for future sessions                       │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯\n",
+        );
+
+        assert_eq!(copilot.status.kind, StatusKind::Busy);
+        assert_eq!(copilot.status.source, crate::app::StatusSource::PaneOutput);
+    }
+
+    #[test]
+    fn copilot_pane_output_does_not_infer_idle_from_prompt() {
+        let mut copilot = pane_output_status_pane(747, Provider::Copilot, "GitHub Copilot");
+
+        classify::apply_pane_output_status_fallback(
+            &mut copilot,
+            "/tmp/probe [main]\n────────────────────\n❯\n",
+        );
+
+        assert_eq!(copilot.status.kind, StatusKind::Unknown);
+        assert_eq!(copilot.status.source, crate::app::StatusSource::NotChecked);
+    }
+
+    #[test]
+    fn copilot_pane_output_marks_current_prompt_idle() {
+        let mut copilot = pane_output_status_pane(757, Provider::Copilot, "GitHub Copilot");
+
+        classify::apply_pane_output_status_fallback(
+            &mut copilot,
+            "╭──────────────────────────────────────────────────────────────────────────╮\n\
+         │  GitHub Copilot v1.0.39                                           │\n\
+         ╰──────────────────────────────────────────────────────────────────────────╯\n\
+         \n\
+         ● Environment loaded: 1 custom instruction, 22 skills\n\
+         \n\
+         ~/code/agentscan [⎇ master*]\n\
+         ──────────────────────────────────────────────────────────────────────────\n\
+         ❯\n\
+         ──────────────────────────────────────────────────────────────────────────\n\
+          / commands · ? help                                      Claude Haiku 4.5\n",
+        );
+
+        assert_eq!(copilot.status.kind, StatusKind::Idle);
+        assert_eq!(copilot.status.source, crate::app::StatusSource::PaneOutput);
+    }
+
+    #[test]
+    fn copilot_pane_output_marks_absolute_path_prompt_idle() {
+        let mut copilot = pane_output_status_pane(759, Provider::Copilot, "GitHub Copilot");
+
+        classify::apply_pane_output_status_fallback(
+            &mut copilot,
+            "╭──────────────────────────────────────────────────────────────────────────╮\n\
+         │  GitHub Copilot v1.0.39                                           │\n\
+         ╰──────────────────────────────────────────────────────────────────────────╯\n\
+         \n\
+         ● Environment loaded: 22 skills, 1 MCP server, 2 agents\n\
+         \n\
+         /private/tmp/agentscan-copilot-idle-smoke\n\
+         ──────────────────────────────────────────────────────────────────────────\n\
+         ❯\n\
+         ──────────────────────────────────────────────────────────────────────────\n\
+          / commands · ? help                                      Claude Haiku 4.5\n",
+        );
+
+        assert_eq!(copilot.status.kind, StatusKind::Idle);
+        assert_eq!(copilot.status.source, crate::app::StatusSource::PaneOutput);
+    }
+
+    #[test]
+    fn copilot_pane_output_uses_current_prompt_over_stale_thinking() {
+        let mut copilot = pane_output_status_pane(758, Provider::Copilot, "GitHub Copilot");
+
+        classify::apply_pane_output_status_fallback(
+            &mut copilot,
+            "● Thinking (Esc to cancel · 616 B)\n\
+         ● Done! Created result.txt.\n\
+         \n\
+         ~/code/agentscan [⎇ master*]\n\
+         ──────────────────────────────────────────────────────────────────────────\n\
+         ❯\n\
+         ──────────────────────────────────────────────────────────────────────────\n\
+          / commands · ? help                                      Claude Haiku 4.5\n",
+        );
+
+        assert_eq!(copilot.status.kind, StatusKind::Idle);
+        assert_eq!(copilot.status.source, crate::app::StatusSource::PaneOutput);
+    }
+
+    #[test]
+    fn copilot_pane_output_uses_current_prompt_over_stale_working_footer() {
+        let mut copilot = pane_output_status_pane(819, Provider::Copilot, "GitHub Copilot");
+
+        classify::apply_pane_output_status_fallback(
+            &mut copilot,
+            "~/code/agentscan [⎇ aur-550]\n\
+         ──────────────────────────────────────────────────────────────────────────\n\
+         ❯\n\
+         ──────────────────────────────────────────────────────────────────────────\n\
+         ◉ Working esc cancel                                      GPT-5 mini\n\
+         ● Finished running command.\n\
+         \n\
+         ~/code/agentscan [⎇ aur-550]\n\
+         ──────────────────────────────────────────────────────────────────────────\n\
+         ❯\n\
+         ──────────────────────────────────────────────────────────────────────────\n\
+         / commands · ? help · tab next tab                         GPT-5 mini\n",
+        );
+
+        assert_eq!(copilot.status.kind, StatusKind::Idle);
+        assert_eq!(copilot.status.source, crate::app::StatusSource::PaneOutput);
+    }
+}

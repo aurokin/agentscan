@@ -1,0 +1,4 @@
+Permission required
+→ Edit src/app.rs
+Allow once   Allow always   Reject
+esc reject

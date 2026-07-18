@@ -89,3 +89,208 @@ fn kimi_unknown_spinner_shaped_line(line: &str) -> bool {
             && !('\u{2580}'..='\u{259f}').contains(&ch)
     }) && chars.as_str().starts_with(" · ")
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::app::classify;
+    use crate::app::tests::{
+        assert_pane_output_status, assert_unprovidered_pane_output_unchanged,
+        pane_output_status_pane,
+    };
+    use crate::app::{Provider, StatusKind};
+
+    #[test]
+    fn kimi_code_pane_output_marks_current_streaming_prompt_busy() {
+        // Mirrors a real busy kimi frame (v0.27.0): a moon-phase spinner line with rotating tip
+        // text sits directly above the input box while a turn runs.
+        let mut kimi = pane_output_status_pane(830, Provider::KimiCode, "reply with exactly OK");
+
+        classify::apply_pane_output_status_fallback(
+            &mut kimi,
+            "● OK\n\n\
+         🌓 · Tip: ! to run a shell command\n\n\
+         ╭──────────────────────────────────────────────────────────────────────────────╮\n\
+         │ >                                                                            │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯\n\
+         K2.7 Coding thinking  ~/code/agentscan  main                    ctrl+c: cancel\n\
+         context: 9% (22k/256k)\n",
+        );
+
+        assert_eq!(kimi.status.kind, StatusKind::Busy);
+        assert_eq!(kimi.status.source, crate::app::StatusSource::PaneOutput);
+    }
+
+    #[test]
+    fn kimi_code_pane_output_marks_wrapped_spinner_tip_busy_in_narrow_pane() {
+        // In a narrow pane the rotating tip text wraps below the moon glyph, pushing the
+        // spinner line several rows above the input box. The widened window must still see it.
+        let mut kimi = pane_output_status_pane(837, Provider::KimiCode, "reply with exactly OK");
+
+        classify::apply_pane_output_status_fallback(
+            &mut kimi,
+            "● OK\n\n\
+         🌒 · Tip: ask Kimi to schedule\n\
+         tasks, e.g. \"remind me at\n\
+         5pm\"\n\n\
+         ╭──────────────────────────────╮\n\
+         │ >                            │\n\
+         ╰──────────────────────────────╯\n\
+         K2.7 Coding thinking  ~/code\n\
+         context: 9% (22k/256k)\n",
+        );
+
+        assert_eq!(kimi.status.kind, StatusKind::Busy);
+        assert_eq!(kimi.status.source, crate::app::StatusSource::PaneOutput);
+    }
+
+    #[test]
+    fn kimi_code_pane_output_marks_current_prompt_idle_only_after_provider_is_known() {
+        let output = "╭──────────────────────────────────────────────────────────────────────────────╮\n\
+         │  Welcome to Kimi Code!                                                       │\n\
+         │  Model:     K2.7 Coding                                                      │\n\
+         │  Version:   0.27.0                                                           │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯\n\n\
+         ● OK\n\n\
+         ╭──────────────────────────────────────────────────────────────────────────────╮\n\
+         │ >                                                                            │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯\n\
+         K2.7 Coding thinking  ~/code/agentscan  main                    ctrl+c: cancel\n\
+         context: 0% (0/256k)\n";
+        assert_pane_output_status(
+            831,
+            Provider::KimiCode,
+            "Kimi Code",
+            output,
+            StatusKind::Idle,
+            crate::app::StatusSource::PaneOutput,
+        );
+        assert_unprovidered_pane_output_unchanged(832, "zsh", "custom title", output);
+    }
+
+    #[test]
+    fn kimi_code_pane_output_ignores_stale_streaming_above_current_prompt() {
+        // A moon glyph fossilized in scrollback (a spinner line that scrolled into history
+        // during a long turn, with the turn's output below it) must not mark the fresh idle
+        // prompt busy: the spinner window is anchored to the current input box.
+        let mut kimi = pane_output_status_pane(833, Provider::KimiCode, "reply with exactly OK");
+
+        classify::apply_pane_output_status_fallback(
+            &mut kimi,
+            "🌑 · Tip: ask Kimi to schedule tasks, e.g. \"remind me at 5pm\"\n\n\
+         ● Done. The refactor is complete.\n\n\
+         ● Updated src/lib.rs and src/main.rs.\n\n\
+         ● Added the new classifier module.\n\n\
+         ● Wired the provider registry entry.\n\n\
+         ● Ran cargo fmt: no changes.\n\n\
+         ● Ran cargo test: 42 passed.\n\n\
+         ● Ran cargo clippy: clean.\n\n\
+         ● All tests pass.\n\n\
+         ╭──────────────────────────────────────────────────────────────────────────────╮\n\
+         │ >                                                                            │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯\n\
+         K2.7 Coding thinking  ~/code/agentscan  main                    ctrl+c: cancel\n\
+         context: 9% (22k/256k)\n",
+        );
+
+        assert_eq!(kimi.status.kind, StatusKind::Idle);
+        assert_eq!(kimi.status.source, crate::app::StatusSource::PaneOutput);
+    }
+
+    #[test]
+    fn kimi_code_pane_output_leaves_status_unknown_without_current_input_box() {
+        // Unprobed UI states (approval dialogs, alternate screens) drop the input box; the
+        // classifier must leave those Unknown rather than guessing.
+        let mut kimi = pane_output_status_pane(834, Provider::KimiCode, "reply with exactly OK");
+
+        classify::apply_pane_output_status_fallback(
+            &mut kimi,
+            "● Working through the plan.\n\n\
+         K2.7 Coding thinking  ~/code/agentscan  main                    ctrl+c: cancel\n\
+         context: 9% (22k/256k)\n",
+        );
+
+        assert_eq!(kimi.status.kind, StatusKind::Unknown);
+        assert_eq!(kimi.status.source, crate::app::StatusSource::NotChecked);
+    }
+
+    #[test]
+    fn kimi_code_pane_output_withholds_status_from_bare_moon_line_near_prompt() {
+        // A moon-glyph line without the ` · ` separator is ambiguous: echoed output, or a
+        // future release restyling the spinner tip. It must not report busy, and it must
+        // not silently flip to idle either — status stays unknown.
+        let mut kimi = pane_output_status_pane(836, Provider::KimiCode, "reply with exactly OK");
+
+        classify::apply_pane_output_status_fallback(
+            &mut kimi,
+            "🌑 marks a new moon in the schedule output.\n\n\
+         ╭──────────────────────────────────────────────────────────────────────────────╮\n\
+         │ >                                                                            │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯\n\
+         K2.7 Coding thinking  ~/code/agentscan  main                    ctrl+c: cancel\n\
+         context: 9% (22k/256k)\n",
+        );
+
+        assert_eq!(kimi.status.kind, StatusKind::Unknown);
+        assert_eq!(kimi.status.source, crate::app::StatusSource::NotChecked);
+    }
+
+    #[test]
+    fn kimi_code_pane_output_withholds_idle_from_braille_spinner_shape() {
+        let mut kimi = pane_output_status_pane(838, Provider::KimiCode, "reply with exactly OK");
+
+        classify::apply_pane_output_status_fallback(
+            &mut kimi,
+            "● Still working.\n\n\
+         ⠋ · Tip: use @ to include files\n\n\
+         ╭──────────────────────────────────────────────────────────────────────────────╮\n\
+         │ >                                                                            │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯\n\
+         K2.7 Coding thinking  ~/code/agentscan  main                    ctrl+c: cancel\n\
+         context: 9% (22k/256k)\n",
+        );
+
+        assert_eq!(kimi.status.kind, StatusKind::Unknown);
+        assert_eq!(kimi.status.source, crate::app::StatusSource::NotChecked);
+    }
+
+    #[test]
+    fn kimi_code_pane_output_withholds_status_from_unknown_spinner_glyph() {
+        let mut kimi = pane_output_status_pane(839, Provider::KimiCode, "reply with exactly OK");
+
+        classify::apply_pane_output_status_fallback(
+            &mut kimi,
+            "◆ · Tip: future spinner style\n\n\
+         ╭──────────────────────────────────────────────────────────────────────────────╮\n\
+         │ >                                                                            │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯\n\
+         K2.7 Coding thinking  ~/code/agentscan  main                    ctrl+c: cancel\n\
+         context: 9% (22k/256k)\n",
+        );
+
+        assert_eq!(kimi.status.kind, StatusKind::Unknown);
+        assert_eq!(kimi.status.source, crate::app::StatusSource::NotChecked);
+    }
+
+    #[test]
+    fn kimi_code_pane_output_ignores_stale_input_box_above_replacement_ui() {
+        // When an approval dialog (or another alternate UI) replaces the prompt, the last
+        // input box survives in scrollback well above the bottom of the frame. The stale box
+        // must not be classified as the current prompt; status stays unknown.
+        let mut kimi = pane_output_status_pane(835, Provider::KimiCode, "reply with exactly OK");
+
+        classify::apply_pane_output_status_fallback(
+            &mut kimi,
+            "╭──────────────────────────────────────────────────────────────────────────────╮\n\
+         │ >                                                                            │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯\n\n\
+         ● Running the migration now.\n\n\
+         Allow Kimi to run this command?\n\n\
+         rm -rf build/\n\n\
+         1. Yes\n\
+         2. No, tell Kimi what to do differently\n",
+        );
+
+        assert_eq!(kimi.status.kind, StatusKind::Unknown);
+        assert_eq!(kimi.status.source, crate::app::StatusSource::NotChecked);
+    }
+}

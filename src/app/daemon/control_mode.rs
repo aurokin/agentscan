@@ -177,41 +177,31 @@ impl TmuxBrokerHealth {
             next_reconcile_in_ms: None,
         }
     }
-
-    #[cfg(test)]
-    pub(crate) fn test_disabled_reason(&self) -> Option<&str> {
-        self.disabled_reason.as_deref()
-    }
 }
 
 #[cfg(test)]
-pub(crate) fn test_broker_health_after_error(message: &str) -> (bool, Option<String>, u64) {
+fn run_broker_health_after_error(message: &str) -> (bool, Option<String>, u64) {
     let mut health = TmuxBrokerHealth::default();
     let error = anyhow::anyhow!(message.to_string());
     health.disable_after_error(&error);
     (
         health.enabled(),
-        health.test_disabled_reason().map(str::to_string),
+        health.disabled_reason.clone(),
         health.fallback_count,
     )
 }
 
 #[cfg(test)]
-pub(crate) fn test_broker_health_after_repeated_error(message: &str) -> (Option<String>, u64) {
+fn run_broker_health_after_repeated_error(message: &str) -> (Option<String>, u64) {
     let mut health = TmuxBrokerHealth::default();
     let error = anyhow::anyhow!(message.to_string());
     health.disable_after_error(&error);
     health.disable_after_error(&error);
-    (
-        health.test_disabled_reason().map(str::to_string),
-        health.fallback_count,
-    )
+    (health.disabled_reason.clone(), health.fallback_count)
 }
 
 #[cfg(test)]
-pub(crate) fn test_broker_health_after_reconnect(
-    message: &str,
-) -> ipc::ControlModeBrokerStatusFrame {
+fn run_broker_health_after_reconnect(message: &str) -> ipc::ControlModeBrokerStatusFrame {
     let mut health = TmuxBrokerHealth::default();
     let error = anyhow::anyhow!(message.to_string());
     health.disable_after_error(&error);
@@ -225,7 +215,7 @@ pub(crate) fn test_broker_health_after_reconnect(
 // post-drain count reflects an emptied-but-open channel, mirroring the retained
 // shared channel on reconnect. Returns the residual frame count (expected 0).
 #[cfg(test)]
-pub(crate) fn test_drain_control_mode_channel_clears_stale_frames() -> usize {
+fn run_drain_control_mode_channel_clears_stale_frames() -> usize {
     let (line_tx, line_rx) = mpsc::channel::<Result<ControlModeLine>>();
     let mut deferred_lines = VecDeque::new();
     let source = ControlModeLineSource::Primary { session_id: None };
@@ -256,7 +246,7 @@ pub(crate) fn test_drain_control_mode_channel_clears_stale_frames() -> usize {
 }
 
 #[cfg(test)]
-pub(crate) fn test_drain_control_mode_channel_preserves_subscriber_frames() -> usize {
+fn run_drain_control_mode_channel_preserves_subscriber_frames() -> usize {
     let (line_tx, line_rx) = mpsc::channel::<Result<ControlModeLine>>();
     let mut deferred_lines = VecDeque::new();
     line_tx
@@ -274,7 +264,7 @@ pub(crate) fn test_drain_control_mode_channel_preserves_subscriber_frames() -> u
 }
 
 #[cfg(test)]
-pub(crate) fn test_reconnect_preserves_deferred_lines() -> Vec<String> {
+fn run_reconnect_preserves_deferred_lines() -> Vec<String> {
     let deferred_lines = VecDeque::from([
         "%subscription-changed agentscan $1 @1 0 %1 : %1:Codex:codex::::".to_string(),
     ]);
@@ -451,8 +441,7 @@ fn test_subscriber_status_frame(
 }
 
 #[cfg(test)]
-pub(crate) fn test_subscriber_status_drops_recovered_dead_tombstone() -> (usize, Vec<(String, bool)>)
-{
+fn run_subscriber_status_drops_recovered_dead_tombstone() -> (usize, Vec<(String, bool)>) {
     let active_subscribers = vec![test_subscriber_status_frame("$2", false)];
     let recent_dead_subscribers = vec![
         test_subscriber_status_frame("$2", true),
@@ -471,7 +460,7 @@ pub(crate) fn test_subscriber_status_drops_recovered_dead_tombstone() -> (usize,
 }
 
 #[cfg(test)]
-pub(crate) fn test_recent_dead_subscriber_tombstone_persists_without_new_dead() -> Vec<String> {
+fn run_recent_dead_subscriber_tombstone_persists_without_new_dead() -> Vec<String> {
     let mut recent_dead_subscribers = vec![test_subscriber_status_frame("$2", true)];
 
     record_recent_dead_subscribers(&mut recent_dead_subscribers, Vec::new());
@@ -1024,7 +1013,7 @@ fn subscriber_local_exit(error_mode: ClientErrorMode, line: &str) -> bool {
 }
 
 #[cfg(test)]
-pub(crate) fn test_subscriber_local_exit(quiet: bool, line: &str) -> bool {
+fn run_subscriber_local_exit(quiet: bool, line: &str) -> bool {
     let error_mode = if quiet {
         ClientErrorMode::Quiet
     } else {
@@ -1455,7 +1444,7 @@ enum ControlModeBrokerCommandOutcome {
 }
 
 #[cfg(test)]
-pub(crate) fn test_collect_control_mode_command_response<'a>(
+fn run_collect_control_mode_command_response<'a>(
     expected_id: &ControlModeCommandFrameId,
     lines: impl IntoIterator<Item = &'a str>,
 ) -> Result<ControlModeCommandPrototypeResponse> {
@@ -1723,4 +1712,703 @@ pub(crate) struct ControlModeBrokerListTargetResponse {
 
 fn control_mode_broker_should_defer_line(line: &str) -> bool {
     !matches!(control_event_from_line(line), ControlEvent::Ignored)
+}
+#[cfg(test)]
+mod tests {
+    use crate::app::daemon::events::output_title_change_pane_id;
+    use crate::app::{PANE_FORMAT, ipc, tmux};
+    fn broker_frame_id(command_number: &str) -> super::ControlModeCommandFrameId {
+        super::ControlModeCommandFrameId {
+            timestamp: "1777830000".to_string(),
+            command_number: command_number.to_string(),
+            flags: "0".to_string(),
+        }
+    }
+
+    fn broker_pane_row_line(pane_id: &str) -> String {
+        broker_pane_row_line_with_session("session", pane_id)
+    }
+
+    fn broker_pane_row_line_with_session(session_name: &str, pane_id: &str) -> String {
+        [
+            session_name,
+            "1",
+            "0",
+            pane_id,
+            "42000",
+            "codex",
+            "Codex",
+            "/dev/ttys001",
+            "/tmp/agentscan",
+            "editor",
+            "$1",
+            "@1",
+            "codex",
+            "Codex",
+            "/tmp/agentscan",
+            "idle",
+            "session-1",
+            "",
+            "",
+            "",
+            "0",
+            "0",
+        ]
+        .join("\u{1f}")
+    }
+
+    #[test]
+    fn daemon_broker_transcript_collects_matching_command_response() {
+        let expected_id = broker_frame_id("201");
+        let mut harness = super::ControlModeBrokerTranscriptHarness::new([
+            super::ControlModeBrokerTranscriptStep::line(
+                "%subscription-changed agentscan $1 @1 0 %1 : %1:Codex:codex::::",
+            ),
+            super::ControlModeBrokerTranscriptStep::line("%begin 1777830000 201 0"),
+            super::ControlModeBrokerTranscriptStep::line(
+                "s\u{1f}0\u{1f}0\u{1f}%1\u{1f}100\u{1f}codex\u{1f}Codex",
+            ),
+            super::ControlModeBrokerTranscriptStep::line("%end 1777830000 201 0"),
+        ]);
+
+        let response = harness
+            .collect_command_response(&expected_id)
+            .expect("broker transcript should collect matching response");
+
+        assert_eq!(
+            response.deferred_events,
+            vec!["%subscription-changed agentscan $1 @1 0 %1 : %1:Codex:codex::::"]
+        );
+        assert_eq!(
+            response.output,
+            vec!["s\u{1f}0\u{1f}0\u{1f}%1\u{1f}100\u{1f}codex\u{1f}Codex"]
+        );
+    }
+
+    #[test]
+    fn daemon_broker_list_pane_records_command_and_parses_response() {
+        let expected_id = broker_frame_id("208");
+        let mut harness = super::ControlModeBrokerTranscriptHarness::new([
+            super::ControlModeBrokerTranscriptStep::line(
+                "%subscription-changed agentscan $1 @1 0 %1 : %1:Codex:codex::::",
+            ),
+            super::ControlModeBrokerTranscriptStep::line("%begin 1777830000 208 0"),
+            super::ControlModeBrokerTranscriptStep::line(broker_pane_row_line("%1")),
+            super::ControlModeBrokerTranscriptStep::line("%end 1777830000 208 0"),
+        ]);
+
+        let response = harness
+            .list_pane("%1", &expected_id)
+            .expect("list-pane response should parse");
+
+        assert_eq!(
+            harness.written_commands(),
+            &[format!("list-panes -t %1 -F {}", PANE_FORMAT)]
+        );
+        assert_eq!(response.pane.expect("pane should exist").pane_id, "%1");
+        assert_eq!(
+            response.deferred_events,
+            vec!["%subscription-changed agentscan $1 @1 0 %1 : %1:Codex:codex::::"]
+        );
+    }
+
+    #[test]
+    fn daemon_broker_list_pane_selects_requested_pane_from_window_listing() {
+        // `list-panes -t <pane>` lists every pane of the containing window; the broker
+        // must select the requested pane by id, not any positional row (AUR-679).
+        let expected_id = broker_frame_id("209");
+        let mut harness = super::ControlModeBrokerTranscriptHarness::new([
+            super::ControlModeBrokerTranscriptStep::line("%begin 1777830000 209 0"),
+            super::ControlModeBrokerTranscriptStep::line(broker_pane_row_line("%1")),
+            super::ControlModeBrokerTranscriptStep::line(broker_pane_row_line("%2")),
+            super::ControlModeBrokerTranscriptStep::line(broker_pane_row_line("%3")),
+            super::ControlModeBrokerTranscriptStep::line("%end 1777830000 209 0"),
+        ]);
+
+        let response = harness
+            .list_pane("%1", &expected_id)
+            .expect("list-pane response should parse");
+
+        assert_eq!(response.pane.expect("pane should exist").pane_id, "%1");
+    }
+
+    #[test]
+    fn daemon_broker_list_pane_returns_none_when_pane_missing_from_window_listing() {
+        // A listing that resolves but no longer contains the requested pane must read
+        // as a removal, never as a neighboring pane's row.
+        let expected_id = broker_frame_id("210");
+        let mut harness = super::ControlModeBrokerTranscriptHarness::new([
+            super::ControlModeBrokerTranscriptStep::line("%begin 1777830000 210 0"),
+            super::ControlModeBrokerTranscriptStep::line(broker_pane_row_line("%2")),
+            super::ControlModeBrokerTranscriptStep::line(broker_pane_row_line("%3")),
+            super::ControlModeBrokerTranscriptStep::line("%end 1777830000 210 0"),
+        ]);
+
+        let response = harness
+            .list_pane("%1", &expected_id)
+            .expect("list-pane response should parse");
+
+        assert!(response.pane.is_none());
+    }
+
+    #[test]
+    fn daemon_broker_list_target_records_command_and_parses_rows() {
+        let expected_id = broker_frame_id("213");
+        let mut harness = super::ControlModeBrokerTranscriptHarness::new([
+            super::ControlModeBrokerTranscriptStep::line("%window-pane-changed @1 %2"),
+            super::ControlModeBrokerTranscriptStep::line("%begin 1777830000 213 0"),
+            super::ControlModeBrokerTranscriptStep::line(broker_pane_row_line("%1")),
+            super::ControlModeBrokerTranscriptStep::line(broker_pane_row_line("%2")),
+            super::ControlModeBrokerTranscriptStep::line("%end 1777830000 213 0"),
+        ]);
+
+        let response = harness
+            .list_target_panes(tmux::PaneListScope::Window, "@1", &expected_id)
+            .expect("list-target response should parse");
+
+        assert_eq!(
+            harness.written_commands(),
+            &[format!("list-panes -t @1 -F {}", PANE_FORMAT)]
+        );
+        let pane_ids: Vec<_> = response
+            .rows
+            .expect("target should exist")
+            .into_iter()
+            .map(|row| row.pane_id)
+            .collect();
+        assert_eq!(pane_ids, vec!["%1", "%2"]);
+        assert_eq!(response.deferred_events, vec!["%window-pane-changed @1 %2"]);
+    }
+
+    #[test]
+    fn daemon_broker_list_target_maps_missing_session_to_none() {
+        let expected_id = broker_frame_id("214");
+        let mut harness = super::ControlModeBrokerTranscriptHarness::new([
+            super::ControlModeBrokerTranscriptStep::line("%session-window-changed $1 @1"),
+            super::ControlModeBrokerTranscriptStep::line("%begin 1777830000 214 0"),
+            super::ControlModeBrokerTranscriptStep::line("can't find session: $404"),
+            super::ControlModeBrokerTranscriptStep::line("%error 1777830000 214 0"),
+        ]);
+
+        let response = harness
+            .list_target_panes(tmux::PaneListScope::Session, "$404", &expected_id)
+            .expect("missing session should not fail");
+
+        assert_eq!(
+            harness.written_commands(),
+            &[format!("list-panes -s -t $404 -F {}", PANE_FORMAT)]
+        );
+        assert!(response.rows.is_none());
+        assert_eq!(
+            response.deferred_events,
+            vec!["%session-window-changed $1 @1"]
+        );
+    }
+
+    #[test]
+    fn daemon_broker_list_all_records_command_and_parses_rows() {
+        let expected_id = broker_frame_id("215");
+        let mut harness = super::ControlModeBrokerTranscriptHarness::new([
+            super::ControlModeBrokerTranscriptStep::line("%session-changed $1"),
+            super::ControlModeBrokerTranscriptStep::line("%begin 1777830000 215 0"),
+            super::ControlModeBrokerTranscriptStep::line(broker_pane_row_line("%1")),
+            super::ControlModeBrokerTranscriptStep::line(broker_pane_row_line("%2")),
+            super::ControlModeBrokerTranscriptStep::line("%end 1777830000 215 0"),
+        ]);
+
+        let response = harness
+            .list_all_panes(&expected_id)
+            .expect("list-all response should parse");
+
+        assert_eq!(
+            harness.written_commands(),
+            &[format!("list-panes -a -F {}", PANE_FORMAT)]
+        );
+        let pane_ids: Vec<_> = response.rows.into_iter().map(|row| row.pane_id).collect();
+        assert_eq!(pane_ids, vec!["%1", "%2"]);
+        assert_eq!(response.deferred_events, vec!["%session-changed $1"]);
+    }
+
+    #[test]
+    fn daemon_broker_list_all_preserves_unexpected_errors() {
+        let expected_id = broker_frame_id("216");
+        let mut harness = super::ControlModeBrokerTranscriptHarness::new([
+            super::ControlModeBrokerTranscriptStep::line("%begin 1777830000 216 0"),
+            super::ControlModeBrokerTranscriptStep::line(
+                "%error 1777830000 216 0 invalid format string",
+            ),
+        ]);
+
+        let error = harness
+            .list_all_panes(&expected_id)
+            .expect_err("unexpected tmux error should fail");
+
+        assert!(
+            error.to_string().contains("invalid format string"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn daemon_broker_health_disables_after_unexpected_error() {
+        let (enabled, reason, fallback_count) = super::run_broker_health_after_error("broken pipe");
+
+        assert!(!enabled);
+        assert_eq!(reason.as_deref(), Some("broken pipe"));
+        assert_eq!(fallback_count, 1);
+    }
+
+    #[test]
+    fn daemon_broker_health_counts_only_fallback_transition() {
+        let (reason, fallback_count) = super::run_broker_health_after_repeated_error("broken pipe");
+
+        assert_eq!(reason.as_deref(), Some("broken pipe"));
+        assert_eq!(fallback_count, 1);
+    }
+
+    #[test]
+    fn daemon_subscriber_exit_is_local_and_not_forwarded_as_server_exit() {
+        // A subscriber (Quiet) client's `%exit` is a local detach and must be
+        // swallowed so it never reaches the shared stream as a server-wide exit that
+        // would stop the daemon loop.
+        assert!(super::run_subscriber_local_exit(true, "%exit"));
+        assert!(super::run_subscriber_local_exit(
+            true,
+            "%exit client detached"
+        ));
+        // The primary (Fatal) client still forwards `%exit` to drive shutdown.
+        assert!(!super::run_subscriber_local_exit(false, "%exit"));
+        // Non-exit subscriber lines are always forwarded.
+        assert!(!super::run_subscriber_local_exit(
+            true,
+            "%subscription-changed agentscan $1 @1 0 %1 : %1:Codex:codex::::"
+        ));
+        assert!(!super::run_subscriber_local_exit(true, "%output %1 data"));
+        // Match the exact `%exit` token, not a bare prefix: a hypothetical
+        // `%exit`-prefixed token must not be swallowed (and stays consistent with the
+        // main control-event parser, which uses the same predicate).
+        assert!(!super::run_subscriber_local_exit(true, "%exited"));
+        assert!(!super::run_subscriber_local_exit(true, "%exitfoo"));
+    }
+
+    #[test]
+    fn daemon_broker_health_returns_active_after_reconnect() {
+        let status = super::run_broker_health_after_reconnect("broken pipe");
+
+        assert_eq!(status.mode, ipc::ControlModeBrokerMode::Active);
+        assert_eq!(status.disabled_reason, None);
+        assert_eq!(status.reconnect_count, 1);
+        assert_eq!(status.fallback_count, Some(1));
+    }
+
+    #[test]
+    fn daemon_broker_reconnect_preserves_deferred_events() {
+        let deferred_events = super::run_reconnect_preserves_deferred_lines();
+
+        assert_eq!(
+            deferred_events,
+            vec!["%subscription-changed agentscan $1 @1 0 %1 : %1:Codex:codex::::"]
+        );
+    }
+
+    #[test]
+    fn daemon_broker_reconnect_drains_stale_command_frames() {
+        // The retained shared channel is not replaced on reconnect, so leftover
+        // `%begin`/`%end` from a timed-out command must be drained or a later brokered
+        // command would consume the stale response. The drain must clear every stale
+        // primary frame.
+        assert_eq!(
+            super::run_drain_control_mode_channel_clears_stale_frames(),
+            0
+        );
+    }
+
+    #[test]
+    fn daemon_broker_reconnect_preserves_queued_subscriber_events() {
+        // Subscribers share the event channel but are independent control clients;
+        // reconnecting the primary broker must not discard their queued events.
+        assert_eq!(
+            super::run_drain_control_mode_channel_preserves_subscriber_frames(),
+            1
+        );
+    }
+
+    #[test]
+    fn daemon_broker_status_omits_recovered_dead_subscriber_tombstone() {
+        let (dead_count, subscribers) =
+            super::run_subscriber_status_drops_recovered_dead_tombstone();
+
+        assert_eq!(dead_count, 1);
+        assert_eq!(
+            subscribers,
+            vec![("$2".to_string(), false), ("$3".to_string(), true)]
+        );
+    }
+
+    #[test]
+    fn daemon_broker_status_keeps_dead_tombstone_until_recovery() {
+        assert_eq!(
+            super::run_recent_dead_subscriber_tombstone_persists_without_new_dead(),
+            vec!["$2".to_string()]
+        );
+    }
+
+    #[test]
+    fn daemon_broker_list_pane_keeps_event_shaped_rows_as_output() {
+        let expected_id = broker_frame_id("211");
+        let mut harness = super::ControlModeBrokerTranscriptHarness::new([
+            super::ControlModeBrokerTranscriptStep::line("%begin 1777830000 211 0"),
+            super::ControlModeBrokerTranscriptStep::line(broker_pane_row_line_with_session(
+                "%window-pane-changed @999",
+                "%1",
+            )),
+            super::ControlModeBrokerTranscriptStep::line("%end 1777830000 211 0"),
+        ]);
+
+        let response = harness
+            .list_pane("%1", &expected_id)
+            .expect("event-shaped row should still parse as command output");
+
+        let pane = response.pane.expect("pane should exist");
+        assert_eq!(pane.session_name, "%window-pane-changed @999");
+        assert_eq!(pane.pane_id, "%1");
+        assert!(response.deferred_events.is_empty());
+    }
+
+    #[test]
+    fn daemon_broker_list_pane_keeps_command_marker_shaped_rows_as_output() {
+        let expected_id = broker_frame_id("212");
+        let mut harness = super::ControlModeBrokerTranscriptHarness::new([
+            super::ControlModeBrokerTranscriptStep::line("%begin 1777830000 212 0"),
+            super::ControlModeBrokerTranscriptStep::line(broker_pane_row_line_with_session(
+                "%begin 1777830001 999 0",
+                "%1",
+            )),
+            super::ControlModeBrokerTranscriptStep::line("%end 1777830000 212 0"),
+        ]);
+
+        let response = harness
+            .list_pane("%1", &expected_id)
+            .expect("command-marker-shaped row should still parse as command output");
+
+        let pane = response.pane.expect("pane should exist");
+        assert_eq!(pane.session_name, "%begin 1777830001 999 0");
+        assert_eq!(pane.pane_id, "%1");
+        assert!(response.deferred_events.is_empty());
+    }
+
+    #[test]
+    fn daemon_broker_list_pane_maps_missing_target_to_none() {
+        let expected_id = broker_frame_id("209");
+        let mut harness = super::ControlModeBrokerTranscriptHarness::new([
+            super::ControlModeBrokerTranscriptStep::line(
+                "%subscription-changed agentscan $1 @1 0 %1 : %1:Codex:codex::::",
+            ),
+            super::ControlModeBrokerTranscriptStep::line("%begin 1777830000 209 0"),
+            super::ControlModeBrokerTranscriptStep::line("%window-pane-changed @1 %2"),
+            super::ControlModeBrokerTranscriptStep::line("can't find pane: %404"),
+            super::ControlModeBrokerTranscriptStep::line("%error 1777830000 209 0"),
+        ]);
+
+        let response = harness
+            .list_pane("%404", &expected_id)
+            .expect("missing pane should not fail");
+
+        assert_eq!(
+            harness.written_commands(),
+            &[format!("list-panes -t %404 -F {}", PANE_FORMAT)]
+        );
+        assert!(response.pane.is_none());
+        assert_eq!(
+            response.deferred_events,
+            vec![
+                "%subscription-changed agentscan $1 @1 0 %1 : %1:Codex:codex::::",
+                "%window-pane-changed @1 %2",
+            ]
+        );
+    }
+
+    #[test]
+    fn daemon_broker_list_pane_preserves_unexpected_errors() {
+        let expected_id = broker_frame_id("210");
+        let mut harness = super::ControlModeBrokerTranscriptHarness::new([
+            super::ControlModeBrokerTranscriptStep::line("%begin 1777830000 210 0"),
+            super::ControlModeBrokerTranscriptStep::line(
+                "%error 1777830000 210 0 invalid format string",
+            ),
+        ]);
+
+        let error = harness
+            .list_pane("%1", &expected_id)
+            .expect_err("unexpected tmux error should fail");
+
+        assert!(
+            error.to_string().contains("invalid format string"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn daemon_broker_transcript_defers_async_events_inside_command_frame() {
+        let expected_id = broker_frame_id("207");
+        let mut harness = super::ControlModeBrokerTranscriptHarness::new([
+            super::ControlModeBrokerTranscriptStep::line("%begin 1777830000 207 0"),
+            super::ControlModeBrokerTranscriptStep::line(
+                "s\u{1f}0\u{1f}0\u{1f}%1\u{1f}100\u{1f}codex\u{1f}Codex",
+            ),
+            super::ControlModeBrokerTranscriptStep::line(
+                "%subscription-changed agentscan $1 @1 0 %1 : %1:Codex:codex::::",
+            ),
+            super::ControlModeBrokerTranscriptStep::line("%end 1777830000 207 0"),
+        ]);
+
+        let response = harness
+            .collect_command_response(&expected_id)
+            .expect("broker transcript should collect matching response");
+
+        assert_eq!(
+            response.deferred_events,
+            vec!["%subscription-changed agentscan $1 @1 0 %1 : %1:Codex:codex::::"]
+        );
+        assert_eq!(
+            response.output,
+            vec!["s\u{1f}0\u{1f}0\u{1f}%1\u{1f}100\u{1f}codex\u{1f}Codex"]
+        );
+    }
+
+    #[test]
+    fn daemon_broker_transcript_reports_command_error() {
+        let expected_id = broker_frame_id("202");
+        let mut harness = super::ControlModeBrokerTranscriptHarness::new([
+            super::ControlModeBrokerTranscriptStep::line("%begin 1777830000 202 0"),
+            super::ControlModeBrokerTranscriptStep::line(
+                "%error 1777830000 202 0 can't find pane: %404",
+            ),
+        ]);
+
+        let error = harness
+            .collect_command_response(&expected_id)
+            .expect_err("matching error frame should fail");
+
+        assert!(
+            error.to_string().contains("can't find pane: %404"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn daemon_broker_transcript_rejects_interleaved_command_frames() {
+        let expected_id = broker_frame_id("203");
+        let mut harness = super::ControlModeBrokerTranscriptHarness::new([
+            super::ControlModeBrokerTranscriptStep::line("%begin 1777830000 203 0"),
+            super::ControlModeBrokerTranscriptStep::line("%begin 1777830000 204 0"),
+            super::ControlModeBrokerTranscriptStep::line("%end 1777830000 204 0"),
+            super::ControlModeBrokerTranscriptStep::line("%end 1777830000 203 0"),
+        ]);
+
+        let error = harness
+            .collect_command_response(&expected_id)
+            .expect_err("interleaved command frame should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("interleaved control-mode command frame"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn daemon_broker_transcript_reports_timeout_and_eof() {
+        let timeout_id = broker_frame_id("205");
+        let mut timeout_harness = super::ControlModeBrokerTranscriptHarness::new([
+            super::ControlModeBrokerTranscriptStep::line("%begin 1777830000 205 0"),
+            super::ControlModeBrokerTranscriptStep::Timeout,
+        ]);
+
+        let timeout = timeout_harness
+            .collect_command_response(&timeout_id)
+            .expect_err("timeout should fail command collection");
+        assert!(
+            timeout
+                .to_string()
+                .contains("timed out waiting for control-mode command response"),
+            "unexpected error: {timeout:#}"
+        );
+
+        let eof_id = broker_frame_id("206");
+        let mut eof_harness = super::ControlModeBrokerTranscriptHarness::new([
+            super::ControlModeBrokerTranscriptStep::line("%begin 1777830000 206 0"),
+            super::ControlModeBrokerTranscriptStep::Eof,
+        ]);
+
+        let eof = eof_harness
+            .collect_command_response(&eof_id)
+            .expect_err("EOF should fail command collection");
+        assert!(
+            eof.to_string()
+                .contains("stream ended before command response completed"),
+            "unexpected error: {eof:#}"
+        );
+    }
+    #[test]
+    fn control_mode_reader_tolerates_non_utf8_pane_output() {
+        let mut input = std::io::Cursor::new(b"%output %0 \xff\xfe plain bytes\r\n%exit\n");
+
+        let first = super::read_control_mode_line(&mut input)
+            .expect("line read should succeed")
+            .expect("first line should exist");
+        assert_eq!(output_title_change_pane_id(&first), None);
+        assert!(first.starts_with("%output %0 "));
+        assert!(first.contains("plain bytes"));
+
+        let second = super::read_control_mode_line(&mut input)
+            .expect("line read should succeed")
+            .expect("second line should exist");
+        assert_eq!(second, "%exit");
+
+        assert!(
+            super::read_control_mode_line(&mut input)
+                .expect("eof read should succeed")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn control_mode_command_markers_parse_frame_ids_and_errors() {
+        assert_eq!(
+            super::control_mode_command_marker("%begin 1777830000 101 0"),
+            Some(super::ControlModeCommandMarker::Begin(
+                super::ControlModeCommandFrameId {
+                    timestamp: "1777830000".to_string(),
+                    command_number: "101".to_string(),
+                    flags: "0".to_string(),
+                }
+            ))
+        );
+        assert_eq!(
+            super::control_mode_command_marker("%end 1777830000 101 0"),
+            Some(super::ControlModeCommandMarker::End(
+                super::ControlModeCommandFrameId {
+                    timestamp: "1777830000".to_string(),
+                    command_number: "101".to_string(),
+                    flags: "0".to_string(),
+                }
+            ))
+        );
+        assert_eq!(
+            super::control_mode_command_marker("%error 1777830000 101 0 can't find pane: %404"),
+            Some(super::ControlModeCommandMarker::Error {
+                id: super::ControlModeCommandFrameId {
+                    timestamp: "1777830000".to_string(),
+                    command_number: "101".to_string(),
+                    flags: "0".to_string(),
+                },
+                message: "can't find pane: %404".to_string(),
+            })
+        );
+        assert_eq!(super::control_mode_command_marker("%window-add @1"), None);
+    }
+
+    #[test]
+    fn control_mode_command_response_collects_output_and_defers_prior_events() {
+        let expected_id = super::ControlModeCommandFrameId {
+            timestamp: "1777830000".to_string(),
+            command_number: "102".to_string(),
+            flags: "0".to_string(),
+        };
+
+        let response = super::run_collect_control_mode_command_response(
+            &expected_id,
+            [
+                "%subscription-changed agentscan $174 @251 1 %251 : %251:Claude Code | Working:claude::::",
+                "%begin 1777830000 102 0",
+                "s\u{1f}0\u{1f}0\u{1f}%251\u{1f}100\u{1f}claude\u{1f}Claude Code | Working",
+                "%end 1777830000 102 0",
+            ],
+        )
+        .expect("matching frame should parse");
+
+        assert_eq!(
+            response.deferred_events,
+            vec![
+                "%subscription-changed agentscan $174 @251 1 %251 : %251:Claude Code | Working:claude::::"
+            ]
+        );
+        assert_eq!(
+            response.output,
+            vec!["s\u{1f}0\u{1f}0\u{1f}%251\u{1f}100\u{1f}claude\u{1f}Claude Code | Working"]
+        );
+    }
+
+    #[test]
+    fn control_mode_command_response_reports_errors_and_interleaved_frames() {
+        let expected_id = super::ControlModeCommandFrameId {
+            timestamp: "1777830000".to_string(),
+            command_number: "103".to_string(),
+            flags: "0".to_string(),
+        };
+
+        let missing = super::run_collect_control_mode_command_response(
+            &expected_id,
+            [
+                "%begin 1777830000 103 0",
+                "%error 1777830000 103 0 can't find pane: %404",
+            ],
+        )
+        .expect_err("matching error frame should fail");
+        assert!(
+            missing.to_string().contains("can't find pane: %404"),
+            "unexpected error: {missing:#}"
+        );
+
+        let interleaved = super::run_collect_control_mode_command_response(
+            &expected_id,
+            [
+                "%begin 1777830000 103 0",
+                "%begin 1777830000 104 0",
+                "%end 1777830000 104 0",
+                "%end 1777830000 103 0",
+            ],
+        )
+        .expect_err("interleaved command frames should fail");
+        assert!(
+            interleaved
+                .to_string()
+                .contains("interleaved control-mode command frame"),
+            "unexpected error: {interleaved:#}"
+        );
+
+        let unexpected_end = super::run_collect_control_mode_command_response(
+            &expected_id,
+            [
+                "%begin 1777830000 103 0",
+                "%end 1777830000 104 0",
+                "%end 1777830000 103 0",
+            ],
+        )
+        .expect_err("unexpected end frame should fail");
+        assert!(
+            unexpected_end
+                .to_string()
+                .contains("interleaved control-mode command frame"),
+            "unexpected error: {unexpected_end:#}"
+        );
+
+        let unexpected_error = super::run_collect_control_mode_command_response(
+            &expected_id,
+            [
+                "%begin 1777830000 103 0",
+                "%error 1777830000 104 0 other command failed",
+                "%end 1777830000 103 0",
+            ],
+        )
+        .expect_err("unexpected error frame should fail");
+        assert!(
+            unexpected_error
+                .to_string()
+                .contains("interleaved control-mode command frame"),
+            "unexpected error: {unexpected_error:#}"
+        );
+    }
 }

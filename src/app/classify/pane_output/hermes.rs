@@ -116,3 +116,230 @@ fn hermes_turn_busy_marker_is_current(frame: &PaneOutputFrame<'_>, busy_index: u
             .lines_from(busy_index)
             .is_some_and(|lines| lines.iter().any(|line| hermes_box_rule_line(line.trim())))
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::app::classify;
+    use crate::app::tests::{pane_output_status_pane, proc_fallback_pane};
+    use crate::app::{Provider, StatusKind};
+
+    #[test]
+    fn hermes_pane_output_marks_busy_only_after_provider_is_known() {
+        let mut hermes = pane_output_status_pane(765, Provider::Hermes, "agentscan: hermes");
+
+        classify::apply_pane_output_status_fallback(
+            &mut hermes,
+            "╭─ task ─╮\n\
+         │ working │\n\
+         ╰─────────╯\n\
+         ⚕ gpt-5.5 │ 65.4K/272K │ [██░░░░░░░░] 24% │ 2m │ ⏱ 1m 19s\n\
+         ⚕ ❯ msg=interrupt · /queue · /bg · /steer · Ctrl+C cancel\n",
+        );
+
+        assert_eq!(hermes.status.kind, StatusKind::Busy);
+        assert_eq!(hermes.status.source, crate::app::StatusSource::PaneOutput);
+
+        let mut unknown = proc_fallback_pane(766, "python3.11", "agentscan: hermes");
+        classify::apply_pane_output_status_fallback(
+            &mut unknown,
+            "⚕ gpt-5.5 │ 65.4K/272K │ [██░░░░░░░░] 24% │ 2m │ ⏱ 1m 19s\n\
+         ⚕ ❯ msg=interrupt · /queue · /bg · /steer · Ctrl+C cancel\n",
+        );
+
+        assert_eq!(unknown.status.kind, StatusKind::Unknown);
+        assert_eq!(unknown.status.source, crate::app::StatusSource::NotChecked);
+    }
+
+    #[test]
+    fn hermes_pane_output_marks_current_prompt_idle() {
+        let mut hermes = pane_output_status_pane(767, Provider::Hermes, "agentscan: hermes");
+
+        classify::apply_pane_output_status_fallback(
+            &mut hermes,
+            "┌─────────────────────────────────────────────────────────────────────────────┐\n\
+         │ Hermes Agent                                                                │\n\
+         └─────────────────────────────────────────────────────────────────────────────┘\n\
+         ⚕ gpt-5.5 │ ctx -- │ [░░░░░░░░░░] -- │ 2s │ ⏲ 0s\n\
+         ❯\n",
+        );
+
+        assert_eq!(hermes.status.kind, StatusKind::Idle);
+        assert_eq!(hermes.status.source, crate::app::StatusSource::PaneOutput);
+    }
+
+    #[test]
+    fn hermes_pane_output_accepts_one_busy_hint_in_provider_frame() {
+        let mut hermes = pane_output_status_pane(773, Provider::Hermes, "agentscan: hermes");
+
+        classify::apply_pane_output_status_fallback(
+            &mut hermes,
+            "⚕ gpt-5.5 │ 65.4K/272K │ [██░░░░░░░░] 24% │ 2m │ ⏱ 1m 19s\n\
+         ⚕ ❯ /queue\n\
+         ────────────────────────────────────────\n",
+        );
+
+        assert_eq!(hermes.status.kind, StatusKind::Busy);
+        assert_eq!(hermes.status.source, crate::app::StatusSource::PaneOutput);
+    }
+
+    #[test]
+    fn hermes_pane_output_with_glyph_frame_but_no_busy_hint_stays_unknown() {
+        let mut hermes = pane_output_status_pane(774, Provider::Hermes, "agentscan: hermes");
+
+        classify::apply_pane_output_status_fallback(
+            &mut hermes,
+            "⚕ gpt-5.5 │ 65.4K/272K │ [██░░░░░░░░] 24% │ 2m │ ⏱ 1m 19s\n\
+         ⚕ ❯ /bg · /steer\n\
+         ────────────────────────────────────────\n",
+        );
+
+        assert_eq!(hermes.status.kind, StatusKind::Unknown);
+        assert_eq!(hermes.status.source, crate::app::StatusSource::NotChecked);
+    }
+
+    #[test]
+    fn hermes_pane_output_marks_idle_with_unsubmitted_draft_prompt() {
+        // The user has typed a message but not submitted it: the agent is not running a turn, so the
+        // honest label is idle even though the prompt is no longer a bare `❯`. The busy prompt is
+        // `⚕ ❯ …` (leading `⚕`), so a `❯ <draft>` line cannot be mistaken for it.
+        let mut hermes = pane_output_status_pane(769, Provider::Hermes, "agentscan: hermes");
+
+        classify::apply_pane_output_status_fallback(
+            &mut hermes,
+            "⚕ gpt-5.5 │ ctx -- │ [░░░░░░░░░░] -- │ 5s │ ⏲ 0s │ ⚠ YOLO\n\
+         ─────────────────────────────────────────────────────────────\n\
+         ❯ Analyze the entire repo, tell me what you like, tell me what you don't\n\
+         ─────────────────────────────────────────────────────────────\n",
+        );
+
+        assert_eq!(hermes.status.kind, StatusKind::Idle);
+        assert_eq!(hermes.status.source, crate::app::StatusSource::PaneOutput);
+    }
+
+    #[test]
+    fn hermes_pane_output_marks_initializing_turn_busy() {
+        let mut hermes = pane_output_status_pane(771, Provider::Hermes, "agentscan: hermes");
+
+        classify::apply_pane_output_status_fallback(
+            &mut hermes,
+            "────────────────────────────────────────\n\
+         ● Print exactly the marker formed by joining these parts with underscores\n\
+         Initializing agent...\n\
+         ────────────────────────────────────────\n",
+        );
+
+        assert_eq!(hermes.status.kind, StatusKind::Busy);
+        assert_eq!(hermes.status.source, crate::app::StatusSource::PaneOutput);
+    }
+
+    #[test]
+    fn hermes_pane_output_uses_idle_prompt_below_stale_initializing_turn() {
+        let mut hermes = pane_output_status_pane(772, Provider::Hermes, "agentscan: hermes");
+
+        classify::apply_pane_output_status_fallback(
+            &mut hermes,
+            "────────────────────────────────────────\n\
+         ● Print exactly the marker formed by joining these parts with underscores\n\
+         Initializing agent...\n\
+         ────────────────────────────────────────\n\
+         ╭─ ⚕ Hermes ────────────────────────────╮\n\
+             AGENTSCAN_E2E_DONE_hermes_123\n\
+         ╰───────────────────────────────────────╯\n\
+         ⚕ gpt-5.5 │ 16.4K/272K │ [█░░░░░░░░░] 6% │ 8s │ ⏲ 4s │ ⚠ YOLO\n\
+         ────────────────────────────────────────\n\
+         ❯\n\
+         ────────────────────────────────────────\n",
+        );
+
+        assert_eq!(hermes.status.kind, StatusKind::Idle);
+        assert_eq!(hermes.status.source, crate::app::StatusSource::PaneOutput);
+    }
+
+    #[test]
+    fn hermes_pane_output_does_not_infer_idle_from_stale_draft_prompt_in_scrollback() {
+        // A `❯ …` draft prompt (with its status bar) sits in the scrollback capture, but the turn
+        // ran and agent output scrolled below it with no current prompt/busy footer at the bottom.
+        // The broadened `❯ <draft>` idle match must not resurrect that stale line — the prompt is
+        // far from the current footer, so the pane stays unknown.
+        let mut hermes = pane_output_status_pane(770, Provider::Hermes, "agentscan: hermes");
+
+        classify::apply_pane_output_status_fallback(
+            &mut hermes,
+            "⚕ gpt-5.5 │ ctx -- │ [░░░░░░░░░░] -- │ 5s │ ⏲ 0s │ ⚠ YOLO\n\
+         ─────────────────────────────────────────────────────────────\n\
+         ❯ Analyze the entire repo, tell me what you like\n\
+         ─────────────────────────────────────────────────────────────\n\
+         ⚕ Reading src/app/classify/pane_output.rs\n\
+         ⚕ Reading src/app/classify/provider_match.rs\n\
+         ⚕ Grepping for hermes_idle_prompt_line\n\
+         Found 3 matches across the classify module.\n\
+         Next I will outline the strengths and weaknesses I see.\n\
+         Starting with the daemon event loop and classification ladder.\n",
+        );
+
+        assert_eq!(hermes.status.kind, StatusKind::Unknown);
+        assert_eq!(hermes.status.source, crate::app::StatusSource::NotChecked);
+    }
+
+    #[test]
+    fn hermes_pane_output_does_not_infer_idle_from_prompt_like_line_with_prose_above() {
+        // A status bar in scrollback followed by prose (`Run this:`) and a `❯ <command>` line is
+        // agent output, not the live input box. Proximity alone would accept it; the intervening
+        // line between the status bar and the prompt must be a box rule or blank.
+        let mut hermes = pane_output_status_pane(772, Provider::Hermes, "agentscan: hermes");
+
+        classify::apply_pane_output_status_fallback(
+            &mut hermes,
+            "⚕ gpt-5.5 │ ctx -- │ [░░░░░░░░░░] -- │ 5s │ ⏲ 0s │ ⚠ YOLO\n\
+         Run this:\n\
+         ❯ npm test\n",
+        );
+
+        assert_eq!(hermes.status.kind, StatusKind::Unknown);
+        assert_eq!(hermes.status.source, crate::app::StatusSource::NotChecked);
+    }
+
+    #[test]
+    fn hermes_pane_output_does_not_infer_idle_from_terminal_output_line_at_bottom() {
+        // Agent output (e.g. a quoted shell prompt like `❯ npm test`) ends up as the last line of
+        // the capture with a hermes status bar still sitting far above in scrollback. Nothing
+        // follows the matched line so the current-frame guard trivially passes, but proximity to
+        // the status bar must hold — an unrelated bottom line with no adjacent status bar is not
+        // the live prompt.
+        let mut hermes = pane_output_status_pane(771, Provider::Hermes, "agentscan: hermes");
+
+        classify::apply_pane_output_status_fallback(
+            &mut hermes,
+            "⚕ gpt-5.5 │ ctx -- │ [░░░░░░░░░░] -- │ 5s │ ⏲ 0s │ ⚠ YOLO\n\
+         ─────────────────────────────────────────────────────────────\n\
+         ❯ Audit the build scripts\n\
+         ─────────────────────────────────────────────────────────────\n\
+         ⚕ Reading scripts/build.sh\n\
+         ⚕ Reading scripts/test.sh\n\
+         Run this to reproduce locally:\n\
+         ❯ npm test\n",
+        );
+
+        assert_eq!(hermes.status.kind, StatusKind::Unknown);
+        assert_eq!(hermes.status.source, crate::app::StatusSource::NotChecked);
+    }
+
+    #[test]
+    fn hermes_pane_output_uses_current_prompt_over_stale_busy_footer() {
+        let mut hermes = pane_output_status_pane(768, Provider::Hermes, "agentscan: hermes");
+
+        classify::apply_pane_output_status_fallback(
+            &mut hermes,
+            "⚕ gpt-5.5 │ 65.4K/272K │ [██░░░░░░░░] 24% │ 2m │ ⏱ 1m 19s\n\
+         ⚕ ❯ msg=interrupt · /queue · /bg · /steer · Ctrl+C cancel\n\
+         \n\
+         ⚕ Hermes\n\
+         Done.\n\
+         ⚕ gpt-5.5 │ 16K/272K │ [█░░░░░░░░░] 6% │ 6s │ ⏲ 3s\n\
+         ❯\n",
+        );
+
+        assert_eq!(hermes.status.kind, StatusKind::Idle);
+        assert_eq!(hermes.status.source, crate::app::StatusSource::PaneOutput);
+    }
+}

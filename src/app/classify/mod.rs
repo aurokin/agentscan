@@ -12,12 +12,12 @@ mod title;
 use display::display_metadata_from_analysis;
 #[cfg(test)]
 pub(crate) use display::{display_metadata, normalize_title_for_display};
+#[cfg(test)]
+pub(crate) use pane_output::classify_output;
 pub(crate) use pane_output::{
     apply_pane_output_status_fallback, pane_output_status_activity_candidate,
     pane_output_status_candidate_cacheable, pane_output_status_fallback_candidate,
 };
-#[cfg(test)]
-pub(crate) use proc_fallback::apply_proc_fallback;
 pub(crate) use proc_fallback::apply_proc_fallback_with_options;
 #[cfg(test)]
 pub(crate) use provider_match::classify_provider;

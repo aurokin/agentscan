@@ -1,0 +1,13 @@
+   main ~/code/agentscan/
+
+Tip: Press Ctrl-W to start a parallel task in its own worktree.
+
+╭────────────────────────────────────────────────╮
+│ ❯                                                │
+╰──────────────── Grok Build · always-approve ─╯
+
+0.2.3 [stable] Beta
+
+
+
+
