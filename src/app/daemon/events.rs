@@ -319,7 +319,7 @@ pub(super) fn control_event_from_line(line: &str) -> ControlEvent {
 }
 
 #[cfg(test)]
-pub(crate) fn test_control_event_pane_kind(line: &str) -> Option<(&'static str, String)> {
+fn run_control_event_pane_kind(line: &str) -> Option<(&'static str, String)> {
     match control_event_from_line(line) {
         ControlEvent::PaneChanged(pane_id) => Some(("metadata", pane_id)),
         ControlEvent::PaneActivity(pane_id) => Some(("activity", pane_id)),
@@ -525,4 +525,124 @@ pub(crate) fn notification_name(line: &str) -> Option<&str> {
     line.split_whitespace()
         .next()
         .filter(|token| token.starts_with('%'))
+}
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn daemon_notifications_trigger_refresh() {
+        assert!(super::should_resnapshot_from_notification("%window-add @1"));
+        assert!(super::should_resnapshot_from_notification(
+            "%unlinked-window-close @1"
+        ));
+        assert!(!super::should_resnapshot_from_notification(
+            "%subscription-changed agentscan $174 @251 1 %251 : %251:Claude Code | Working:claude::::"
+        ));
+        assert!(!super::should_resnapshot_from_notification("%begin 1 1 0"));
+    }
+
+    #[test]
+    fn window_notifications_expose_window_targets() {
+        assert_eq!(
+            super::window_notification_target("%window-renamed @1 editor"),
+            Some("@1")
+        );
+        assert_eq!(
+            super::window_notification_target("%window-close @2"),
+            Some("@2")
+        );
+        assert_eq!(
+            super::window_notification_target("%unlinked-window-renamed @4 sh"),
+            Some("@4")
+        );
+        assert_eq!(
+            super::window_notification_target("%layout-change @3 a,b,c"),
+            Some("@3")
+        );
+        assert_eq!(
+            super::window_notification_target("%session-renamed $1 renamed"),
+            None
+        );
+    }
+
+    #[test]
+    fn session_notifications_expose_session_targets() {
+        assert_eq!(
+            super::session_notification_target("%session-renamed $1 renamed"),
+            Some("$1")
+        );
+        assert_eq!(
+            super::session_notification_target("%window-renamed @1 editor"),
+            None
+        );
+    }
+
+    #[test]
+    fn subscription_changed_notifications_expose_pane_id() {
+        assert_eq!(
+            super::subscription_changed_pane_id(
+                "%subscription-changed agentscan $174 @251 1 %251 : %251:Claude Code | Working:claude::::"
+            ),
+            Some("%251")
+        );
+        assert_eq!(super::subscription_changed_pane_id("%window-add @1"), None);
+    }
+
+    #[test]
+    fn activity_subscription_changes_are_distinct_from_metadata_changes() {
+        assert_eq!(
+            super::run_control_event_pane_kind(
+                "%subscription-changed agentscan-activity $174 @251 1 %251 : %251:1783956107"
+            ),
+            Some(("activity", "%251".to_string()))
+        );
+        assert_eq!(
+            super::run_control_event_pane_kind(
+                "%subscription-changed agentscan $174 @251 1 %251 : %251:codex:Working"
+            ),
+            Some(("metadata", "%251".to_string()))
+        );
+    }
+
+    #[test]
+    fn output_notifications_expose_title_change_pane_id() {
+        assert_eq!(
+            super::output_title_change_pane_id(
+                "%output %0 printf '\\033]2;Claude Code | Working\\033\\\\'\r\n"
+            ),
+            Some("%0")
+        );
+        assert_eq!(
+            super::output_title_change_pane_id("%output %0 plain shell output"),
+            None
+        );
+    }
+
+    #[test]
+    fn output_notifications_expose_title_payload() {
+        assert_eq!(
+            super::output_title_change_title("%output %0 \\033]0;Working\\007sh-3.2$ ").as_deref(),
+            Some("Working")
+        );
+        assert_eq!(
+            super::output_title_change_title("%output %0 \\033]2;Review patch\\033\\\\").as_deref(),
+            Some("Review patch")
+        );
+    }
+
+    #[test]
+    fn output_title_payload_ignores_typed_backslash_escapes() {
+        assert_eq!(
+            super::output_title_change_title("%output %0 printf '\\134033]0;Working\\134007'"),
+            None
+        );
+    }
+
+    #[test]
+    fn detects_notification_names() {
+        assert_eq!(
+            super::notification_name("%window-renamed @1 editor"),
+            Some("%window-renamed")
+        );
+        assert_eq!(super::notification_name("plain output"), None);
+    }
 }

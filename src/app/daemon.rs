@@ -24,18 +24,6 @@ mod socket_server;
 pub(crate) use control_mode::StartedTmuxControlModeClient;
 #[cfg(test)]
 use control_mode::control_mode_startup_response_from_line;
-#[cfg(test)]
-pub(crate) use control_mode::{
-    ControlModeBrokerTranscriptHarness, ControlModeBrokerTranscriptStep, ControlModeCommandFrameId,
-    ControlModeCommandMarker, control_mode_command_marker, test_broker_health_after_error,
-    test_broker_health_after_reconnect, test_broker_health_after_repeated_error,
-    test_collect_control_mode_command_response,
-    test_drain_control_mode_channel_clears_stale_frames,
-    test_drain_control_mode_channel_preserves_subscriber_frames,
-    test_recent_dead_subscriber_tombstone_persists_without_new_dead,
-    test_reconnect_preserves_deferred_lines, test_subscriber_local_exit,
-    test_subscriber_status_drops_recovered_dead_tombstone,
-};
 use control_mode::{
     ControlModeLine, DaemonClosingGuard, RunningTmuxControlModeClient, SubscriberAttachOutcome,
     SubscriberReconcileOutcome, install_shutdown_signal_handlers,
@@ -45,14 +33,6 @@ use control_mode::{
 use events::{
     ControlEvent, ControlEventBatch, ControlEventOutcome, batch_changed_session_set,
     control_event_from_line, is_control_exit_line,
-};
-// Test-only parser helpers stay behind this gate; production builds must not
-// expose or resolve the `#[cfg(test)]` definitions in the child modules.
-#[cfg(test)]
-pub(crate) use events::{
-    notification_name, output_title_change_pane_id, output_title_change_title,
-    session_notification_target, should_resnapshot_from_notification, subscription_changed_pane_id,
-    test_control_event_pane_kind, window_notification_target,
 };
 pub(crate) use lifecycle::{
     AutoStartPolicy, DaemonSnapshotError, LifecycleQuery, SubscriptionRowMode, daemon_restart,
@@ -75,17 +55,6 @@ use refresh::{
     apply_control_event_batch, reconcile_full_snapshot, reconcile_refresh_outcome,
     refresh_snapshot_for_focused_pane, refresh_snapshot_pane_with_title, snapshot_diff,
     snapshots_are_materially_equal,
-};
-#[cfg(test)]
-pub(crate) use refresh::{
-    test_apply_control_event_lines_with_provider,
-    test_apply_control_event_lines_with_provider_counts,
-    test_apply_resnapshot_control_event_with_provider, test_reconcile_full_snapshot_with_provider,
-    test_recover_targeted_pane_provider_with_inspector,
-    test_refresh_snapshot_for_focused_pane_with_provider,
-    test_refresh_snapshot_pane_title_with_provider, test_refresh_snapshot_pane_with_provider,
-    test_refresh_snapshot_session_with_inspector, test_refresh_snapshot_session_with_provider,
-    test_refresh_snapshot_window_with_provider,
 };
 use snapshot_store::SnapshotStore;
 pub(crate) use socket_server::DaemonSocketState;
@@ -869,7 +838,7 @@ fn subscriber_coverage_complete(
 }
 
 #[cfg(test)]
-pub(crate) fn test_subscriber_coverage_complete(
+fn run_subscriber_coverage_complete(
     under_cap: bool,
     desired: &[String],
     present: &[String],
@@ -1897,7 +1866,7 @@ fn duration_until_millis(deadline: Instant) -> u64 {
 }
 
 #[cfg(test)]
-pub(crate) fn test_deep_control_mode_telemetry_value_enabled(value: &str) -> bool {
+fn run_deep_control_mode_telemetry_value_enabled(value: &str) -> bool {
     deep_control_mode_telemetry_value_enabled(std::ffi::OsStr::new(value))
 }
 
@@ -1929,16 +1898,14 @@ pub(crate) fn bench_encode_diff_frame_bytes(
 }
 
 #[cfg(test)]
-pub(crate) fn test_snapshot_observability(
-    snapshot: &SnapshotEnvelope,
-) -> ipc::SnapshotObservabilityFrame {
+fn run_snapshot_observability(snapshot: &SnapshotEnvelope) -> ipc::SnapshotObservabilityFrame {
     snapshot_store::snapshot_observability(snapshot)
 }
 
 #[cfg(test)]
 /// Returns `(total_line_count, output_line_count, output_byte_count, ignored_count)`
 /// for a parsed control-mode batch.
-pub(crate) fn test_control_event_batch_volume(lines: &[String]) -> (u64, u64, u64, u64) {
+fn run_control_event_batch_volume(lines: &[String]) -> (u64, u64, u64, u64) {
     let batch = ControlEventBatch::from_lines(lines);
     (
         batch.total_line_count,
@@ -1951,7 +1918,7 @@ pub(crate) fn test_control_event_batch_volume(lines: &[String]) -> (u64, u64, u6
 #[cfg(test)]
 /// Records a single control-mode batch into otherwise-default telemetry, mirroring
 /// the always-on volume path the daemon runs even for ignored-only batches.
-pub(crate) fn test_runtime_telemetry_after_control_event_volume(
+fn run_runtime_telemetry_after_control_event_volume(
     lines: &[String],
 ) -> ipc::RuntimeTelemetryFrame {
     let mut telemetry = RuntimeTelemetry::default();
@@ -1979,7 +1946,7 @@ pub(crate) fn test_runtime_telemetry_after_control_event_volume(
 }
 
 #[cfg(test)]
-pub(crate) fn test_control_event_observability_for_lines(
+fn run_control_event_observability_for_lines(
     lines: &[String],
 ) -> (bool, bool, String, Option<String>) {
     let control_lines = lines
@@ -2003,7 +1970,7 @@ pub(crate) fn test_control_event_observability_for_lines(
 }
 
 #[cfg(test)]
-pub(crate) fn test_control_event_source_summary_for_lines(
+fn run_control_event_source_summary_for_lines(
     lines: &[(&str, Option<&str>, &str)],
 ) -> Vec<ipc::ControlModeSourceFrame> {
     let control_lines = lines
@@ -2025,7 +1992,7 @@ pub(crate) fn test_control_event_source_summary_for_lines(
 }
 
 #[cfg(test)]
-pub(crate) fn test_reconcile_refresh_publish_decision(
+fn run_reconcile_refresh_publish_decision(
     previous: &SnapshotEnvelope,
     current: &SnapshotEnvelope,
 ) -> (bool, bool) {
@@ -2041,7 +2008,7 @@ pub(crate) fn test_reconcile_refresh_publish_decision(
 }
 
 #[cfg(test)]
-pub(crate) fn test_control_event_refresh_should_reset_reconcile_timer(
+fn run_control_event_refresh_should_reset_reconcile_timer(
     broker_enabled_before_refresh: bool,
     reconnected: bool,
     broker_enabled: bool,
@@ -2054,12 +2021,12 @@ pub(crate) fn test_control_event_refresh_should_reset_reconcile_timer(
 }
 
 #[cfg(test)]
-pub(crate) fn test_control_event_should_recover_broker(should_exit: bool) -> bool {
+fn run_control_event_should_recover_broker(should_exit: bool) -> bool {
     control_event_should_recover_broker(should_exit)
 }
 
 #[cfg(test)]
-pub(crate) fn test_reconcile_interval_for(
+fn run_reconcile_interval_for(
     broker_enabled: bool,
     disable_reconcile: bool,
     subscriber_coverage_complete: bool,
@@ -2072,7 +2039,7 @@ pub(crate) fn test_reconcile_interval_for(
 }
 
 #[cfg(test)]
-pub(crate) fn test_next_settle_deadline(
+fn run_next_settle_deadline(
     has_busy_pane_output: bool,
     current: Option<Instant>,
     now: Instant,
@@ -2082,7 +2049,7 @@ pub(crate) fn test_next_settle_deadline(
 }
 
 #[cfg(test)]
-pub(crate) fn test_next_control_mode_wait_for(
+fn run_next_control_mode_wait_for(
     next_reconcile_after: Duration,
     next_subscriber_monitor_after: Option<Duration>,
     settle_recapture_after: Option<Duration>,
@@ -2097,12 +2064,12 @@ pub(crate) fn test_next_control_mode_wait_for(
 }
 
 #[cfg(test)]
-pub(crate) fn test_capped_subscriber_session_ids(session_ids: Vec<String>) -> Vec<String> {
+fn run_capped_subscriber_session_ids(session_ids: Vec<String>) -> Vec<String> {
     capped_subscriber_session_ids(session_ids)
 }
 
 #[cfg(test)]
-pub(crate) fn test_runtime_telemetry_after_reconcile_results(
+fn run_runtime_telemetry_after_reconcile_results(
     previous: &SnapshotEnvelope,
     noop_current: &SnapshotEnvelope,
     changed_current: &SnapshotEnvelope,
@@ -2248,5 +2215,460 @@ mod pane_focus_recency_tests {
         );
         // Stamping a stale clone back to None must not corrupt the map.
         assert_eq!(recency.by_pane.len(), 1);
+    }
+}
+#[cfg(test)]
+mod migrated_tests {
+    use super::*;
+    use crate::app::tests::*;
+
+    fn empty_socket_snapshot(generated_at: &str) -> SnapshotEnvelope {
+        SnapshotEnvelope {
+            schema_version: CACHE_SCHEMA_VERSION,
+            generated_at: generated_at.to_string(),
+            source: SnapshotSource {
+                kind: SourceKind::Daemon,
+                tmux_version: Some("3.4".to_string()),
+                daemon_generated_at: Some(generated_at.to_string()),
+            },
+            panes: Vec::new(),
+        }
+    }
+
+    fn daemon_refresh_row(
+        pane_id: &str,
+        session_id: &str,
+        window_id: &str,
+        pane_index: u32,
+        title: &str,
+    ) -> TmuxPaneRow {
+        let window_index = window_id
+            .trim_start_matches('@')
+            .parse::<u32>()
+            .expect("window id should be numeric");
+        TmuxPaneRow {
+            session_name: format!("session-{session_id}"),
+            window_index,
+            pane_index,
+            pane_id: pane_id.to_string(),
+            pane_pid: 42_000 + pane_index,
+            pane_current_command: "codex".to_string(),
+            pane_title_raw: title.to_string(),
+            pane_tty: format!("/dev/ttys{pane_index}"),
+            pane_current_path: "/tmp/agentscan".to_string(),
+            window_name: format!("window-{window_id}"),
+            session_id: Some(session_id.to_string()),
+            window_id: Some(window_id.to_string()),
+            agent_provider: None,
+            agent_label: None,
+            agent_cwd: None,
+            agent_state: None,
+            agent_session_id: None,
+            agent_pid: None,
+            agent_version: None,
+            agent_model: None,
+            pane_active: false,
+            window_active: false,
+        }
+    }
+
+    fn daemon_refresh_snapshot(rows: Vec<TmuxPaneRow>) -> SnapshotEnvelope {
+        let mut snapshot = empty_socket_snapshot("2026-05-03T00:00:00Z");
+        snapshot.panes = rows.into_iter().map(classify::pane_from_row).collect();
+        snapshot::sort_snapshot_panes(&mut snapshot);
+        snapshot
+    }
+    #[test]
+    fn daemon_deep_control_mode_telemetry_env_value_parser() {
+        assert!(super::run_deep_control_mode_telemetry_value_enabled("1"));
+        assert!(super::run_deep_control_mode_telemetry_value_enabled("true"));
+        assert!(super::run_deep_control_mode_telemetry_value_enabled(
+            " yes "
+        ));
+        assert!(!super::run_deep_control_mode_telemetry_value_enabled(""));
+        assert!(!super::run_deep_control_mode_telemetry_value_enabled("0"));
+        assert!(!super::run_deep_control_mode_telemetry_value_enabled(
+            "false"
+        ));
+        assert!(!super::run_deep_control_mode_telemetry_value_enabled("off"));
+    }
+
+    #[test]
+    fn snapshot_observability_breaks_down_paths_per_provider() {
+        // Two command-classified codex panes plus one wholly unclassified pane.
+        let mut unknown_row = daemon_refresh_row("%3", "$1", "@1", 2, "scratch");
+        unknown_row.pane_current_command = "bash".to_string();
+        unknown_row.pane_tty = "not a tty".to_string();
+        let snapshot = daemon_refresh_snapshot(vec![
+            daemon_refresh_row("%1", "$1", "@1", 0, "codex"),
+            daemon_refresh_row("%2", "$1", "@1", 1, "codex"),
+            unknown_row,
+        ]);
+
+        let observability = super::run_snapshot_observability(&snapshot);
+
+        let codex = observability
+            .per_provider
+            .get("codex")
+            .expect("codex bucket should be present");
+        assert_eq!(codex.pane_count, 2);
+        assert_eq!(codex.matched_pane_current_command_count, 2);
+        assert_eq!(codex.matched_proc_process_tree_count, 0);
+
+        let unknown = observability
+            .per_provider
+            .get("unknown")
+            .expect("unclassified panes bucket under `unknown`");
+        assert_eq!(unknown.pane_count, 1);
+        assert_eq!(unknown.matched_pane_current_command_count, 0);
+
+        // Per-provider pane counts reconcile with the snapshot total.
+        let bucketed: usize = observability
+            .per_provider
+            .values()
+            .map(|stats| stats.pane_count)
+            .sum();
+        assert_eq!(bucketed, snapshot.panes.len());
+    }
+
+    #[test]
+    fn control_event_batch_counts_output_firehose_volume() {
+        let lines = vec![
+            "%output %1 \\033]0;Claude Code | repo\\007".to_string(),
+            "%output %2 ordinary streaming bytes".to_string(),
+            "%subscription-changed agentscan $1 @1 0 %1 : %1:claude:::::".to_string(),
+        ];
+
+        let (total, output_lines, output_bytes, ignored) =
+            super::run_control_event_batch_volume(&lines);
+
+        // Every line is counted, both `%output` lines are sized (title-bearing or not),
+        // and only the non-title `%output` line lands in the ignored bucket.
+        assert_eq!(total, 3);
+        assert_eq!(output_lines, 2);
+        assert_eq!(output_bytes, (lines[0].len() + lines[1].len()) as u64);
+        assert_eq!(ignored, 1);
+    }
+
+    #[test]
+    fn runtime_telemetry_records_volume_for_ignored_only_output_batch() {
+        // A pure `%output` firehose burst with no title and no metadata change still
+        // updates the always-on volume counters, while leaving the gated kind counters
+        // (pane/title/window/session) at zero.
+        let lines = vec![
+            "%output %1 streaming tokens".to_string(),
+            "%output %1 more tokens".to_string(),
+        ];
+
+        let frame = super::run_runtime_telemetry_after_control_event_volume(&lines);
+
+        assert_eq!(frame.control_event_batch_count, 1);
+        assert_eq!(frame.control_event_line_count, 2);
+        assert_eq!(frame.control_event_output_line_count, 2);
+        assert_eq!(
+            frame.control_event_output_byte_count,
+            (lines[0].len() + lines[1].len()) as u64
+        );
+        assert_eq!(frame.control_event_ignored_count, 2);
+        assert_eq!(frame.control_event_pane_count, 0);
+        assert_eq!(frame.control_event_title_count, 0);
+    }
+
+    #[test]
+    fn daemon_observability_skips_snapshot_diff_for_ignored_control_output() {
+        let lines = vec!["%output %1 ordinary pane bytes".to_string()];
+
+        let (should_record, should_capture_snapshot_diff, refresh, detail) =
+            super::run_control_event_observability_for_lines(&lines);
+
+        assert!(!should_record);
+        assert!(!should_capture_snapshot_diff);
+        assert_eq!(refresh, "none");
+        assert_eq!(detail.as_deref(), Some("ignored:1"));
+    }
+
+    #[test]
+    fn daemon_control_event_source_summary_counts_lines_and_events_per_client() {
+        let sources = super::run_control_event_source_summary_for_lines(&[
+            (
+                "primary",
+                Some("$0"),
+                "%subscription-changed agentscan $0 @1 0 %1 : %1:codex:::::",
+            ),
+            ("subscriber", Some("$2"), "%output %7 ordinary bytes"),
+            (
+                "subscriber",
+                Some("$2"),
+                "%subscription-changed agentscan $2 @4 0 %7 : %7:codex:::::",
+            ),
+        ]);
+
+        assert_eq!(sources.len(), 2);
+        assert_eq!(sources[0].source, "primary");
+        assert_eq!(sources[0].session_id.as_deref(), Some("$0"));
+        assert_eq!(sources[0].line_count, 1);
+        assert_eq!(sources[0].event_count, 1);
+        assert_eq!(sources[1].source, "subscriber");
+        assert_eq!(sources[1].session_id.as_deref(), Some("$2"));
+        assert_eq!(sources[1].line_count, 2);
+        assert_eq!(sources[1].event_count, 1);
+    }
+
+    #[test]
+    fn daemon_reconcile_publish_decision_suppresses_timestamp_only_changes() {
+        let previous = empty_socket_snapshot("2026-05-23T18:00:00Z");
+        let mut current = previous.clone();
+        current.generated_at = "2026-05-23T18:00:01Z".to_string();
+        current.source.daemon_generated_at = Some("2026-05-23T18:00:01Z".to_string());
+
+        let (should_publish, reset_reconcile_timer) =
+            super::run_reconcile_refresh_publish_decision(&previous, &current);
+
+        assert!(!should_publish);
+        assert!(reset_reconcile_timer);
+    }
+
+    #[test]
+    fn daemon_reconcile_publish_decision_publishes_material_changes() {
+        let previous = empty_socket_snapshot("2026-05-23T18:00:00Z");
+        let mut current = previous.clone();
+        current
+            .panes
+            .push(proc_fallback_pane(42, "claude", "claude"));
+
+        let (should_publish, reset_reconcile_timer) =
+            super::run_reconcile_refresh_publish_decision(&previous, &current);
+
+        assert!(should_publish);
+        assert!(reset_reconcile_timer);
+    }
+
+    #[test]
+    fn daemon_control_event_timer_reset_tracks_broker_recovery_and_fallback() {
+        assert!(super::run_control_event_refresh_should_reset_reconcile_timer(true, true, true));
+        assert!(super::run_control_event_refresh_should_reset_reconcile_timer(true, false, false));
+        assert!(
+            !super::run_control_event_refresh_should_reset_reconcile_timer(false, false, false)
+        );
+        assert!(!super::run_control_event_refresh_should_reset_reconcile_timer(true, false, true));
+    }
+
+    #[test]
+    fn daemon_control_exit_event_skips_broker_recovery() {
+        assert!(super::run_control_event_should_recover_broker(false));
+        assert!(!super::run_control_event_should_recover_broker(true));
+    }
+
+    #[test]
+    fn daemon_reconcile_interval_uses_fallback_when_broker_is_disabled() {
+        // Broker fallback has no event stream, so the reconcile poll is the sole
+        // update path and stays fast regardless of `disable_reconcile`.
+        assert_eq!(
+            super::run_reconcile_interval_for(false, false, true),
+            std::time::Duration::from_secs(1)
+        );
+        assert_eq!(
+            super::run_reconcile_interval_for(false, true, true),
+            std::time::Duration::from_secs(1)
+        );
+    }
+
+    #[test]
+    fn daemon_reconcile_interval_uses_self_heal_when_reconcile_disabled() {
+        // Broker active + reconcile disabled: all sessions are event-driven via
+        // per-session subscriber clients, so the poll is reduced to the infrequent
+        // self-heal/drift backstop cadence.
+        assert_eq!(
+            super::run_reconcile_interval_for(true, true, true),
+            std::time::Duration::from_secs(300)
+        );
+        // Broker active + reconcile enabled keeps the full redundancy interval.
+        assert_eq!(
+            super::run_reconcile_interval_for(true, false, true),
+            std::time::Duration::from_secs(30)
+        );
+    }
+
+    #[test]
+    fn daemon_settle_deadline_arms_once_and_is_not_pushed_by_unrelated_activity() {
+        use std::time::Duration;
+        let now = std::time::Instant::now();
+        let delay = Duration::from_millis(2200);
+
+        // No busy pane-output pane: never armed (and cleared if previously set).
+        assert_eq!(
+            super::run_next_settle_deadline(false, None, now, delay),
+            None
+        );
+        assert_eq!(
+            super::run_next_settle_deadline(false, Some(now + delay), now, delay),
+            None
+        );
+
+        // First busy observation arms the deadline. This is also the boot path: `run` calls
+        // `update_settle_deadline` once at startup, so a pane already busy in the initial snapshot
+        // arms the re-check even if no control event ever follows.
+        assert_eq!(
+            super::run_next_settle_deadline(true, None, now, delay),
+            Some(now + delay)
+        );
+
+        // Already armed: a later refresh (e.g. another pane streaming) must NOT push the
+        // deadline out, or the busy->idle re-check would be starved and never fire.
+        let armed_at = now + delay;
+        let later = now + Duration::from_millis(1000);
+        assert_eq!(
+            super::run_next_settle_deadline(true, Some(armed_at), later, delay),
+            Some(armed_at)
+        );
+    }
+
+    #[test]
+    fn daemon_subscriber_coverage_requires_every_desired_session_attached() {
+        let desired = vec!["$0".to_string(), "$1".to_string(), "$2".to_string()];
+
+        // Under the cap and all desired sessions attached: coverage is complete.
+        assert!(super::run_subscriber_coverage_complete(
+            true, &desired, &desired
+        ));
+        // A failed attach (one desired session missing a subscriber) is incomplete,
+        // even though the count is under the cap, so the poll stays active.
+        assert!(!super::run_subscriber_coverage_complete(
+            true,
+            &desired,
+            &["$0".to_string(), "$2".to_string()],
+        ));
+        // Over the cap is always incomplete regardless of attachments.
+        assert!(!super::run_subscriber_coverage_complete(
+            false, &desired, &desired
+        ));
+        // No desired sessions is vacuously complete.
+        assert!(super::run_subscriber_coverage_complete(true, &[], &[]));
+    }
+
+    #[test]
+    fn daemon_reconcile_interval_stays_active_when_subscriber_coverage_is_incomplete() {
+        // More sessions than the subscriber cap means some sessions have no event
+        // client, so even with reconcile "disabled" the poll must stay at the active
+        // interval to cover them rather than relaxing to the 300s self-heal backstop.
+        assert_eq!(
+            super::run_reconcile_interval_for(true, true, false),
+            std::time::Duration::from_secs(30)
+        );
+        // Broker fallback still wins: no event stream means the fast poll regardless.
+        assert_eq!(
+            super::run_reconcile_interval_for(false, true, false),
+            std::time::Duration::from_secs(1)
+        );
+    }
+
+    #[test]
+    fn daemon_control_mode_wait_wakes_for_subscriber_monitor_before_reconcile() {
+        let wait = super::run_next_control_mode_wait_for(
+            std::time::Duration::from_secs(300),
+            Some(std::time::Duration::from_millis(250)),
+            None,
+        );
+
+        assert_eq!(wait, std::time::Duration::from_millis(250));
+    }
+
+    #[test]
+    fn daemon_control_mode_wait_does_not_arm_subscriber_monitor_without_subscribers() {
+        let wait =
+            super::run_next_control_mode_wait_for(std::time::Duration::from_secs(300), None, None);
+
+        // With no near deadline the wait falls back to the idle cap (CONTROL_MODE_MAX_WAIT).
+        assert_eq!(wait, std::time::Duration::from_secs(2));
+    }
+
+    #[test]
+    fn daemon_subscriber_session_ids_pass_through_under_the_cap() {
+        // At or under the cap the set is returned unchanged (and un-reordered), so
+        // existing subscriber clients are never churned by reconcile.
+        let session_ids: Vec<String> = (0..daemon::MAX_CONTROL_MODE_SUBSCRIBERS)
+            .map(|index| format!("${index}"))
+            .collect();
+        assert_eq!(
+            super::run_capped_subscriber_session_ids(session_ids.clone()),
+            session_ids
+        );
+    }
+
+    #[test]
+    fn daemon_subscriber_session_ids_capped_to_lowest_numeric_ids_over_the_cap() {
+        // Use real, unpadded tmux ids in shuffled order. The cap must keep the lowest
+        // numeric session indices, not a lexical prefix (where `$2` sorts after
+        // `$19`), and the result must be deterministic across reconciles.
+        let over = daemon::MAX_CONTROL_MODE_SUBSCRIBERS + 10;
+        let mut session_ids: Vec<String> = (0..over).map(|index| format!("${index}")).collect();
+        session_ids.reverse();
+
+        let capped = super::run_capped_subscriber_session_ids(session_ids);
+        assert_eq!(capped.len(), daemon::MAX_CONTROL_MODE_SUBSCRIBERS);
+
+        // Expect exactly the lowest-numbered ids, numerically ordered. A lexical sort
+        // would instead have kept ids like `$10`..`$19` ahead of `$2`..`$9` and
+        // dropped some low indices, so this also guards against regressing the sort.
+        let expected: Vec<String> = (0..daemon::MAX_CONTROL_MODE_SUBSCRIBERS)
+            .map(|index| format!("${index}"))
+            .collect();
+        assert_eq!(capped, expected);
+        // The highest-numbered sessions are the ones dropped.
+        assert!(!capped.contains(&format!("${over}")));
+
+        // Capping is idempotent: re-capping the already-capped set is a no-op.
+        assert_eq!(
+            super::run_capped_subscriber_session_ids(capped.clone()),
+            capped
+        );
+    }
+
+    #[test]
+    fn daemon_runtime_telemetry_counts_reconcile_results_and_fallbacks() {
+        let previous = empty_socket_snapshot("2026-05-23T18:00:00Z");
+        let mut noop_current = previous.clone();
+        noop_current.generated_at = "2026-05-23T18:00:01Z".to_string();
+        noop_current.source.daemon_generated_at = Some("2026-05-23T18:00:01Z".to_string());
+
+        let mut changed_current = noop_current.clone();
+        changed_current
+            .panes
+            .push(proc_fallback_pane(42, "claude", "claude"));
+
+        let telemetry = super::run_runtime_telemetry_after_reconcile_results(
+            &previous,
+            &noop_current,
+            &changed_current,
+        );
+
+        assert_eq!(telemetry.control_event_refresh_count, 1);
+        assert_eq!(telemetry.control_event_batch_count, 2);
+        assert_eq!(telemetry.control_event_line_count, 5);
+        assert_eq!(telemetry.targeted_title_update_count, 1);
+        assert_eq!(telemetry.targeted_pane_refresh_count, 2);
+        assert_eq!(telemetry.targeted_scope_refresh_count, 1);
+        assert_eq!(telemetry.full_snapshot_refresh_count, 1);
+        assert_eq!(telemetry.targeted_refresh_fallback_to_full_count, 1);
+        assert_eq!(telemetry.reconcile_attempt_count, 2);
+        assert_eq!(telemetry.reconcile_noop_count, 1);
+        assert_eq!(telemetry.reconcile_changed_snapshot_count, 1);
+        assert_eq!(telemetry.broker_fallback_count, 2);
+    }
+    #[test]
+    fn daemon_subscription_format_includes_wrapper_metadata_fields() {
+        // Single-brace `#{...}` directives: the string is sent to tmux verbatim, so
+        // doubled braces would render every field as a literal `}` (see the constant's
+        // doc comment). These assertions guard against regressing back to that.
+        assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{pane_current_command}"));
+        assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{pane_title}"));
+        assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{@agent.provider}"));
+        assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{@agent.state}"));
+        assert!(DAEMON_SUBSCRIPTION_FORMAT.contains("#{@agent.session_id}"));
+        assert!(!DAEMON_SUBSCRIPTION_FORMAT.contains("#{window_activity}"));
+        assert!(DAEMON_ACTIVITY_SUBSCRIPTION_FORMAT.contains("#{window_activity}"));
+        assert!(DAEMON_ACTIVITY_SUBSCRIPTION_FORMAT.starts_with("agentscan-activity:%*:"));
+        // Explicitly reject the doubled-brace form that broke the subscription.
+        assert!(!DAEMON_SUBSCRIPTION_FORMAT.contains("#{{"));
     }
 }

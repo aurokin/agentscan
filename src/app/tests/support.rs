@@ -299,7 +299,7 @@ impl FakeProcessInspector {
         self.calls.borrow().clone()
     }
 
-    fn snapshot_captures(&self) -> u32 {
+    pub(crate) fn snapshot_captures(&self) -> u32 {
         self.snapshot_captures.get()
     }
 

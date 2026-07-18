@@ -34,15 +34,12 @@ use super::{
 include!("support.rs");
 include!("live_client.rs");
 include!("daemon_socket.rs");
-include!("daemon_refresh.rs");
-include!("daemon_broker.rs");
 include!("classification.rs");
 include!("provider_classification.rs");
 include!("picker_contract.rs");
 include!("tmux_parse.rs");
 include!("snapshot_contract.rs");
 include!("contract_fixtures.rs");
-include!("daemon_control_mode.rs");
 include!("title_status_display.rs");
 include!("tmux_metadata.rs");
 include!("tui.rs");
