@@ -84,6 +84,14 @@ fn waiting_refinement_candidate(pane: &PaneRecord) -> bool {
         && pane.status.source == StatusSource::TmuxTitle
 }
 
+// Busy-title waiting-refinement candidates stay cacheable deliberately: busy
+// panes stream output and fire activity events constantly, so uncached capture
+// would re-run capture-pane on every refresh — the exact cost the cache exists
+// to bound. Staleness is capped by the 2s cache TTL, and any title change
+// re-keys the cache (the key includes pane_title_raw), so a busy → waiting
+// screen transition is picked up within one TTL. Gemini's idle-title
+// refinement is uncacheable instead because idle panes emit no activity and a
+// fresh capture there is nearly free.
 pub(crate) fn pane_output_status_candidate_cacheable(pane: &PaneRecord) -> bool {
     !matches!(pane.provider, Some(Provider::Gemini))
 }
