@@ -41,9 +41,9 @@ struct ProvidersEnvelope<'a> {
 /// Versioned envelope for the `hotkeys --format json` output. The desktop shell
 /// consumes these rows, so the envelope makes any row-shape change explicit.
 #[derive(Serialize)]
-struct PickerRowsEnvelope<'a> {
-    schema_version: u32,
-    rows: &'a [picker::PickerRow],
+pub(super) struct PickerRowsEnvelope<'a> {
+    pub(super) schema_version: u32,
+    pub(super) rows: &'a [picker::PickerRow],
 }
 
 pub(super) fn emit_providers(

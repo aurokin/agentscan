@@ -1,0 +1,5 @@
+{
+  "type": "offline",
+  "message": "agentscan daemon is offline",
+  "retrying": true
+}

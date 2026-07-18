@@ -41,6 +41,7 @@ include!("provider_classification.rs");
 include!("picker_contract.rs");
 include!("tmux_parse.rs");
 include!("snapshot_contract.rs");
+include!("contract_fixtures.rs");
 include!("daemon_control_mode.rs");
 include!("title_status_display.rs");
 include!("tmux_metadata.rs");
