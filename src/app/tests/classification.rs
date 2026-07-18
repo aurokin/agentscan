@@ -2827,6 +2827,39 @@ fn claude_pane_output_marks_current_interrupt_hint_busy() {
 }
 
 #[test]
+fn claude_pane_output_does_not_treat_interrupt_prose_as_busy() {
+    let mut claude = pane_output_status_pane(810, Provider::Claude, "Claude Code");
+
+    classify::apply_pane_output_status_fallback(
+        &mut claude,
+        "describe how to interrupt the running task\n\
+         ╭──────────────────────────────────────╮\n\
+         ❯ \n\
+         ╰──────────────────────────────────────╯\n\
+         ? for shortcuts\n",
+    );
+
+    assert_eq!(claude.status.kind, StatusKind::Idle);
+    assert_eq!(claude.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn claude_pane_output_leaves_loose_interrupt_words_unknown() {
+    let mut claude = pane_output_status_pane(811, Provider::Claude, "Claude Code");
+
+    classify::apply_pane_output_status_fallback(
+        &mut claude,
+        "esc can describe how to interrupt safely\n\
+         ╭──────────────────────────────────────╮\n\
+         ❯ \n\
+         ╰──────────────────────────────────────╯\n",
+    );
+
+    assert_eq!(claude.status.kind, StatusKind::Unknown);
+    assert_eq!(claude.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
 fn claude_pane_output_marks_current_permission_wait_waiting() {
     let mut claude = pane_output_status_pane(807, Provider::Claude, "Claude Code");
 
@@ -2931,6 +2964,31 @@ fn codex_pane_output_marks_model_path_footer_idle() {
 
     assert_eq!(codex.status.kind, StatusKind::Idle);
     assert_eq!(codex.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn codex_pane_output_marks_restyled_prompt_with_current_footer_idle() {
+    let mut codex = pane_output_status_pane(812, Provider::Codex, "codex");
+
+    classify::apply_pane_output_status_fallback(
+        &mut codex,
+        "› What should we build next?\n\
+         \n\
+           gpt-5.5 default · /tmp/project\n",
+    );
+
+    assert_eq!(codex.status.kind, StatusKind::Idle);
+    assert_eq!(codex.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn codex_pane_output_leaves_bare_restyled_prompt_unknown() {
+    let mut codex = pane_output_status_pane(813, Provider::Codex, "codex");
+
+    classify::apply_pane_output_status_fallback(&mut codex, "› What should we build next?\n");
+
+    assert_eq!(codex.status.kind, StatusKind::Unknown);
+    assert_eq!(codex.status.source, super::StatusSource::NotChecked);
 }
 
 #[test]
@@ -3194,7 +3252,7 @@ fn grok_pane_output_marks_active_turn_busy_via_spinner_when_footer_reworded() {
         &mut grok,
         "     ◆ Search \"disable_reconcile\" in src (28 matches)\n\
          \n\
-         ⠹ Thinking… 0.4s                              42s ⇣80.3k [✗]\n\
+         ⠹ Thinking… 0.4s                              42s ⇣80.3k [■]\n\
          \n\
          ╭────────────────────────────────────────────────╮\n\
          │ ❯                                                │\n\
@@ -3205,6 +3263,23 @@ fn grok_pane_output_marks_active_turn_busy_via_spinner_when_footer_reworded() {
 
     assert_eq!(grok.status.kind, StatusKind::Busy);
     assert_eq!(grok.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn grok_pane_output_leaves_unrecognized_keybind_action_unknown() {
+    let mut grok = pane_output_status_pane(784, Provider::Grok, "grok");
+
+    classify::apply_pane_output_status_fallback(
+        &mut grok,
+        "╭────────────────────────────────────────────────╮\n\
+         │ ❯                                                │\n\
+         ╰────────────── Grok Build · always-approve ─╯\n\
+         \n\
+         Shift+Tab:mode  │  Ctrl+x:stop  │  Ctrl+.:shortcuts\n",
+    );
+
+    assert_eq!(grok.status.kind, StatusKind::Unknown);
+    assert_eq!(grok.status.source, super::StatusSource::NotChecked);
 }
 
 #[test]
@@ -3238,9 +3313,10 @@ fn grok_pane_output_marks_running_body_marker_busy() {
 }
 
 #[test]
-fn grok_pane_output_ignores_stale_spinner_above_current_prompt_box() {
+fn grok_pane_output_leaves_footerless_box_after_stale_spinner_unknown() {
     // The screen capture still holds a prior turn's running spinner, but the current bottom
-    // UI is the idle input box, so the pane is idle — the stale spinner must not force busy.
+    // UI is the input box, but a footerless box is not positive idle evidence. The stale spinner
+    // must not force busy, and the absence of an idle footer must degrade to unknown.
     let mut grok = pane_output_status_pane(775, Provider::Grok, "grok");
 
     classify::apply_pane_output_status_fallback(
@@ -3252,8 +3328,8 @@ fn grok_pane_output_ignores_stale_spinner_above_current_prompt_box() {
          ╰──────────────── Grok Build · always-approve ─╯\n",
     );
 
-    assert_eq!(grok.status.kind, StatusKind::Idle);
-    assert_eq!(grok.status.source, super::StatusSource::PaneOutput);
+    assert_eq!(grok.status.kind, StatusKind::Unknown);
+    assert_eq!(grok.status.source, super::StatusSource::NotChecked);
 }
 
 #[test]
