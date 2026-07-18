@@ -170,18 +170,22 @@ fn custom_picker_keys_expected() -> [char; 16] {
     ]
 }
 
-fn proc_fallback_pane(pid: u32, command: &str, title: &str) -> PaneRecord {
+pub(crate) fn proc_fallback_pane(pid: u32, command: &str, title: &str) -> PaneRecord {
     tmux_pane_row(pid).command(command).title(title).pane()
 }
 
-fn pane_output_status_pane(pid: u32, provider: Provider, title: &str) -> PaneRecord {
+pub(crate) fn pane_output_status_pane(
+    pid: u32,
+    provider: Provider,
+    title: &str,
+) -> PaneRecord {
     let mut pane = proc_fallback_pane(pid, "node", title);
     pane.provider = Some(provider);
     pane.status = PaneStatus::not_checked();
     pane
 }
 
-fn assert_pane_output_status(
+pub(crate) fn assert_pane_output_status(
     pid: u32,
     provider: Provider,
     title: &str,
@@ -196,7 +200,12 @@ fn assert_pane_output_status(
     assert_eq!(pane.status.source, expected_source);
 }
 
-fn assert_unprovidered_pane_output_unchanged(pid: u32, command: &str, title: &str, output: &str) {
+pub(crate) fn assert_unprovidered_pane_output_unchanged(
+    pid: u32,
+    command: &str,
+    title: &str,
+    output: &str,
+) {
     let mut pane = proc_fallback_pane(pid, command, title);
     classify::apply_pane_output_status_fallback(&mut pane, output);
 

@@ -219,3 +219,349 @@ fn grok_running_status_line(line: &str) -> bool {
             })
         })
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::app::classify;
+    use crate::app::tests::{pane_output_status_pane, proc_fallback_pane};
+    use crate::app::{Provider, StatusKind};
+
+    #[test]
+    fn grok_pane_output_marks_current_prompt_box_idle_only_after_provider_is_known() {
+        // Mirrors a real fresh idle grok pane (v0.2.3 capture): the rounded input box is the
+        // current bottom UI with the version line below it, and the rest of the taller pane is
+        // blank padding.
+        let idle_screen = "   main ~/code/agentscan/\n\
+         \n\
+         Tip: Press Ctrl-W to start a parallel task in its own worktree.\n\
+         \n\
+         ╭────────────────────────────────────────────────╮\n\
+         │ ❯                                                │\n\
+         ╰──────────────── Grok Build · always-approve ─╯\n\
+         \n\
+         0.2.3 [stable] Beta\n\
+         \n\
+         \n\
+         \n\
+         \n";
+
+        let mut grok = pane_output_status_pane(769, Provider::Grok, "grok");
+        classify::apply_pane_output_status_fallback(&mut grok, idle_screen);
+
+        assert_eq!(grok.status.kind, StatusKind::Idle);
+        assert_eq!(grok.status.source, crate::app::StatusSource::PaneOutput);
+
+        let mut unknown = proc_fallback_pane(770, "zsh", "custom title");
+        classify::apply_pane_output_status_fallback(&mut unknown, idle_screen);
+
+        assert_eq!(unknown.status.kind, StatusKind::Unknown);
+        assert_eq!(unknown.status.source, crate::app::StatusSource::NotChecked);
+    }
+
+    #[test]
+    fn grok_pane_output_marks_channel_only_footer_idle() {
+        // Observed from Grok Build Beta 0.2.60: the fresh prompt footer can be just `[stable]`
+        // below the input box, with no dotted version token.
+        let mut grok = pane_output_status_pane(771, Provider::Grok, "grok");
+
+        classify::apply_pane_output_status_fallback(
+            &mut grok,
+            "╭────────────────────────────────────────────────────────────────────────────╮\n\
+         │ ❯                                                                          │\n\
+         ╰──────────────────────────────────── Composer 2.5 Fast · always-approve ─╯\n\
+         \n\
+         [stable]\n",
+        );
+
+        assert_eq!(grok.status.kind, StatusKind::Idle);
+        assert_eq!(grok.status.source, crate::app::StatusSource::PaneOutput);
+    }
+
+    #[test]
+    fn grok_pane_output_does_not_treat_plain_channel_word_below_box_as_chrome() {
+        let mut grok = pane_output_status_pane(783, Provider::Grok, "grok");
+
+        classify::apply_pane_output_status_fallback(
+            &mut grok,
+            "╭────────────────────────────────────────────────────────────────────────────╮\n\
+         │ ❯                                                                          │\n\
+         ╰──────────────────────────────────── Composer 2.5 Fast · always-approve ─╯\n\
+         \n\
+         stable\n",
+        );
+
+        assert_eq!(grok.status.kind, StatusKind::Unknown);
+        assert_eq!(grok.status.source, crate::app::StatusSource::NotChecked);
+    }
+
+    #[test]
+    fn grok_pane_output_marks_used_session_keybind_footer_idle() {
+        // Mirrors a real used grok session (v0.2.3): after a completed turn the input box is the
+        // current bottom UI with the idle keybind footer (mode/shortcuts only) below it.
+        let mut grok = pane_output_status_pane(778, Provider::Grok, "grok");
+
+        classify::apply_pane_output_status_fallback(
+            &mut grok,
+            "     ❯ hi                                          2:23 PM\n\
+         \n\
+         Turn completed in 1.9s.\n\
+         \n\
+         ╭────────────────────────────────────────────────╮\n\
+         │ ❯                                                │\n\
+         ╰──────────────── Grok Build · always-approve ─╯\n\
+         \n\
+         Shift+Tab:mode  │  Ctrl+.:shortcuts\n",
+        );
+
+        assert_eq!(grok.status.kind, StatusKind::Idle);
+        assert_eq!(grok.status.source, crate::app::StatusSource::PaneOutput);
+    }
+
+    #[test]
+    fn grok_pane_output_marks_active_turn_footer_busy() {
+        // Mirrors a real busy grok pane (v0.2.3): the input box stays pinned at the bottom during
+        // a turn, with the running spinner above it and the active-turn footer (adding
+        // cancel/interject keybinds) below it.
+        let mut grok = pane_output_status_pane(779, Provider::Grok, "grok");
+
+        classify::apply_pane_output_status_fallback(
+            &mut grok,
+            "     ◆ Search \"disable_reconcile\" in src (28 matches)\n\
+         \n\
+         ⠹ Thinking… 0.4s                              42s ⇣80.3k [✗]\n\
+         \n\
+         ╭────────────────────────────────────────────────╮\n\
+         │ ❯                                                │\n\
+         ╰──────────────── Grok Build · always-approve ─╯\n\
+         \n\
+         Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+Enter:interject  │  Ctrl+.:shortcuts\n",
+        );
+
+        assert_eq!(grok.status.kind, StatusKind::Busy);
+        assert_eq!(grok.status.source, crate::app::StatusSource::PaneOutput);
+    }
+
+    #[test]
+    fn grok_pane_output_marks_active_turn_busy_via_spinner_when_footer_reworded() {
+        // Same live-turn layout as the active-turn footer case, but the footer hints are reworded
+        // so `cancel`/`interject` are absent (mirrors grok relabeling its interrupt keybinds). The
+        // run spinner sitting directly above the pinned box still proves the turn is in flight, so
+        // the pane stays busy without depending on the footer wording.
+        let mut grok = pane_output_status_pane(780, Provider::Grok, "grok");
+
+        classify::apply_pane_output_status_fallback(
+            &mut grok,
+            "     ◆ Search \"disable_reconcile\" in src (28 matches)\n\
+         \n\
+         ⠹ Thinking… 0.4s                              42s ⇣80.3k [■]\n\
+         \n\
+         ╭────────────────────────────────────────────────╮\n\
+         │ ❯                                                │\n\
+         ╰──────────────── Grok Build · always-approve ─╯\n\
+         \n\
+         Shift+Tab:mode  │  Ctrl+x:stop  │  Ctrl+.:shortcuts\n",
+        );
+
+        assert_eq!(grok.status.kind, StatusKind::Busy);
+        assert_eq!(grok.status.source, crate::app::StatusSource::PaneOutput);
+    }
+
+    #[test]
+    fn grok_pane_output_leaves_unrecognized_keybind_action_unknown() {
+        let mut grok = pane_output_status_pane(784, Provider::Grok, "grok");
+
+        classify::apply_pane_output_status_fallback(
+            &mut grok,
+            "╭────────────────────────────────────────────────╮\n\
+         │ ❯                                                │\n\
+         ╰────────────── Grok Build · always-approve ─╯\n\
+         \n\
+         Shift+Tab:mode  │  Ctrl+x:stop  │  Ctrl+.:shortcuts\n",
+        );
+
+        assert_eq!(grok.status.kind, StatusKind::Unknown);
+        assert_eq!(grok.status.source, crate::app::StatusSource::NotChecked);
+    }
+
+    #[test]
+    fn grok_pane_output_marks_running_spinner_busy() {
+        let mut grok = pane_output_status_pane(771, Provider::Grok, "grok");
+
+        classify::apply_pane_output_status_fallback(
+            &mut grok,
+            "╭────────────────────────────────────────────────╮\n\
+         │ ❯                                                │\n\
+         ╰──────────────── Grok Build · always-approve ─╯\n\
+         ⠹ Running: shell - agentscan 8s … ⇣123 [✗]\n",
+        );
+
+        assert_eq!(grok.status.kind, StatusKind::Busy);
+        assert_eq!(grok.status.source, crate::app::StatusSource::PaneOutput);
+    }
+
+    #[test]
+    fn grok_pane_output_marks_running_body_marker_busy() {
+        let mut grok = pane_output_status_pane(774, Provider::Grok, "grok");
+
+        classify::apply_pane_output_status_fallback(
+            &mut grok,
+            "Turn completed in 2.8s.\n\
+         ⠹ Editing files 5s … ⇣42 [✗]\n",
+        );
+
+        assert_eq!(grok.status.kind, StatusKind::Busy);
+        assert_eq!(grok.status.source, crate::app::StatusSource::PaneOutput);
+    }
+
+    #[test]
+    fn grok_pane_output_leaves_footerless_box_after_stale_spinner_unknown() {
+        // The screen capture still holds a prior turn's running spinner, but the current bottom
+        // UI is the input box, but a footerless box is not positive idle evidence. The stale spinner
+        // must not force busy, and the absence of an idle footer must degrade to unknown.
+        let mut grok = pane_output_status_pane(775, Provider::Grok, "grok");
+
+        classify::apply_pane_output_status_fallback(
+            &mut grok,
+            "⠹ Running: shell - agentscan 8s … ⇣123 [✗]\n\
+         Turn completed in 4.2s.\n\
+         ╭────────────────────────────────────────────────╮\n\
+         │ ❯                                                │\n\
+         ╰──────────────── Grok Build · always-approve ─╯\n",
+        );
+
+        assert_eq!(grok.status.kind, StatusKind::Unknown);
+        assert_eq!(grok.status.source, crate::app::StatusSource::NotChecked);
+    }
+
+    #[test]
+    fn grok_pane_output_does_not_infer_idle_with_output_just_below_box_border() {
+        // Even a single output row below the box border means the box is a stale frame in the
+        // scrollback capture, not the current prompt — distance alone must not call it idle.
+        let mut grok = pane_output_status_pane(776, Provider::Grok, "grok");
+
+        classify::apply_pane_output_status_fallback(
+            &mut grok,
+            "╭────────────────────────────────────────────────╮\n\
+         │ ❯                                                │\n\
+         ╰──────────────── Grok Build · always-approve ─╯\n\
+         Reading files\n",
+        );
+
+        assert_eq!(grok.status.kind, StatusKind::Unknown);
+        assert_eq!(grok.status.source, crate::app::StatusSource::NotChecked);
+    }
+
+    #[test]
+    fn grok_pane_output_does_not_infer_idle_without_current_prompt_box() {
+        // A completed-turn line scrolled near the bottom with no current input box must not
+        // be read as idle.
+        let mut grok = pane_output_status_pane(772, Provider::Grok, "grok");
+
+        classify::apply_pane_output_status_fallback(
+            &mut grok,
+            "Turn completed in 2.8s.\n\
+         Reviewing the diff before the next step.\n",
+        );
+
+        assert_eq!(grok.status.kind, StatusKind::Unknown);
+        assert_eq!(grok.status.source, crate::app::StatusSource::NotChecked);
+    }
+
+    #[test]
+    fn grok_pane_output_does_not_infer_idle_from_scrolled_away_prompt_box() {
+        // The input box exists in scrollback but a later turn pushed it far from the current
+        // bottom, so it is no longer the active prompt.
+        let mut grok = pane_output_status_pane(773, Provider::Grok, "grok");
+
+        classify::apply_pane_output_status_fallback(
+            &mut grok,
+            "╭────────────────────────────────────────────────╮\n\
+         │ ❯                                                │\n\
+         ╰──────────────── Grok Build · always-approve ─╯\n\
+         Reading files\n\
+         Planning edits\n\
+         Updating code\n\
+         Running tests\n\
+         Collecting output\n\
+         Drafting summary\n\
+         Current line\n",
+        );
+
+        assert_eq!(grok.status.kind, StatusKind::Unknown);
+        assert_eq!(grok.status.source, crate::app::StatusSource::NotChecked);
+    }
+
+    #[test]
+    fn grok_pane_output_does_not_treat_release_channel_prose_below_box_as_chrome() {
+        // The version footer is shape-anchored (a couple of version/channel tokens). A prose
+        // line that merely mentions a channel word like "Beta" sits below the box as real output,
+        // so the box is a stale frame and the pane must not be inferred idle.
+        let mut grok = pane_output_status_pane(777, Provider::Grok, "grok");
+
+        classify::apply_pane_output_status_fallback(
+            &mut grok,
+            "╭────────────────────────────────────────────────╮\n\
+         │ ❯                                                │\n\
+         ╰──────────────── Grok Build · always-approve ─╯\n\
+         Beta access for the new planner is rolling out now\n",
+        );
+
+        assert_eq!(grok.status.kind, StatusKind::Unknown);
+        assert_eq!(grok.status.source, crate::app::StatusSource::NotChecked);
+    }
+
+    #[test]
+    fn grok_pane_output_does_not_treat_ctrl_prose_below_box_as_keybind_footer() {
+        // The keybind footer is matched by its `Ctrl+<key>:<action>` shape, not bare `Ctrl+`. Model
+        // output that mentions `Ctrl+C` in prose sits below the box as real output, so the box is a
+        // stale frame and the pane must not be inferred idle.
+        let mut grok = pane_output_status_pane(780, Provider::Grok, "grok");
+
+        classify::apply_pane_output_status_fallback(
+            &mut grok,
+            "╭────────────────────────────────────────────────╮\n\
+         │ ❯                                                │\n\
+         ╰──────────────── Grok Build · always-approve ─╯\n\
+         You can press Ctrl+C to stop the dev server\n",
+        );
+
+        assert_eq!(grok.status.kind, StatusKind::Unknown);
+        assert_eq!(grok.status.source, crate::app::StatusSource::NotChecked);
+    }
+
+    #[test]
+    fn grok_pane_output_does_not_treat_shift_tab_prose_below_box_as_keybind_footer() {
+        // The keybind footer is matched by its `Key:action` shape, not a bare `Shift+Tab` substring.
+        // Prose mentioning Shift+Tab below a stale box is real output, so the pane stays unknown.
+        let mut grok = pane_output_status_pane(782, Provider::Grok, "grok");
+
+        classify::apply_pane_output_status_fallback(
+            &mut grok,
+            "╭────────────────────────────────────────────────╮\n\
+         │ ❯                                                │\n\
+         ╰──────────────── Grok Build · always-approve ─╯\n\
+         Press Shift+Tab to cycle between the open editor tabs\n",
+        );
+
+        assert_eq!(grok.status.kind, StatusKind::Unknown);
+        assert_eq!(grok.status.source, crate::app::StatusSource::NotChecked);
+    }
+
+    #[test]
+    fn grok_pane_output_does_not_treat_version_led_prose_below_box_as_chrome() {
+        // The version footer's trailing tokens must be release-channel labels, so version-led prose
+        // like `0.2.3 docs` is real output below a stale box and the pane must not be inferred idle.
+        let mut grok = pane_output_status_pane(781, Provider::Grok, "grok");
+
+        classify::apply_pane_output_status_fallback(
+            &mut grok,
+            "╭────────────────────────────────────────────────╮\n\
+         │ ❯                                                │\n\
+         ╰──────────────── Grok Build · always-approve ─╯\n\
+         0.2.3 docs\n",
+        );
+
+        assert_eq!(grok.status.kind, StatusKind::Unknown);
+        assert_eq!(grok.status.source, crate::app::StatusSource::NotChecked);
+    }
+}

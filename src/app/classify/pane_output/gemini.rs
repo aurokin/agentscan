@@ -122,3 +122,235 @@ fn gemini_current_auth_prompt_index(frame: &PaneOutputFrame<'_>) -> Option<usize
 fn gemini_prompt_is_near_current_footer(frame: &PaneOutputFrame<'_>, prompt_index: usize) -> bool {
     frame.is_within_tail(prompt_index, 8)
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::app::classify;
+    use crate::app::tests::{pane_output_status_pane, proc_fallback_pane};
+    use crate::app::{PaneStatus, Provider, StatusKind};
+
+    #[test]
+    fn gemini_pane_output_marks_current_prompt_idle_only_after_provider_is_known() {
+        let mut gemini = pane_output_status_pane(775, Provider::Gemini, "Gemini CLI");
+
+        classify::apply_pane_output_status_fallback(
+            &mut gemini,
+            "Welcome to Gemini CLI\n\
+         \n\
+         >   Type your message or @path/to/file\n\
+         Workspace   Sandbox    Model\n\
+         ~/code/app  no sandbox gemini-2.5-pro\n",
+        );
+
+        assert_eq!(gemini.status.kind, StatusKind::Idle);
+        assert_eq!(gemini.status.source, crate::app::StatusSource::PaneOutput);
+
+        let mut unknown = proc_fallback_pane(776, "zsh", "custom title");
+        classify::apply_pane_output_status_fallback(
+            &mut unknown,
+            "Welcome to Gemini CLI\n\
+         \n\
+         >   Type your message or @path/to/file\n\
+         Workspace   Sandbox    Model\n\
+         ~/code/app  no sandbox gemini-2.5-pro\n",
+        );
+
+        assert_eq!(unknown.status.kind, StatusKind::Unknown);
+        assert_eq!(unknown.status.source, crate::app::StatusSource::NotChecked);
+    }
+
+    #[test]
+    fn gemini_pane_output_marks_action_required_busy() {
+        let mut gemini = pane_output_status_pane(777, Provider::Gemini, "Gemini CLI");
+
+        classify::apply_pane_output_status_fallback(
+            &mut gemini,
+            "╭──────────────────────────────────────────────────────────────────────────────╮\n\
+         │ Action Required                                                             │\n\
+         │ ?  ls list directory                                                        │\n\
+         │ Allow execution of [ls]?                                                    │\n\
+         │   1. Yes                                                                    │\n\
+         │   2. No, suggest changes (esc)                                              │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯\n",
+        );
+
+        assert_eq!(gemini.status.kind, StatusKind::Busy);
+        assert_eq!(gemini.status.source, crate::app::StatusSource::PaneOutput);
+    }
+
+    #[test]
+    fn gemini_pane_output_ignores_chromeless_action_required_prose() {
+        let mut gemini = pane_output_status_pane(784, Provider::Gemini, "Gemini CLI");
+
+        classify::apply_pane_output_status_fallback(
+            &mut gemini,
+            ">   Type your message or @path/to/file\n\
+         Workspace   Sandbox    Model\n\
+         The phrase Action Required can appear in generated documentation.\n",
+        );
+
+        assert_eq!(gemini.status.kind, StatusKind::Idle);
+        assert_eq!(gemini.status.source, crate::app::StatusSource::PaneOutput);
+    }
+
+    #[test]
+    fn gemini_pane_output_withholds_status_from_chromeless_busy_marker() {
+        let mut gemini = pane_output_status_pane(785, Provider::Gemini, "Gemini CLI");
+
+        classify::apply_pane_output_status_fallback(
+            &mut gemini,
+            "Generated copy follows.\n\
+         Apply this change? is an example confirmation message.\n\
+         No modal is currently displayed.\n",
+        );
+
+        assert_eq!(gemini.status.kind, StatusKind::Unknown);
+        assert_eq!(gemini.status.source, crate::app::StatusSource::NotChecked);
+    }
+
+    #[test]
+    fn gemini_pane_output_marks_auth_prompt_busy() {
+        let mut gemini = pane_output_status_pane(780, Provider::Gemini, "Gemini CLI");
+
+        classify::apply_pane_output_status_fallback(
+            &mut gemini,
+            "Gemini CLI v0.49.0\n\
+         \n\
+         ╭──────────────────────────────────────────────────────────────────────────────╮\n\
+         │  Opening authentication page in your browser.                                │\n\
+         │                                                                              │\n\
+         │  Do you want to continue?                                                    │\n\
+         │                                                                              │\n\
+         │  ● 1. Yes                                                                    │\n\
+         │    2. No                                                                     │\n\
+         │                                                                              │\n\
+         │  Enter to select · ↑/↓ to navigate · Esc to cancel                           │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯\n",
+        );
+
+        assert_eq!(gemini.status.kind, StatusKind::Busy);
+        assert_eq!(gemini.status.source, crate::app::StatusSource::PaneOutput);
+    }
+
+    #[test]
+    fn gemini_pane_output_refines_ready_title_when_auth_prompt_is_visible() {
+        let mut gemini = pane_output_status_pane(781, Provider::Gemini, "◇  Ready (gemini)");
+        gemini.status = PaneStatus::title(StatusKind::Idle);
+
+        classify::apply_pane_output_status_fallback(
+            &mut gemini,
+            "Gemini CLI v0.49.0\n\
+         ╭──────────────────────────────────────────────────────────────────────────────╮\n\
+         │  Opening authentication page in your browser.                                │\n\
+         │  Do you want to continue?                                                    │\n\
+         │  Enter to select · ↑/↓ to navigate · Esc to cancel                           │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯\n",
+        );
+
+        assert_eq!(gemini.status.kind, StatusKind::Busy);
+        assert_eq!(gemini.status.source, crate::app::StatusSource::PaneOutput);
+    }
+
+    #[test]
+    fn gemini_pane_output_uses_current_idle_prompt_over_stale_auth_prompt() {
+        let mut gemini = pane_output_status_pane(782, Provider::Gemini, "Gemini CLI");
+
+        classify::apply_pane_output_status_fallback(
+            &mut gemini,
+            "Gemini CLI v0.49.0\n\
+         ╭──────────────────────────────────────────────────────────────────────────────╮\n\
+         │  Opening authentication page in your browser.                                │\n\
+         │  Do you want to continue?                                                    │\n\
+         │  Enter to select · ↑/↓ to navigate · Esc to cancel                           │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯\n\
+         \n\
+         >   Type your message or @path/to/file\n\
+         Workspace   Sandbox    Model\n\
+         ~/code/app  no sandbox gemini-2.5-pro\n",
+        );
+
+        assert_eq!(gemini.status.kind, StatusKind::Idle);
+        assert_eq!(gemini.status.source, crate::app::StatusSource::PaneOutput);
+    }
+
+    #[test]
+    fn gemini_pane_output_uses_current_busy_marker_over_stale_idle_prompt() {
+        let mut gemini = pane_output_status_pane(778, Provider::Gemini, "Gemini CLI");
+
+        classify::apply_pane_output_status_fallback(
+            &mut gemini,
+            ">   Type your message or @path/to/file\n\
+         Workspace   Sandbox    Model\n\
+         ~/code/app  no sandbox gemini-2.5-pro\n\
+         \n\
+         ╭──────────────────────────────────────────────────────────────────────────────╮\n\
+         │ Action Required                                                             │\n\
+         │ Apply this change?                                                          │\n\
+         │   1. Yes                                                                    │\n\
+         │   2. No, suggest changes (esc)                                              │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯\n",
+        );
+
+        assert_eq!(gemini.status.kind, StatusKind::Busy);
+        assert_eq!(gemini.status.source, crate::app::StatusSource::PaneOutput);
+    }
+
+    #[test]
+    fn gemini_pane_output_does_not_infer_idle_from_stale_prompt() {
+        let mut gemini = pane_output_status_pane(779, Provider::Gemini, "Gemini CLI");
+
+        classify::apply_pane_output_status_fallback(
+            &mut gemini,
+            ">   Type your message or @path/to/file\n\
+         Workspace   Sandbox    Model\n\
+         ~/code/app  no sandbox gemini-2.5-pro\n\
+         \n\
+         ✦ Working on the latest request\n\
+         Reading files\n\
+         Preparing answer\n\
+         Updating edits\n\
+         Running tests\n\
+         Collecting output\n\
+         Still working\n\
+         More output\n\
+         Current line\n",
+        );
+
+        assert_eq!(gemini.status.kind, StatusKind::Unknown);
+        assert_eq!(gemini.status.source, crate::app::StatusSource::NotChecked);
+    }
+
+    #[test]
+    fn gemini_pane_output_ignores_stale_busy_marker_above_current_frame() {
+        // A dismissed approval modal is still visible higher on the screen, but the
+        // current bottom frame is plain agent output with no live idle prompt. The
+        // stale modal must not read as busy — the honest answer is unknown.
+        let mut gemini = pane_output_status_pane(783, Provider::Gemini, "Gemini CLI");
+
+        classify::apply_pane_output_status_fallback(
+            &mut gemini,
+            "╭──────────────────────────────────────────────────────────────────────────────╮\n\
+         │ Action Required                                                             │\n\
+         │ Apply this change?                                                          │\n\
+         │   1. Yes                                                                    │\n\
+         │   2. No, suggest changes (esc)                                              │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯\n\
+         \n\
+         ✦ Applying the approved change\n\
+         Reading files\n\
+         Preparing answer\n\
+         Updating edits\n\
+         Running tests\n\
+         Collecting output\n\
+         Checking diagnostics\n\
+         Formatting sources\n\
+         Reviewing results\n\
+         Still working\n\
+         More output\n\
+         Current line\n",
+        );
+
+        assert_eq!(gemini.status.kind, StatusKind::Unknown);
+        assert_eq!(gemini.status.source, crate::app::StatusSource::NotChecked);
+    }
+}
