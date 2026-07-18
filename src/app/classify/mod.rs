@@ -16,8 +16,6 @@ pub(crate) use pane_output::{
     apply_pane_output_status_fallback, pane_output_status_activity_candidate,
     pane_output_status_candidate_cacheable, pane_output_status_fallback_candidate,
 };
-#[cfg(test)]
-pub(crate) use proc_fallback::apply_proc_fallback;
 pub(crate) use proc_fallback::apply_proc_fallback_with_options;
 #[cfg(test)]
 pub(crate) use provider_match::classify_provider;
