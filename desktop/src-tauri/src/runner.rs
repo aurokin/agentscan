@@ -425,9 +425,6 @@ fn load_picker_rows_from_runner_interruptible(
     Ok(rows)
 }
 
-// Unwrap a picker-rows envelope after checking its schema version. An unexpected
-// version means the host CLI changed the row shape under us, so treat it as an
-// incompatible-binary failure (upgrade guidance) rather than trusting the rows.
 pub(crate) fn focus_picker_row_with_runner(
     runner: &AgentscanRunner,
     pane_id: &str,
@@ -489,18 +486,6 @@ fn focus_args_for_runner<'a>(
     Ok(args)
 }
 
-// Per-key stale-start gate: honor a start only when its epoch advances past the
-// highest epoch already honored for that source key — and past the fence floor,
-// which stands in for evicted keys. Keys gate independently, so one source's
-// stale start can never block — or tear down — another's worker.
-//
-// The floor fallback is gate-equivalent for evicted keys, never weaker: a worker
-// running at epoch E means E was committed as that key's entry (per-key entries
-// are monotone), and an absent entry means it was evicted — eviction takes only
-// the map minimum and raises the floor to at least that value, so floor >= E
-// whenever a running key lacks an entry. `epoch > floor` then admits exactly the
-// strictly-newer starts the entry would have admitted; no superseded start can
-// slip between the floor and a running worker (see commit_start_epoch).
 pub(crate) fn load_daemon_status(runner: &AgentscanRunner) -> Result<serde_json::Value, String> {
     let output = run_agentscan_command(
         runner,
@@ -562,9 +547,6 @@ pub(crate) fn poll_daemon_status_with_runner(
     })
 }
 
-// Render collected stderr bytes into a compact message, dropping blank lines.
-// Takes already-buffered bytes (from a pipe collector) so partial diagnostics
-// survive even when the pipe never reaches EOF because a descendant holds it.
 pub(crate) fn classify_desktop_failure(
     runner: &AgentscanRunner,
     operation: &str,

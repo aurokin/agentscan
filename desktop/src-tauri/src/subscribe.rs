@@ -147,6 +147,18 @@ struct LiveSnapshotSummary {
     source_kind: Option<String>,
 }
 
+// Per-key stale-start gate: honor a start only when its epoch advances past the
+// highest epoch already honored for that source key — and past the fence floor,
+// which stands in for evicted keys. Keys gate independently, so one source's
+// stale start can never block — or tear down — another's worker.
+//
+// The floor fallback is gate-equivalent for evicted keys, never weaker: a worker
+// running at epoch E means E was committed as that key's entry (per-key entries
+// are monotone), and an absent entry means it was evicted — eviction takes only
+// the map minimum and raises the floor to at least that value, so floor >= E
+// whenever a running key lacks an entry. `epoch > floor` then admits exactly the
+// strictly-newer starts the entry would have admitted; no superseded start can
+// slip between the floor and a running worker (see commit_start_epoch).
 fn epoch_advances(fence: &StartFence, source_key: &str, epoch: u64) -> bool {
     epoch > fence.floor
         && fence
@@ -688,6 +700,9 @@ fn summarize_snapshot(snapshot: &serde_json::Value) -> LiveSnapshotSummary {
     }
 }
 
+// Render collected stderr bytes into a compact message, dropping blank lines.
+// Takes already-buffered bytes (from a pipe collector) so partial diagnostics
+// survive even when the pipe never reaches EOF because a descendant holds it.
 fn filter_stderr_text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes)
         .lines()

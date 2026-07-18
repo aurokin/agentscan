@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn status_from_ready_working_prefix(label: &str) -> Option<StatusKind> {
+pub(super) fn status_from_exact_ready_working_label(label: &str) -> Option<StatusKind> {
     match label.trim() {
         "Working" | "Working…" | "Working..." => Some(StatusKind::Busy),
         "Ready" => Some(StatusKind::Idle),
@@ -35,28 +35,31 @@ mod tests {
     #[test]
     fn ready_working_status_rejects_task_summary_prefixes() {
         assert_eq!(
-            status_from_ready_working_prefix("Working tree cleanup"),
+            status_from_exact_ready_working_label("Working tree cleanup"),
             None
         );
-        assert_eq!(status_from_ready_working_prefix("Ready for review"), None);
+        assert_eq!(
+            status_from_exact_ready_working_label("Ready for review"),
+            None
+        );
     }
 
     #[test]
     fn ready_working_status_accepts_only_exact_status_forms() {
         assert_eq!(
-            status_from_ready_working_prefix("Working"),
+            status_from_exact_ready_working_label("Working"),
             Some(StatusKind::Busy)
         );
         assert_eq!(
-            status_from_ready_working_prefix("Working…"),
+            status_from_exact_ready_working_label("Working…"),
             Some(StatusKind::Busy)
         );
         assert_eq!(
-            status_from_ready_working_prefix("Working..."),
+            status_from_exact_ready_working_label("Working..."),
             Some(StatusKind::Busy)
         );
         assert_eq!(
-            status_from_ready_working_prefix("Ready"),
+            status_from_exact_ready_working_label("Ready"),
             Some(StatusKind::Idle)
         );
     }

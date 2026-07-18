@@ -208,7 +208,7 @@ fn opencode_current_busy_marker_line(line: &str) -> bool {
 
 fn opencode_waiting_marker_line(line: &str) -> bool {
     let line = line.trim();
-    opencode_permission_prompt_line(line) || line.contains(OPENCODE_WAITING_QUESTION_MARKER)
+    opencode_permission_prompt_line(line) || opencode_question_prompt_line(line)
 }
 
 fn opencode_interrupt_hint_line(line: &str) -> bool {
@@ -345,6 +345,23 @@ mod tests {
             "# Questions\n\
          Reject question\n\
          Waiting for question event\n",
+        );
+
+        assert_eq!(opencode.status.kind, StatusKind::Waiting);
+        assert_eq!(opencode.status.source, crate::app::StatusSource::PaneOutput);
+    }
+
+    #[test]
+    fn opencode_pane_output_marks_question_prompt_waiting_when_reject_row_is_lowest() {
+        // The bottom-most question marker is `Reject question`, not the waiting-event copy;
+        // every question-prompt marker must map to waiting, not just the event line.
+        let mut opencode = pane_output_status_pane(814, Provider::Opencode, "OC | Question");
+
+        classify::apply_pane_output_status_fallback(
+            &mut opencode,
+            "# Questions\n\
+         Waiting for question event\n\
+         Reject question\n",
         );
 
         assert_eq!(opencode.status.kind, StatusKind::Waiting);

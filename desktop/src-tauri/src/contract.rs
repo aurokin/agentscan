@@ -41,6 +41,9 @@ pub(crate) struct PickerLocation {
     pub(crate) extra: serde_json::Map<String, serde_json::Value>,
 }
 
+// Unwrap a picker-rows envelope after checking its schema version. An unexpected
+// version means the host CLI changed the row shape under us, so treat it as an
+// incompatible-binary failure (upgrade guidance) rather than trusting the rows.
 pub(crate) fn picker_rows_from_envelope(
     runner: &AgentscanRunner,
     envelope: PickerRowsEnvelope,

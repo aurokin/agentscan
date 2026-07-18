@@ -23,6 +23,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      # The daemon integration suite shells out to tmux; hosted macOS images do
+      # not ship it the way the Ubuntu image does.
+      - name: Install tmux (macOS)
+        if: runner.os == 'macOS'
+        run: brew install tmux
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:

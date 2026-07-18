@@ -1,6 +1,6 @@
 use super::status_label::{
-    status_from_codex_run_state_label, status_from_gemini_generic_title,
-    status_from_ready_working_prefix,
+    status_from_codex_run_state_label, status_from_exact_ready_working_label,
+    status_from_gemini_generic_title,
 };
 use super::*;
 
@@ -398,7 +398,8 @@ fn no_title_status(_: &TitleAnalysis<'_>) -> Option<StatusKind> {
 
 fn claude_title_status(analysis: &TitleAnalysis<'_>) -> Option<StatusKind> {
     let label_status = analysis.claude_label.and_then(|label| {
-        status_from_ready_working_prefix(label).or_else(|| status_from_codex_run_state_label(label))
+        status_from_exact_ready_working_label(label)
+            .or_else(|| status_from_codex_run_state_label(label))
     });
     if label_status == Some(StatusKind::Busy) {
         return label_status;
@@ -450,13 +451,13 @@ fn copilot_title_status(analysis: &TitleAnalysis<'_>) -> Option<StatusKind> {
     }
     analysis
         .copilot_label
-        .and_then(status_from_ready_working_prefix)
+        .and_then(status_from_exact_ready_working_label)
 }
 
 fn cursor_title_status(analysis: &TitleAnalysis<'_>) -> Option<StatusKind> {
     analysis
         .cursor_label
-        .and_then(status_from_ready_working_prefix)
+        .and_then(status_from_exact_ready_working_label)
 }
 
 fn pi_title_status(analysis: &TitleAnalysis<'_>) -> Option<StatusKind> {
