@@ -48,7 +48,7 @@ impl TmuxPaneRowBuilder {
         self
     }
 
-    fn pane_id(mut self, pane_id: impl Into<String>) -> Self {
+    pub(crate) fn pane_id(mut self, pane_id: impl Into<String>) -> Self {
         self.row.pane_id = pane_id.into();
         self
     }
@@ -149,6 +149,34 @@ impl TmuxPaneRowBuilder {
 
 pub(crate) fn tmux_pane_row(pane_pid: u32) -> TmuxPaneRowBuilder {
     TmuxPaneRowBuilder::new(pane_pid)
+}
+
+pub(crate) fn tui_test_pane(pane_index: u32) -> PaneRecord {
+    let command = if pane_index.is_multiple_of(2) {
+        "claude"
+    } else {
+        "codex"
+    };
+
+    tmux_pane_row(pane_index)
+        .session_name("alpha")
+        .pane_index(pane_index)
+        .command(command)
+        .title(format!("Task {pane_index:02}"))
+        .current_path("/tmp/alpha")
+        .window_name("editor")
+        .pane()
+}
+
+pub(crate) fn tui_search_pane(index: u32, title: &str) -> PaneRecord {
+    tmux_pane_row(index)
+        .session_name("work")
+        .pane_id(format!("%{index}"))
+        .pane_index(index)
+        .command("codex")
+        .title(title)
+        .current_path("/work/app")
+        .pane()
 }
 
 fn custom_picker_key_values() -> Vec<String> {
