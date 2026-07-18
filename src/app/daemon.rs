@@ -2184,6 +2184,9 @@ mod pane_focus_recency_tests {
                         agent_cwd: None,
                         agent_state: None,
                         agent_session_id: None,
+                        agent_pid: None,
+                        agent_version: None,
+                        agent_model: None,
                         pane_active: false,
                         window_active: false,
                     })

@@ -46,7 +46,16 @@ pub(crate) fn parse_pane_rows(input: &str) -> Result<Vec<TmuxPaneRow>> {
 
         // The agent block follows core (and ids when present), so its start
         // shifts left by the ids width when ids are absent.
-        let (agent_provider, agent_label, agent_cwd, agent_state, agent_session_id) = if has_agent {
+        let (
+            agent_provider,
+            agent_label,
+            agent_cwd,
+            agent_state,
+            agent_session_id,
+            agent_pid,
+            agent_version,
+            agent_model,
+        ) = if has_agent {
             let start = CORE_FIELD_COUNT + if has_ids { IDS_FIELD_COUNT } else { 0 };
             (
                 empty_to_none(fields[start + AGENT_PROVIDER_OFFSET]),
@@ -54,9 +63,12 @@ pub(crate) fn parse_pane_rows(input: &str) -> Result<Vec<TmuxPaneRow>> {
                 empty_to_none(fields[start + AGENT_CWD_OFFSET]),
                 empty_to_none(fields[start + AGENT_STATE_OFFSET]),
                 empty_to_none(fields[start + AGENT_SESSION_ID_OFFSET]),
+                empty_to_none(fields[start + AGENT_PID_OFFSET]),
+                empty_to_none(fields[start + AGENT_VERSION_OFFSET]),
+                empty_to_none(fields[start + AGENT_MODEL_OFFSET]),
             )
         } else {
-            (None, None, None, None, None)
+            (None, None, None, None, None, None, None, None)
         };
 
         // The active flags are always the trailing `ACTIVE_FIELD_COUNT` fields.
@@ -82,6 +94,9 @@ pub(crate) fn parse_pane_rows(input: &str) -> Result<Vec<TmuxPaneRow>> {
             agent_cwd,
             agent_state,
             agent_session_id,
+            agent_pid,
+            agent_version,
+            agent_model,
             pane_active,
             window_active,
         });

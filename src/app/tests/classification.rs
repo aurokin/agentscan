@@ -1397,6 +1397,9 @@ fn inspect_text_reports_unresolved_fallback_decision() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        agent_pid: None,
+        agent_version: None,
+        agent_model: None,
         pane_active: false,
         window_active: false,
     });
@@ -1434,6 +1437,9 @@ fn pane_metadata_overrides_display_provider_and_status_when_title_is_ambiguous()
         agent_cwd: Some("/tmp/wrapper".to_string()),
         agent_state: Some("idle".to_string()),
         agent_session_id: Some("sess-123".to_string()),
+        agent_pid: None,
+        agent_version: None,
+        agent_model: None,
         pane_active: false,
         window_active: false,
     });
@@ -1452,6 +1458,132 @@ fn pane_metadata_overrides_display_provider_and_status_when_title_is_ambiguous()
     );
     assert_eq!(pane.agent_metadata.provider.as_deref(), Some("claude"));
     assert_eq!(pane.agent_metadata.session_id.as_deref(), Some("sess-123"));
+}
+
+#[test]
+fn pidless_metadata_keeps_v0_trust_without_process_inspection() {
+    let inspector = FakeProcessInspector::new([]);
+    let panes = classify::panes_from_rows_with_proc_fallback(
+        vec![tmux_pane_row(500)
+            .command("codex")
+            .title("Ready")
+            .agent_provider("claude")
+            .agent_state("busy")
+            .agent_model("claude-opus-4-1")
+            .build()],
+        &inspector,
+    );
+
+    assert_eq!(panes[0].provider, Some(Provider::Claude));
+    assert_eq!(panes[0].status, PaneStatus::metadata(StatusKind::Busy));
+    assert_eq!(
+        panes[0].agent_metadata.model.as_deref(),
+        Some("claude-opus-4-1")
+    );
+    assert_eq!(inspector.snapshot_captures(), 0);
+}
+
+#[test]
+fn live_descendant_pid_trusts_the_entire_metadata_block() {
+    let inspector = FakeProcessInspector::with_single_process(500, 501, "helper", &["helper"]);
+    let panes = classify::panes_from_rows_with_proc_fallback(
+        vec![tmux_pane_row(500)
+            .command("codex")
+            .title("Ready")
+            .agent_provider("claude")
+            .agent_label("Trusted task")
+            .agent_state("waiting")
+            .agent_session_id("session-1")
+            .agent_pid("501")
+            .agent_version("1")
+            .agent_model("claude-opus-4-1")
+            .build()],
+        &inspector,
+    );
+
+    assert_eq!(panes[0].provider, Some(Provider::Claude));
+    assert_eq!(panes[0].display.label, "Trusted task");
+    assert_eq!(panes[0].status, PaneStatus::metadata(StatusKind::Waiting));
+    assert_eq!(panes[0].agent_metadata.pid.as_deref(), Some("501"));
+    assert_eq!(panes[0].agent_metadata.session_id.as_deref(), Some("session-1"));
+    assert_eq!(panes[0].agent_metadata.v.as_deref(), Some("1"));
+    assert_eq!(
+        panes[0].agent_metadata.model.as_deref(),
+        Some("claude-opus-4-1")
+    );
+    let inspect = output::inspect_text(&panes[0]);
+    assert!(inspect.contains("  pid: 501"));
+    assert!(inspect.contains("  v: 1"));
+    assert!(inspect.contains("  model: claude-opus-4-1"));
+    assert_eq!(inspector.calls(), vec![500]);
+    assert_eq!(inspector.snapshot_captures(), 1);
+}
+
+#[test]
+fn pane_root_pid_is_trusted_as_equal_process_tree_member() {
+    let inspector = FakeProcessInspector::with_single_process(500, 500, "codex", &["codex"]);
+    let panes = classify::panes_from_rows_with_proc_fallback(
+        vec![tmux_pane_row(500)
+            .command("codex")
+            .title("Ready")
+            .agent_provider("claude")
+            .agent_state("busy")
+            .agent_pid("500")
+            .build()],
+        &inspector,
+    );
+
+    assert_eq!(panes[0].provider, Some(Provider::Claude));
+    assert_eq!(panes[0].status, PaneStatus::metadata(StatusKind::Busy));
+}
+
+#[test]
+fn invalid_published_pid_rejects_the_entire_metadata_block() {
+    for (published_pid, processes, expected_snapshot_captures) in [
+        (
+            "999",
+            vec![process_evidence(501, "helper", &["helper"])],
+            1,
+        ),
+        ("501", Vec::new(), 1),
+        (
+            "0",
+            vec![process_evidence(501, "helper", &["helper"])],
+            0,
+        ),
+        (
+            "garbage",
+            vec![process_evidence(501, "helper", &["helper"])],
+            0,
+        ),
+    ] {
+        let inspector = FakeProcessInspector::with_processes([(500, processes)]);
+        let panes = classify::panes_from_rows_with_proc_fallback(
+            vec![tmux_pane_row(500)
+                .command("codex")
+                .title("Ready")
+                .agent_provider("claude")
+                .agent_label("Stale task")
+                .agent_cwd("/stale")
+                .agent_state("busy")
+                .agent_session_id("stale-session")
+                .agent_pid(published_pid)
+                .agent_version("1")
+                .agent_model("stale-model")
+                .build()],
+            &inspector,
+        );
+
+        assert_eq!(panes[0].provider, Some(Provider::Codex), "pid={published_pid}");
+        assert_eq!(panes[0].status, PaneStatus::title(StatusKind::Idle));
+        assert_eq!(panes[0].display.label, "Ready");
+        assert_eq!(panes[0].agent_metadata, crate::app::AgentMetadata::default());
+        assert_eq!(
+            inspector.snapshot_captures(),
+            expected_snapshot_captures,
+            "pid={published_pid}"
+        );
+    }
 }
 
 #[test]
@@ -1554,6 +1686,9 @@ fn snapshot_sort_orders_panes_by_location() {
                 agent_cwd: None,
                 agent_state: None,
                 agent_session_id: None,
+                agent_pid: None,
+                agent_version: None,
+                agent_model: None,
                 pane_active: false,
                 window_active: false,
             }),
@@ -1575,6 +1710,9 @@ fn snapshot_sort_orders_panes_by_location() {
                 agent_cwd: None,
                 agent_state: None,
                 agent_session_id: None,
+                agent_pid: None,
+                agent_version: None,
+                agent_model: None,
                 pane_active: false,
                 window_active: false,
             }),
@@ -1596,6 +1734,9 @@ fn snapshot_sort_orders_panes_by_location() {
                 agent_cwd: None,
                 agent_state: None,
                 agent_session_id: None,
+                agent_pid: None,
+                agent_version: None,
+                agent_model: None,
                 pane_active: false,
                 window_active: false,
             }),

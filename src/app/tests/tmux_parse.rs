@@ -5,7 +5,7 @@ fn derived_pane_format_matches_frozen_literal() {
     // every `list-panes -F` call and snapshot fixture depends on; the derivation
     // must reproduce it exactly. `\\037` here is the escaped `\037` unit
     // separator, matching the original `concat!(..., r"\037", ...)` layout.
-    const FROZEN_PANE_FORMAT: &str = "#{session_name}\\037#{window_index}\\037#{pane_index}\\037#{pane_id}\\037#{pane_pid}\\037#{pane_current_command}\\037#{pane_title}\\037#{pane_tty}\\037#{pane_current_path}\\037#{window_name}\\037#{session_id}\\037#{window_id}\\037#{@agent.provider}\\037#{@agent.label}\\037#{@agent.cwd}\\037#{@agent.state}\\037#{@agent.session_id}\\037#{pane_active}\\037#{window_active}";
+    const FROZEN_PANE_FORMAT: &str = "#{session_name}\\037#{window_index}\\037#{pane_index}\\037#{pane_id}\\037#{pane_pid}\\037#{pane_current_command}\\037#{pane_title}\\037#{pane_tty}\\037#{pane_current_path}\\037#{window_name}\\037#{session_id}\\037#{window_id}\\037#{@agent.provider}\\037#{@agent.label}\\037#{@agent.cwd}\\037#{@agent.state}\\037#{@agent.session_id}\\037#{@agent.pid}\\037#{@agent.v}\\037#{@agent.model}\\037#{pane_active}\\037#{window_active}";
     assert_eq!(PANE_FORMAT, FROZEN_PANE_FORMAT);
 }
 
@@ -13,7 +13,7 @@ fn derived_pane_format_matches_frozen_literal() {
 fn derived_subscription_format_matches_frozen_literal() {
     // Contract: `DAEMON_SUBSCRIPTION_FORMAT` is derived from the same table.
     // This frozen literal is the exact single-brace payload sent to tmux.
-    const FROZEN_SUBSCRIPTION_FORMAT: &str = "agentscan:%*:#{pane_id}:#{pane_current_command}:#{pane_title}:#{@agent.provider}:#{@agent.label}:#{@agent.cwd}:#{@agent.state}:#{@agent.session_id}:#{pane_active}:#{window_active}";
+    const FROZEN_SUBSCRIPTION_FORMAT: &str = "agentscan:%*:#{pane_id}:#{pane_current_command}:#{pane_title}:#{@agent.provider}:#{@agent.label}:#{@agent.cwd}:#{@agent.state}:#{@agent.session_id}:#{@agent.pid}:#{@agent.v}:#{@agent.model}:#{pane_active}:#{window_active}";
     assert_eq!(DAEMON_SUBSCRIPTION_FORMAT, FROZEN_SUBSCRIPTION_FORMAT);
 }
 
@@ -50,7 +50,7 @@ fn parses_tmux_output_with_session_and_window_ids() {
 
 #[test]
 fn parses_tmux_output_with_escaped_delimiters() {
-    let input = r"notes\0374\0371\037%41\037324026\037claude\037Claude Code\037/dev/pts/44\037/home/auro/notes\037query\037$7\037@9\037codex\037Task\037/home/auro/notes\037busy\037session-1\0371\0370
+    let input = r"notes\0374\0371\037%41\037324026\037claude\037Claude Code\037/dev/pts/44\037/home/auro/notes\037query\037$7\037@9\037codex\037Task\037/home/auro/notes\037busy\037session-1\037324026\0371\037o3\0371\0370
 ";
 
     let rows = tmux::parse_pane_rows(input).expect("escaped tmux output should parse");
@@ -60,13 +60,16 @@ fn parses_tmux_output_with_escaped_delimiters() {
     assert_eq!(rows[0].session_id.as_deref(), Some("$7"));
     assert_eq!(rows[0].agent_provider.as_deref(), Some("codex"));
     assert_eq!(rows[0].agent_state.as_deref(), Some("busy"));
+    assert_eq!(rows[0].agent_pid.as_deref(), Some("324026"));
+    assert_eq!(rows[0].agent_version.as_deref(), Some("1"));
+    assert_eq!(rows[0].agent_model.as_deref(), Some("o3"));
     assert!(rows[0].pane_active);
     assert!(!rows[0].window_active);
 }
 
 #[test]
 fn tmux_output_does_not_split_on_printable_field_content() {
-    let input = r"notes\0374\0371\037%41\037324026\037claude\037Task ||AGENTSCAN|| Review\037/dev/pts/44\037/home/auro/notes\037query\037$7\037@9\037codex\037Task ||AGENTSCAN|| Review\037/home/auro/notes\037busy\037session-1\0371\0371
+    let input = r"notes\0374\0371\037%41\037324026\037claude\037Task ||AGENTSCAN|| Review\037/dev/pts/44\037/home/auro/notes\037query\037$7\037@9\037codex\037Task ||AGENTSCAN|| Review\037/home/auro/notes\037busy\037session-1\037\037\037\0371\0371
 ";
 
     let rows = tmux::parse_pane_rows(input).expect("tmux output with printable token should parse");

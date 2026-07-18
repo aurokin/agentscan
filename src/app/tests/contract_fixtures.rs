@@ -30,6 +30,9 @@ fn populated_contract_snapshot() -> SnapshotEnvelope {
     pane.agent_metadata.cwd = Some("/home/auro/notes".to_string());
     pane.agent_metadata.state = Some("waiting".to_string());
     pane.agent_metadata.session_id = Some("agent-session-123".to_string());
+    pane.agent_metadata.pid = Some("324026".to_string());
+    pane.agent_metadata.v = Some("1".to_string());
+    pane.agent_metadata.model = Some("claude-opus-4-1".to_string());
     pane.diagnostics.cache_origin = "contract_fixture".to_string();
     pane.diagnostics.proc_fallback = super::ProcFallbackDiagnostics {
         outcome: ProcFallbackOutcome::Resolved,

@@ -33,6 +33,15 @@ pub(crate) fn tmux_metadata_updates(args: &TmuxSetMetadataArgs) -> Vec<(&'static
     {
         updates.push(("@agent.session_id", session_id.to_string()));
     }
+    if let Some(pid) = trimmed_nonempty(args.pid.as_deref()) {
+        updates.push(("@agent.pid", pid.to_string()));
+    }
+    if let Some(version) = trimmed_nonempty(args.contract_version.as_deref()) {
+        updates.push(("@agent.v", version.to_string()));
+    }
+    if let Some(model) = trimmed_nonempty(args.model.as_deref()) {
+        updates.push(("@agent.model", model.to_string()));
+    }
 
     updates
 }
@@ -45,6 +54,9 @@ pub(crate) fn tmux_metadata_fields_to_clear(fields: &[TmuxMetadataField]) -> Vec
             "@agent.cwd",
             "@agent.state",
             "@agent.session_id",
+            "@agent.pid",
+            "@agent.v",
+            "@agent.model",
         ];
     }
 
@@ -56,8 +68,15 @@ pub(crate) fn tmux_metadata_fields_to_clear(fields: &[TmuxMetadataField]) -> Vec
             TmuxMetadataField::Cwd => "@agent.cwd",
             TmuxMetadataField::State => "@agent.state",
             TmuxMetadataField::SessionId => "@agent.session_id",
+            TmuxMetadataField::Pid => "@agent.pid",
+            TmuxMetadataField::V => "@agent.v",
+            TmuxMetadataField::Model => "@agent.model",
         })
         .collect()
+}
+
+fn trimmed_nonempty(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
 }
 
 pub(crate) fn set_tmux_pane_option(pane_id: &str, option_name: &str, value: &str) -> Result<()> {

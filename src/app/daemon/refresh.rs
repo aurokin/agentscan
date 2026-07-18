@@ -420,31 +420,31 @@ fn preserve_provider_identity_for_targeted_update(pane: &mut PaneRecord, previou
 }
 
 fn pane_from_targeted_row_preserving_provider_identity(
-    mut row: TmuxPaneRow,
+    row: TmuxPaneRow,
     previous: Option<&PaneRecord>,
     allow_title_change_for_identity: bool,
     proc_snapshot: &impl proc::ProcessSnapshot,
     disable_proc_fallback: bool,
 ) -> PaneRecord {
+    let fresh_agent_metadata = classify::trusted_agent_metadata(&row, Some(proc_snapshot));
     let should_preserve = previous.is_some_and(|previous| {
         should_preserve_provider_identity_for_targeted_update(
             previous,
             &row,
+            &fresh_agent_metadata,
             allow_title_change_for_identity,
         )
     });
-    let fresh_agent_metadata = should_preserve.then(|| agent_metadata_from_row(&row));
+    let mut classification_metadata = fresh_agent_metadata.clone();
     if should_preserve {
-        row.agent_provider = previous
+        classification_metadata.provider = previous
             .and_then(|previous| previous.provider)
             .map(|provider| provider.to_string());
     }
 
-    let mut pane = classify::pane_from_row(row);
+    let mut pane = classify::pane_from_row_with_agent_metadata(row, classification_metadata);
     if should_preserve && let Some(previous) = previous {
-        if let Some(fresh_agent_metadata) = fresh_agent_metadata {
-            pane.agent_metadata = fresh_agent_metadata;
-        }
+        pane.agent_metadata = fresh_agent_metadata;
         preserve_provider_identity_for_targeted_update(&mut pane, previous);
     }
     recover_targeted_pane_provider(&mut pane, proc_snapshot, disable_proc_fallback);
@@ -485,16 +485,6 @@ fn recover_targeted_pane_provider(
     classify::apply_proc_fallback_with_options(pane, proc_snapshot, disable_proc_fallback);
 }
 
-fn agent_metadata_from_row(row: &TmuxPaneRow) -> AgentMetadata {
-    AgentMetadata {
-        provider: row.agent_provider.clone(),
-        label: row.agent_label.clone(),
-        cwd: row.agent_cwd.clone(),
-        state: row.agent_state.clone(),
-        session_id: row.agent_session_id.clone(),
-    }
-}
-
 // Decide whether a targeted (title/pane) refresh should keep the pane's existing
 // provider instead of the freshly classified one. A control-mode title update only
 // changes the pane's title text; when a previously *process-tree-confirmed* agent's
@@ -519,18 +509,19 @@ fn agent_metadata_from_row(row: &TmuxPaneRow) -> AgentMetadata {
 fn should_preserve_provider_identity_for_targeted_update(
     previous: &PaneRecord,
     row: &TmuxPaneRow,
+    fresh_agent_metadata: &AgentMetadata,
     allow_title_change: bool,
 ) -> bool {
     previous.diagnostics.proc_fallback.outcome == ProcFallbackOutcome::Resolved
         && previous.provider.is_some()
         && previous.agent_metadata.provider.is_none()
-        && row.agent_provider.is_none()
+        && fresh_agent_metadata.provider.is_none()
         && previous.tmux.pane_pid == row.pane_pid
         && {
             // Provider-only classification (no row clone, no full PaneRecord) instead
             // of `pane_from_row(row.clone()).provider`; the real classification still
             // runs once in `pane_from_targeted_row_preserving_provider_identity`.
-            let fresh_provider = classify::provider_from_row(row);
+            let fresh_provider = classify::provider_from_row(row, fresh_agent_metadata);
             fresh_provider == previous.provider
                 || (fresh_provider.is_none()
                     && row_matches_previous_tmux_identity(previous, row, allow_title_change))
@@ -1293,6 +1284,9 @@ mod material_equality_tests {
             agent_cwd: None,
             agent_state: None,
             agent_session_id: None,
+            agent_pid: None,
+            agent_version: None,
+            agent_model: None,
             pane_active: false,
             window_active: false,
         }

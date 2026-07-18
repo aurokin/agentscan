@@ -922,6 +922,9 @@ fn tui_frame_writer_sanitizes_tmux_controlled_labels() {
         agent_cwd: None,
         agent_state: None,
         agent_session_id: None,
+        agent_pid: None,
+        agent_version: None,
+        agent_model: None,
         pane_active: false,
         window_active: false,
     });

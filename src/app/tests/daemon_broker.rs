@@ -29,6 +29,11 @@ fn broker_pane_row_line_with_session(session_name: &str, pane_id: &str) -> Strin
         "/tmp/agentscan",
         "idle",
         "session-1",
+        "",
+        "",
+        "",
+        "0",
+        "0",
     ]
     .join("\u{1f}")
 }

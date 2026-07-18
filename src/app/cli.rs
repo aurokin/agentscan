@@ -294,6 +294,18 @@ pub(crate) struct TmuxSetMetadataArgs {
     /// Optional provider-specific session identifier.
     #[arg(long)]
     pub(crate) session_id: Option<String>,
+
+    /// Publishing process id used to reject stale metadata.
+    #[arg(long)]
+    pub(crate) pid: Option<String>,
+
+    /// Metadata contract version.
+    #[arg(long = "v")]
+    pub(crate) contract_version: Option<String>,
+
+    /// Agent model identifier.
+    #[arg(long)]
+    pub(crate) model: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -334,4 +346,7 @@ pub(crate) enum TmuxMetadataField {
     Cwd,
     State,
     SessionId,
+    Pid,
+    V,
+    Model,
 }

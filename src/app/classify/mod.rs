@@ -35,13 +35,61 @@ use title::{
 pub(crate) use title::{looks_like_codex_title, strip_known_status_glyph};
 
 pub(crate) fn pane_from_row(row: TmuxPaneRow) -> PaneRecord {
-    let agent_metadata = AgentMetadata {
+    let agent_metadata = trusted_agent_metadata(&row, None);
+    pane_from_row_with_agent_metadata(row, agent_metadata)
+}
+
+pub(crate) fn pane_from_row_with_process_snapshot(
+    row: TmuxPaneRow,
+    process_snapshot: &impl proc::ProcessSnapshot,
+) -> PaneRecord {
+    let agent_metadata = trusted_agent_metadata(&row, Some(process_snapshot));
+    pane_from_row_with_agent_metadata(row, agent_metadata)
+}
+
+pub(crate) fn trusted_agent_metadata(
+    row: &TmuxPaneRow,
+    process_snapshot: Option<&dyn proc::ProcessSnapshot>,
+) -> AgentMetadata {
+    let metadata = AgentMetadata {
         provider: row.agent_provider.clone(),
         label: row.agent_label.clone(),
         cwd: row.agent_cwd.clone(),
         state: row.agent_state.clone(),
         session_id: row.agent_session_id.clone(),
+        pid: row.agent_pid.clone(),
+        v: row.agent_version.clone(),
+        model: row.agent_model.clone(),
     };
+
+    let Some(published_pid) = metadata.pid.as_deref() else {
+        // Contract v0 predates @agent.pid, so pid-less metadata retains its
+        // historical trusted behavior for compatibility.
+        return metadata;
+    };
+    let Some(published_pid) = published_pid
+        .trim()
+        .parse::<u32>()
+        .ok()
+        .filter(|pid| *pid > 0)
+    else {
+        return AgentMetadata::default();
+    };
+    let trusted = process_snapshot
+        .and_then(|snapshot| snapshot.descendant_processes(row.pane_pid).ok())
+        .is_some_and(|processes| processes.iter().any(|process| process.pid == published_pid));
+
+    if trusted {
+        metadata
+    } else {
+        AgentMetadata::default()
+    }
+}
+
+pub(crate) fn pane_from_row_with_agent_metadata(
+    row: TmuxPaneRow,
+    agent_metadata: AgentMetadata,
+) -> PaneRecord {
     let title_analysis = analyze_title(&row.pane_title_raw);
     let current_command = current_command_for_analysis(&row.pane_current_command);
     let provider_match = classify_provider_from_analysis(
@@ -93,11 +141,14 @@ pub(crate) fn pane_from_row(row: TmuxPaneRow) -> PaneRecord {
 // building the full `PaneRecord`. Used on the targeted-refresh preserve path where
 // callers need the fresh provider to decide identity preservation but would otherwise
 // clone the row and run a full classification just to read `.provider`.
-pub(crate) fn provider_from_row(row: &TmuxPaneRow) -> Option<Provider> {
+pub(crate) fn provider_from_row(
+    row: &TmuxPaneRow,
+    agent_metadata: &AgentMetadata,
+) -> Option<Provider> {
     let title_analysis = analyze_title(&row.pane_title_raw);
     let current_command = current_command_for_analysis(&row.pane_current_command);
     classify_provider_from_analysis(
-        row.agent_provider.as_deref(),
+        agent_metadata.provider.as_deref(),
         current_command,
         &title_analysis,
     )
@@ -125,7 +176,7 @@ pub(crate) fn panes_from_rows_with_proc_fallback_options(
     let snapshot = proc::LazyProcessSnapshot::new(inspector);
     rows.into_iter()
         .map(|row| {
-            let mut pane = pane_from_row(row);
+            let mut pane = pane_from_row_with_process_snapshot(row, &snapshot);
             apply_proc_fallback_with_options(&mut pane, &snapshot, disable_proc_fallback);
             pane
         })
