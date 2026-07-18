@@ -28,6 +28,12 @@ This repo uses progressively disclosed documentation.
 - `docs/desktop-client-contract.md`
   Local and SSH desktop command contract, remote compatibility checks, expected
   failures, and remote smoke plan.
+- `docs/adding-a-provider.md`
+  End-to-end playbook for adding or fixing a provider: evidence-first rule,
+  ledger row, matcher calibration doctrine, corpus fixtures, and tests.
+- `CONTRIBUTING.md`
+  Entry point for contributors; points here and at the provider playbook and
+  quality baseline.
 - `docs/harness-engineering.md`
   Validation posture and the rule for what belongs in repo docs versus Linear.
 - `docs/macos-release-signing.md`

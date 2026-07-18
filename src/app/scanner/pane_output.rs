@@ -365,13 +365,17 @@ mod tests {
             .with_output("%6", gemini_idle_output())
             .with_output("%7", opencode_idle_output())
             .with_output("%8", pi_idle_output())
-            .with_output("%9", claude_idle_output());
+            .with_output("%9", claude_idle_output())
+            .with_output("%10", claude_idle_output());
 
         apply_pane_output_status_fallbacks_with_capture(&mut panes, &mut capture);
 
+        // `%10` (claude, title-busy) is a waiting-refinement candidate and is
+        // captured; its idle read must not displace the title-busy verdict.
+        // `%3` (copilot, title-busy) has no waiting markers and is skipped.
         assert_eq!(
             capture.calls,
-            vec!["%2", "%4", "%5", "%6", "%7", "%8", "%9"]
+            vec!["%2", "%4", "%5", "%6", "%7", "%8", "%9", "%10"]
         );
         assert_eq!(panes[1].status, PaneStatus::pane_output(StatusKind::Idle));
         assert_eq!(panes[3].status, PaneStatus::pane_output(StatusKind::Busy));
@@ -380,6 +384,7 @@ mod tests {
         assert_eq!(panes[6].status, PaneStatus::pane_output(StatusKind::Idle));
         assert_eq!(panes[7].status, PaneStatus::pane_output(StatusKind::Idle));
         assert_eq!(panes[8].status, PaneStatus::pane_output(StatusKind::Idle));
+        assert_eq!(panes[9].status, PaneStatus::title(StatusKind::Busy));
         assert_eq!(panes[10].status, PaneStatus::not_checked());
     }
 

@@ -206,6 +206,53 @@ mod tests {
     }
 
     #[test]
+    fn claude_pane_output_upgrades_title_busy_to_waiting_on_permission_prompt() {
+        // A spinner-glyph title reads busy, but the screen shows a permission
+        // prompt: the waiting refinement must upgrade busy → waiting.
+        let mut claude = pane_output_status_pane(817, Provider::Claude, "Claude Code");
+        claude.status = crate::app::PaneStatus::title(StatusKind::Busy);
+
+        classify::apply_pane_output_status_fallback(
+            &mut claude,
+            "Waiting for permission…\n\
+         \n\
+         ╭────────────────────────────────────────╮\n\
+         ❯ \n\
+         ╰────────────────────────────────────────╯\n\
+         ? for shortcuts\n",
+        );
+
+        assert_eq!(claude.status.kind, StatusKind::Waiting);
+        assert_eq!(claude.status.source, crate::app::StatusSource::PaneOutput);
+    }
+
+    #[test]
+    fn claude_pane_output_keeps_title_busy_when_screen_reads_busy_or_idle() {
+        // Refinement of a busy title accepts only a waiting read: a busy read
+        // must not churn provenance, and an idle read must not invert status.
+        for output in [
+            // Busy: current interrupt hint above the prompt box.
+            "(esc to interrupt)\n\
+             ╭────────────────────────────────────────╮\n\
+             ❯ \n\
+             ╰────────────────────────────────────────╯\n",
+            // Idle: plain current prompt with shortcuts footer.
+            "╭────────────────────────────────────────╮\n\
+             ❯ \n\
+             ╰────────────────────────────────────────╯\n\
+             ? for shortcuts\n",
+        ] {
+            let mut claude = pane_output_status_pane(818, Provider::Claude, "Claude Code");
+            claude.status = crate::app::PaneStatus::title(StatusKind::Busy);
+
+            classify::apply_pane_output_status_fallback(&mut claude, output);
+
+            assert_eq!(claude.status.kind, StatusKind::Busy);
+            assert_eq!(claude.status.source, crate::app::StatusSource::TmuxTitle);
+        }
+    }
+
+    #[test]
     fn claude_pane_output_ignores_stale_prompt_without_current_footer() {
         let mut claude = pane_output_status_pane(808, Provider::Claude, "Claude Code");
 

@@ -2059,10 +2059,13 @@ mod tests {
 
     #[test]
     fn daemon_activity_event_skips_provider_with_concrete_title_status() {
+        // Idle title status: not a refinement candidate, so output activity is
+        // ignored. (A busy title on a waiting-capable provider now refreshes —
+        // see daemon_activity_event_refreshes_busy_title_waiting_candidate.)
         let row = daemon_refresh_row("%1", "$1", "@1", 0, "Codex | Working");
         let mut snapshot = daemon_refresh_snapshot(vec![row.clone()]);
         assert_eq!(snapshot.panes[0].provider, Some(Provider::Codex));
-        snapshot.panes[0].status = PaneStatus::title(StatusKind::Busy);
+        snapshot.panes[0].status = PaneStatus::title(StatusKind::Idle);
         let mut provider = FakeTmuxReadProvider::default().with_pane("%1", Some(row));
         let lines =
             vec!["%subscription-changed agentscan-activity $1 @1 0 %1 : %1:1783956107".to_string()];
@@ -2084,6 +2087,38 @@ mod tests {
         assert!(!changed);
         assert_eq!(targeted_pane_refreshes, 0);
         assert_eq!(provider.list_pane_count, 0);
+    }
+
+    #[test]
+    fn daemon_activity_event_refreshes_busy_title_waiting_candidate() {
+        // A busy title on a waiting-capable provider is a refinement candidate:
+        // output activity must trigger a targeted refresh so an approval prompt
+        // can upgrade busy to waiting.
+        let row = daemon_refresh_row("%1", "$1", "@1", 0, "Codex | Working");
+        let mut snapshot = daemon_refresh_snapshot(vec![row.clone()]);
+        assert_eq!(snapshot.panes[0].provider, Some(Provider::Codex));
+        snapshot.panes[0].status = PaneStatus::title(StatusKind::Busy);
+        let mut provider = FakeTmuxReadProvider::default().with_pane("%1", Some(row));
+        let lines =
+            vec!["%subscription-changed agentscan-activity $1 @1 0 %1 : %1:1783956107".to_string()];
+
+        let (
+            changed,
+            _full_snapshot_refresh,
+            _fallback_to_full,
+            _targeted_title_updates,
+            targeted_pane_refreshes,
+            _targeted_scope_refreshes,
+        ) = run_apply_control_event_lines_with_provider_counts(
+            &mut snapshot,
+            &mut provider,
+            &lines,
+        )
+        .expect("busy-title waiting candidate activity should refresh the pane");
+
+        assert!(changed);
+        assert_eq!(targeted_pane_refreshes, 1);
+        assert_eq!(provider.list_pane_count, 1);
     }
 
     #[test]

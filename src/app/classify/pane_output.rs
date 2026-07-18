@@ -32,8 +32,9 @@ pub(crate) fn pane_output_status_activity_candidate(pane: &PaneRecord) -> bool {
 pub(crate) fn apply_pane_output_status_fallback(pane: &mut PaneRecord, output: &str) {
     let can_fill_unknown =
         pane.status.kind == StatusKind::Unknown && pane.status.source == StatusSource::NotChecked;
-    let can_refine = pane_output_status_refinement_candidate(pane);
-    if !(can_fill_unknown || can_refine) {
+    let can_refine_idle = idle_title_refinement_candidate(pane);
+    let can_refine_waiting = waiting_refinement_candidate(pane);
+    if !(can_fill_unknown || can_refine_idle || can_refine_waiting) {
         return;
     }
 
@@ -48,16 +49,38 @@ pub(crate) fn apply_pane_output_status_fallback(pane: &mut PaneRecord, output: &
     // once here, so each provider matcher does not have to fight pane padding.
     let output = trim_trailing_blank_lines(output);
 
-    if let Some(kind) = classifier(output)
-        && (can_fill_unknown || matches!(kind, StatusKind::Busy | StatusKind::Waiting))
-    {
-        pane.status = PaneStatus::pane_output(kind);
+    if let Some(kind) = classifier(output) {
+        let accept = can_fill_unknown
+            || (can_refine_idle && matches!(kind, StatusKind::Busy | StatusKind::Waiting))
+            // A busy-titled pane may only be upgraded to waiting; a busy or idle
+            // read keeps the title verdict so refinement can never invert status
+            // or churn provenance.
+            || (can_refine_waiting && kind == StatusKind::Waiting);
+        if accept {
+            pane.status = PaneStatus::pane_output(kind);
+        }
     }
 }
 
 fn pane_output_status_refinement_candidate(pane: &PaneRecord) -> bool {
+    idle_title_refinement_candidate(pane) || waiting_refinement_candidate(pane)
+}
+
+fn idle_title_refinement_candidate(pane: &PaneRecord) -> bool {
     matches!(pane.provider, Some(Provider::Gemini))
         && pane.status.kind == StatusKind::Idle
+        && pane.status.source == StatusSource::TmuxTitle
+}
+
+// Providers whose pane-output matchers can distinguish "waiting on the user"
+// (approval/question prompts) from plain busy. A title-derived busy pane is
+// worth one capture to check for that upgrade; trusted metadata busy is not
+// second-guessed.
+fn waiting_refinement_candidate(pane: &PaneRecord) -> bool {
+    matches!(
+        pane.provider,
+        Some(Provider::Claude | Provider::Codex | Provider::Opencode)
+    ) && pane.status.kind == StatusKind::Busy
         && pane.status.source == StatusSource::TmuxTitle
 }
 
