@@ -1,0 +1,25 @@
+name: Provider release watch
+
+on:
+  schedule:
+    - cron: '23 14 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  # Provider TUI releases can invalidate status heuristics without warning;
+  # this job opens a prompt for local real-agent validation, never a CI e2e run.
+  watch:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Check provider releases
+        run: scripts/provider-release-watch.sh
+        env:
+          GH_TOKEN: ${{ github.token }}

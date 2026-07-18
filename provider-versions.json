@@ -1,0 +1,62 @@
+{
+  "codex": {
+    "source": "npm",
+    "package": "@openai/codex",
+    "version": "0.144.5"
+  },
+  "claude": {
+    "source": "npm",
+    "package": "@anthropic-ai/claude-code",
+    "version": "2.1.214"
+  },
+  "gemini": {
+    "source": "npm",
+    "package": "@google/gemini-cli",
+    "version": "0.51.0"
+  },
+  "opencode": {
+    "source": "npm",
+    "package": "opencode-ai",
+    "version": "1.18.3"
+  },
+  "copilot": {
+    "source": "npm",
+    "package": "@github/copilot",
+    "version": "1.0.71"
+  },
+  "cursor_cli": {
+    "source": "manual",
+    "package": null,
+    "version": "unknown"
+  },
+  "pi": {
+    "source": "manual",
+    "package": null,
+    "version": "unknown"
+  },
+  "grok": {
+    "source": "manual",
+    "package": null,
+    "version": "unknown"
+  },
+  "hermes": {
+    "source": "manual",
+    "package": null,
+    "version": "unknown"
+  },
+  "aider": {
+    "source": "pypi",
+    "package": "aider-chat",
+    "version": "0.86.2"
+  },
+  "droid": {
+    "source": "manual",
+    "package": null,
+    "version": "unknown"
+  },
+  "antigravity": {
+    "source": "manual",
+    "package": null,
+    "version": "unknown"
+  }
+}
