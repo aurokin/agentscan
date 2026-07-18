@@ -7,6 +7,10 @@
 - Added a distinct `waiting` agent status for panes blocked on human input,
   sourced only from published `@agent.state=waiting` metadata and current
   Claude Code, OpenCode, or Codex approval/question markers in pane output.
+- Added a distinct orange waiting dot to the desktop picker for agents blocked
+  on human input.
+- Desktop notifications now report agents that are waiting on you, and report
+  when waiting agents finish, under the existing agent-finished preference.
 - Added `@agent.pid`, `@agent.v`, and `@agent.model` pane metadata, including
   optional model enrichment in schema-7 snapshots and inspect output.
 - Extended `tmux set-metadata` and `tmux clear-metadata` with `pid`, `v`, and

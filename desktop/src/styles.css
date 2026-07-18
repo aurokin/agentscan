@@ -37,6 +37,7 @@
   --accent: rgb(var(--accent-rgb));
   --on-accent: #1a1a1c;
   --dot-busy: #e3b341;
+  --dot-waiting: #f0883e;
   --dot-idle: #3fb950;
   --dot-unknown: #5a5a61;
   --dot-error: #f85149;
@@ -103,6 +104,7 @@
   --on-accent: #ffffff;
   /* Status dots stay yellow/green across themes (per request). */
   --dot-busy: #e3b341;
+  --dot-waiting: #e8590c;
   --dot-idle: #3fb950;
   --dot-unknown: #a8a8ae;
   --dot-error: #e5484d;
@@ -828,6 +830,10 @@ p {
 
 .status-dot[data-tone="busy"] {
   background: var(--dot-busy);
+}
+
+.status-dot[data-tone="waiting"] {
+  background: var(--dot-waiting);
 }
 
 .status-dot[data-tone="idle"] {

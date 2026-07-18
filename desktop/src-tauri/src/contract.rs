@@ -187,6 +187,26 @@ mod tests {
     }
 
     #[test]
+    fn picker_row_waiting_status_round_trips() {
+        let input = serde_json::json!({
+            "key": "1",
+            "pane_id": "%1",
+            "provider": "codex",
+            "status": { "kind": "waiting" },
+            "display_label": "Root Task",
+            "location_tag": "work:0.0",
+            "location": { "session_name": "work" }
+        });
+        let row: PickerRow = serde_json::from_value(input.clone()).expect("picker row parses");
+
+        assert_eq!(row.status.kind, "waiting");
+        assert_eq!(
+            serde_json::to_value(row).expect("picker row serializes"),
+            input
+        );
+    }
+
+    #[test]
     fn picker_rows_reject_incompatible_output() {
         let rows: Vec<PickerRow> = serde_json::from_str(
             r#"[

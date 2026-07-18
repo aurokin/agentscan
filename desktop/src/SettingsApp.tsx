@@ -726,14 +726,14 @@ function SettingsApp() {
 
           <div className="setting-row">
             <div className="setting-label">
-              <span>Notify when an agent finishes</span>
+              <span>Notify when an agent finishes or needs you</span>
             </div>
             <button
               className={`switch${notifyOnIdle ? " on" : ""}`}
               type="button"
               role="switch"
               aria-checked={notifyOnIdle}
-              aria-label="Notify when an agent finishes"
+              aria-label="Notify when an agent finishes or needs you"
               onClick={toggleNotifyOnIdle}
             >
               <span className="switch-thumb" />

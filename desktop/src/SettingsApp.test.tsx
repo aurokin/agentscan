@@ -98,7 +98,7 @@ it("boots settings: renders the form and registers only settings-side listeners"
   screen.getByLabelText("agentscan binary");
   expect(
     screen
-      .getByRole("switch", { name: "Notify when an agent finishes" })
+      .getByRole("switch", { name: "Notify when an agent finishes or needs you" })
       .getAttribute("aria-checked"),
   ).toBe("false");
   // The dock's UI must not exist here.

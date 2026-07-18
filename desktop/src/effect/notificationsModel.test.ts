@@ -3,10 +3,12 @@ import type { LiveStates } from "./LiveConnection";
 import {
   detectStatusTransitions,
   idleTransitions,
+  notificationTransitions,
   NOTIFY_ON_IDLE_STORAGE_KEY,
   parseNotifyOnIdle,
   storeNotifyOnIdle,
   type StatusTransition,
+  waitingTransitions,
 } from "./notificationsModel";
 import type { LiveState, PickerRow } from "./types";
 
@@ -77,6 +79,15 @@ describe("detectStatusTransitions", () => {
     ).toMatchObject([{ paneId: "%1", from: "idle", to: "busy" }]);
   });
 
+  it("detects transitions into waiting generically", () => {
+    expect(
+      detectStatusTransitions(
+        states(["local", [row("%1", "busy")]]),
+        states(["local", [row("%1", "waiting")]]),
+      ),
+    ).toMatchObject([{ paneId: "%1", from: "busy", to: "waiting" }]);
+  });
+
   it("emits nothing for an unchanged status", () => {
     expect(
       detectStatusTransitions(states(["local", [row("%1", "busy")]]), states(["local", [row("%1", "busy")]])),
@@ -112,7 +123,7 @@ describe("detectStatusTransitions", () => {
 });
 
 describe("idleTransitions", () => {
-  it("keeps only busy to idle transitions", () => {
+  it("keeps busy or waiting to idle transitions", () => {
     const transition = (from: string, to: string): StatusTransition => ({
       paneId: `${from}-${to}`,
       provider: null,
@@ -123,9 +134,69 @@ describe("idleTransitions", () => {
     expect(
       idleTransitions([
         transition("busy", "idle"),
+        transition("waiting", "idle"),
         transition("idle", "busy"),
         transition("busy", "waiting"),
       ]),
-    ).toEqual([transition("busy", "idle")]);
+    ).toEqual([transition("busy", "idle"), transition("waiting", "idle")]);
+  });
+});
+
+describe("waitingTransitions", () => {
+  it("keeps transitions into waiting from any other observed status", () => {
+    const transition = (from: string, to: string): StatusTransition => ({
+      paneId: `${from}-${to}`,
+      provider: null,
+      label: "agent",
+      from,
+      to,
+    });
+    expect(
+      waitingTransitions([
+        transition("busy", "waiting"),
+        transition("idle", "waiting"),
+        transition("unknown", "waiting"),
+        transition("waiting", "idle"),
+      ]),
+    ).toEqual([
+      transition("busy", "waiting"),
+      transition("idle", "waiting"),
+      transition("unknown", "waiting"),
+    ]);
+  });
+});
+
+describe("notificationTransitions", () => {
+  const transition = (from: string, to: string): StatusTransition => ({
+    paneId: `${from}-${to}`,
+    provider: "claude",
+    label: "agent",
+    from,
+    to,
+  });
+
+  it("selects waiting and completion notifications without notifying on resumed work", () => {
+    expect(
+      notificationTransitions(
+        [
+          transition("busy", "waiting"),
+          transition("waiting", "idle"),
+          transition("waiting", "busy"),
+        ],
+        true,
+      ),
+    ).toEqual([
+      { ...transition("busy", "waiting"), notification: "waiting" },
+      { ...transition("waiting", "idle"), notification: "finished" },
+    ]);
+  });
+
+  it("suppresses all notifications when the existing preference is off", () => {
+    expect(
+      notificationTransitions(
+        [transition("busy", "waiting"), transition("waiting", "idle")],
+        false,
+      ),
+    ).toEqual([]);
   });
 });
