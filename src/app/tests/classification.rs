@@ -1648,7 +1648,12 @@ fn validate_snapshot_rejects_future_schema_version() {
 fn status_names_match_serialized_values() {
     assert_eq!(StatusKind::Busy.as_str(), "busy");
     assert_eq!(StatusKind::Idle.as_str(), "idle");
+    assert_eq!(StatusKind::Waiting.as_str(), "waiting");
     assert_eq!(StatusKind::Unknown.as_str(), "unknown");
+    assert_eq!(
+        serde_json::to_string(&StatusKind::Waiting).expect("serialize waiting status"),
+        "\"waiting\""
+    );
     assert_eq!(
         super::StatusSource::PaneOutput.as_str(),
         "pane_output"
@@ -2681,7 +2686,7 @@ fn claude_pane_output_marks_current_interrupt_hint_busy() {
 }
 
 #[test]
-fn claude_pane_output_marks_current_permission_wait_busy() {
+fn claude_pane_output_marks_current_permission_wait_waiting() {
     let mut claude = pane_output_status_pane(807, Provider::Claude, "Claude Code");
 
     classify::apply_pane_output_status_fallback(
@@ -2694,7 +2699,7 @@ fn claude_pane_output_marks_current_permission_wait_busy() {
          ? for shortcuts\n",
     );
 
-    assert_eq!(claude.status.kind, StatusKind::Busy);
+    assert_eq!(claude.status.kind, StatusKind::Waiting);
     assert_eq!(claude.status.source, super::StatusSource::PaneOutput);
 }
 
@@ -2841,7 +2846,7 @@ fn codex_pane_output_marks_status_indicator_with_details_busy() {
 }
 
 #[test]
-fn codex_pane_output_marks_current_approval_prompt_busy() {
+fn codex_pane_output_marks_current_approval_prompt_waiting() {
     let mut codex = pane_output_status_pane(797, Provider::Codex, "codex");
 
     classify::apply_pane_output_status_fallback(
@@ -2855,7 +2860,7 @@ fn codex_pane_output_marks_current_approval_prompt_busy() {
            Press enter to confirm or esc to cancel\n",
     );
 
-    assert_eq!(codex.status.kind, StatusKind::Busy);
+    assert_eq!(codex.status.kind, StatusKind::Waiting);
     assert_eq!(codex.status.source, super::StatusSource::PaneOutput);
 }
 
@@ -4357,7 +4362,7 @@ fn opencode_pane_output_marks_running_prompt_busy() {
 }
 
 #[test]
-fn opencode_pane_output_marks_permission_prompt_busy() {
+fn opencode_pane_output_marks_permission_prompt_waiting() {
     let mut opencode = pane_output_status_pane(784, Provider::Opencode, "OC | Permission");
 
     classify::apply_pane_output_status_fallback(
@@ -4368,7 +4373,7 @@ fn opencode_pane_output_marks_permission_prompt_busy() {
          esc reject\n",
     );
 
-    assert_eq!(opencode.status.kind, StatusKind::Busy);
+    assert_eq!(opencode.status.kind, StatusKind::Waiting);
     assert_eq!(opencode.status.source, super::StatusSource::PaneOutput);
 }
 
@@ -4387,7 +4392,22 @@ fn opencode_pane_output_uses_current_busy_marker_over_stale_idle_prompt() {
          Allow once   Allow always   Reject\n",
     );
 
-    assert_eq!(opencode.status.kind, StatusKind::Busy);
+    assert_eq!(opencode.status.kind, StatusKind::Waiting);
+    assert_eq!(opencode.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn opencode_pane_output_marks_question_event_waiting() {
+    let mut opencode = pane_output_status_pane(813, Provider::Opencode, "OC | Question");
+
+    classify::apply_pane_output_status_fallback(
+        &mut opencode,
+        "# Questions\n\
+         Reject question\n\
+         Waiting for question event\n",
+    );
+
+    assert_eq!(opencode.status.kind, StatusKind::Waiting);
     assert_eq!(opencode.status.source, super::StatusSource::PaneOutput);
 }
 
@@ -4695,7 +4715,7 @@ fn opencode_pane_output_live_build_marks_busy_when_interrupt_hint_above_box_with
 
 #[test]
 fn opencode_pane_output_new_build_yields_to_current_busy_marker() {
-    // A busy marker still wins over the persistent command-bar input box.
+    // A waiting marker still wins over the persistent command-bar input box.
     let mut opencode = pane_output_status_pane(803, Provider::Opencode, "OC | Working");
 
     classify::apply_pane_output_status_fallback(
@@ -4708,7 +4728,7 @@ fn opencode_pane_output_new_build_yields_to_current_busy_marker() {
          Allow once   Allow always   Reject\n",
     );
 
-    assert_eq!(opencode.status.kind, StatusKind::Busy);
+    assert_eq!(opencode.status.kind, StatusKind::Waiting);
     assert_eq!(opencode.status.source, super::StatusSource::PaneOutput);
 }
 

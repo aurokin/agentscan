@@ -82,7 +82,7 @@ pub fn bench_snapshot_with_one_status_flip(snapshot: &BenchSnapshot) -> BenchSna
     if let Some(pane) = next.panes.first_mut() {
         pane.status.kind = match pane.status.kind {
             StatusKind::Busy => StatusKind::Idle,
-            _ => StatusKind::Busy,
+            StatusKind::Idle | StatusKind::Waiting | StatusKind::Unknown => StatusKind::Busy,
         };
     }
     next.generated_at = "2026-07-13T00:00:01Z".to_string();

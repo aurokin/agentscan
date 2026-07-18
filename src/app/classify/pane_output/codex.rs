@@ -33,7 +33,12 @@ pub(super) fn status(output: &str) -> Option<StatusKind> {
                 || codex_busy_marker_is_near_current_prompt(&frame, index, idle_index)
         })
     {
-        return Some(StatusKind::Busy);
+        let kind = if frame.line(index).is_some_and(codex_approval_prompt_line) {
+            StatusKind::Waiting
+        } else {
+            StatusKind::Busy
+        };
+        return Some(kind);
     }
 
     idle_index

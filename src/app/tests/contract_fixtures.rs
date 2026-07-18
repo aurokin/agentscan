@@ -19,7 +19,7 @@ fn populated_contract_snapshot() -> SnapshotEnvelope {
         .pane();
 
     pane.provider = Some(Provider::Claude);
-    pane.status = PaneStatus::new(StatusKind::Busy, super::StatusSource::PaneMetadata);
+    pane.status = PaneStatus::new(StatusKind::Waiting, super::StatusSource::PaneMetadata);
     pane.display.label = "Contract Query".to_string();
     pane.display.activity_label = Some("Query".to_string());
     pane.classification.matched_by = Some(super::ClassificationMatchKind::PaneMetadata);
@@ -28,7 +28,7 @@ fn populated_contract_snapshot() -> SnapshotEnvelope {
     pane.agent_metadata.provider = Some("claude".to_string());
     pane.agent_metadata.label = Some("Contract Query".to_string());
     pane.agent_metadata.cwd = Some("/home/auro/notes".to_string());
-    pane.agent_metadata.state = Some("busy".to_string());
+    pane.agent_metadata.state = Some("waiting".to_string());
     pane.agent_metadata.session_id = Some("agent-session-123".to_string());
     pane.diagnostics.cache_origin = "contract_fixture".to_string();
     pane.diagnostics.proc_fallback = super::ProcFallbackDiagnostics {

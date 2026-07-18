@@ -3510,7 +3510,7 @@ fn doctor_json_warns_and_reports_schema_when_daemon_not_running() -> Result<()> 
     let stdout = harness.agentscan_output(["doctor", "--format", "json"])?;
     let report: Value = serde_json::from_str(&stdout).context("doctor JSON should parse")?;
 
-    assert_eq!(report["schema_version"], 1);
+    assert_eq!(report["schema_version"], 2);
     assert!(
         report["generated_at"]
             .as_str()

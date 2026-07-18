@@ -14,6 +14,7 @@ pub(crate) enum SourceKind {
 pub(crate) enum StatusKind {
     Idle,
     Busy,
+    Waiting,
     Unknown,
 }
 
@@ -299,6 +300,7 @@ impl StatusKind {
         match self {
             Self::Idle => "idle",
             Self::Busy => "busy",
+            Self::Waiting => "waiting",
             Self::Unknown => "unknown",
         }
     }

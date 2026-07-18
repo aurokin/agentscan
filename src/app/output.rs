@@ -80,8 +80,9 @@ fn print_list_text(panes: &[PaneRecord], icon_mode: IconMode) -> Result<()> {
         let provider = provider_display_marker(pane.provider, icon_mode);
 
         lines.push(format!(
-            "{} {}:{}.{} - {}",
+            "{} [{}] {}:{}.{} - {}",
             provider,
+            pane.status.kind.as_str(),
             pane.location.session_name,
             pane.location.window_index,
             pane.location.pane_index,

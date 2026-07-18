@@ -36,6 +36,7 @@ pub(crate) fn infer_status(title_status: PaneStatus, published_state: Option<&st
     match published_state.map(|value| value.trim().to_ascii_lowercase()) {
         Some(state) if state == "busy" => PaneStatus::metadata(StatusKind::Busy),
         Some(state) if state == "idle" => PaneStatus::metadata(StatusKind::Idle),
+        Some(state) if state == "waiting" => PaneStatus::metadata(StatusKind::Waiting),
         Some(state) if state == "unknown" => PaneStatus::metadata(StatusKind::Unknown),
         _ => title_status,
     }

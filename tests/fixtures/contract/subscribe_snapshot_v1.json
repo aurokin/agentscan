@@ -1,7 +1,7 @@
 {
   "type": "snapshot",
   "snapshot": {
-    "schema_version": 6,
+    "schema_version": 7,
     "generated_at": "2026-04-15T00:00:00Z",
     "source": {
       "kind": "daemon",
@@ -34,7 +34,7 @@
         },
         "provider": "claude",
         "status": {
-          "kind": "busy",
+          "kind": "waiting",
           "source": "pane_metadata"
         },
         "classification": {
@@ -48,7 +48,7 @@
           "provider": "claude",
           "label": "Contract Query",
           "cwd": "/home/auro/notes",
-          "state": "busy",
+          "state": "waiting",
           "session_id": "agent-session-123"
         },
         "diagnostics": {
@@ -71,7 +71,7 @@
       "pane_id": "%41",
       "provider": "claude",
       "status": {
-        "kind": "busy",
+        "kind": "waiting",
         "source": "pane_metadata"
       },
       "display": {

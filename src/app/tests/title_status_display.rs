@@ -681,8 +681,20 @@ fn metadata_state_fills_unknown_status_without_overriding_title_signal() {
         Some(super::ClassificationMatchKind::PaneTitle),
         "(bront) repo: codex",
     );
-    let busy_from_metadata = classify::infer_status(unknown_from_title, Some("busy"));
+    let busy_from_metadata = classify::infer_status(unknown_from_title.clone(), Some("busy"));
     assert_eq!(busy_from_metadata.kind, StatusKind::Busy);
+
+    let waiting_from_metadata =
+        classify::infer_status(unknown_from_title.clone(), Some(" WAITING "));
+    assert_eq!(waiting_from_metadata.kind, StatusKind::Waiting);
+    assert_eq!(waiting_from_metadata.source, super::StatusSource::PaneMetadata);
+
+    let unrecognized_from_metadata = classify::infer_status(unknown_from_title, Some("blocked"));
+    assert_eq!(unrecognized_from_metadata.kind, StatusKind::Unknown);
+    assert_eq!(
+        unrecognized_from_metadata.source,
+        super::StatusSource::NotChecked
+    );
 
     let idle_from_title = classify::infer_title_status(
         Some(Provider::Codex),
@@ -691,6 +703,24 @@ fn metadata_state_fills_unknown_status_without_overriding_title_signal() {
     );
     let still_idle = classify::infer_status(idle_from_title, Some("busy"));
     assert_eq!(still_idle.kind, StatusKind::Idle);
+}
+
+#[test]
+fn title_status_heuristics_never_emit_waiting() {
+    let cases = [
+        (Provider::Claude, "Claude Code | Waiting"),
+        (Provider::Codex, "Working"),
+        (Provider::Opencode, "OC | Action Required"),
+    ];
+
+    for (provider, title) in cases {
+        let status = classify::infer_title_status(
+            Some(provider),
+            Some(super::ClassificationMatchKind::PaneTitle),
+            title,
+        );
+        assert_ne!(status.kind, StatusKind::Waiting, "title: {title}");
+    }
 }
 
 #[test]

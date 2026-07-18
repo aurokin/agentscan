@@ -9,7 +9,7 @@ use render::print_doctor_text;
 
 /// Versioned envelope for `agentscan doctor --format json`. Bump when the report
 /// shape changes in a way machine consumers must notice.
-const DOCTOR_SCHEMA_VERSION: u32 = 1;
+const DOCTOR_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]

@@ -200,7 +200,7 @@ fn ipc_frame_roundtrips_snapshot_hello() {
 
 #[test]
 fn ipc_frame_accepts_subscribe_mode() {
-    let bytes = br#"{"type":"hello","protocol_version":2,"snapshot_schema_version":6,"mode":"subscribe"}"#;
+    let bytes = br#"{"type":"hello","protocol_version":2,"snapshot_schema_version":7,"mode":"subscribe"}"#;
 
     let decoded = ipc::decode_client_frame(bytes).expect("subscribe hello should decode");
 
@@ -216,7 +216,7 @@ fn ipc_frame_accepts_subscribe_mode() {
 
 #[test]
 fn ipc_frame_accepts_lifecycle_status_mode() {
-    let bytes = br#"{"type":"hello","protocol_version":2,"snapshot_schema_version":6,"mode":"lifecycle_status"}"#;
+    let bytes = br#"{"type":"hello","protocol_version":2,"snapshot_schema_version":7,"mode":"lifecycle_status"}"#;
 
     let decoded = ipc::decode_client_frame(bytes).expect("lifecycle status hello should decode");
 
@@ -232,7 +232,7 @@ fn ipc_frame_accepts_lifecycle_status_mode() {
 
 #[test]
 fn ipc_frame_accepts_client_event() {
-    let bytes = br#"{"type":"client_event","protocol_version":2,"snapshot_schema_version":6,"event":{"kind":"pane_focus","pane_id":"%42"}}"#;
+    let bytes = br#"{"type":"client_event","protocol_version":2,"snapshot_schema_version":7,"event":{"kind":"pane_focus","pane_id":"%42"}}"#;
 
     let decoded = ipc::decode_client_frame(bytes).expect("client event should decode");
 

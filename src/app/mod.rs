@@ -49,7 +49,7 @@ const TMUX_SOCKET_ENV_VAR: &str = "AGENTSCAN_TMUX_SOCKET";
 // Explicit tmux binary override. When set, agentscan execs exactly this tmux
 // and never auto-resolves a compatible install (see tmux::command).
 const TMUX_BIN_ENV_VAR: &str = "AGENTSCAN_TMUX_BIN";
-const CACHE_SCHEMA_VERSION: u32 = 6;
+const CACHE_SCHEMA_VERSION: u32 = 7;
 // Schema versions for the machine-readable envelopes of the `hotkeys` and
 // `providers` JSON outputs. These wrap their arrays the way the snapshot wraps
 // `panes`, so a field change is a versioned break rather than a silent one. They

@@ -689,6 +689,7 @@ fn status_emoji(status: StatusKind) -> &'static str {
     match status {
         StatusKind::Idle => "🟢",
         StatusKind::Busy => "🟡",
+        StatusKind::Waiting => "🟠",
         StatusKind::Unknown => "⚫",
     }
 }

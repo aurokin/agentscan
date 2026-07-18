@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Added
+
+- Added a distinct `waiting` agent status for panes blocked on human input,
+  sourced only from published `@agent.state=waiting` metadata and current
+  Claude Code, OpenCode, or Codex approval/question markers in pane output.
+
+### Changed
+
+- Snapshot schema version is now 7 to add the `waiting` status wire value;
+  the versioned doctor report schema is now 2 so its status counts can expose
+  `waiting` distinctly as well.
+
 ## 0.10.0 - 2026-07-17
 
 ### Added

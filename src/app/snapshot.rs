@@ -77,17 +77,22 @@ pub(crate) fn summarize_snapshot(snapshot: &SnapshotEnvelope) -> Result<Snapshot
         })
         .collect();
 
-    let status_counts = [StatusKind::Busy, StatusKind::Idle, StatusKind::Unknown]
-        .into_iter()
-        .filter_map(|status| {
-            let count = snapshot
-                .panes
-                .iter()
-                .filter(|pane| pane.status.kind == status)
-                .count();
-            (count > 0).then_some((status, count))
-        })
-        .collect();
+    let status_counts = [
+        StatusKind::Busy,
+        StatusKind::Waiting,
+        StatusKind::Idle,
+        StatusKind::Unknown,
+    ]
+    .into_iter()
+    .filter_map(|status| {
+        let count = snapshot
+            .panes
+            .iter()
+            .filter(|pane| pane.status.kind == status)
+            .count();
+        (count > 0).then_some((status, count))
+    })
+    .collect();
 
     Ok(SnapshotSummary {
         pane_count,
