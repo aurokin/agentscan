@@ -1,9 +1,7 @@
 use super::{PaneOutputFrame, StatusKind};
 
-// Claude Code interrupt hint shown in the status line while a turn is running
-// (`esc to interrupt`); probed as two substrings.
-const INTERRUPT_ESC_MARKER: &str = "esc";
-const INTERRUPT_VERB_MARKER: &str = "interrupt";
+// Claude Code interrupt hint shown in the status line while a turn is running.
+const INTERRUPT_HINT_TOKENS: [&str; 3] = ["esc", "to", "interrupt"];
 // Claude Code permission approval prompt shown while awaiting the user.
 const WAITING_PERMISSION_MARKER: &str = "Waiting for permission";
 // Claude Code idle input footer hint.
@@ -55,7 +53,11 @@ fn claude_current_busy_marker_line(line: &str) -> bool {
 }
 
 fn claude_interrupt_hint_line(line: &str) -> bool {
-    line.contains(INTERRUPT_ESC_MARKER) && line.contains(INTERRUPT_VERB_MARKER)
+    line.split_whitespace()
+        .map(|token| token.trim_matches(|ch: char| !ch.is_alphanumeric()))
+        .collect::<Vec<_>>()
+        .windows(INTERRUPT_HINT_TOKENS.len())
+        .any(|tokens| tokens == INTERRUPT_HINT_TOKENS)
 }
 
 fn claude_waiting_permission_line(line: &str) -> bool {
@@ -89,6 +91,8 @@ fn claude_current_footer_line(line: &str) -> bool {
         || line.contains(ACCEPT_EDITS_MODE_MARKER)
         || line.contains(BYPASS_PERMISSIONS_MODE_MARKER)
         || line.contains(ULTRAPLAN_MODE_MARKER)
+        // Real busy frames can render this as their only footer-ish line. Only the strict,
+        // token-delimited sequence is accepted here, never a loose `esc`/`interrupt` pair.
         || claude_interrupt_hint_line(line)
 }
 

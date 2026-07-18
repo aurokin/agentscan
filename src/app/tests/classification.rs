@@ -2497,6 +2497,39 @@ fn droid_pane_output_marks_current_tmux_footer_idle() {
 }
 
 #[test]
+fn droid_pane_output_uses_input_box_when_badge_is_renamed() {
+    // The input-box row is the durable frame anchor; the integration badge is mutable copy.
+    let mut droid = pane_output_status_pane(822, Provider::Droid, "⛬ New Session");
+
+    classify::apply_pane_output_status_fallback(
+        &mut droid,
+        "⠹ Thinking...  (Press ESC to stop)\n\
+         Auto (High) · allow all commands                         Droid Core (GLM-5.2) (High)\n\
+         ╭──────────────────────────────────────────────────────────────────────────────╮\n\
+         │ > Enter to steer                                                             │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯\n\
+         [⏱ 9s] ? for help                                                        SHELL ◌\n",
+    );
+
+    assert_eq!(droid.status.kind, StatusKind::Busy);
+    assert_eq!(droid.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn droid_pane_output_without_badge_or_input_box_stays_unknown() {
+    let mut droid = pane_output_status_pane(823, Provider::Droid, "⛬ New Session");
+
+    classify::apply_pane_output_status_fallback(
+        &mut droid,
+        "The documentation says > Enter to steer while a request is active.\n\
+         [⏱ 9s] ? for help                                                        SHELL ◌\n",
+    );
+
+    assert_eq!(droid.status.kind, StatusKind::Unknown);
+    assert_eq!(droid.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
 fn droid_pane_output_marks_update_ready_tmux_footer_idle() {
     // Observed from Droid v0.156.2: the current prompt is followed by an update-ready footer
     // rather than the older `? for help` footer. The prompt box still anchors the live frame.
@@ -2732,6 +2765,43 @@ fn kimi_code_pane_output_withholds_status_from_bare_moon_line_near_prompt() {
 }
 
 #[test]
+fn kimi_code_pane_output_withholds_idle_from_braille_spinner_shape() {
+    let mut kimi = pane_output_status_pane(838, Provider::KimiCode, "reply with exactly OK");
+
+    classify::apply_pane_output_status_fallback(
+        &mut kimi,
+        "● Still working.\n\n\
+         ⠋ · Tip: use @ to include files\n\n\
+         ╭──────────────────────────────────────────────────────────────────────────────╮\n\
+         │ >                                                                            │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯\n\
+         K2.7 Coding thinking  ~/code/agentscan  main                    ctrl+c: cancel\n\
+         context: 9% (22k/256k)\n",
+    );
+
+    assert_eq!(kimi.status.kind, StatusKind::Unknown);
+    assert_eq!(kimi.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn kimi_code_pane_output_withholds_status_from_unknown_spinner_glyph() {
+    let mut kimi = pane_output_status_pane(839, Provider::KimiCode, "reply with exactly OK");
+
+    classify::apply_pane_output_status_fallback(
+        &mut kimi,
+        "◆ · Tip: future spinner style\n\n\
+         ╭──────────────────────────────────────────────────────────────────────────────╮\n\
+         │ >                                                                            │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯\n\
+         K2.7 Coding thinking  ~/code/agentscan  main                    ctrl+c: cancel\n\
+         context: 9% (22k/256k)\n",
+    );
+
+    assert_eq!(kimi.status.kind, StatusKind::Unknown);
+    assert_eq!(kimi.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
 fn kimi_code_pane_output_ignores_stale_input_box_above_replacement_ui() {
     // When an approval dialog (or another alternate UI) replaces the prompt, the last
     // input box survives in scrollback well above the bottom of the frame. The stale box
@@ -2824,6 +2894,39 @@ fn claude_pane_output_marks_current_interrupt_hint_busy() {
 
     assert_eq!(claude.status.kind, StatusKind::Busy);
     assert_eq!(claude.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn claude_pane_output_does_not_treat_interrupt_prose_as_busy() {
+    let mut claude = pane_output_status_pane(810, Provider::Claude, "Claude Code");
+
+    classify::apply_pane_output_status_fallback(
+        &mut claude,
+        "describe how to interrupt the running task\n\
+         ╭──────────────────────────────────────╮\n\
+         ❯ \n\
+         ╰──────────────────────────────────────╯\n\
+         ? for shortcuts\n",
+    );
+
+    assert_eq!(claude.status.kind, StatusKind::Idle);
+    assert_eq!(claude.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn claude_pane_output_leaves_loose_interrupt_words_unknown() {
+    let mut claude = pane_output_status_pane(811, Provider::Claude, "Claude Code");
+
+    classify::apply_pane_output_status_fallback(
+        &mut claude,
+        "esc can describe how to interrupt safely\n\
+         ╭──────────────────────────────────────╮\n\
+         ❯ \n\
+         ╰──────────────────────────────────────╯\n",
+    );
+
+    assert_eq!(claude.status.kind, StatusKind::Unknown);
+    assert_eq!(claude.status.source, super::StatusSource::NotChecked);
 }
 
 #[test]
@@ -2931,6 +3034,31 @@ fn codex_pane_output_marks_model_path_footer_idle() {
 
     assert_eq!(codex.status.kind, StatusKind::Idle);
     assert_eq!(codex.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn codex_pane_output_marks_restyled_prompt_with_current_footer_idle() {
+    let mut codex = pane_output_status_pane(812, Provider::Codex, "codex");
+
+    classify::apply_pane_output_status_fallback(
+        &mut codex,
+        "› What should we build next?\n\
+         \n\
+           gpt-5.5 default · /tmp/project\n",
+    );
+
+    assert_eq!(codex.status.kind, StatusKind::Idle);
+    assert_eq!(codex.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn codex_pane_output_leaves_bare_restyled_prompt_unknown() {
+    let mut codex = pane_output_status_pane(813, Provider::Codex, "codex");
+
+    classify::apply_pane_output_status_fallback(&mut codex, "› What should we build next?\n");
+
+    assert_eq!(codex.status.kind, StatusKind::Unknown);
+    assert_eq!(codex.status.source, super::StatusSource::NotChecked);
 }
 
 #[test]
@@ -3194,7 +3322,7 @@ fn grok_pane_output_marks_active_turn_busy_via_spinner_when_footer_reworded() {
         &mut grok,
         "     ◆ Search \"disable_reconcile\" in src (28 matches)\n\
          \n\
-         ⠹ Thinking… 0.4s                              42s ⇣80.3k [✗]\n\
+         ⠹ Thinking… 0.4s                              42s ⇣80.3k [■]\n\
          \n\
          ╭────────────────────────────────────────────────╮\n\
          │ ❯                                                │\n\
@@ -3205,6 +3333,23 @@ fn grok_pane_output_marks_active_turn_busy_via_spinner_when_footer_reworded() {
 
     assert_eq!(grok.status.kind, StatusKind::Busy);
     assert_eq!(grok.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn grok_pane_output_leaves_unrecognized_keybind_action_unknown() {
+    let mut grok = pane_output_status_pane(784, Provider::Grok, "grok");
+
+    classify::apply_pane_output_status_fallback(
+        &mut grok,
+        "╭────────────────────────────────────────────────╮\n\
+         │ ❯                                                │\n\
+         ╰────────────── Grok Build · always-approve ─╯\n\
+         \n\
+         Shift+Tab:mode  │  Ctrl+x:stop  │  Ctrl+.:shortcuts\n",
+    );
+
+    assert_eq!(grok.status.kind, StatusKind::Unknown);
+    assert_eq!(grok.status.source, super::StatusSource::NotChecked);
 }
 
 #[test]
@@ -3238,9 +3383,10 @@ fn grok_pane_output_marks_running_body_marker_busy() {
 }
 
 #[test]
-fn grok_pane_output_ignores_stale_spinner_above_current_prompt_box() {
+fn grok_pane_output_leaves_footerless_box_after_stale_spinner_unknown() {
     // The screen capture still holds a prior turn's running spinner, but the current bottom
-    // UI is the idle input box, so the pane is idle — the stale spinner must not force busy.
+    // UI is the input box, but a footerless box is not positive idle evidence. The stale spinner
+    // must not force busy, and the absence of an idle footer must degrade to unknown.
     let mut grok = pane_output_status_pane(775, Provider::Grok, "grok");
 
     classify::apply_pane_output_status_fallback(
@@ -3252,8 +3398,8 @@ fn grok_pane_output_ignores_stale_spinner_above_current_prompt_box() {
          ╰──────────────── Grok Build · always-approve ─╯\n",
     );
 
-    assert_eq!(grok.status.kind, StatusKind::Idle);
-    assert_eq!(grok.status.source, super::StatusSource::PaneOutput);
+    assert_eq!(grok.status.kind, StatusKind::Unknown);
+    assert_eq!(grok.status.source, super::StatusSource::NotChecked);
 }
 
 #[test]
@@ -3879,6 +4025,42 @@ fn cursor_cli_pane_output_marks_run_everything_footer_idle() {
 }
 
 #[test]
+fn cursor_cli_pane_output_marks_restyled_prompt_idle_from_footer_chrome() {
+    let mut cursor = pane_output_status_pane(761, Provider::CursorCli, "Cursor Agent");
+
+    classify::apply_pane_output_status_fallback(
+        &mut cursor,
+        "  Cursor Agent\n\
+         \n\
+         ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄\n\
+          → Ask Cursor anything\n\
+         ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+          Composer 2.5                                                   Auto-run -- INSERT --\n\
+          /private/tmp/agentscan-cursor-smoke · main\n",
+    );
+
+    assert_eq!(cursor.status.kind, StatusKind::Idle);
+    assert_eq!(cursor.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn cursor_cli_pane_output_withholds_status_without_current_prompt_chrome() {
+    let mut cursor = pane_output_status_pane(762, Provider::CursorCli, "Cursor Agent");
+
+    classify::apply_pane_output_status_fallback(
+        &mut cursor,
+        "  Cursor Agent\n\
+         \n\
+           → Ask Cursor anything\n\
+         \n\
+         response text with no current composer or path footer\n",
+    );
+
+    assert_eq!(cursor.status.kind, StatusKind::Unknown);
+    assert_eq!(cursor.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
 fn cursor_cli_pane_output_marks_borderless_stop_hint_busy() {
     let mut cursor = pane_output_status_pane(759, Provider::CursorCli, "Command Runner");
 
@@ -3966,6 +4148,36 @@ fn hermes_pane_output_marks_current_prompt_idle() {
 
     assert_eq!(hermes.status.kind, StatusKind::Idle);
     assert_eq!(hermes.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn hermes_pane_output_accepts_one_busy_hint_in_provider_frame() {
+    let mut hermes = pane_output_status_pane(773, Provider::Hermes, "agentscan: hermes");
+
+    classify::apply_pane_output_status_fallback(
+        &mut hermes,
+        "⚕ gpt-5.5 │ 65.4K/272K │ [██░░░░░░░░] 24% │ 2m │ ⏱ 1m 19s\n\
+         ⚕ ❯ /queue\n\
+         ────────────────────────────────────────\n",
+    );
+
+    assert_eq!(hermes.status.kind, StatusKind::Busy);
+    assert_eq!(hermes.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn hermes_pane_output_with_glyph_frame_but_no_busy_hint_stays_unknown() {
+    let mut hermes = pane_output_status_pane(774, Provider::Hermes, "agentscan: hermes");
+
+    classify::apply_pane_output_status_fallback(
+        &mut hermes,
+        "⚕ gpt-5.5 │ 65.4K/272K │ [██░░░░░░░░] 24% │ 2m │ ⏱ 1m 19s\n\
+         ⚕ ❯ /bg · /steer\n\
+         ────────────────────────────────────────\n",
+    );
+
+    assert_eq!(hermes.status.kind, StatusKind::Unknown);
+    assert_eq!(hermes.status.source, super::StatusSource::NotChecked);
 }
 
 #[test]
@@ -4161,6 +4373,36 @@ fn gemini_pane_output_marks_action_required_busy() {
 
     assert_eq!(gemini.status.kind, StatusKind::Busy);
     assert_eq!(gemini.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn gemini_pane_output_ignores_chromeless_action_required_prose() {
+    let mut gemini = pane_output_status_pane(784, Provider::Gemini, "Gemini CLI");
+
+    classify::apply_pane_output_status_fallback(
+        &mut gemini,
+        ">   Type your message or @path/to/file\n\
+         Workspace   Sandbox    Model\n\
+         The phrase Action Required can appear in generated documentation.\n",
+    );
+
+    assert_eq!(gemini.status.kind, StatusKind::Idle);
+    assert_eq!(gemini.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn gemini_pane_output_withholds_status_from_chromeless_busy_marker() {
+    let mut gemini = pane_output_status_pane(785, Provider::Gemini, "Gemini CLI");
+
+    classify::apply_pane_output_status_fallback(
+        &mut gemini,
+        "Generated copy follows.\n\
+         Apply this change? is an example confirmation message.\n\
+         No modal is currently displayed.\n",
+    );
+
+    assert_eq!(gemini.status.kind, StatusKind::Unknown);
+    assert_eq!(gemini.status.source, super::StatusSource::NotChecked);
 }
 
 #[test]
@@ -4365,11 +4607,44 @@ fn pi_pane_output_marks_current_retry_loader_busy() {
 
     classify::apply_pane_output_status_fallback(
         &mut pi,
-        "Retrying (2/3) in 4s... (ctrl+c to cancel)\n",
+        // Busy paths require the same live `%/` footer anchor as idle paths.
+        "Retrying (2/3) in 4s... (ctrl+c to cancel)\n\
+         0.0%/200k                                      claude-sonnet\n",
     );
 
     assert_eq!(pi.status.kind, StatusKind::Busy);
     assert_eq!(pi.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn pi_pane_output_does_not_treat_working_prose_after_footer_as_busy() {
+    let mut pi = pane_output_status_pane(793, Provider::Pi, "π - agentscan");
+
+    classify::apply_pane_output_status_fallback(
+        &mut pi,
+        "────────────────────────────────\n\
+         \n\
+         ────────────────────────────────\n\
+         ~/code/app\n\
+         0.0%/200k                                      claude-sonnet\n\
+         The Working... label is described in this documentation.\n",
+    );
+
+    assert_eq!(pi.status.kind, StatusKind::Unknown);
+    assert_eq!(pi.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn pi_pane_output_unanchored_working_loader_stays_unknown() {
+    let mut pi = pane_output_status_pane(794, Provider::Pi, "π - agentscan");
+
+    classify::apply_pane_output_status_fallback(
+        &mut pi,
+        "⠋ Working... (ctrl+c to interrupt)\n",
+    );
+
+    assert_eq!(pi.status.kind, StatusKind::Unknown);
+    assert_eq!(pi.status.source, super::StatusSource::NotChecked);
 }
 
 #[test]
@@ -4628,7 +4903,9 @@ fn opencode_pane_output_marks_new_build_splash_idle() {
 }
 
 #[test]
-fn opencode_pane_output_marks_wrapped_tip_splash_idle() {
+fn opencode_pane_output_leaves_literal_wrapped_tip_splash_unknown() {
+    // The old v1.15.11 sentence-specific exception over-classified aligned output as chrome.
+    // Wrapped tips now deliberately degrade to unknown instead of matching prose.
     let mut opencode = pane_output_status_pane(813, Provider::Opencode, "OpenCode");
 
     classify::apply_pane_output_status_fallback(
@@ -4650,8 +4927,33 @@ fn opencode_pane_output_marks_wrapped_tip_splash_idle() {
         ),
     );
 
-    assert_eq!(opencode.status.kind, StatusKind::Idle);
-    assert_eq!(opencode.status.source, super::StatusSource::PaneOutput);
+    assert_eq!(opencode.status.kind, StatusKind::Unknown);
+    assert_eq!(opencode.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn opencode_pane_output_leaves_reworded_wrapped_tip_unknown() {
+    let mut opencode = pane_output_status_pane(818, Provider::Opencode, "OpenCode");
+
+    classify::apply_pane_output_status_fallback(
+        &mut opencode,
+        concat!(
+            "┃\n",
+            "┃  Ask anything... \"Review this project\"\n",
+            "┃\n",
+            "┃  Build · Kimi K2.6 OpenCode Go\n",
+            "╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n",
+            "tab agents  ctrl+p commands\n",
+            "\n",
+            "● Tip Pin important sessions from the list so they remain at the\n",
+            "      top after restarting\n",
+            "\n",
+            "~/code/agentscan:main                                  1.16.0\n",
+        ),
+    );
+
+    assert_eq!(opencode.status.kind, StatusKind::Unknown);
+    assert_eq!(opencode.status.source, super::StatusSource::NotChecked);
 }
 
 #[test]

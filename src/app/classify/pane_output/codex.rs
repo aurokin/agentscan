@@ -1,7 +1,5 @@
 use super::{PaneOutputFrame, StatusKind};
 
-// Codex idle input prompt placeholder.
-const IDLE_PROMPT_MARKER: &str = "Ask Codex to do anything";
 // Codex busy status footer shown while a turn is running (`(… esc to interrupt)`).
 const INTERRUPT_HINT: &str = "esc to interrupt)";
 // Codex approval prompt copy shown when awaiting user confirmation.
@@ -48,7 +46,9 @@ pub(super) fn status(output: &str) -> Option<StatusKind> {
 
 fn codex_idle_prompt_line(line: &str) -> bool {
     let line = line.trim_start();
-    line.starts_with('›') && line.contains(IDLE_PROMPT_MARKER)
+    // `Ask Codex to do anything` is the observed corroborating placeholder, but the durable
+    // prompt primitive is the leading chevron. Currency is established by the footer-only tail.
+    line.starts_with('›')
 }
 
 fn codex_current_busy_marker_line(line: &str) -> bool {
@@ -81,7 +81,12 @@ fn codex_status_gap_line(line: &str) -> bool {
 }
 
 fn codex_prompt_is_near_current_footer(frame: &PaneOutputFrame<'_>, prompt_index: usize) -> bool {
-    frame.tail_contains(prompt_index, 6, codex_footer_line)
+    let has_footer = frame.tail_contains(prompt_index, 6, codex_footer_line);
+    has_footer
+        && frame.trailing_lines_after_are(prompt_index, |_, line, _| {
+            let line = line.trim();
+            line.is_empty() || codex_footer_line(line)
+        })
 }
 
 fn codex_footer_line(line: &str) -> bool {

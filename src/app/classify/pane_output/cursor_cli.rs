@@ -18,11 +18,14 @@ pub(super) fn status(output: &str) -> Option<StatusKind> {
         return cursor_cli_borderless_prompt_status(&frame);
     };
 
-    let current_footer = frame
+    let prompt_index = frame
         .lines_from(footer_top_index)?
         .iter()
-        .map(|line| line.trim())
-        .find(|line| line.starts_with('→'));
+        .position(|line| line.trim().starts_with('→'))
+        .map(|index| footer_top_index + index);
+    let current_footer = prompt_index
+        .and_then(|index| frame.line(index))
+        .map(str::trim);
 
     if current_footer.is_some_and(|line| line.contains(STOP_HINT))
         || cursor_cli_current_status_line(&frame, footer_top_index)
@@ -31,48 +34,47 @@ pub(super) fn status(output: &str) -> Option<StatusKind> {
         return Some(StatusKind::Busy);
     }
 
-    current_footer
-        .is_some_and(cursor_cli_footer_indicates_idle)
-        .then_some(StatusKind::Idle)
+    let prompt_index = prompt_index?;
+    (cursor_cli_prompt_has_current_chrome(&frame, prompt_index, true, false)
+        || current_footer.is_some_and(cursor_cli_footer_indicates_idle))
+    .then_some(StatusKind::Idle)
 }
 
 fn cursor_cli_borderless_prompt_status(frame: &PaneOutputFrame<'_>) -> Option<StatusKind> {
     let prompt_index = frame.rposition(cursor_cli_borderless_prompt_line)?;
     let prompt = frame.line(prompt_index)?.trim();
     if cursor_cli_borderless_prompt_indicates_busy(prompt) {
-        return cursor_cli_borderless_prompt_has_current_chrome(frame, prompt_index, true)
+        return cursor_cli_prompt_has_current_chrome(frame, prompt_index, false, true)
             .then_some(StatusKind::Busy);
     }
-    // `cursor_cli_footer_indicates_idle` strips the leading arrow, so the same predicate
-    // covers bordered footer rows and borderless prompt rows.
-    if !cursor_cli_footer_indicates_idle(prompt) {
-        return None;
-    }
 
-    cursor_cli_borderless_prompt_has_current_chrome(frame, prompt_index, false)
+    cursor_cli_prompt_has_current_chrome(frame, prompt_index, false, false)
         .then_some(StatusKind::Idle)
 }
 
-fn cursor_cli_borderless_prompt_has_current_chrome(
+fn cursor_cli_prompt_has_current_chrome(
     frame: &PaneOutputFrame<'_>,
     prompt_index: usize,
+    allow_footer_border: bool,
     allow_task_count: bool,
 ) -> bool {
     let Some(lines_after) = frame.lines_from(prompt_index) else {
         return false;
     };
-    let has_composer_footer = lines_after
-        .iter()
-        .any(|line| cursor_cli_composer_footer_line(line.trim()));
+    let has_cursor_footer = lines_after.iter().any(|line| {
+        let line = line.trim();
+        cursor_cli_composer_footer_line(line) || cursor_cli_path_footer_line(line)
+    });
     let only_cursor_chrome_after = frame.trailing_lines_after_are(prompt_index, |_, line, _| {
         let line = line.trim();
         line.is_empty()
             || cursor_cli_composer_footer_line(line)
             || cursor_cli_path_footer_line(line)
+            || (allow_footer_border && cursor_cli_footer_bottom_border(line))
             || (allow_task_count && cursor_cli_task_count_line(line))
     });
 
-    has_composer_footer && only_cursor_chrome_after
+    has_cursor_footer && only_cursor_chrome_after
 }
 
 fn cursor_cli_current_status_line<'a>(
@@ -132,4 +134,8 @@ fn cursor_cli_task_count_line(line: &str) -> bool {
 
 fn cursor_cli_footer_top_border(line: &str) -> bool {
     line.trim_start().starts_with("▄▄▄▄▄▄")
+}
+
+fn cursor_cli_footer_bottom_border(line: &str) -> bool {
+    line.trim_start().starts_with("▀▀▀▀▀▀")
 }

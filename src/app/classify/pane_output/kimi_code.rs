@@ -2,8 +2,9 @@ use super::{PaneOutputFrame, StatusKind};
 
 // kimi renders a bordered input box (`│ > … │`) at the current prompt in every state.
 const INPUT_BOX_MARKER: &str = "│ >";
-// While a turn runs, a moon-phase spinner line (`<moon> · <tip>`) is rendered directly
-// above the input box; it is absent once the turn completes.
+// While a turn runs, a spinner line (`<glyph> · <tip>`) is rendered directly above the
+// input box. Observed moon-phase glyphs are confident busy signals; other non-ASCII
+// spinner-shaped glyphs are guarded as ambiguous so a restyle cannot invert busy to idle.
 const MOON_SPINNER_START: char = '\u{1f311}'; // 🌑
 const MOON_SPINNER_END: char = '\u{1f318}'; // 🌘
 // Lines to inspect above the current input box: top border, blank spacer, and the
@@ -35,10 +36,13 @@ pub(super) fn status(output: &str) -> Option<StatusKind> {
         return Some(StatusKind::Busy);
     }
 
-    // A moon-glyph line without the observed ` · ` separator is ambiguous: echoed
-    // output, or a future release restyling the tip separator. Withhold status rather
-    // than letting a decorative-string mismatch silently flip busy to idle.
-    if current_prompt_lines.iter().any(|line| kimi_moon_line(line)) {
+    // A bare moon glyph or an unrecognized non-ASCII `<glyph> · <tip>` line is
+    // ambiguous: echoed output, or a future spinner restyle. Withhold status rather
+    // than letting a decorative-string or glyph-range mismatch flip busy to idle.
+    if current_prompt_lines
+        .iter()
+        .any(|line| kimi_moon_line(line) || kimi_unknown_spinner_shaped_line(line))
+    {
         return None;
     }
 
@@ -74,4 +78,14 @@ fn kimi_moon_line(line: &str) -> bool {
         .chars()
         .next()
         .is_some_and(|ch| (MOON_SPINNER_START..=MOON_SPINNER_END).contains(&ch))
+}
+
+fn kimi_unknown_spinner_shaped_line(line: &str) -> bool {
+    let line = line.trim_start();
+    let mut chars = line.chars();
+    chars.next().is_some_and(|ch| {
+        !ch.is_ascii()
+            && !('\u{2500}'..='\u{257f}').contains(&ch)
+            && !('\u{2580}'..='\u{259f}').contains(&ch)
+    }) && chars.as_str().starts_with(" · ")
 }

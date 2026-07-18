@@ -17,7 +17,7 @@ const AUTH_NAVIGATE_HINT: &str = "to navigate";
 pub(super) fn status(output: &str) -> Option<StatusKind> {
     let frame = PaneOutputFrame::new(output);
     let idle_index = frame.rposition(gemini_idle_input_prompt_line);
-    let busy_index = frame.rposition(gemini_current_busy_marker_line);
+    let busy_index = gemini_current_busy_marker_index(&frame);
 
     // A dismissed approval modal stays visible higher on the screen after the
     // turn moves on, so a busy marker only counts when it is anchored to the
@@ -45,12 +45,60 @@ fn gemini_idle_input_prompt_line(line: &str) -> bool {
     line.starts_with('>') && line.contains(IDLE_PROMPT_MARKER)
 }
 
+fn gemini_current_busy_marker_index(frame: &PaneOutputFrame<'_>) -> Option<usize> {
+    let mut marker_index = frame.rposition(gemini_current_busy_marker_line);
+    while let Some(index) = marker_index {
+        let line = frame.line(index)?;
+        if gemini_running_agent_marker_line(line)
+            || gemini_approval_marker_has_current_chrome(frame, index)
+        {
+            return Some(index);
+        }
+        marker_index = frame.rposition_before(index, gemini_current_busy_marker_line);
+    }
+    None
+}
+
 fn gemini_current_busy_marker_line(line: &str) -> bool {
     let line = line.trim();
     line.contains(ACTION_REQUIRED_MARKER)
         || line.contains(APPLY_CHANGE_MARKER)
         || line.contains(ALLOW_EXECUTION_MARKER)
-        || (line.contains(RUNNING_AGENT_MARKER) && line.contains(COLLAPSE_HINT))
+        || gemini_running_agent_marker_line(line)
+}
+
+fn gemini_running_agent_marker_line(line: &str) -> bool {
+    line.contains(RUNNING_AGENT_MARKER) && line.contains(COLLAPSE_HINT)
+}
+
+fn gemini_approval_marker_has_current_chrome(
+    frame: &PaneOutputFrame<'_>,
+    marker_index: usize,
+) -> bool {
+    let chrome_start = marker_index.saturating_sub(3);
+    let chrome_len = marker_index - chrome_start + 4;
+    let has_nearby_box = frame.lines_from(chrome_start).is_some_and(|lines| {
+        lines
+            .iter()
+            .take(chrome_len)
+            .any(|line| gemini_modal_box_line(line))
+    });
+    let glyph_start = marker_index.saturating_sub(1);
+    let glyph_len = marker_index - glyph_start + 2;
+    let has_adjacent_status_glyph = frame.lines_from(glyph_start).is_some_and(|lines| {
+        lines
+            .iter()
+            .take(glyph_len)
+            .any(|line| line.contains('✋') || line.contains('⏲'))
+    });
+
+    has_nearby_box || has_adjacent_status_glyph
+}
+
+fn gemini_modal_box_line(line: &str) -> bool {
+    let line = line.trim();
+    (line.starts_with('│') && line.ends_with('│'))
+        || ((line.starts_with('╭') || line.starts_with('╰')) && line.chars().any(|ch| ch == '─'))
 }
 
 fn gemini_current_auth_prompt_index(frame: &PaneOutputFrame<'_>) -> Option<usize> {

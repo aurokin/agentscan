@@ -101,9 +101,9 @@ fn hermes_idle_prompt_line(line: &str) -> bool {
 fn hermes_busy_prompt_line(line: &str) -> bool {
     let line = line.trim();
     line.starts_with("⚕ ❯")
-        && line.contains(INTERRUPT_MARKER)
-        && line.contains(QUEUE_MARKER)
-        && line.contains(CANCEL_HINT)
+        && [INTERRUPT_MARKER, QUEUE_MARKER, CANCEL_HINT]
+            .iter()
+            .any(|marker| line.contains(marker))
 }
 
 fn hermes_current_turn_busy_line(line: &str) -> bool {

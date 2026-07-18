@@ -22,11 +22,10 @@ pub(super) fn status(output: &str) -> Option<StatusKind> {
         // directly above the box and so won't trip it.
         let busy = grok_active_turn_footer_after(&frame, border)
             || grok_running_spinner_above_box(&frame, border);
-        return Some(if busy {
-            StatusKind::Busy
-        } else {
-            StatusKind::Idle
-        });
+        if busy {
+            return Some(StatusKind::Busy);
+        }
+        return grok_idle_footer_after(&frame, border).then_some(StatusKind::Idle);
     }
 
     // No current input box (a transient mid-stream frame): a running spinner as the current
@@ -79,8 +78,12 @@ fn grok_footer_line(line: &str) -> bool {
 }
 
 fn grok_keybind_footer_line(line: &str) -> bool {
+    grok_footer_tokens(line).any(grok_keybind_token)
+}
+
+fn grok_footer_tokens(line: &str) -> impl Iterator<Item = &str> {
     line.split(|ch: char| ch.is_whitespace() || ch == '│')
-        .any(grok_keybind_token)
+        .filter(|token| !token.is_empty())
 }
 
 /// A grok keybind hint token such as `Shift+Tab:mode`, `Ctrl+.:shortcuts`, or `Ctrl+c:cancel` —
@@ -103,6 +106,34 @@ fn grok_active_turn_footer_after(frame: &PaneOutputFrame<'_>, border: usize) -> 
         grok_keybind_footer_line(line)
             && (line.contains(CANCEL_ACTION) || line.contains(INTERJECT_ACTION))
     })
+}
+
+/// An idle conclusion needs positive footer evidence rather than the absence of known busy
+/// words. Every rendered row below the box must be known chrome, and keybind rows are idle-only
+/// only when every shaped keybind names an observed idle action (`mode` or `shortcuts`).
+fn grok_idle_footer_after(frame: &PaneOutputFrame<'_>, border: usize) -> bool {
+    let mut saw_footer = false;
+    let only_idle_footer = frame.trailing_lines_after_are(border, |_, line, _| {
+        let line = line.trim();
+        if line.is_empty() {
+            return true;
+        }
+        saw_footer = true;
+        grok_idle_footer_line(line)
+    });
+    saw_footer && only_idle_footer
+}
+
+fn grok_idle_footer_line(line: &str) -> bool {
+    if grok_keybind_footer_line(line) {
+        return grok_footer_tokens(line).all(|token| {
+            let Some((_, action)) = token.split_once(':') else {
+                return false;
+            };
+            grok_keybind_token(token) && matches!(action, "mode" | "shortcuts")
+        });
+    }
+    grok_version_footer_line(line) || grok_release_channel_footer_line(line)
 }
 
 /// True when a live run spinner sits directly above the current input box — only blank rows
@@ -163,7 +194,9 @@ fn grok_bracketed_release_channel_word(token: &str) -> bool {
 }
 
 // True when the bottom-most rendered line is a running spinner: a braille spinner glyph with
-// grok's in-flight run marker (`[✗]`).
+// grok's bracketed single-glyph run marker. The observed `[✗]` spelling corroborates this
+// shape, but the durable anchor is a non-ASCII-alphanumeric glyph in brackets; rejecting ASCII
+// letters and digits avoids treating prose annotations such as `[a]` as run markers.
 fn grok_current_running_spinner(frame: &PaneOutputFrame<'_>) -> bool {
     frame.last_nonblank().is_some_and(grok_running_status_line)
 }
@@ -173,5 +206,16 @@ fn grok_running_status_line(line: &str) -> bool {
     line.chars()
         .next()
         .is_some_and(|ch| ('\u{2800}'..='\u{28ff}').contains(&ch))
-        && line.contains("[✗]")
+        && line.char_indices().any(|(index, ch)| {
+            if ch != '[' {
+                return false;
+            }
+            let mut marker = line[index + ch.len_utf8()..].chars();
+            marker.next().is_some_and(|glyph| {
+                !glyph.is_ascii_alphanumeric()
+                    && !glyph.is_whitespace()
+                    && !matches!(glyph, '[' | ']')
+                    && marker.next() == Some(']')
+            })
+        })
 }
