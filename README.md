@@ -13,10 +13,10 @@ integration to install.
 
 ```console
 $ agentscan
-👾 api:1.0 - fix flaky auth tests
-💭 api:2.1 - codex
-✨ dotfiles:1.0 - gemini
-👾 blog:3.0 - draft release notes
+👾 [busy] api:1.0 - fix flaky auth tests
+💭 [waiting] api:2.1 - codex
+✨ [idle] dotfiles:1.0 - gemini
+👾 [busy] blog:3.0 - draft release notes
 ```
 
 <!-- TODO: replace the sample above with a real GIF of `agentscan tui` recorded
