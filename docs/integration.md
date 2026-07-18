@@ -257,6 +257,11 @@ failure surfaces, and remote smoke plan live in
 
 ## Wrapper Metadata Contract
 
+The canonical emitter specification — transport rules, the full field table,
+state semantics, the `@agent.pid` trust rule, precedence, and copy-pasteable
+emitter recipes — lives in `docs/metadata-contract.md`. This section is a
+summary for wrapper authors working inside this repo.
+
 Launch wrappers may publish explicit pane-local tmux user options:
 
 - `@agent.provider`
@@ -264,6 +269,9 @@ Launch wrappers may publish explicit pane-local tmux user options:
 - `@agent.cwd`
 - `@agent.state`
 - `@agent.session_id`
+- `@agent.pid`
+- `@agent.v`
+- `@agent.model`
 
 Field semantics:
 
@@ -281,13 +289,22 @@ Field semantics:
 - `cwd`: task root or meaningful working directory for the agent workflow. This
   may differ from tmux `pane_current_path` when the wrapper launches from a
   bootstrap directory and then attaches an agent to another project root.
-- `state`: optional explicit state. Valid values are `busy`, `idle`, and
-  `unknown`. Publish `busy` or `idle` only from direct provider state or a
-  wrapper-controlled lifecycle event; otherwise omit the field or publish
-  `unknown`.
+- `state`: optional explicit state. Valid values are `busy`, `idle`,
+  `waiting`, and `unknown`. `waiting` means the agent is blocked on human
+  input (approval prompt, question). Publish `busy`, `idle`, or `waiting` only
+  from direct provider state or a wrapper-controlled lifecycle event;
+  otherwise omit the field or publish `unknown`.
 - `session_id`: provider-specific resume, chat, or conversation identifier when
   one exists and is useful for later wrapper behavior. It is not a tmux session
   id.
+- `pid`: the publishing agent process id, used as a staleness guard. When
+  present, the whole `@agent.*` block is trusted only while that pid is a live
+  member of the pane's process tree; a stale pid means the entire block is
+  ignored. See `docs/metadata-contract.md`.
+- `v`: integer emitter contract version; publish `1`. Absence means the v0
+  behavior described here.
+- `model`: model slug enrichment (e.g. `claude-opus-4-1`), carried into the
+  JSON snapshot.
 
 Wrappers can publish metadata with:
 
@@ -310,7 +327,9 @@ ignored by the helper rather than written as meaningful metadata.
 - Update only fields the wrapper actually knows.
 - Do not invent activity state without strong evidence.
 - Missing metadata must not block discovery.
-- Explicit metadata overrides heuristic title parsing when present.
+- Trusted explicit metadata overrides heuristic inference when present — for
+  provider identity and for status. A trusted published state also suppresses
+  the pane-output capture fallback for that pane.
 - Cursor CLI wrappers should prefer explicit labels and session ids over hoping tmux titles stay rich.
 - Provider hooks and extensions are deep-roadmap enrichment only. They may
   eventually improve labels, session ids, or activity state, but baseline
@@ -335,6 +354,8 @@ State publication should be conservative:
   working.
 - Use `idle` when the wrapper has direct evidence that the agent is ready for
   input or otherwise quiescent.
+- Use `waiting` when the wrapper has direct evidence that the agent is blocked
+  on human input, such as a permission or approval prompt.
 - Use `unknown` when the wrapper knows the pane is agent-owned but cannot
   honestly report activity.
 - Omit `state` when the wrapper has no state signal at all.

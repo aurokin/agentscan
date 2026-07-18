@@ -169,6 +169,19 @@ macOS desktop badges each open source's folder header (and the bar's source
 trigger) with that source's own count, naming the host, rather than showing one
 global banner that cannot say which server it describes.
 
+### Waiting status (schema 7+)
+
+Schema 7 adds `"waiting"` to the pane status vocabulary (`status.kind`, picker
+row `status.kind`): the agent is blocked on human input, such as a permission
+or approval prompt. Clients should render it distinctly from `busy` — it is
+the "needs you" state. Status kinds are an open string set on the client side:
+treat any unrecognized kind as `unknown` (neutral dot, no crash) so newer
+backends never break older clients. Schema 7 also passes through optional
+`agent_metadata.pid`, `agent_metadata.v`, and `agent_metadata.model` when a
+wrapper publishes them (`docs/metadata-contract.md`); clients may display
+`model` where a natural slot exists and should otherwise ignore unknown
+metadata fields.
+
 ### Focus recency (schema 6+)
 
 Each snapshot pane and picker row may carry `last_focus_seq`: an ordinal
@@ -260,7 +273,7 @@ ssh workbox agentscan daemon status --format json
 If that succeeds and reports non-null `protocol_version` and
 `snapshot_schema_version` values, validate exact compatibility before starting
 the long-lived subscription process. The current compatible values are
-`protocol_version=2` and `snapshot_schema_version=6`.
+`protocol_version=2` and `snapshot_schema_version=7`.
 
 If the daemon is not running, this command reports the normal not-running JSON
 shape without a live daemon protocol/schema to validate. Normal remote

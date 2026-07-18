@@ -191,6 +191,11 @@ Implications:
   `#{window_active}` so focus changes trigger a re-snapshot. The backend reports
   tmux's raw layered state; collapsing multiple attached sessions to one global
   active pane is a client concern, not a backend one.
+- schema 7 added the `waiting` status kind (agent blocked on human input) and
+  the `agent_metadata` `pid`/`v`/`model` passthrough. `waiting` is emitted only
+  from published `@agent.state=waiting` metadata or provider-scoped pane-output
+  waiting markers that were previously folded into busy; title heuristics never
+  emit it, and marker absence degrades to busy, never to idle.
 - focus actions from `agentscan focus`, `agentscan hotkey`, and the terminal TUI
   also emit a best-effort daemon client event after tmux confirms the switch. The
   daemon still re-reads tmux as the source of truth, but the client event forces
@@ -210,6 +215,16 @@ The default detection path is:
 Implications:
 
 - prefer tmux metadata and control-mode events over process scans
+- trusted explicit metadata is authoritative for status as well as identity:
+  a trusted published `@agent.state` beats title heuristics and suppresses the
+  pane-output capture fallback for that pane. A published literal `unknown`
+  falls through to inference. Inference remains the permanent zero-config
+  baseline (plug-and-play is an invariant; metadata is never a prerequisite).
+- when `@agent.pid` is published, the entire `@agent.*` block is trusted
+  all-or-nothing: the pid must be a live member of the pane's process tree, or
+  the whole block is ignored and the pane falls back to inference. Pid-less
+  blocks keep the earlier v0 trust behavior. The emitter contract is
+  `docs/metadata-contract.md`.
 - keep labels conservative when evidence is weak
 - treat pane inspection as fallback rather than the normal path
 - pane output is not a provider-identity signal. When used, it must be
