@@ -13,8 +13,12 @@ const STOP_HINT: &str = "Press ESC to stop";
 
 pub(super) fn status(output: &str) -> Option<StatusKind> {
     let frame = PaneOutputFrame::new(output);
-    let footer_index = frame.rposition(droid_current_footer_line)?;
-    let current_prompt_lines = frame.window_ending_at(footer_index, 8)?;
+    let footer_index = frame.rposition(droid_current_footer_line);
+    let input_box_index = frame
+        .rposition(droid_input_box_row)
+        .filter(|&index| frame.is_within_tail(index, 8));
+    let current_frame_index = footer_index.max(input_box_index)?;
+    let current_prompt_lines = frame.window_ending_at(current_frame_index, 8)?;
 
     if current_prompt_lines
         .iter()
@@ -34,6 +38,10 @@ pub(super) fn status(output: &str) -> Option<StatusKind> {
         .iter()
         .any(|line| droid_current_streaming_line(line))
         .then_some(StatusKind::Busy)
+}
+
+fn droid_input_box_row(line: &str) -> bool {
+    line.trim_start().starts_with("│ >")
 }
 
 fn droid_current_footer_line(line: &str) -> bool {
@@ -66,5 +74,5 @@ fn droid_current_streaming_line(line: &str) -> bool {
 
 fn droid_current_idle_prompt_line(line: &str) -> bool {
     let line = line.trim();
-    line.starts_with("│ >") && !line.contains(STEER_HINT)
+    droid_input_box_row(line) && !line.contains(STEER_HINT)
 }

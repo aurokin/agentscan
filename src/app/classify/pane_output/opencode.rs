@@ -1,11 +1,5 @@
 use super::{PaneOutputFrame, StatusKind, is_version_like_command};
 
-const OPENCODE_TIP_TEXT_INDENT: usize = 6;
-const OPENCODE_MIN_BLANK_LINES_AFTER_PIN_TIP_WRAP: usize = 3;
-const OPENCODE_PIN_SESSION_TIP_PREFIX: &str =
-    "● Tip Press ctrl+f in the session list to pin a session so it stays at the";
-const OPENCODE_PIN_SESSION_TIP_CONTINUATION: &str = "top";
-
 // opencode idle input placeholders (older placeholder-row build).
 const OPENCODE_ASK_PLACEHOLDER: &str = "Ask anything... \"";
 const OPENCODE_COMMAND_PLACEHOLDER: &str = "Run a command... \"";
@@ -164,101 +158,17 @@ fn opencode_trailing_chrome_after(
     index: usize,
     allow_command_bar: bool,
 ) -> bool {
-    let mut tip_notice = None;
-    let only_chrome = frame.trailing_lines_after_are(index, |_, line, is_last| {
-        opencode_trailing_chrome_line(line, is_last, allow_command_bar, &mut tip_notice)
-    });
-    // Trailing blank rows are trimmed before provider classifiers run, and the observed
-    // OpenCode Go splash pins a status bar below the wrapped tip. If the captured tail ends
-    // at the continuation itself, keep the pane unknown rather than treating a final `top`
-    // output line as current footer chrome.
-    only_chrome
-        && !matches!(
-            tip_notice,
-            Some(OpencodeTipNotice {
-                saw_observed_continuation: true,
-                ..
-            })
-        )
+    frame.trailing_lines_after_are(index, |_, line, is_last| {
+        opencode_trailing_chrome_line(line, is_last, allow_command_bar)
+    })
 }
 
-struct OpencodeTipNotice {
-    continuation_column: usize,
-    allow_observed_top_continuation: bool,
-    saw_observed_continuation: bool,
-    blank_lines_after_observed_continuation: usize,
-}
-
-fn opencode_trailing_chrome_line(
-    line: &str,
-    is_last: bool,
-    allow_command_bar: bool,
-    tip_notice: &mut Option<OpencodeTipNotice>,
-) -> bool {
-    let raw_line = line;
-    let trimmed = raw_line.trim();
-    if trimmed.is_empty() {
-        if let Some(notice) = tip_notice.as_mut()
-            && notice.saw_observed_continuation
-        {
-            notice.blank_lines_after_observed_continuation += 1;
-            return true;
-        }
-        *tip_notice = None;
-        return true;
-    }
-
-    if let Some((marker_column, allow_observed_top_continuation)) = opencode_tip_notice(raw_line) {
-        *tip_notice = Some(OpencodeTipNotice {
-            continuation_column: marker_column + OPENCODE_TIP_TEXT_INDENT,
-            allow_observed_top_continuation,
-            saw_observed_continuation: false,
-            blank_lines_after_observed_continuation: 0,
-        });
-        return true;
-    }
-
-    if let Some(notice) = tip_notice.as_mut() {
-        if notice.saw_observed_continuation {
-            if notice.blank_lines_after_observed_continuation
-                < OPENCODE_MIN_BLANK_LINES_AFTER_PIN_TIP_WRAP
-            {
-                return false;
-            }
-            *tip_notice = None;
-        } else if notice.allow_observed_top_continuation
-            && opencode_tip_continuation_line(raw_line, notice.continuation_column)
-        {
-            notice.saw_observed_continuation = true;
-            return true;
-        } else {
-            *tip_notice = None;
-        }
-    }
-
-    (allow_command_bar && opencode_command_bar_footer_line(trimmed))
+fn opencode_trailing_chrome_line(line: &str, is_last: bool, allow_command_bar: bool) -> bool {
+    let trimmed = line.trim();
+    trimmed.is_empty()
+        || trimmed.starts_with(OPENCODE_TIP_MARKER)
+        || (allow_command_bar && opencode_command_bar_footer_line(trimmed))
         || (is_last && opencode_bottom_status_bar_line(trimmed))
-}
-
-fn opencode_tip_notice(line: &str) -> Option<(usize, bool)> {
-    let column = first_nonblank_column(line)?;
-    let trimmed = line.trim_start();
-    trimmed
-        .starts_with(OPENCODE_TIP_MARKER)
-        .then_some((column, trimmed == OPENCODE_PIN_SESSION_TIP_PREFIX))
-}
-
-fn opencode_tip_continuation_line(line: &str, continuation_column: usize) -> bool {
-    // Plain `capture-pane` text cannot distinguish arbitrary aligned output from wrapped
-    // tip prose. Keep support to the observed OpenCode 1.15.11 pin-session wrap; other
-    // wraps should stay unknown until there is stronger provider evidence.
-    first_nonblank_column(line).is_some_and(|column| column == continuation_column)
-        && line.trim() == OPENCODE_PIN_SESSION_TIP_CONTINUATION
-}
-
-fn first_nonblank_column(line: &str) -> Option<usize> {
-    let trimmed = line.trim_start();
-    (!trimmed.is_empty()).then(|| line.chars().take_while(|ch| ch.is_whitespace()).count())
 }
 
 fn opencode_command_bar_footer_line(line: &str) -> bool {

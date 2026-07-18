@@ -397,15 +397,36 @@ fn no_title_status(_: &TitleAnalysis<'_>) -> Option<StatusKind> {
 }
 
 fn claude_title_status(analysis: &TitleAnalysis<'_>) -> Option<StatusKind> {
+    let label_status = analysis.claude_label.and_then(|label| {
+        status_from_ready_working_prefix(label).or_else(|| status_from_codex_run_state_label(label))
+    });
+    if label_status == Some(StatusKind::Busy) {
+        return label_status;
+    }
     if analysis.has_spinner_glyph {
         return Some(StatusKind::Busy);
     }
     if analysis.has_idle_glyph {
+        if analysis
+            .claude_label
+            .is_some_and(claude_label_has_ambiguous_run_state_prefix)
+        {
+            return None;
+        }
         return Some(StatusKind::Idle);
     }
-    analysis
-        .claude_label
-        .and_then(status_from_ready_working_prefix)
+    label_status
+}
+
+fn claude_label_has_ambiguous_run_state_prefix(label: &str) -> bool {
+    ["Working", "Waiting", "Thinking", "Starting", "Undoing"]
+        .iter()
+        .any(|state| {
+            label
+                .trim()
+                .strip_prefix(state)
+                .is_some_and(|suffix| suffix.chars().next().is_some_and(char::is_whitespace))
+        })
 }
 
 fn codex_title_status(analysis: &TitleAnalysis<'_>) -> Option<StatusKind> {
@@ -918,6 +939,21 @@ mod tests {
 
     fn provider_hint(title: &str) -> Option<TitleProviderHint> {
         analyze_title(title).provider_hint
+    }
+
+    #[test]
+    fn claude_busy_label_wins_over_leading_idle_glyph() {
+        let analysis = analyze_title("✳ Claude Code | Working");
+        assert_eq!(
+            provider_title_status(Provider::Claude, &analysis),
+            Some(StatusKind::Busy)
+        );
+    }
+
+    #[test]
+    fn claude_ambiguous_busy_label_with_idle_glyph_stays_unknown() {
+        let analysis = analyze_title("✳ Claude Code | Working tree cleanup");
+        assert_eq!(provider_title_status(Provider::Claude, &analysis), None);
     }
 
     #[test]

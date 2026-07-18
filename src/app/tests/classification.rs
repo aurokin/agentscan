@@ -2497,6 +2497,39 @@ fn droid_pane_output_marks_current_tmux_footer_idle() {
 }
 
 #[test]
+fn droid_pane_output_uses_input_box_when_badge_is_renamed() {
+    // The input-box row is the durable frame anchor; the integration badge is mutable copy.
+    let mut droid = pane_output_status_pane(822, Provider::Droid, "⛬ New Session");
+
+    classify::apply_pane_output_status_fallback(
+        &mut droid,
+        "⠹ Thinking...  (Press ESC to stop)\n\
+         Auto (High) · allow all commands                         Droid Core (GLM-5.2) (High)\n\
+         ╭──────────────────────────────────────────────────────────────────────────────╮\n\
+         │ > Enter to steer                                                             │\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯\n\
+         [⏱ 9s] ? for help                                                        SHELL ◌\n",
+    );
+
+    assert_eq!(droid.status.kind, StatusKind::Busy);
+    assert_eq!(droid.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn droid_pane_output_without_badge_or_input_box_stays_unknown() {
+    let mut droid = pane_output_status_pane(823, Provider::Droid, "⛬ New Session");
+
+    classify::apply_pane_output_status_fallback(
+        &mut droid,
+        "The documentation says > Enter to steer while a request is active.\n\
+         [⏱ 9s] ? for help                                                        SHELL ◌\n",
+    );
+
+    assert_eq!(droid.status.kind, StatusKind::Unknown);
+    assert_eq!(droid.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
 fn droid_pane_output_marks_update_ready_tmux_footer_idle() {
     // Observed from Droid v0.156.2: the current prompt is followed by an update-ready footer
     // rather than the older `? for help` footer. The prompt box still anchors the live frame.
@@ -4118,6 +4151,36 @@ fn hermes_pane_output_marks_current_prompt_idle() {
 }
 
 #[test]
+fn hermes_pane_output_accepts_one_busy_hint_in_provider_frame() {
+    let mut hermes = pane_output_status_pane(773, Provider::Hermes, "agentscan: hermes");
+
+    classify::apply_pane_output_status_fallback(
+        &mut hermes,
+        "⚕ gpt-5.5 │ 65.4K/272K │ [██░░░░░░░░] 24% │ 2m │ ⏱ 1m 19s\n\
+         ⚕ ❯ /queue\n\
+         ────────────────────────────────────────\n",
+    );
+
+    assert_eq!(hermes.status.kind, StatusKind::Busy);
+    assert_eq!(hermes.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn hermes_pane_output_with_glyph_frame_but_no_busy_hint_stays_unknown() {
+    let mut hermes = pane_output_status_pane(774, Provider::Hermes, "agentscan: hermes");
+
+    classify::apply_pane_output_status_fallback(
+        &mut hermes,
+        "⚕ gpt-5.5 │ 65.4K/272K │ [██░░░░░░░░] 24% │ 2m │ ⏱ 1m 19s\n\
+         ⚕ ❯ /bg · /steer\n\
+         ────────────────────────────────────────\n",
+    );
+
+    assert_eq!(hermes.status.kind, StatusKind::Unknown);
+    assert_eq!(hermes.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
 fn hermes_pane_output_marks_idle_with_unsubmitted_draft_prompt() {
     // The user has typed a message but not submitted it: the agent is not running a turn, so the
     // honest label is idle even though the prompt is no longer a bare `❯`. The busy prompt is
@@ -4544,11 +4607,44 @@ fn pi_pane_output_marks_current_retry_loader_busy() {
 
     classify::apply_pane_output_status_fallback(
         &mut pi,
-        "Retrying (2/3) in 4s... (ctrl+c to cancel)\n",
+        // Busy paths require the same live `%/` footer anchor as idle paths.
+        "Retrying (2/3) in 4s... (ctrl+c to cancel)\n\
+         0.0%/200k                                      claude-sonnet\n",
     );
 
     assert_eq!(pi.status.kind, StatusKind::Busy);
     assert_eq!(pi.status.source, super::StatusSource::PaneOutput);
+}
+
+#[test]
+fn pi_pane_output_does_not_treat_working_prose_after_footer_as_busy() {
+    let mut pi = pane_output_status_pane(793, Provider::Pi, "π - agentscan");
+
+    classify::apply_pane_output_status_fallback(
+        &mut pi,
+        "────────────────────────────────\n\
+         \n\
+         ────────────────────────────────\n\
+         ~/code/app\n\
+         0.0%/200k                                      claude-sonnet\n\
+         The Working... label is described in this documentation.\n",
+    );
+
+    assert_eq!(pi.status.kind, StatusKind::Unknown);
+    assert_eq!(pi.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn pi_pane_output_unanchored_working_loader_stays_unknown() {
+    let mut pi = pane_output_status_pane(794, Provider::Pi, "π - agentscan");
+
+    classify::apply_pane_output_status_fallback(
+        &mut pi,
+        "⠋ Working... (ctrl+c to interrupt)\n",
+    );
+
+    assert_eq!(pi.status.kind, StatusKind::Unknown);
+    assert_eq!(pi.status.source, super::StatusSource::NotChecked);
 }
 
 #[test]
@@ -4807,7 +4903,9 @@ fn opencode_pane_output_marks_new_build_splash_idle() {
 }
 
 #[test]
-fn opencode_pane_output_marks_wrapped_tip_splash_idle() {
+fn opencode_pane_output_leaves_literal_wrapped_tip_splash_unknown() {
+    // The old v1.15.11 sentence-specific exception over-classified aligned output as chrome.
+    // Wrapped tips now deliberately degrade to unknown instead of matching prose.
     let mut opencode = pane_output_status_pane(813, Provider::Opencode, "OpenCode");
 
     classify::apply_pane_output_status_fallback(
@@ -4829,8 +4927,33 @@ fn opencode_pane_output_marks_wrapped_tip_splash_idle() {
         ),
     );
 
-    assert_eq!(opencode.status.kind, StatusKind::Idle);
-    assert_eq!(opencode.status.source, super::StatusSource::PaneOutput);
+    assert_eq!(opencode.status.kind, StatusKind::Unknown);
+    assert_eq!(opencode.status.source, super::StatusSource::NotChecked);
+}
+
+#[test]
+fn opencode_pane_output_leaves_reworded_wrapped_tip_unknown() {
+    let mut opencode = pane_output_status_pane(818, Provider::Opencode, "OpenCode");
+
+    classify::apply_pane_output_status_fallback(
+        &mut opencode,
+        concat!(
+            "┃\n",
+            "┃  Ask anything... \"Review this project\"\n",
+            "┃\n",
+            "┃  Build · Kimi K2.6 OpenCode Go\n",
+            "╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n",
+            "tab agents  ctrl+p commands\n",
+            "\n",
+            "● Tip Pin important sessions from the list so they remain at the\n",
+            "      top after restarting\n",
+            "\n",
+            "~/code/agentscan:main                                  1.16.0\n",
+        ),
+    );
+
+    assert_eq!(opencode.status.kind, StatusKind::Unknown);
+    assert_eq!(opencode.status.source, super::StatusSource::NotChecked);
 }
 
 #[test]

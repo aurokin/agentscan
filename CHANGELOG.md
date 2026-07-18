@@ -18,6 +18,9 @@
 
 ### Changed
 
+- Calibrated grok, Claude, Codex, Cursor, Gemini, Kimi, status-label, title,
+  Hermes, Droid, OpenCode, and pi matchers to degrade ambiguous frames to
+  unknown and prefer durable glyph, border, geometry, and footer anchors.
 - Snapshot schema version is now 7 to add the `waiting` status wire value;
   the versioned doctor report schema is now 2 so its status counts can expose
   `waiting` distinctly as well.
