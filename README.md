@@ -11,6 +11,10 @@ Rust binary gives you a CLI, an interactive TUI picker, and a macOS desktop
 dock, all driven by tmux metadata with no hooks, wrappers, or shell
 integration to install.
 
+<p align="center">
+  <img src="assets/agentscan-tui.gif" alt="agentscan tui showing live agent sessions with busy/idle status" width="720" />
+</p>
+
 ```console
 $ agentscan
 👾 [busy] api:1.0 - fix flaky auth tests
@@ -18,9 +22,6 @@ $ agentscan
 ✨ [idle] dotfiles:1.0 - gemini
 👾 [busy] blog:3.0 - draft release notes
 ```
-
-<!-- TODO: replace the sample above with a real GIF of `agentscan tui` recorded
-     from live agent sessions (assets/agentscan-tui.gif). -->
 
 `agentscan tui` opens the same list as an interactive picker with busy/idle
 status and single-key jump-to-pane; the desktop app puts it in a dock on your
