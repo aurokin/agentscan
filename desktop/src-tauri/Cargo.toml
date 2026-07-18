@@ -1,6 +1,6 @@
 [package]
 name = "agentscan-desktop"
-version = "0.10.0"
+version = "0.11.0"
 description = "Mac-first desktop shell for agentscan"
 authors = ["agentscan"]
 edition = "2024"

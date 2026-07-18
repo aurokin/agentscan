@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.11.0 - 2026-07-18
+
 ### Fixed
 
 - Kimi panes running long tool/task turns without the moon spinner (newer K3
