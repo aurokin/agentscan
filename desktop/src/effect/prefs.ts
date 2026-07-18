@@ -33,6 +33,8 @@ export type PrefsSync =
   // Frameless dock chrome toggle, mirrored so the settings window's switch drives the
   // dock's decorations (the dock owns the apply).
   | { kind: "frameless"; enabled: boolean }
+  // Agent-finished notification toggle, mirrored between dock and settings.
+  | { kind: "notifyOnIdle"; enabled: boolean }
   // Signal-only: the receiver re-reads persisted profiles. Carries no data so it
   // can never clobber an in-progress edit with a stale snapshot.
   | { kind: "profiles" }

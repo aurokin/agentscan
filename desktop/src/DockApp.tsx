@@ -23,6 +23,7 @@ import {
   configureSummonHotkeyAtom,
   liveStatesAtom,
   localHostLabelAtom,
+  notificationsAtom,
   preflightStateAtom,
   profilesAtom,
   pruneActivationAtom,
@@ -40,6 +41,13 @@ import { liveStateFor, type LiveStates } from "./effect/LiveConnection";
 import { pickerKeyIntent } from "./effect/keybinds";
 import type { PreflightState } from "./effect/Preflight";
 import { loadAppearance } from "./effect/appearanceModel";
+import {
+  detectStatusTransitions,
+  idleTransitions,
+  NOTIFY_ON_IDLE_STORAGE_KEY,
+  parseNotifyOnIdle,
+} from "./effect/notificationsModel";
+import { notifyAgentFinished } from "./effect/notify";
 import {
   commandPrefix,
   committedProfileValidation,
@@ -173,6 +181,25 @@ function DockApp() {
   // a target, so its supervisors stay idle.
   const liveResult = useAtomValue(liveStatesAtom);
   const liveStates = Result.getOrElse(liveResult, () => EMPTY_LIVE_STATES);
+  const initialNotifications = useMemo(
+    () => ({ notifyOnIdle: parseNotifyOnIdle(readLocalStorage(NOTIFY_ON_IDLE_STORAGE_KEY)) }),
+    [],
+  );
+  const { notifyOnIdle } = Result.getOrElse(
+    useAtomValue(notificationsAtom),
+    () => initialNotifications,
+  );
+  const previousLiveStatesRef = useRef<LiveStates>(EMPTY_LIVE_STATES);
+  useEffect(() => {
+    const transitions = detectStatusTransitions(previousLiveStatesRef.current, liveStates);
+    previousLiveStatesRef.current = liveStates;
+
+    if (notifyOnIdle) {
+      for (const transition of idleTransitions(transitions)) {
+        void notifyAgentFinished(transition.provider, transition.label);
+      }
+    }
+  }, [liveStates, notifyOnIdle]);
   const configureLive = useAtomSet(configureAtom);
   const startLive = useAtomSet(startAtom);
   const reconnectLive = useAtomSet(reconnectAtom);

@@ -14,6 +14,7 @@ import {
   debugLogAtom,
   deleteActiveProfileAtom,
   localHostLabelAtom,
+  notificationsAtom,
   profilesAtom,
   reloadAppearanceAtom,
   reloadProfilesAtom,
@@ -23,6 +24,7 @@ import {
   setFramelessAtom,
   setGlassEnabledAtom,
   setOrientationAtom,
+  setNotifyOnIdleAtom,
   setSurfaceAlphaAtom,
   setThemeAtom,
   syncedPreflightAtom,
@@ -36,6 +38,11 @@ import {
   SURFACE_ALPHA_MAX,
   SURFACE_ALPHA_MIN,
 } from "./effect/appearanceModel";
+import {
+  NOTIFY_ON_IDLE_STORAGE_KEY,
+  parseNotifyOnIdle,
+} from "./effect/notificationsModel";
+import { ensureNotificationPermission } from "./effect/notify";
 import {
   folderProfiles,
   getActiveProfile,
@@ -201,6 +208,22 @@ function SettingsApp() {
   const setSurfaceAlpha = useAtomSet(setSurfaceAlphaAtom);
   const setFrameless = useAtomSet(setFramelessAtom);
   const reloadAppearance = useAtomSet(reloadAppearanceAtom);
+  const initialNotifications = useMemo(
+    () => ({ notifyOnIdle: parseNotifyOnIdle(readLocalStorage(NOTIFY_ON_IDLE_STORAGE_KEY)) }),
+    [],
+  );
+  const { notifyOnIdle } = Result.getOrElse(
+    useAtomValue(notificationsAtom),
+    () => initialNotifications,
+  );
+  const setNotifyOnIdle = useAtomSet(setNotifyOnIdleAtom);
+  const toggleNotifyOnIdle = () => {
+    const enabled = !notifyOnIdle;
+    if (enabled) {
+      void ensureNotificationPermission();
+    }
+    setNotifyOnIdle(enabled);
+  };
   // Apply the theme to <html data-theme>. "system" resolves from prefers-color-scheme
   // and re-resolves live when the OS appearance changes. Persistence + the cross-window
   // broadcast are owned by the Appearance service (driven by the setter); this effect
@@ -696,6 +719,22 @@ function SettingsApp() {
               aria-checked={framelessEnabled}
               aria-label="Frameless window"
               onClick={() => setFrameless(!framelessEnabled)}
+            >
+              <span className="switch-thumb" />
+            </button>
+          </div>
+
+          <div className="setting-row">
+            <div className="setting-label">
+              <span>Notify when an agent finishes</span>
+            </div>
+            <button
+              className={`switch${notifyOnIdle ? " on" : ""}`}
+              type="button"
+              role="switch"
+              aria-checked={notifyOnIdle}
+              aria-label="Notify when an agent finishes"
+              onClick={toggleNotifyOnIdle}
             >
               <span className="switch-thumb" />
             </button>
