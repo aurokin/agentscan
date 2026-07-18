@@ -61,7 +61,7 @@ fn macos_codesign_display_rejection(
     if !status_success {
         return Some(MacExecutableAssessment::Untrusted(format!(
             "codesign inspection failed: {}",
-            compact_command_output(text)
+            summarize_codesign_output(text)
         )));
     }
 
@@ -69,7 +69,7 @@ fn macos_codesign_display_rejection(
     if lower.contains("signature=adhoc") || lower.contains("(adhoc") || lower.contains("adhoc,") {
         return Some(MacExecutableAssessment::Untrusted(format!(
             "codesign reports an ad-hoc executable: {}",
-            compact_command_output(text)
+            summarize_codesign_output(text)
         )));
     }
     None
@@ -82,7 +82,7 @@ fn assess_macos_codesign_verification(status_success: bool, text: &str) -> MacEx
     } else {
         MacExecutableAssessment::Untrusted(format!(
             "codesign verification failed: {}",
-            compact_command_output(text)
+            summarize_codesign_output(text)
         ))
     }
 }
@@ -123,17 +123,42 @@ fn command_output_text(output: &std::process::Output) -> String {
 }
 
 #[cfg(any(test, target_os = "macos"))]
-fn compact_command_output(text: &str) -> String {
-    let compact = text
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join("; ");
-    if compact.chars().count() > 500 {
-        let prefix = compact.chars().take(500).collect::<String>();
-        format!("{prefix}...")
-    } else {
-        compact
+fn summarize_codesign_output(text: &str) -> String {
+    let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
+    let Some(first_line) = lines.next() else {
+        return String::new();
+    };
+    let mut summary = first_line.to_string();
+    if !first_line.starts_with("TeamIdentifier=")
+        && let Some(team_identifier) = lines.find(|line| line.starts_with("TeamIdentifier="))
+    {
+        summary.push_str("; ");
+        summary.push_str(team_identifier);
+    }
+    summary
+}
+
+#[cfg(test)]
+mod tests {
+    use super::summarize_codesign_output;
+
+    #[test]
+    fn codesign_summary_keeps_first_line_and_team_identifier_only() {
+        let output = "\
+Executable=/tmp/agentscan
+Identifier=com.example.agentscan
+Format=Mach-O 64-bit executable arm64
+CodeDirectory v=20400 size=123 flags=0x2(adhoc) hashes=1+0 location=embedded
+Signature=adhoc
+TeamIdentifier=not set
+Sealed Resources=none
+";
+
+        let summary = summarize_codesign_output(output);
+
+        assert_eq!(summary, "Executable=/tmp/agentscan; TeamIdentifier=not set");
+        assert!(!summary.contains("Identifier=com.example.agentscan"));
+        assert!(!summary.contains("Signature=adhoc"));
+        assert!(!summary.contains("Sealed Resources"));
     }
 }

@@ -851,7 +851,7 @@ fn daemon_start_policy_decision_from_macos_assessment(
         MacExecutableAssessment::Untrusted(reason) => {
             DaemonStartPolicyDecision::Blocked(DaemonSnapshotError::AutoStartDisabled {
                 reason: format!(
-                    "macOS executable trust preflight rejected detached daemon start for {}; {reason}. {}",
+                    "macOS executable trust preflight rejected detached daemon start for {}. {}. Detail: {reason}",
                     executable_path.display(),
                     macos_auto_start_recovery_guidance(intent)
                 ),

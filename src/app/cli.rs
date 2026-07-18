@@ -40,6 +40,15 @@ pub(crate) enum Commands {
     Tmux(TmuxArgs),
     /// Diagnose environment, tmux, daemon, and discovery health.
     Doctor(DoctorArgs),
+    /// Generate shell completions for bash, zsh, or fish.
+    Completions(CompletionsArgs),
+}
+
+#[derive(Args, Clone, Copy, Debug)]
+pub(crate) struct CompletionsArgs {
+    /// Shell to generate completions for.
+    #[arg(value_enum)]
+    pub(crate) shell: clap_complete::Shell,
 }
 
 #[derive(Args, Clone, Copy, Debug)]

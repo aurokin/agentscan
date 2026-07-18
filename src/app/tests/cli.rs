@@ -1,4 +1,27 @@
 #[test]
+fn completions_generate_output_and_reject_invalid_shells() {
+    let cli = <Cli as clap::Parser>::parse_from(["agentscan", "completions", "bash"]);
+    let args = match cli.command {
+        Some(super::Commands::Completions(args)) => args,
+        other => panic!("expected completions command, got {other:?}"),
+    };
+
+    let mut output = Vec::new();
+    super::commands::command_completions(&args, &mut output)
+        .expect("bash completions should generate successfully");
+    assert!(!output.is_empty());
+    assert!(String::from_utf8_lossy(&output).contains("agentscan"));
+
+    let error = <Cli as clap::Parser>::try_parse_from([
+        "agentscan",
+        "completions",
+        "unsupported-shell",
+    ])
+    .expect_err("unsupported completion shells should be rejected");
+    assert!(error.to_string().contains("invalid value 'unsupported-shell'"));
+}
+
+#[test]
 fn root_list_args_parse_for_default_list_flow() {
     let cli = <Cli as clap::Parser>::parse_from(["agentscan", "-f", "--all", "--format", "json"]);
     assert!(cli.list_args.refresh.refresh);
