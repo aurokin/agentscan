@@ -2,10 +2,12 @@ use super::{PaneOutputFrame, StatusKind};
 
 // Copilot busy status line shown while a turn is running.
 const THINKING_CANCEL_HINT: &str = "Thinking (Esc to cancel";
-// Copilot working footer probes (`Working — esc to cancel`).
+// Copilot working footer probes (`Working — esc to cancel` through v1.0.6x,
+// `Working esc interrupt` from v1.0.73).
 const WORKING_MARKER: &str = "Working";
 const ESC_MARKER: &str = "esc";
 const CANCEL_MARKER: &str = "cancel";
+const INTERRUPT_MARKER: &str = "interrupt";
 // Copilot idle footer command hints.
 const COMMANDS_HINT: &str = "/ commands";
 const HELP_HINT: &str = "? help";
@@ -126,7 +128,9 @@ fn copilot_current_working_footer_visible(frame: &PaneOutputFrame<'_>) -> bool {
 
 fn copilot_working_footer_line(line: &str) -> bool {
     let line = line.trim();
-    line.contains(WORKING_MARKER) && line.contains(ESC_MARKER) && line.contains(CANCEL_MARKER)
+    line.contains(WORKING_MARKER)
+        && line.contains(ESC_MARKER)
+        && (line.contains(CANCEL_MARKER) || line.contains(INTERRUPT_MARKER))
 }
 
 fn copilot_idle_footer_line(line: &str) -> bool {
@@ -215,6 +219,27 @@ mod tests {
             crate::app::StatusSource::PaneOutput,
         );
         assert_unprovidered_pane_output_unchanged(818, "node", "custom title", output);
+    }
+
+    #[test]
+    fn copilot_pane_output_marks_interrupt_working_footer_busy() {
+        // Observed from Copilot v1.0.73: the working footer hint reads `esc interrupt`
+        // instead of the older `esc cancel`, optionally with a token counter between.
+        let output = "~/code/agentscan [⎇ main*%]                                  Session: 0 AIC used\n\
+         ──────────────────────────────────────────────────────────────────────────\n\
+         ❯\n\
+         ──────────────────────────────────────────────────────────────────────────\n\
+         ◎ Working · 66 B esc interrupt                                Claude Sonnet 5\n";
+
+        assert_pane_output_status(
+            826,
+            Provider::Copilot,
+            "GitHub Copilot",
+            output,
+            StatusKind::Busy,
+            crate::app::StatusSource::PaneOutput,
+        );
+        assert_unprovidered_pane_output_unchanged(827, "node", "custom title", output);
     }
 
     #[test]

@@ -52,7 +52,7 @@ For `agentscan` subprocess checks against the isolated tmux server, pass
 | GitHub Copilot | Custom `--name` tmux title | Supporting only | Display label after provider identity | Never establishes provider by itself |
 | GitHub Copilot | Current title beginning with `🤖` | Strong after identity | Primary busy status via `status.source="tmux_title"` | Scoped to known Copilot panes; the title glyph must not establish provider identity by itself |
 | GitHub Copilot | `Thinking (Esc to cancel)` near the current prompt | Strong after identity | `status.source="pane_output"` busy fallback | Scoped to known Copilot panes and current prompt context |
-| GitHub Copilot | Current prompt footer containing `Working` plus `esc cancel` | Strong after identity | `status.source="pane_output"` busy fallback | Scoped to known Copilot panes and anchored below the current prompt/footer |
+| GitHub Copilot | Current prompt footer containing `Working` plus `esc` and `cancel` or `interrupt` | Strong after identity | `status.source="pane_output"` busy fallback | Scoped to known Copilot panes and anchored below the current prompt/footer |
 | GitHub Copilot | Folder trust modal text | Strong after identity | Busy fallback | Ignored after a normal prompt appears below the modal |
 | GitHub Copilot | Current `❯` prompt plus `/ commands · ? help` footer | Strong after identity | Idle fallback | Requires current prompt/footer anchoring so stale scrollback does not win |
 | GitHub Copilot | `COPILOT_HOME`, `COPILOT_MODEL`, similar env | Supporting only | Research context | Never establishes provider alone |
@@ -106,6 +106,20 @@ local 1.0.61 command list did not expose
 `/rubber-duck`, and invoking `/rubber-duck` returned `Unknown command`; treat
 rubber-duck CLI status evidence as unavailable until a narrower follow-up proves
 the local command shape.
+
+A July 21, 2026 re-probe of GitHub Copilot CLI 1.0.73 in an isolated tmux
+session found two upstream changes that had broken busy detection. First, the
+working footer hint now reads `◎ Working esc interrupt` (optionally with a token
+counter, e.g. `◎ Working · 66 B esc interrupt`) instead of the older
+`◉ Working ... esc cancel`; the pane-output busy matcher now accepts `cancel` or
+`interrupt` after the `Working` plus `esc` anchor. Second, since upstream 1.0.66
+("Format terminal titles with the session title and GitHub Copilot suffix") the
+busy tmux title no longer carries the `🤖` prefix; a running turn sets a
+task-summary title like `Run Shell Command Sleep - GitHub Copilot`, and that
+title persists unchanged after the turn completes. The suffix-format title
+therefore cannot distinguish busy from idle and must not become a status
+signal; the `🤖` title check is retained only for older versions, and busy
+status on 1.0.66+ relies on the pane-output working footer.
 
 Cursor CLI probing used the local `cursor-agent` binary in an isolated tmux
 session. The default idle pane could expose a generic `Cursor Agent` title while
