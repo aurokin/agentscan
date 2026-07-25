@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## 0.11.1 - 2026-07-25
+
+### Fixed
+
+- OpenCode v2 panes now classify from the exact `opencode.exe` foreground
+  command and recognize timestamped `0.0.0-beta-YYYYMMDDHHmm` footers without
+  replacing OpenCode v1 command or stable-version support.
+- OpenCode v2's merged busy/footer row no longer crashes the daemon when two
+  pane-output anchors resolve to the same line.
+- Kimi Code 0.29.1 composing turns now recognize the braille `working...`
+  spinner, including when an expanded Todo panel raises the activity indicator
+  well above the input box; current-panel geometry and conservative
+  stale-scrollback checks prevent detached indicators from reporting busy.
+- Copilot CLI 1.0.73 working turns using `esc interrupt` in the footer now
+  report busy alongside the older `esc cancel` form.
+- The macOS desktop bundle icon is now a full-bleed dark tile so macOS 26 Tahoe
+  no longer shrinks it onto a generated white squircle plate.
+
 ## 0.11.0 - 2026-07-18
 
 ### Fixed
