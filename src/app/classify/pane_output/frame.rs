@@ -90,7 +90,8 @@ impl<'a> PaneOutputFrame<'a> {
             && self.contains_index(after_index)
             && before_index <= after_index
             && after_index.saturating_sub(before_index) <= max_gap
-            && self.lines[before_index + 1..after_index]
+            && self
+                .lines_between(before_index, after_index)
                 .iter()
                 .all(|line| predicate(line))
     }
@@ -104,7 +105,8 @@ impl<'a> PaneOutputFrame<'a> {
         self.contains_index(before_index)
             && self.contains_index(after_index)
             && before_index <= after_index
-            && self.lines[before_index + 1..after_index]
+            && self
+                .lines_between(before_index, after_index)
                 .iter()
                 .all(|line| predicate(line))
     }
@@ -155,8 +157,8 @@ impl<'a> PaneOutputFrame<'a> {
     }
 
     fn lines_between(&self, first_index: usize, second_index: usize) -> &[&'a str] {
-        let start = first_index.min(second_index) + 1;
         let end = first_index.max(second_index);
+        let start = first_index.min(second_index).saturating_add(1).min(end);
         &self.lines[start..end]
     }
 }
@@ -193,6 +195,15 @@ mod tests {
             frame.forward_gap_before_all(0, 3, |line| { line.trim().is_empty() || line == "ok" })
         );
         assert!(!frame.forward_gap_before_all(3, 0, |_| true));
+    }
+
+    #[test]
+    fn gap_helpers_treat_equal_anchors_as_an_empty_gap() {
+        let frame = PaneOutputFrame::new("busy\nprompt\nfooter\n");
+
+        assert!(frame.forward_gap_before_is_within(1, 1, 0, |_| false));
+        assert!(frame.forward_gap_before_all(1, 1, |_| false));
+        assert!(frame.gap_between_is_within(1, 1, 0, |_| false));
     }
 
     #[test]

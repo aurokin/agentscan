@@ -10,6 +10,8 @@ const OPENCODE_COMMAND_BAR_TAB_HINT: &str = "tab agents";
 const OPENCODE_COMMAND_BAR_COMMANDS_HINT: &str = "ctrl+p commands";
 // opencode pinned bottom status-bar brand marker (`• OpenCode <ver>`).
 const OPENCODE_BRAND_MARKER: &str = "• OpenCode";
+// v2 beta packages use a timestamped prerelease version (`0.0.0-beta-YYYYMMDDHHmm`).
+const OPENCODE_V2_BETA_VERSION_PREFIX: &str = "0.0.0-beta-";
 // opencode interrupt hint shown while a turn is running (`esc interrupt`); two substrings.
 const OPENCODE_INTERRUPT_ESC_MARKER: &str = "esc";
 const OPENCODE_INTERRUPT_VERB_MARKER: &str = "interrupt";
@@ -191,14 +193,23 @@ fn opencode_input_box_bottom_border(line: &str) -> bool {
 /// bare file path is not mistaken for chrome.
 fn opencode_bottom_status_bar_line(line: &str) -> bool {
     if line.contains(OPENCODE_BRAND_MARKER) {
-        return line.split_whitespace().any(is_version_like_command);
+        return line.split_whitespace().any(opencode_version_token);
     }
     (line.starts_with("~/") || line.starts_with('/'))
         && line.contains(':')
         && line
             .split_whitespace()
             .next_back()
-            .is_some_and(is_version_like_command)
+            .is_some_and(opencode_version_token)
+}
+
+fn opencode_version_token(token: &str) -> bool {
+    is_version_like_command(token)
+        || token
+            .strip_prefix(OPENCODE_V2_BETA_VERSION_PREFIX)
+            .is_some_and(|timestamp| {
+                timestamp.len() == 12 && timestamp.chars().all(|ch| ch.is_ascii_digit())
+            })
 }
 
 fn opencode_current_busy_marker_line(line: &str) -> bool {
@@ -677,6 +688,38 @@ mod tests {
     }
 
     #[test]
+    fn opencode_pane_output_v2_beta_footer_marks_used_session_idle() {
+        let mut opencode = pane_output_status_pane(818, Provider::Opencode, "OC | Greeting");
+
+        classify::apply_pane_output_status_fallback(
+            &mut opencode,
+            "  ┃\n\
+               ┃\n\
+               ┃  Build · Kimi K3 Kimi For Coding                     ~/workspace/poe-human:main\n\
+               ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+               /Users/auro/workspace/poe-human  9.8K (1%)  ctrl+p commands  • OpenCode 0.0.0-beta-202607242043\n",
+        );
+
+        assert_eq!(opencode.status.kind, StatusKind::Idle);
+        assert_eq!(opencode.status.source, crate::app::StatusSource::PaneOutput);
+    }
+
+    #[test]
+    fn opencode_pane_output_rejects_malformed_v2_beta_footer() {
+        let mut opencode = pane_output_status_pane(819, Provider::Opencode, "OC | Greeting");
+
+        classify::apply_pane_output_status_fallback(
+            &mut opencode,
+            "  ┃  Build · Kimi K3 Kimi For Coding\n\
+               ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+               /Users/auro/workspace/poe-human  ctrl+p commands  • OpenCode 0.0.0-beta-preview\n",
+        );
+
+        assert_eq!(opencode.status.kind, StatusKind::Unknown);
+        assert_eq!(opencode.status.source, crate::app::StatusSource::NotChecked);
+    }
+
+    #[test]
     fn opencode_pane_output_live_build_marks_busy_when_interrupt_hint_in_merged_bottom_bar() {
         // Real capture: the live build renders `esc interrupt` plus the braille run spinner in the
         // merged command/status bar directly *below* the input box border, not above it. The current
@@ -689,6 +732,20 @@ mod tests {
            ┃  Build · Kimi K2.6 OpenCode Go                              ~/code/agentscan:main\n\
            ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
             ⬝⬝⬝⬝⬝⬝⬝⬝  esc interrupt    139.2K (53%) · $0.23  ctrl+p commands    • OpenCode 1.15.11\n",
+        );
+
+        assert_eq!(opencode.status.kind, StatusKind::Busy);
+        assert_eq!(opencode.status.source, crate::app::StatusSource::PaneOutput);
+    }
+
+    #[test]
+    fn opencode_pane_output_v2_marks_busy_when_interrupt_and_commands_share_footer_row() {
+        let mut opencode = pane_output_status_pane(813, Provider::Opencode, "OC | Working");
+
+        classify::apply_pane_output_status_fallback(
+            &mut opencode,
+            "  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+               ⬝⬝⬝⬝⬝⬝⬝⬝  esc interrupt  tab agents  ctrl+p commands  • OpenCode 0.0.0-beta-202607242043\n",
         );
 
         assert_eq!(opencode.status.kind, StatusKind::Busy);

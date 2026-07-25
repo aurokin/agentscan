@@ -317,6 +317,19 @@ fn closed_source_titles_remain_labels_after_strong_provider_identity() {
 }
 
 #[test]
+fn opencode_v1_and_v2_commands_both_classify_without_title_support() {
+    for command in ["opencode", "opencode.exe"] {
+        let matched = classify::classify_provider(None, command, "shell")
+            .unwrap_or_else(|| panic!("should classify opencode command: {command}"));
+        assert_eq!(matched.provider, Provider::Opencode);
+        assert_eq!(
+            matched.matched_by,
+            super::ClassificationMatchKind::PaneCurrentCommand
+        );
+    }
+}
+
+#[test]
 fn opencode_title_matches_stay_exact() {
     assert!(
         classify::classify_provider(None, "zsh", "OpenCoder").is_none(),

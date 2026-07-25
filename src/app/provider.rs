@@ -181,7 +181,10 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
         canonical_name: "opencode",
         icons: ProviderIconSet::new("🔲", "\u{f0168}", "\u{100043}"),
         metadata_aliases: &["opencode"],
-        command_aliases: &[ProviderCommandAlias::new("opencode", true)],
+        command_aliases: &[
+            ProviderCommandAlias::new("opencode", true),
+            ProviderCommandAlias::new("opencode.exe", false),
+        ],
         title_prefixes: &["OC | "],
         title_aliases: &["OpenCode"],
         generic_display_labels: &["OpenCode"],
