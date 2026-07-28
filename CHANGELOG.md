@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Fixed
+
+- pi panes running an extension that registers a footer status row — workflows,
+  subagents, a primary runtime, the run summarizer — no longer report
+  `unknown`. The `%/` context line is still the anchor, but pi draws those rows
+  beneath it, so it no longer has to be the last line in the pane; up to four
+  contiguous rows may follow it.
+
 ## 0.11.1 - 2026-07-25
 
 ### Fixed
