@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.11.2 - 2026-07-28
+
 ### Fixed
 
 - pi panes running an extension that registers a footer status row — workflows,
