@@ -24,11 +24,24 @@
 // could newly apply ends in a fresh resolved tick. If the driver ever gains
 // per-runnerKey probe caching or debouncing, revisit this.
 
-import { Effect, Fiber, Stream, SubscriptionRef } from "effect";
+import {
+  Context,
+  Effect,
+  Fiber,
+  Layer,
+  Semaphore,
+  Stream,
+  SubscriptionRef,
+} from "effect";
 import { hostnameProbeCandidates, sourceRunnerKeys, type HostnameProbeCandidate } from "./enrichmentModel";
-import { LiveConnection } from "./LiveConnection";
-import { Preflight, PreflightIpc } from "./Preflight";
-import { Profiles } from "./Profiles";
+import { LiveConnection, layer as liveConnectionLayer } from "./LiveConnection";
+import {
+  Preflight,
+  PreflightIpc,
+  ipcLayer as preflightIpcLayer,
+  layer as preflightLayer,
+} from "./Preflight";
+import { Profiles, layer as profilesLayer } from "./Profiles";
 import { runnerKeyForProfile } from "./profileModel";
 
 // Debug-log sink ("hostname probe (<host>)" + started/ok/error detail) — the
@@ -37,11 +50,10 @@ import { runnerKeyForProfile } from "./profileModel";
 // the old effect, whose driver probe is logged elsewhere).
 export type EnrichmentLog = (label: string, detail: string) => void;
 
-export class HostnameEnrichment extends Effect.Service<HostnameEnrichment>()(
+export class HostnameEnrichment extends Context.Service<HostnameEnrichment>()(
   "desktop/HostnameEnrichment",
   {
-    dependencies: [PreflightIpc.Default, Profiles.Default, Preflight.Default, LiveConnection.Default],
-    scoped: Effect.gen(function* () {
+    make: Effect.gen(function* () {
       const ipc = yield* PreflightIpc;
       const profiles = yield* Profiles;
       const preflight = yield* Preflight;
@@ -51,7 +63,7 @@ export class HostnameEnrichment extends Effect.Service<HostnameEnrichment>()(
       // settle like the old never-cancelled invoke promises did.
       const scope = yield* Effect.scope;
       // Serializes configures so two can't interleave their interrupt/fork pairs.
-      const mutex = yield* Effect.makeSemaphore(1);
+      const mutex = yield* Semaphore.make(1);
       // The probed-this-session runnerKeys, owned by the service (NOT a
       // configure closure): marks must survive a re-arm or the replay tick
       // would re-probe an in-flight or already-failed host. Like the old
@@ -59,7 +71,7 @@ export class HostnameEnrichment extends Effect.Service<HostnameEnrichment>()(
       // background supervisor (one at a time, under the slot discipline).
       const attempted = new Set<string>();
       // The armed supervisors (one fiber running both). Mutated under `mutex`.
-      let slot: Fiber.RuntimeFiber<void> | null = null;
+      let slot: Fiber.Fiber<void> | null = null;
 
       // Persist one probed hostname. Uninterruptible so a re-arm can't tear
       // Profiles.commit between its storage write and the ref/broadcast
@@ -74,7 +86,7 @@ export class HostnameEnrichment extends Effect.Service<HostnameEnrichment>()(
       // profile id to offer (a missed lookup — deleted/retargeted before the
       // probe resolved — skips this emission); recordProbedHost re-verifies
       // identity against latest persisted storage at commit time.
-      const recordDriverProbes = preflight.state.changes.pipe(
+      const recordDriverProbes = SubscriptionRef.changes(preflight.state).pipe(
         Stream.changes,
         Stream.runForEach((state) =>
           Effect.gen(function* () {
@@ -98,8 +110,8 @@ export class HostnameEnrichment extends Effect.Service<HostnameEnrichment>()(
             // Defects ARE the complete failure surface here: recordProbedHost's
             // error channel is `never` (commit wraps the throwing storage write
             // in Effect.sync, a defect), which the supervisor slot's
-            // RuntimeFiber<void> type enforces at compile time.
-          }).pipe(Effect.catchAllDefect(() => Effect.void)),
+            // Fiber<void> type enforces at compile time.
+          }).pipe(Effect.catchDefect(() => Effect.void)),
         ),
       );
 
@@ -116,7 +128,7 @@ export class HostnameEnrichment extends Effect.Service<HostnameEnrichment>()(
             Effect.map((result) => ({ ok: true as const, result })),
             // IpcError.message carries the raw Tauri rejection string, matching
             // the old errorMessage(error) log detail verbatim.
-            Effect.catchAll((error) => Effect.succeed({ ok: false as const, message: error.message })),
+            Effect.catch((error) => Effect.succeed({ ok: false as const, message: error.message })),
           );
           if (!outcome.ok) {
             yield* Effect.sync(() => onLog(label, outcome.message));
@@ -130,7 +142,7 @@ export class HostnameEnrichment extends Effect.Service<HostnameEnrichment>()(
           // The candidate's runnerKey rides along: recordProbedHost drops the
           // result if the profile was retargeted while this probe was in flight.
           yield* record(candidate.profileId, probed, candidate.runnerKey);
-        }).pipe(Effect.catchAllDefect(() => Effect.void));
+        }).pipe(Effect.catchDefect(() => Effect.void));
 
       // Background prober: on every profiles/live tick, prune the attempt set
       // to the current sources, then mark and fork a probe per candidate. The
@@ -140,8 +152,8 @@ export class HostnameEnrichment extends Effect.Service<HostnameEnrichment>()(
       // round-trip) must never be interrupted by the next frame.
       const probeBackgroundSources = (onLog: EnrichmentLog) =>
         Stream.merge(
-          profiles.state.changes.pipe(Stream.as(undefined)),
-          lc.states.changes.pipe(Stream.as(undefined)),
+          SubscriptionRef.changes(profiles.state).pipe(Stream.map(() => undefined)),
+          SubscriptionRef.changes(lc.states).pipe(Stream.map(() => undefined)),
         ).pipe(
           Stream.runForEach(() =>
             Effect.gen(function* () {
@@ -168,7 +180,7 @@ export class HostnameEnrichment extends Effect.Service<HostnameEnrichment>()(
                   }),
                 );
               }
-            }).pipe(Effect.catchAllDefect(() => Effect.void)),
+            }).pipe(Effect.catchDefect(() => Effect.void)),
           ),
         );
 
@@ -198,3 +210,13 @@ export class HostnameEnrichment extends Effect.Service<HostnameEnrichment>()(
     }),
   },
 ) {}
+
+export const layerWithoutDependencies = Layer.effect(
+  HostnameEnrichment,
+  HostnameEnrichment.make,
+);
+export const layer = layerWithoutDependencies.pipe(
+  Layer.provide(
+    Layer.mergeAll(preflightIpcLayer, profilesLayer, preflightLayer, liveConnectionLayer),
+  ),
+);

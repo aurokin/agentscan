@@ -1,45 +1,53 @@
-import { Atom } from "@effect-atom/atom-react";
 import { Effect, Layer } from "effect";
-import { LiveConnection, type ConfigureInput } from "./LiveConnection";
-import { Profiles, type ApplyRunnerSettingsInput } from "./Profiles";
-import { Preflight, type PreflightTarget } from "./Preflight";
-import { Appearance } from "./Appearance";
-import { Notifications } from "./Notifications";
-import { SummonHotkey } from "./SummonHotkey";
-import { Activation, type ActivateInput } from "./Activation";
-import { DebugLog, type DebugEntryInput } from "./DebugLog";
-import { HostIpc } from "./HostIpc";
-import { HostnameEnrichment, type EnrichmentLog } from "./HostnameEnrichment";
+import { Atom } from "effect/unstable/reactivity";
+import {
+  LiveConnection,
+  layer as liveConnectionLayer,
+  type ConfigureInput,
+} from "./LiveConnection";
+import { Profiles, layer as profilesLayer, type ApplyRunnerSettingsInput } from "./Profiles";
+import { Preflight, layer as preflightLayer, type PreflightTarget } from "./Preflight";
+import { Appearance, layer as appearanceLayer } from "./Appearance";
+import { Notifications, layer as notificationsLayer } from "./Notifications";
+import { SummonHotkey, layer as summonHotkeyLayer } from "./SummonHotkey";
+import { Activation, layer as activationLayer, type ActivateInput } from "./Activation";
+import { DebugLog, layer as debugLogLayer, type DebugEntryInput } from "./DebugLog";
+import { HostIpc, layer as hostIpcLayer } from "./HostIpc";
+import {
+  HostnameEnrichment,
+  layer as hostnameEnrichmentLayer,
+  type EnrichmentLog,
+} from "./HostnameEnrichment";
 import type { OrientationPreference, ThemePreference } from "./prefs";
 
 // One runtime per webview window, providing the desktop Effect services. Profiles,
 // Preflight, and Appearance all pull in the shared PrefsBridge (the single
 // agentscan:prefs-sync channel), so they reuse one listener rather than opening their
-// own — Effect memoizes PrefsBridge.Default by reference across the merge. Both windows
+// own — Effect memoizes the shared PrefsBridge layer by reference across the merge. Both windows
 // instantiate this layer; LiveConnection's and Preflight's supervisors idle in the
 // settings window because the dock-only configure paths never enable a target (the
 // latch-only invariant is enforced there, not by withholding the layer).
 const runtime = Atom.runtime(
   Layer.mergeAll(
-    LiveConnection.Default,
-    Profiles.Default,
-    Preflight.Default,
-    Appearance.Default,
-    Notifications.Default,
-    SummonHotkey.Default,
+    liveConnectionLayer,
+    profilesLayer,
+    preflightLayer,
+    appearanceLayer,
+    notificationsLayer,
+    summonHotkeyLayer,
     // Activation and HostnameEnrichment also depend on services merged above
     // (LiveConnection; plus Profiles/Preflight for enrichment); layer
     // memoization resolves each to the same instance.
-    Activation.Default,
-    HostnameEnrichment.Default,
-    DebugLog.Default,
-    HostIpc.Default,
+    activationLayer,
+    hostnameEnrichmentLayer,
+    debugLogLayer,
+    hostIpcLayer,
   ),
 );
 
 // The local machine's short hostname, fetched once per webview runtime and
 // shown as the local source's label (the way a remote source is keyed by its
-// SSH host). Read it with Result.getOrElse(..., () => ""): Initial AND Failure
+// SSH host). Read it with AsyncResult.getOrElse(..., () => ""): Initial AND Failure
 // both fall back to "", matching the old per-window fetch whose failure just
 // left the generic label in place (sourceLabel handles "").
 export const localHostLabelAtom = Atom.keepAlive(

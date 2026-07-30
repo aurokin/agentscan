@@ -4,9 +4,18 @@
 // App.tsx shapes the request (row + profile → ActivateInput), renders `state`,
 // and reconciles open folders via prune; everything stateful lives here.
 
-import { Duration, Effect, Fiber, Stream, SubscriptionRef } from "effect";
+import {
+  Context,
+  Duration,
+  Effect,
+  Fiber,
+  Layer,
+  Semaphore,
+  Stream,
+  SubscriptionRef,
+} from "effect";
 import { invoke } from "@tauri-apps/api/core";
-import { LiveConnection, liveStateFor } from "./LiveConnection";
+import { LiveConnection, layer as liveConnectionLayer, liveStateFor } from "./LiveConnection";
 import type { PickerActivation } from "./pickerViewModel";
 import { IpcError } from "./TauriIpc";
 import type { DesktopRunnerSettings } from "./types";
@@ -16,8 +25,8 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
 // The focus-invoke boundary, injected as a service so the Activation logic stays
 // pure over it and a vitest layer can script slow/failing focuses without a real
 // Tauri host.
-export class FocusIpc extends Effect.Service<FocusIpc>()("desktop/FocusIpc", {
-  succeed: {
+export class FocusIpc extends Context.Service<FocusIpc>()("desktop/FocusIpc", {
+  make: Effect.succeed({
     focusRow: (input: { paneId: string; settings: DesktopRunnerSettings }) =>
       Effect.tryPromise({
         try: () =>
@@ -27,21 +36,21 @@ export class FocusIpc extends Effect.Service<FocusIpc>()("desktop/FocusIpc", {
           }),
         catch: (error) => new IpcError({ op: "focus_picker_row", message: messageOf(error) }),
       }),
-  },
+  }),
 }) {}
+
+export const focusIpcLayer = Layer.effect(FocusIpc, FocusIpc.make);
 
 // How long a failed activation's error strip stays up. Long enough to read,
 // short enough that one-shot action feedback doesn't linger as a standing
 // condition (the full error remains in the debug log). Injected so tests can
 // drive it with a TestClock.
-export class ActivationConfig extends Effect.Service<ActivationConfig>()(
+export const ActivationConfig = Context.Reference<{ readonly failureTtl: Duration.Duration }>(
   "desktop/ActivationConfig",
   {
-    succeed: {
-      failureTtl: Duration.seconds(10),
-    },
+    defaultValue: () => ({ failureTtl: Duration.seconds(10) }),
   },
-) {}
+);
 
 export type ActivateInput = {
   readonly paneId: string;
@@ -71,15 +80,14 @@ type Running = {
   readonly token: object;
   // Assigned right after the fork (still under the activate mutex, so prune —
   // which needs the same permit — never observes the null window).
-  fiber: Fiber.RuntimeFiber<void> | null;
+  fiber: Fiber.Fiber<void> | null;
 };
 
 // Owns the activation state machine the picker renders. One supervised fiber per
 // activation (at most one at a time), plus a TTL supervisor that expires a
 // surfaced failure once its source's recovery settles.
-export class Activation extends Effect.Service<Activation>()("desktop/Activation", {
-  dependencies: [FocusIpc.Default, ActivationConfig.Default, LiveConnection.Default],
-  scoped: Effect.gen(function* () {
+export class Activation extends Context.Service<Activation>()("desktop/Activation", {
+  make: Effect.gen(function* () {
     const ipc = yield* FocusIpc;
     const { failureTtl } = yield* ActivationConfig;
     const lc = yield* LiveConnection;
@@ -89,7 +97,7 @@ export class Activation extends Effect.Service<Activation>()("desktop/Activation
     const scope = yield* Effect.scope;
     // Serializes activate/prune so a click and a folder-close can't interleave
     // their reads of the in-flight slot.
-    const mutex = yield* Effect.makeSemaphore(1);
+    const mutex = yield* Semaphore.make(1);
     // The in-flight activation. Mutated under `mutex`, except the settle
     // cleanup's token-guarded clear (a single synchronous step).
     let running: Running | null = null;
@@ -110,7 +118,7 @@ export class Activation extends Effect.Service<Activation>()("desktop/Activation
         yield* Effect.sync(() => input.onLog("started"));
         const failure = yield* ipc.focusRow({ paneId: input.paneId, settings: input.settings }).pipe(
           Effect.as<string | null>(null),
-          Effect.catchAll((error) => Effect.succeed<string | null>(error.message)),
+          Effect.catch((error) => Effect.succeed<string | null>(error.message)),
         );
         if (failure === null) {
           yield* Effect.sync(() => input.onLog("ok"));
@@ -150,7 +158,7 @@ export class Activation extends Effect.Service<Activation>()("desktop/Activation
     // key resolves to the initial "connecting" state and so reads as
     // recovering, exactly like the old liveStateFor-based memo.
     const recoveringFor = (sourceKey: string): Stream.Stream<boolean> =>
-      lc.states.changes.pipe(
+      SubscriptionRef.changes(lc.states).pipe(
         Stream.map((states) => {
           const status = liveStateFor(states, sourceKey).connection.status;
           return status === "connecting" || status === "reconnecting";
@@ -168,30 +176,28 @@ export class Activation extends Effect.Service<Activation>()("desktop/Activation
     // the pending timer and each settle arms a FRESH full TTL (the switch
     // semantics below; pinned by the flap test). The identity guard inside the
     // update clears only the exact failure the timer was armed for.
-    yield* stateRef.changes.pipe(
+    yield* SubscriptionRef.changes(stateRef).pipe(
       Stream.changes,
-      Stream.flatMap(
+      Stream.switchMap(
         (current) =>
           current.status !== "failed"
             ? Stream.empty
             : recoveringFor(current.sourceKey).pipe(
-                Stream.flatMap(
+                Stream.switchMap(
                   (recovering) =>
                     recovering
                       ? Stream.empty
                       : Stream.fromEffect(
                           Effect.sleep(failureTtl).pipe(
-                            Effect.zipRight(
+                            Effect.andThen(
                               SubscriptionRef.update(stateRef, (state) =>
                                 state === current ? IDLE : state,
                               ),
                             ),
                           ),
                         ),
-                  { switch: true },
                 ),
               ),
-        { switch: true },
       ),
       Stream.runDrain,
       Effect.forkScoped,
@@ -230,7 +236,7 @@ export class Activation extends Effect.Service<Activation>()("desktop/Activation
                   }
                 }),
               ),
-              Effect.forkIn(scope),
+              Effect.forkIn(scope, { startImmediately: true }),
             );
             // The fiber may already have completed (and its cleanup run) while
             // we were suspended on the fork — only attach it to a slot we still
@@ -257,10 +263,10 @@ export class Activation extends Effect.Service<Activation>()("desktop/Activation
               // Rust-side focus timeout; "running" means the guard is held by
               // exactly this activation, so free it with the visible state —
               // otherwise every source's clicks/keys silently no-op behind an
-              // invisible in-flight call. interruptFork: don't await the wedged
+              // invisible in-flight call. interruptUnsafe: don't await the wedged
               // invoke (the interrupted fiber abandons it; its outcome is
               // discarded with the fiber's continuation).
-              yield* Fiber.interruptFork(running.fiber);
+              running.fiber.interruptUnsafe();
               running = null;
             }
             yield* SubscriptionRef.set(stateRef, IDLE);
@@ -269,3 +275,10 @@ export class Activation extends Effect.Service<Activation>()("desktop/Activation
     };
   }),
 }) {}
+
+// In v4, Layer.effect runs construction in the layer scope and removes Scope
+// from the layer requirements; no separate scoped constructor is needed.
+export const layerWithoutDependencies = Layer.effect(Activation, Activation.make);
+export const layer = layerWithoutDependencies.pipe(
+  Layer.provide(Layer.merge(focusIpcLayer, liveConnectionLayer)),
+);

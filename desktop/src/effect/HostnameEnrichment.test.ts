@@ -1,4 +1,5 @@
 import {
+  Context,
   Deferred,
   Duration,
   Effect,
@@ -10,11 +11,14 @@ import {
   SubscriptionRef,
 } from "effect";
 import { describe, expect, it } from "vitest";
-import { HostnameEnrichment } from "./HostnameEnrichment";
+import {
+  HostnameEnrichment,
+  layerWithoutDependencies as hostnameEnrichmentLayer,
+} from "./HostnameEnrichment";
 import { LiveConnection, type LiveStates } from "./LiveConnection";
 import { Preflight, PreflightIpc, type PreflightState, type SyncedPreflight } from "./Preflight";
 import { PrefsBridge } from "./PrefsBridge";
-import { Profiles } from "./Profiles";
+import { Profiles, layerWithoutDependencies as profilesLayer } from "./Profiles";
 import { IpcError } from "./TauriIpc";
 import {
   PROFILES_STORAGE_KEY,
@@ -82,7 +86,7 @@ const makeHarness = (input: {
       emit: () => Effect.void,
       events: Stream.empty,
     });
-    const RealProfiles = Profiles.DefaultWithoutDependencies.pipe(Layer.provide(Bridge));
+    const RealProfiles = profilesLayer.pipe(Layer.provide(Bridge));
 
     const preflightState = yield* SubscriptionRef.make<PreflightState>({ status: "loading" });
     const syncedRef = yield* SubscriptionRef.make<SyncedPreflight | null>(null);
@@ -116,9 +120,8 @@ const makeHarness = (input: {
     // Effect's layer memoization yields one Profiles instance for both.
     const deps = Layer.mergeAll(MockIpc, MockPreflight, MockLive, RealProfiles);
     return {
-      layer: Layer.mergeAll(
-        HostnameEnrichment.DefaultWithoutDependencies.pipe(Layer.provide(deps)),
-        deps,
+      layer: Layer.fresh(
+        Layer.mergeAll(hostnameEnrichmentLayer.pipe(Layer.provide(deps)), deps),
       ),
       store,
       preflightState,
@@ -136,7 +139,7 @@ const awaitProbedHost = (
   id: string,
   probedHost: string,
 ): Effect.Effect<void> =>
-  state.changes.pipe(
+  SubscriptionRef.changes(state).pipe(
     Stream.filter((s) =>
       s.profiles.some((p) => p.id === id && p.kind === "ssh" && p.probedHost === probedHost),
     ),
@@ -156,13 +159,13 @@ const probedHostOf = (state: ProfileState, id: string): string | undefined => {
 
 // Let the supervisors and forked probe fibers process a tick — everything in
 // the harness is scheduler-driven (no real timers), so yielding is sufficient.
-const settle = Effect.yieldNow().pipe(Effect.repeatN(60));
+const settle = Effect.yieldNow.pipe(Effect.repeat({ times: 60 }));
 
 const run = <A>(
-  harness: Effect.Effect.Success<ReturnType<typeof makeHarness>>,
+  harness: Effect.Success<ReturnType<typeof makeHarness>>,
   body: (ctx: {
-    enrichment: Effect.Effect.Success<typeof HostnameEnrichment>;
-    profiles: Effect.Effect.Success<typeof Profiles>;
+    enrichment: Context.Service.Shape<typeof HostnameEnrichment>;
+    profiles: Context.Service.Shape<typeof Profiles>;
   }) => Effect.Effect<A>,
 ) =>
   Effect.gen(function* () {
@@ -247,7 +250,7 @@ describe("HostnameEnrichment", () => {
       const gate = yield* Deferred.make<void>();
       const harness = yield* makeHarness({
         initial,
-        probes: [Deferred.await(gate).pipe(Effect.zipRight(Effect.succeed(preflightOf("old-box"))))],
+        probes: [Deferred.await(gate).pipe(Effect.andThen(Effect.succeed(preflightOf("old-box"))))],
       });
 
       yield* run(harness, ({ enrichment, profiles }) =>
@@ -312,7 +315,7 @@ describe("HostnameEnrichment", () => {
       const gate = yield* Deferred.make<void>();
       const harness = yield* makeHarness({
         initial,
-        probes: [Deferred.await(gate).pipe(Effect.zipRight(Effect.succeed(preflightOf("boxy"))))],
+        probes: [Deferred.await(gate).pipe(Effect.andThen(Effect.succeed(preflightOf("boxy"))))],
       });
       const log: string[] = [];
 

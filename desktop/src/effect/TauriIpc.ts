@@ -1,4 +1,4 @@
-import { Data, Effect, Queue, Runtime, Scope } from "effect";
+import { Context, Data, Effect, Layer, Queue } from "effect";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { DesktopRunnerSettings, LivePickerEnvelope, PickerRow } from "./types";
@@ -24,8 +24,8 @@ const invokeEffect = <A>(op: string, args: Record<string, unknown>) =>
 // The IPC boundary. Every Tauri `invoke`/`listen` the live lifecycle needs is
 // wrapped here as an Effect/scoped resource, so LiveConnection is pure logic over
 // this interface and a test can swap in a scripted implementation.
-export class TauriIpc extends Effect.Service<TauriIpc>()("desktop/TauriIpc", {
-  succeed: {
+export class TauriIpc extends Context.Service<TauriIpc>()("desktop/TauriIpc", {
+  make: Effect.succeed({
     // Install the Rust live-picker worker. `autoStart` is the latch policy: false
     // (reconnect/launch) subscribes with `--no-auto-start` and only attaches to a
     // running daemon; true (explicit "Start agentscan") lets it spawn one.
@@ -74,7 +74,7 @@ export class TauriIpc extends Effect.Service<TauriIpc>()("desktop/TauriIpc", {
     liveEvents: (sourceKey: string) =>
       Effect.gen(function* () {
         const queue = yield* Queue.unbounded<LivePickerEnvelope>();
-        const runFork = Runtime.runFork(yield* Effect.runtime<never>());
+        const runFork = Effect.runForkWith(yield* Effect.context<never>());
         yield* Effect.acquireRelease(
           // tryPromise (not promise): a rejected `listen` is a typed IpcError the
           // LiveConnection supervisor can surface as a fatal connection state, not a
@@ -93,5 +93,7 @@ export class TauriIpc extends Effect.Service<TauriIpc>()("desktop/TauriIpc", {
         );
         return queue as Queue.Dequeue<LivePickerEnvelope>;
       }),
-  },
+  }),
 }) {}
+
+export const layer = Layer.effect(TauriIpc, TauriIpc.make);

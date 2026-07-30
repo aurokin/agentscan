@@ -6,7 +6,15 @@
 // and observes `state`; the press callback is captured at configure time so the
 // registration survives React re-renders untouched.
 
-import { Duration, Effect, Fiber, SubscriptionRef } from "effect";
+import {
+  Context,
+  Duration,
+  Effect,
+  Fiber,
+  Layer,
+  Semaphore,
+  SubscriptionRef,
+} from "effect";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import { IpcError } from "./TauriIpc";
 
@@ -45,8 +53,8 @@ function failureDetail(error: unknown): string {
 // logic stays pure over it and a vitest layer can script in-use/terminal failures
 // without a real Tauri host. The press handler is a plain callback because the
 // plugin delivers events outside any Effect runtime.
-export class HotkeyIpc extends Effect.Service<HotkeyIpc>()("desktop/HotkeyIpc", {
-  succeed: {
+export class HotkeyIpc extends Context.Service<HotkeyIpc>()("desktop/HotkeyIpc", {
+  make: Effect.succeed({
     register: (shortcut: string, onEvent: (state: "Pressed" | "Released") => void) =>
       Effect.tryPromise({
         try: () => register(shortcut, (event) => onEvent(event.state)),
@@ -57,19 +65,18 @@ export class HotkeyIpc extends Effect.Service<HotkeyIpc>()("desktop/HotkeyIpc", 
         try: () => unregister(shortcut),
         catch: (error) => new IpcError({ op: "unregister_shortcut", message: messageOf(error) }),
       }),
-  },
+  }),
 }) {}
+
+export const hotkeyIpcLayer = Layer.effect(HotkeyIpc, HotkeyIpc.make);
 
 // Re-registration cadence while the key is held by someone else, injected as a
 // service so tests can zero it out (keeping them event-driven, no wall-clock).
-export class SummonHotkeyConfig extends Effect.Service<SummonHotkeyConfig>()(
-  "desktop/SummonHotkeyConfig",
-  {
-    succeed: {
-      retryBackoff: Duration.seconds(5),
-    },
-  },
-) {}
+export const SummonHotkeyConfig = Context.Reference<{
+  readonly retryBackoff: Duration.Duration;
+}>("desktop/SummonHotkeyConfig", {
+  defaultValue: () => ({ retryBackoff: Duration.seconds(5) }),
+});
 
 // "failed" is a STANDING condition (unlike a failed activation's one-shot
 // feedback): it describes the registration right now and clears only when a
@@ -85,9 +92,8 @@ const INACTIVE: SummonHotkeyState = { status: "inactive" };
 // effect + module-level promise queue. One supervised fiber holds the
 // registration; configure interrupts it (awaiting the paired unregister, so a
 // re-register can't race our own still-held key) before arming the next one.
-export class SummonHotkey extends Effect.Service<SummonHotkey>()("desktop/SummonHotkey", {
-  dependencies: [HotkeyIpc.Default, SummonHotkeyConfig.Default],
-  scoped: Effect.gen(function* () {
+export class SummonHotkey extends Context.Service<SummonHotkey>()("desktop/SummonHotkey", {
+  make: Effect.gen(function* () {
     const ipc = yield* HotkeyIpc;
     const { retryBackoff } = yield* SummonHotkeyConfig;
     const stateRef = yield* SubscriptionRef.make<SummonHotkeyState>(INACTIVE);
@@ -95,9 +101,9 @@ export class SummonHotkey extends Effect.Service<SummonHotkey>()("desktop/Summon
     // it, so the hotkey is released when the runtime dies.
     const scope = yield* Effect.scope;
     // Serializes configures so two can't interleave their interrupt/fork pairs.
-    const mutex = yield* Effect.makeSemaphore(1);
+    const mutex = yield* Semaphore.make(1);
     // The running registration fiber. Mutated only under `mutex`.
-    let fiber: Fiber.RuntimeFiber<never> | null = null;
+    let fiber: Fiber.Fiber<never> | null = null;
 
     // Hold the registration until interrupted, retrying only in-use failures.
     // acquireUseRelease pairs register with unregister so the key is ALWAYS
@@ -117,10 +123,10 @@ export class SummonHotkey extends Effect.Service<SummonHotkey>()("desktop/Summon
             // next configure interrupts us.
             () =>
               SubscriptionRef.set(stateRef, { status: "registered" }).pipe(
-                Effect.zipRight(Effect.never),
+                Effect.andThen(Effect.never),
               ),
             () => ipc.unregister(SUMMON_HOTKEY).pipe(Effect.ignore),
-          ).pipe(Effect.catchAll((error) => Effect.succeed(error)));
+          ).pipe(Effect.catch((error) => Effect.succeed(error)));
 
           // Only a register failure reaches here (the use branch never returns).
           // Re-asserting the SAME standing failure must not publish: every set
@@ -165,3 +171,6 @@ export class SummonHotkey extends Effect.Service<SummonHotkey>()("desktop/Summon
     };
   }),
 }) {}
+
+export const layerWithoutDependencies = Layer.effect(SummonHotkey, SummonHotkey.make);
+export const layer = layerWithoutDependencies.pipe(Layer.provide(hotkeyIpcLayer));

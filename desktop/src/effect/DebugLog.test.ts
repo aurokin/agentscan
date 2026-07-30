@@ -1,6 +1,6 @@
 import { Effect, SubscriptionRef } from "effect";
 import { describe, expect, it } from "vitest";
-import { DEBUG_LOG_LIMIT, DebugLog } from "./DebugLog";
+import { DEBUG_LOG_LIMIT, DebugLog, layer as debugLogLayer } from "./DebugLog";
 
 describe("DebugLog", () => {
   it("prepends stamped entries newest-first", () =>
@@ -17,7 +17,7 @@ describe("DebugLog", () => {
       // Distinct in practice (millis + random). Deliberately weak: the formula
       // is kept for parity with the old App.tsx state and guarantees nothing.
       expect(entries[0].id).not.toBe(entries[1].id);
-    }).pipe(Effect.provide(DebugLog.Default), Effect.runPromise));
+    }).pipe(Effect.provide(debugLogLayer, { local: true }), Effect.runPromise));
 
   it("caps the log at DEBUG_LOG_LIMIT, dropping the oldest", () =>
     Effect.gen(function* () {
@@ -29,7 +29,7 @@ describe("DebugLog", () => {
       expect(entries).toHaveLength(DEBUG_LOG_LIMIT);
       expect(entries[0].label).toBe(`entry ${DEBUG_LOG_LIMIT + 4}`);
       expect(entries[entries.length - 1].label).toBe("entry 5");
-    }).pipe(Effect.provide(DebugLog.Default), Effect.runPromise));
+    }).pipe(Effect.provide(debugLogLayer, { local: true }), Effect.runPromise));
 
   it("clear empties the log", () =>
     Effect.gen(function* () {
@@ -37,5 +37,5 @@ describe("DebugLog", () => {
       yield* log.append({ kind: "stream", label: "x", detail: "y" });
       yield* log.clear;
       expect(yield* SubscriptionRef.get(log.state)).toEqual([]);
-    }).pipe(Effect.provide(DebugLog.Default), Effect.runPromise));
+    }).pipe(Effect.provide(debugLogLayer, { local: true }), Effect.runPromise));
 });

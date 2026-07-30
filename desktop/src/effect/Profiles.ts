@@ -1,5 +1,5 @@
-import { Effect, SubscriptionRef } from "effect";
-import { PrefsBridge } from "./PrefsBridge";
+import { Context, Effect, Layer, SubscriptionRef } from "effect";
+import { PrefsBridge, layer as prefsBridgeLayer } from "./PrefsBridge";
 import {
   emptyRunnerSettings,
   getActiveProfile,
@@ -52,9 +52,8 @@ export type ApplyRunnerSettingsResult = "applied" | "duplicate-host";
 // Keeping the decision in React preserves the original synchronous gate; pushing the
 // dirty flag into a service Ref would let an inbound sync race ahead of the push and
 // clobber a just-started edit.
-export class Profiles extends Effect.Service<Profiles>()("desktop/Profiles", {
-  dependencies: [PrefsBridge.Default],
-  scoped: Effect.gen(function* () {
+export class Profiles extends Context.Service<Profiles>()("desktop/Profiles", {
+  make: Effect.gen(function* () {
     const bridge = yield* PrefsBridge;
     const stateRef = yield* SubscriptionRef.make<ProfileState>(loadProfileState(bridge.loadRaw));
 
@@ -267,3 +266,6 @@ export class Profiles extends Effect.Service<Profiles>()("desktop/Profiles", {
     };
   }),
 }) {}
+
+export const layerWithoutDependencies = Layer.effect(Profiles, Profiles.make);
+export const layer = layerWithoutDependencies.pipe(Layer.provide(prefsBridgeLayer));

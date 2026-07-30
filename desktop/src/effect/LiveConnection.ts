@@ -1,5 +1,16 @@
-import { Duration, Effect, Fiber, Queue, Ref, Stream, SubscriptionRef } from "effect";
-import { TauriIpc, type IpcError } from "./TauriIpc";
+import {
+  Context,
+  Duration,
+  Effect,
+  Fiber,
+  Layer,
+  Queue,
+  Ref,
+  Semaphore,
+  Stream,
+  SubscriptionRef,
+} from "effect";
+import { TauriIpc, layer as tauriIpcLayer, type IpcError } from "./TauriIpc";
 import type {
   ConnectionStatus,
   DesktopRunnerSettings,
@@ -22,18 +33,18 @@ export type LiveBackoff = {
   readonly mismatch: Duration.Duration;
 };
 
-export class LiveConnectionConfig extends Effect.Service<LiveConnectionConfig>()(
+export const LiveConnectionConfig = Context.Reference<{ readonly backoff: LiveBackoff }>(
   "desktop/LiveConnectionConfig",
   {
-    succeed: {
+    defaultValue: () => ({
       backoff: {
         recoverable: Duration.seconds(1),
         noDaemon: Duration.seconds(10),
         mismatch: Duration.seconds(10),
-      } as LiveBackoff,
-    },
+      },
+    }),
   },
-) {}
+);
 
 // A terminal frame ends the subscribe child. The desktop owns reconnect policy, so
 // we classify what to do next rather than wedging:
@@ -190,11 +201,10 @@ function foldEvent(
 // source, each subscribing, folding frames, and re-arming per the latch policy
 // independently. UI/profile changes drive it through configure/reconnect/start —
 // there is no other coupling to App state.
-export class LiveConnection extends Effect.Service<LiveConnection>()(
+export class LiveConnection extends Context.Service<LiveConnection>()(
   "desktop/LiveConnection",
   {
-    dependencies: [TauriIpc.Default, LiveConnectionConfig.Default],
-    scoped: Effect.gen(function* () {
+    make: Effect.gen(function* () {
       const tauri = yield* TauriIpc;
       const { backoff } = yield* LiveConnectionConfig;
       const statesRef = yield* SubscriptionRef.make<LiveStates>(new Map());
@@ -207,7 +217,7 @@ export class LiveConnection extends Effect.Service<LiveConnection>()(
       const scope = yield* Effect.scope;
       // Serializes configure/reconnect/start so a diff and a concurrent retarget
       // can't interleave their edits of the per-key supervisor map.
-      const mutex = yield* Effect.makeSemaphore(1);
+      const mutex = yield* Semaphore.make(1);
 
       const updateKeyState = (key: string, update: (state: LiveState) => LiveState) =>
         SubscriptionRef.update(statesRef, (states) => {
@@ -336,7 +346,7 @@ export class LiveConnection extends Effect.Service<LiveConnection>()(
                     })
                     .pipe(
                       Effect.as<string | null>(null),
-                      Effect.catchAll((error) => Effect.succeed<string | null>(error.message)),
+                      Effect.catch((error) => Effect.succeed<string | null>(error.message)),
                     ),
                   // use: drain frames until terminal, unless the worker never installed.
                   (startError) =>
@@ -415,7 +425,7 @@ export class LiveConnection extends Effect.Service<LiveConnection>()(
                   yield* Effect.sleep(backoff.noDaemon);
                   reachable = yield* tauri.pollDaemonStatus(settings).pipe(
                     Effect.map((result) => result.reachable),
-                    Effect.catchAll(() => Effect.succeed(true)),
+                    Effect.catch(() => Effect.succeed(true)),
                   );
                 }
               } else {
@@ -441,7 +451,7 @@ export class LiveConnection extends Effect.Service<LiveConnection>()(
       // dock with no recovery). Parking on Effect.never keeps the fiber alive so
       // the key's next target switch re-arms us.
       const parkFatal = (runnerKey: string, message: string): Effect.Effect<never> =>
-        Effect.zipRight(
+        Effect.andThen(
           setKeyState(runnerKey, {
             connection: { status: "fatal", message },
             rows: [],
@@ -457,8 +467,8 @@ export class LiveConnection extends Effect.Service<LiveConnection>()(
       // swallowed and flashed as a spurious fatal.
       const superviseTarget = (target: Target): Effect.Effect<never> =>
         runTarget(target).pipe(
-          Effect.catchAll((error) => parkFatal(target.runnerKey, error.message)),
-          Effect.catchAllDefect((defect) =>
+          Effect.catch((error) => parkFatal(target.runnerKey, error.message)),
+          Effect.catchDefect((defect) =>
             parkFatal(target.runnerKey, defectMessage(defect)),
           ),
         );
@@ -468,17 +478,15 @@ export class LiveConnection extends Effect.Service<LiveConnection>()(
       // configure/retarget returns, so only real changes (enabled flip, reconnect,
       // start) re-arm.
       const superviseKey = (targetRef: SubscriptionRef.SubscriptionRef<Target>) =>
-        targetRef.changes.pipe(
+        SubscriptionRef.changes(targetRef).pipe(
           Stream.changes,
-          Stream.flatMap((target) => Stream.fromEffect(superviseTarget(target)), {
-            switch: true,
-          }),
+          Stream.switchMap((target) => Stream.fromEffect(superviseTarget(target))),
           Stream.runDrain,
         );
 
       type Entry = {
         readonly targetRef: SubscriptionRef.SubscriptionRef<Target>;
-        readonly fiber: Fiber.RuntimeFiber<void>;
+        readonly fiber: Fiber.Fiber<void>;
       };
       // The running per-key supervisors. Mutated only under `mutex`.
       const entries = new Map<string, Entry>();
@@ -500,7 +508,7 @@ export class LiveConnection extends Effect.Service<LiveConnection>()(
                 continue;
               }
               entries.delete(key);
-              yield* Fiber.interruptFork(entry.fiber);
+              entry.fiber.interruptUnsafe();
             }
             for (const [key, input] of next) {
               const existing = entries.get(key);
@@ -587,6 +595,9 @@ export class LiveConnection extends Effect.Service<LiveConnection>()(
     }),
   },
 ) {}
+
+export const layerWithoutDependencies = Layer.effect(LiveConnection, LiveConnection.make);
+export const layer = layerWithoutDependencies.pipe(Layer.provide(tauriIpcLayer));
 
 function seedEpoch(): number {
   let base = Date.now();

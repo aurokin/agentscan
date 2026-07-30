@@ -7,7 +7,7 @@
 // appendDebugEntry closure was recreated every render, forcing dep-list
 // omissions in every effect that logged.
 
-import { Effect, SubscriptionRef } from "effect";
+import { Context, Effect, Layer, SubscriptionRef } from "effect";
 
 // Newest-first, capped: appends beyond the limit drop the oldest entries.
 export const DEBUG_LOG_LIMIT = 80;
@@ -23,8 +23,8 @@ export type DebugEntry = {
 // What call sites supply; the service stamps id + time at append.
 export type DebugEntryInput = Omit<DebugEntry, "id" | "time">;
 
-export class DebugLog extends Effect.Service<DebugLog>()("desktop/DebugLog", {
-  effect: Effect.gen(function* () {
+export class DebugLog extends Context.Service<DebugLog>()("desktop/DebugLog", {
+  make: Effect.gen(function* () {
     const stateRef = yield* SubscriptionRef.make<ReadonlyArray<DebugEntry>>([]);
     return {
       state: stateRef,
@@ -47,3 +47,5 @@ export class DebugLog extends Effect.Service<DebugLog>()("desktop/DebugLog", {
     };
   }),
 }) {}
+
+export const layer = Layer.effect(DebugLog, DebugLog.make);

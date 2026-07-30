@@ -1,6 +1,6 @@
-import { Effect, Ref, Stream, SubscriptionRef } from "effect";
+import { Context, Effect, Layer, Ref, Stream, SubscriptionRef } from "effect";
 import { invoke } from "@tauri-apps/api/core";
-import { PrefsBridge } from "./PrefsBridge";
+import { PrefsBridge, layer as prefsBridgeLayer } from "./PrefsBridge";
 import { IpcError } from "./TauriIpc";
 import type { PrefsSync, PreflightStatus } from "./prefs";
 import type { AgentscanPreflight } from "./profileModel";
@@ -13,15 +13,17 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
 // the Preflight logic stays pure over it and a vitest layer can script success/failure
 // without a real Tauri host. Kept separate from TauriIpc so the live-connection tests'
 // scripted boundary is unaffected.
-export class PreflightIpc extends Effect.Service<PreflightIpc>()("desktop/PreflightIpc", {
-  succeed: {
+export class PreflightIpc extends Context.Service<PreflightIpc>()("desktop/PreflightIpc", {
+  make: Effect.succeed({
     probe: (settings: DesktopRunnerSettings) =>
       Effect.tryPromise({
         try: () => invoke<AgentscanPreflight>("preflight_agentscan", { settings }),
         catch: (error) => new IpcError({ op: "preflight_agentscan", message: messageOf(error) }),
       }),
-  },
+  }),
 }) {}
+
+export const ipcLayer = Layer.effect(PreflightIpc, PreflightIpc.make);
 
 // The dock's resolved preflight (CLI reachability for the active runner). Mirrors the
 // old App.tsx LoadState, minus its dead `profiles` field — the dock now reads the
@@ -83,9 +85,8 @@ const IDLE: Armed = { gen: 0, target: null };
 // idle and just adopts the dock's broadcasts. A supervised fiber runs one probe per
 // target and is interrupted by the next configure, superseding an in-flight probe the
 // way the old `cancelled` flag did.
-export class Preflight extends Effect.Service<Preflight>()("desktop/Preflight", {
-  dependencies: [PreflightIpc.Default, PrefsBridge.Default],
-  scoped: Effect.gen(function* () {
+export class Preflight extends Context.Service<Preflight>()("desktop/Preflight", {
+  make: Effect.gen(function* () {
     const ipc = yield* PreflightIpc;
     const bridge = yield* PrefsBridge;
     const stateRef = yield* SubscriptionRef.make<PreflightState>(INITIAL_STATE);
@@ -147,7 +148,7 @@ export class Preflight extends Effect.Service<Preflight>()("desktop/Preflight", 
               ),
               // A probe failure is the old loadShellState catch → a failed state with the
               // IPC error message (Reconnect/Open settings is offered by the dock UI).
-              Effect.catchAll((error) =>
+              Effect.catch((error) =>
                 Effect.succeed<PreflightState>({ status: "failed", message: error.message }),
               ),
             );
@@ -160,9 +161,9 @@ export class Preflight extends Effect.Service<Preflight>()("desktop/Preflight", 
     // Supervisor: each new target interrupts the running probe and replaces it. A probe
     // interrupted mid-flight drops its result (the Tauri invoke can't be cancelled, but
     // its outcome is discarded) — exactly the old `cancelled` guard.
-    yield* targetRef.changes.pipe(
+    yield* SubscriptionRef.changes(targetRef).pipe(
       Stream.changes,
-      Stream.flatMap((armed) => Stream.fromEffect(runTarget(armed)), { switch: true }),
+      Stream.switchMap((armed) => Stream.fromEffect(runTarget(armed))),
       Stream.runDrain,
       Effect.forkScoped,
     );
@@ -204,3 +205,8 @@ export class Preflight extends Effect.Service<Preflight>()("desktop/Preflight", 
     };
   }),
 }) {}
+
+export const layerWithoutDependencies = Layer.effect(Preflight, Preflight.make);
+export const layer = layerWithoutDependencies.pipe(
+  Layer.provide(Layer.merge(ipcLayer, prefsBridgeLayer)),
+);

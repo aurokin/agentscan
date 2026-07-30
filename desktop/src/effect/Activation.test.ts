@@ -7,11 +7,16 @@ import {
   Ref,
   Stream,
   SubscriptionRef,
-  TestClock,
-  TestContext,
 } from "effect";
+import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
-import { Activation, ActivationConfig, FocusIpc, type ActivateInput } from "./Activation";
+import {
+  Activation,
+  ActivationConfig,
+  FocusIpc,
+  layerWithoutDependencies as activationLayer,
+  type ActivateInput,
+} from "./Activation";
 import { LiveConnection, type LiveStates } from "./LiveConnection";
 import type { PickerActivation } from "./pickerViewModel";
 import { IpcError } from "./TauriIpc";
@@ -70,8 +75,8 @@ const makeHarness = (script: ReadonlyArray<Effect.Effect<void, IpcError>>) =>
     });
 
     return {
-      layer: Activation.DefaultWithoutDependencies.pipe(
-        Layer.provide(Layer.mergeAll(MockFocus, MockLive, Ttl)),
+      layer: Layer.fresh(
+        activationLayer.pipe(Layer.provide(Layer.mergeAll(MockFocus, MockLive, Ttl))),
       ),
       liveStates,
       reconnects: Ref.get(reconnects),
@@ -98,7 +103,7 @@ const awaitStatus = (
   state: SubscriptionRef.SubscriptionRef<PickerActivation>,
   status: PickerActivation["status"],
 ): Effect.Effect<PickerActivation> =>
-  state.changes.pipe(
+  SubscriptionRef.changes(state).pipe(
     Stream.filter((a) => a.status === status),
     Stream.runHead,
     Effect.flatMap(
@@ -112,7 +117,7 @@ const awaitStatus = (
 // Let the service's supervisor fibers process a state flip and (re)arm their
 // TestClock sleeps before the test adjusts the clock — every step in between is
 // scheduler-driven (no real timers), so yielding is sufficient and deterministic.
-const settle = Effect.yieldNow().pipe(Effect.repeatN(40));
+const settle = Effect.yieldNow.pipe(Effect.repeat({ times: 40 }));
 
 describe("Activation", () => {
   // THE pin for the TTL/recovery interplay, matching the old React effects:
@@ -162,7 +167,10 @@ describe("Activation", () => {
         // ...and the full window elapsing finally expires it.
         yield* TestClock.adjust("2 seconds");
         yield* awaitStatus(activation.state, "idle");
-      }).pipe(Effect.provide(harness.layer), Effect.provide(TestContext.TestContext));
+      }).pipe(
+        Effect.provide(harness.layer),
+        Effect.provide(TestClock.layer(), { local: true }),
+      );
     }).pipe(Effect.runPromise));
 
   it("runs one activation at a time, never expires a running one, and resets to idle on success", () =>
@@ -197,7 +205,10 @@ describe("Activation", () => {
         yield* Deferred.succeed(gate, undefined);
         yield* awaitStatus(activation.state, "idle");
         expect(firstLog).toEqual(["started", "ok"]);
-      }).pipe(Effect.provide(harness.layer), Effect.provide(TestContext.TestContext));
+      }).pipe(
+        Effect.provide(harness.layer),
+        Effect.provide(TestClock.layer(), { local: true }),
+      );
     }).pipe(Effect.runPromise));
 
   it("surfaces a failure on its open source, logs the detail, and re-arms that source's live client", () =>
@@ -219,7 +230,10 @@ describe("Activation", () => {
         });
         expect(yield* harness.reconnects).toEqual(["k1"]);
         expect(log).toEqual(["started", "no server running"]);
-      }).pipe(Effect.provide(harness.layer), Effect.provide(TestContext.TestContext));
+      }).pipe(
+        Effect.provide(harness.layer),
+        Effect.provide(TestClock.layer(), { local: true }),
+      );
     }).pipe(Effect.runPromise));
 
   it("closing the in-flight source frees the guard for other sources and drops the outcome", () =>
@@ -253,7 +267,10 @@ describe("Activation", () => {
         expect(yield* harness.focusCalls).toEqual(["%1", "%2"]);
         // The abandoned activation must not act on its source after the close.
         expect(yield* harness.reconnects).toEqual([]);
-      }).pipe(Effect.provide(harness.layer), Effect.provide(TestContext.TestContext));
+      }).pipe(
+        Effect.provide(harness.layer),
+        Effect.provide(TestClock.layer(), { local: true }),
+      );
     }).pipe(Effect.runPromise));
 
   it("drops a failure whose source is closed by the time it settles", () =>
@@ -271,7 +288,10 @@ describe("Activation", () => {
         // (there is no folder list left for it to describe).
         yield* activation.prune([]);
         yield* awaitStatus(activation.state, "idle");
-      }).pipe(Effect.provide(harness.layer), Effect.provide(TestContext.TestContext));
+      }).pipe(
+        Effect.provide(harness.layer),
+        Effect.provide(TestClock.layer(), { local: true }),
+      );
     }).pipe(Effect.runPromise));
 
   it("a failure settling after the source closed (before prune) is dropped without a reconnect", () =>
@@ -280,7 +300,7 @@ describe("Activation", () => {
       // settling — the render-synced probe flips before prune gets to run.
       const gate = yield* Deferred.make<void>();
       const harness = yield* makeHarness([
-        Deferred.await(gate).pipe(Effect.zipRight(failWith("late failure"))),
+        Deferred.await(gate).pipe(Effect.andThen(failWith("late failure"))),
       ]);
       let open = true;
 
@@ -297,6 +317,9 @@ describe("Activation", () => {
         // No failure surfaced for the closed folder, and crucially no re-arm
         // of its live client (over SSH that would spawn a doomed subscribe).
         expect(yield* harness.reconnects).toEqual([]);
-      }).pipe(Effect.provide(harness.layer), Effect.provide(TestContext.TestContext));
+      }).pipe(
+        Effect.provide(harness.layer),
+        Effect.provide(TestClock.layer(), { local: true }),
+      );
     }).pipe(Effect.runPromise));
 });

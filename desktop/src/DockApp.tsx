@@ -3,7 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { Result, useAtomSet, useAtomValue } from "@effect-atom/atom-react";
+import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { AsyncResult } from "effect/unstable/reactivity";
 import { BootScreen } from "./components/BootScreen";
 import { GroupedPicker } from "./components/GroupedPicker";
 import { LiveStrip } from "./components/LiveStrip";
@@ -115,7 +116,7 @@ function DockApp() {
   // The dock's resolved CLI preflight is owned by the Preflight Effect service. The dock
   // observes preflightStateAtom and drives the probe via configurePreflight; the service
   // also mirrors each result to the settings window over the shared prefs channel.
-  const preflightState = Result.getOrElse(
+  const preflightState = AsyncResult.getOrElse(
     useAtomValue(preflightStateAtom),
     () => INITIAL_PREFLIGHT,
   );
@@ -127,7 +128,7 @@ function DockApp() {
   // runnerKey / drafts are correct on the very first paint, matching the service seed.
   const initialProfileState = useMemo(() => loadProfileState(readLocalStorage), []);
   const profileStateResult = useAtomValue(profilesAtom);
-  const profileState = Result.getOrElse(profileStateResult, () => initialProfileState);
+  const profileState = AsyncResult.getOrElse(profileStateResult, () => initialProfileState);
   // Promise mode so the horizontal footer's settings deep-link can await the
   // selection commit before opening the window.
   const selectProfileSet = useAtomSet(selectProfileAtom, { mode: "promise" });
@@ -180,12 +181,12 @@ function DockApp() {
   // settings window mounts these too (separate webview/runtime) but never configures
   // a target, so its supervisors stay idle.
   const liveResult = useAtomValue(liveStatesAtom);
-  const liveStates = Result.getOrElse(liveResult, () => EMPTY_LIVE_STATES);
+  const liveStates = AsyncResult.getOrElse(liveResult, () => EMPTY_LIVE_STATES);
   const initialNotifications = useMemo(
     () => ({ notifyOnIdle: parseNotifyOnIdle(readLocalStorage(NOTIFY_ON_IDLE_STORAGE_KEY)) }),
     [],
   );
-  const { notifyOnIdle } = Result.getOrElse(
+  const { notifyOnIdle } = AsyncResult.getOrElse(
     useAtomValue(notificationsAtom),
     () => initialNotifications,
   );
@@ -208,7 +209,7 @@ function DockApp() {
   // The summon hotkey (registration + in-use retry loop) is owned by the
   // SummonHotkey service; the dock arms it below and renders its standing
   // failure state as the global banner.
-  const summonHotkey = Result.getOrElse(
+  const summonHotkey = AsyncResult.getOrElse(
     useAtomValue(summonHotkeyAtom),
     () => SUMMON_HOTKEY_INACTIVE,
   );
@@ -226,7 +227,10 @@ function DockApp() {
   // render (before the runtime resolves the atom) falls back to a direct storage
   // read so layout/theme/glass are right on the first paint.
   const initialAppearance = useMemo(() => loadAppearance(readLocalStorage), []);
-  const appearance = Result.getOrElse(useAtomValue(appearanceAtom), () => initialAppearance);
+  const appearance = AsyncResult.getOrElse(
+    useAtomValue(appearanceAtom),
+    () => initialAppearance,
+  );
   const { themePref, orientationPref, glassEnabled, surfaceAlpha, framelessEnabled } =
     appearance;
   // Every native/DOM apply for those prefs — theme, orientation tracking, window
@@ -247,7 +251,7 @@ function DockApp() {
   // the HostIpc-backed atom, shown as the local source's label (the way a
   // remote source is keyed by its SSH host). Empty while unresolved AND on
   // failure; sourceLabel falls back to a generic label for "".
-  const localHostLabel = Result.getOrElse(useAtomValue(localHostLabelAtom), () => "");
+  const localHostLabel = AsyncResult.getOrElse(useAtomValue(localHostLabelAtom), () => "");
   // The probed remote hostname as a label source, from this window's own resolved
   // preflight (the settings window reuses the mirror instead). sourceLabel only
   // honors it for the profile whose runnerKey matches, so a stale probe can never
@@ -283,7 +287,10 @@ function DockApp() {
   // failure surface + TTL, and its interplay with the failed source's recovery)
   // is owned by the Activation Effect service; this window renders its state
   // and drives it via activateRow/the prune effect.
-  const activation = Result.getOrElse(useAtomValue(activationAtom), () => IDLE_ACTIVATION);
+  const activation = AsyncResult.getOrElse(
+    useAtomValue(activationAtom),
+    () => IDLE_ACTIVATION,
+  );
   const activate = useAtomSet(activateAtom);
   const pruneActivation = useAtomSet(pruneActivationAtom);
 

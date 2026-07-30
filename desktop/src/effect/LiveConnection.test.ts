@@ -10,7 +10,12 @@ import {
   SubscriptionRef,
 } from "effect";
 import { describe, expect, it } from "vitest";
-import { LiveConnection, LiveConnectionConfig, type LiveStates } from "./LiveConnection";
+import {
+  LiveConnection,
+  LiveConnectionConfig,
+  layerWithoutDependencies as liveConnectionLayer,
+  type LiveStates,
+} from "./LiveConnection";
 import { IpcError, TauriIpc } from "./TauriIpc";
 import type {
   ConnectionStatus,
@@ -77,7 +82,7 @@ const awaitKeyStatus = (
   key: string,
   status: ConnectionStatus["status"],
 ): Effect.Effect<LiveState> =>
-  states.changes.pipe(
+  SubscriptionRef.changes(states).pipe(
     Stream.filter((map) => map.get(key)?.connection.status === status),
     Stream.map((map) => map.get(key) as LiveState),
     Stream.runHead,
@@ -152,9 +157,8 @@ describe("LiveConnection", () => {
 
       yield* program.pipe(
         Effect.provide(
-          LiveConnection.DefaultWithoutDependencies.pipe(
-            Layer.provide(Layer.merge(MockTauri, StableBackoff)),
-          ),
+          liveConnectionLayer.pipe(Layer.provide(Layer.merge(MockTauri, StableBackoff))),
+          { local: true },
         ),
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
@@ -213,9 +217,8 @@ describe("LiveConnection", () => {
 
       yield* program.pipe(
         Effect.provide(
-          LiveConnection.DefaultWithoutDependencies.pipe(
-            Layer.provide(Layer.merge(MockTauri, StableBackoff)),
-          ),
+          liveConnectionLayer.pipe(Layer.provide(Layer.merge(MockTauri, StableBackoff))),
+          { local: true },
         ),
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
@@ -269,9 +272,8 @@ describe("LiveConnection", () => {
 
       yield* program.pipe(
         Effect.provide(
-          LiveConnection.DefaultWithoutDependencies.pipe(
-            Layer.provide(Layer.merge(MockTauri, StableBackoff)),
-          ),
+          liveConnectionLayer.pipe(Layer.provide(Layer.merge(MockTauri, StableBackoff))),
+          { local: true },
         ),
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
@@ -319,9 +321,8 @@ describe("LiveConnection", () => {
 
       yield* program.pipe(
         Effect.provide(
-          LiveConnection.DefaultWithoutDependencies.pipe(
-            Layer.provide(Layer.merge(MockTauri, StableBackoff)),
-          ),
+          liveConnectionLayer.pipe(Layer.provide(Layer.merge(MockTauri, StableBackoff))),
+          { local: true },
         ),
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
@@ -352,9 +353,8 @@ describe("LiveConnection", () => {
 
       yield* program.pipe(
         Effect.provide(
-          LiveConnection.DefaultWithoutDependencies.pipe(
-            Layer.provide(Layer.merge(FailingTauri, StableBackoff)),
-          ),
+          liveConnectionLayer.pipe(Layer.provide(Layer.merge(FailingTauri, StableBackoff))),
+          { local: true },
         ),
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
@@ -405,9 +405,10 @@ describe("LiveConnection", () => {
 
       yield* program.pipe(
         Effect.provide(
-          LiveConnection.DefaultWithoutDependencies.pipe(
+          liveConnectionLayer.pipe(
             Layer.provide(Layer.merge(FlakyListenerTauri, StableBackoff)),
           ),
+          { local: true },
         ),
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
@@ -452,9 +453,8 @@ describe("LiveConnection", () => {
 
       yield* program.pipe(
         Effect.provide(
-          LiveConnection.DefaultWithoutDependencies.pipe(
-            Layer.provide(Layer.merge(MockTauri, StableBackoff)),
-          ),
+          liveConnectionLayer.pipe(Layer.provide(Layer.merge(MockTauri, StableBackoff))),
+          { local: true },
         ),
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
@@ -513,9 +513,8 @@ describe("LiveConnection", () => {
 
       yield* program.pipe(
         Effect.provide(
-          LiveConnection.DefaultWithoutDependencies.pipe(
-            Layer.provide(Layer.merge(MockTauri, EagerBackoff)),
-          ),
+          liveConnectionLayer.pipe(Layer.provide(Layer.merge(MockTauri, EagerBackoff))),
+          { local: true },
         ),
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
@@ -572,9 +571,8 @@ describe("LiveConnection", () => {
 
       yield* program.pipe(
         Effect.provide(
-          LiveConnection.DefaultWithoutDependencies.pipe(
-            Layer.provide(Layer.merge(MockTauri, EagerBackoff)),
-          ),
+          liveConnectionLayer.pipe(Layer.provide(Layer.merge(MockTauri, EagerBackoff))),
+          { local: true },
         ),
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
@@ -619,9 +617,8 @@ describe("LiveConnection", () => {
 
       yield* program.pipe(
         Effect.provide(
-          LiveConnection.DefaultWithoutDependencies.pipe(
-            Layer.provide(Layer.merge(MockTauri, EagerBackoff)),
-          ),
+          liveConnectionLayer.pipe(Layer.provide(Layer.merge(MockTauri, EagerBackoff))),
+          { local: true },
         ),
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
@@ -637,7 +634,7 @@ describe("LiveConnection", () => {
 
       const MockTauri = Layer.succeed(TauriIpc, {
         startLivePicker: ({ epoch }) =>
-          Effect.zipRight(Queue.offer(startedEpochs, epoch), Deferred.await(releaseStart)),
+          Effect.andThen(Queue.offer(startedEpochs, epoch), Deferred.await(releaseStart)),
         stopLivePicker: ({ sourceKey, epoch }) =>
           Queue.offer(stoppedCalls, { sourceKey, epoch }).pipe(Effect.asVoid),
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
@@ -662,9 +659,8 @@ describe("LiveConnection", () => {
 
       yield* program.pipe(
         Effect.provide(
-          LiveConnection.DefaultWithoutDependencies.pipe(
-            Layer.provide(Layer.merge(MockTauri, StableBackoff)),
-          ),
+          liveConnectionLayer.pipe(Layer.provide(Layer.merge(MockTauri, StableBackoff))),
+          { local: true },
         ),
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
@@ -720,9 +716,8 @@ describe("LiveConnection", () => {
 
       yield* program.pipe(
         Effect.provide(
-          LiveConnection.DefaultWithoutDependencies.pipe(
-            Layer.provide(Layer.merge(MockTauri, StableBackoff)),
-          ),
+          liveConnectionLayer.pipe(Layer.provide(Layer.merge(MockTauri, StableBackoff))),
+          { local: true },
         ),
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
@@ -749,7 +744,7 @@ describe("LiveConnection", () => {
         yield* lc.configure([{ settings: SETTINGS, runnerKey: "k1", enabled: "carry" }]);
         // The disabled-target state, not merely the INITIAL_STATE seed (both are
         // "connecting", so filter on the message).
-        yield* lc.states.changes.pipe(
+        yield* SubscriptionRef.changes(lc.states).pipe(
           Stream.filter(
             (map) => map.get("k1")?.connection.message === "Waiting for a source",
           ),
@@ -771,9 +766,8 @@ describe("LiveConnection", () => {
 
       yield* program.pipe(
         Effect.provide(
-          LiveConnection.DefaultWithoutDependencies.pipe(
-            Layer.provide(Layer.merge(MockTauri, StableBackoff)),
-          ),
+          liveConnectionLayer.pipe(Layer.provide(Layer.merge(MockTauri, StableBackoff))),
+          { local: true },
         ),
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
@@ -842,7 +836,7 @@ describe("LiveConnection", () => {
         yield* lc.configure([{ settings: SETTINGS, runnerKey: "k1", enabled: true }]);
         const stopped = yield* Queue.take(stoppedCalls);
         expect(stopped).toEqual({ sourceKey: "k2", epoch: k2.epoch });
-        const dropped = yield* lc.states.changes.pipe(
+        const dropped = yield* SubscriptionRef.changes(lc.states).pipe(
           Stream.filter((map) => !map.has("k2")),
           Stream.runHead,
           Effect.flatMap(
@@ -858,9 +852,8 @@ describe("LiveConnection", () => {
 
       yield* program.pipe(
         Effect.provide(
-          LiveConnection.DefaultWithoutDependencies.pipe(
-            Layer.provide(Layer.merge(MockTauri, StableBackoff)),
-          ),
+          liveConnectionLayer.pipe(Layer.provide(Layer.merge(MockTauri, StableBackoff))),
+          { local: true },
         ),
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
