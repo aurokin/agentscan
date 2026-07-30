@@ -1,6 +1,6 @@
 // Pure profile/settings model for the desktop shell. No React, Effect runtime, or
 // global `window` access — persistence is parameterized over a read/write pair so
-// the Profiles Effect.Service (and its vitest proof) can drive it over an injected
+// the Profiles Effect service (and its vitest proof) can drive it over an injected
 // storage boundary while App.tsx keeps using the same derivations for rendering.
 //
 // These types mirror the Rust contracts in src-tauri/src/lib.rs (DesktopRunnerSettings)

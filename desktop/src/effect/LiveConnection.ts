@@ -461,8 +461,8 @@ export class LiveConnection extends Context.Service<LiveConnection>()(
         );
 
       // Wrap each target run so a failure (the event listener failing to install) or
-      // an unexpected defect inside runTarget is parked as fatal. catchAll +
-      // catchAllDefect deliberately do NOT catch interruption, so the supervisor's
+      // an unexpected defect inside runTarget is parked as fatal. catch +
+      // catchDefect deliberately do NOT catch interruption, so the supervisor's
       // `switch` on a new target still cancels this run cleanly rather than being
       // swallowed and flashed as a spurious fatal.
       const superviseTarget = (target: Target): Effect.Effect<never> =>
