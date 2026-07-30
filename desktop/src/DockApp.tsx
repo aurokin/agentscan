@@ -4,6 +4,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { Result } from "effect";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { BootScreen } from "./components/BootScreen";
 import { GroupedPicker } from "./components/GroupedPicker";
@@ -64,7 +65,8 @@ import {
   type DesktopProfileConfig,
   type PreflightLabelSource,
 } from "./effect/profileModel";
-import { PREFS_SYNC_EVENT, type PrefsSync } from "./effect/prefs";
+import { PREFS_SYNC_EVENT } from "./effect/prefs";
+import { decodePrefsSync } from "./effect/wireSchema";
 import {
   deriveSourceViews,
   footerTriggerView,
@@ -528,8 +530,9 @@ function DockApp() {
   useEffect(() => {
     let disposed = false;
     let unlisten: UnlistenFn | null = null;
-    void listen<PrefsSync>(PREFS_SYNC_EVENT, (event) => {
-      if (event.payload.kind === "profiles") {
+    void listen<unknown>(PREFS_SYNC_EVENT, (event) => {
+      const payload = decodePrefsSync(event.payload);
+      if (Result.isSuccess(payload) && payload.success.kind === "profiles") {
         reloadProfiles();
       }
     }).then((fn) => {

@@ -5,6 +5,7 @@ import { IpcError } from "./TauriIpc";
 import type { PrefsSync, PreflightStatus } from "./prefs";
 import type { AgentscanPreflight } from "./profileModel";
 import type { DesktopRunnerSettings } from "./types";
+import { decodeAgentscanPreflight } from "./wireSchema";
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
@@ -15,11 +16,21 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
 // scripted boundary is unaffected.
 export class PreflightIpc extends Context.Service<PreflightIpc>()("desktop/PreflightIpc", {
   make: Effect.succeed({
-    probe: (settings: DesktopRunnerSettings) =>
+    probe: (
+      settings: DesktopRunnerSettings,
+    ): Effect.Effect<AgentscanPreflight, IpcError> =>
       Effect.tryPromise({
-        try: () => invoke<AgentscanPreflight>("preflight_agentscan", { settings }),
+        try: () => invoke<unknown>("preflight_agentscan", { settings }),
         catch: (error) => new IpcError({ op: "preflight_agentscan", message: messageOf(error) }),
-      }),
+      }).pipe(
+        Effect.flatMap((input) =>
+          Effect.fromResult(decodeAgentscanPreflight(input)).pipe(
+            Effect.mapError(
+              (error) => new IpcError({ op: "preflight_agentscan", message: error.message }),
+            ),
+          ),
+        ),
+      ),
   }),
 }) {}
 
@@ -43,11 +54,10 @@ export type PreflightState =
 // prefs channel. The card reproduces the dock's tones from `status` + `preflight`,
 // guarded by `runnerKey` against its own active runner. `preflight` is non-null only
 // when the dock status is "ready".
-export type SyncedPreflight = {
-  readonly status: PreflightStatus;
-  readonly runnerKey: string;
-  readonly preflight: AgentscanPreflight | null;
-};
+export type SyncedPreflight = { readonly runnerKey: string } & (
+  | { readonly status: "ready"; readonly preflight: AgentscanPreflight }
+  | { readonly status: Exclude<PreflightStatus, "ready">; readonly preflight: null }
+);
 
 // What the dock asks Preflight to resolve. The caller (React) precomputes the
 // synchronous profile validation: `invalid` non-null short-circuits the probe and
@@ -176,11 +186,19 @@ export class Preflight extends Context.Service<Preflight>()("desktop/Preflight",
       Stream.runForEach((payload) =>
         Effect.gen(function* () {
           if (bridge.mode === "settings" && payload.kind === "preflight") {
-            yield* SubscriptionRef.set(syncedRef, {
-              status: payload.status,
-              runnerKey: payload.runnerKey,
-              preflight: payload.preflight,
-            });
+            const synced: SyncedPreflight =
+              payload.status === "ready"
+                ? {
+                    status: "ready",
+                    runnerKey: payload.runnerKey,
+                    preflight: payload.preflight,
+                  }
+                : {
+                    status: payload.status,
+                    runnerKey: payload.runnerKey,
+                    preflight: null,
+                  };
+            yield* SubscriptionRef.set(syncedRef, synced);
           } else if (bridge.mode === "dock" && payload.kind === "preflight-request") {
             const wire = yield* Ref.get(lastWireRef);
             yield* bridge.emit(wire);

@@ -30,12 +30,12 @@ export class FocusIpc extends Context.Service<FocusIpc>()("desktop/FocusIpc", {
     focusRow: (input: { paneId: string; settings: DesktopRunnerSettings }) =>
       Effect.tryPromise({
         try: () =>
-          invoke<void>("focus_picker_row", {
+          invoke<unknown>("focus_picker_row", {
             paneId: input.paneId,
             settings: input.settings,
           }),
         catch: (error) => new IpcError({ op: "focus_picker_row", message: messageOf(error) }),
-      }),
+      }).pipe(Effect.asVoid),
   }),
 }) {}
 

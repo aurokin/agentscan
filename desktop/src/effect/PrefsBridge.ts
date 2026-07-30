@@ -1,8 +1,9 @@
-import { Context, Effect, Layer, PubSub, Stream } from "effect";
+import { Context, Effect, Layer, PubSub, Result, Stream } from "effect";
 import { emitTo, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { PREFS_SYNC_EVENT, type PrefsSync, type ShellMode } from "./prefs";
 import type { StorageRead, StorageWrite } from "./profileModel";
+import { decodePrefsSync } from "./wireSchema";
 
 // One Vite entry serves both windows; the window label decides which UI/runtime
 // this is. Mirrors the resolution in main.tsx. Guarded so service construction
@@ -47,8 +48,11 @@ export class PrefsBridge extends Context.Service<PrefsBridge>()("desktop/PrefsBr
     yield* Effect.acquireRelease(
       Effect.tryPromise({
         try: () =>
-          listen<PrefsSync>(PREFS_SYNC_EVENT, (event) => {
-            runFork(PubSub.publish(inbound, event.payload));
+          listen<unknown>(PREFS_SYNC_EVENT, (event) => {
+            const decoded = decodePrefsSync(event.payload);
+            if (Result.isSuccess(decoded)) {
+              runFork(PubSub.publish(inbound, decoded.success));
+            }
           }),
         catch: (error) => error,
       }).pipe(Effect.orElseSucceed((): UnlistenFn => () => {})),

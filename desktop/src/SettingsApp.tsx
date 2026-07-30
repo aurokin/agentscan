@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { Result } from "effect";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { DebugLog } from "./components/DebugLog";
 import { SourceKindIcon } from "./components/SourceKindIcon";
@@ -56,9 +57,9 @@ import {
 import {
   PREFS_SYNC_EVENT,
   type OrientationPreference,
-  type PrefsSync,
   type ThemePreference,
 } from "./effect/prefs";
+import { decodePrefsSync } from "./effect/wireSchema";
 import { settingsPreflightCard } from "./effect/settingsViewModel";
 import { readLocalStorage } from "./shared";
 import { isNewerVersion, resolveLatestVersion } from "./updateCheck";
@@ -270,9 +271,9 @@ function SettingsApp() {
   useEffect(() => {
     let disposed = false;
     let unlisten: UnlistenFn | null = null;
-    void listen<PrefsSync>(PREFS_SYNC_EVENT, (event) => {
-      const payload = event.payload;
-      if (payload.kind === "profiles") {
+    void listen<unknown>(PREFS_SYNC_EVENT, (event) => {
+      const decoded = decodePrefsSync(event.payload);
+      if (Result.isSuccess(decoded) && decoded.success.kind === "profiles") {
         // The Profiles service owns persistence + the reload primitive, but the
         // adopt/skip DECISION stays here because it gates on the settings form's
         // unsaved-edit flag — React-synchronous state. Reading isSettingsDirtyRef in
