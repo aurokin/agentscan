@@ -108,13 +108,23 @@ export class Preflight extends Context.Service<Preflight>()("desktop/Preflight",
       wireOf(INITIAL_STATE, ""),
     );
 
-    // Set a resolved state and (dock only) mirror it to the settings window.
+    // Commit local and replay state atomically with respect to a target switch.
+    // Keep only these in-memory writes uninterruptible: the best-effort bridge is
+    // external and must remain interruptible so a stalled emit cannot block a newer
+    // target. If it is interrupted, settings can recover the committed wire through
+    // its replay request. Probes stay interruptible too.
     const publish = (next: PreflightState, runnerKey: string) =>
       Effect.gen(function* () {
-        yield* SubscriptionRef.set(stateRef, next);
-        if (bridge.mode === "dock") {
-          const wire = wireOf(next, runnerKey);
-          yield* Ref.set(lastWireRef, wire);
+        const wire = bridge.mode === "dock" ? wireOf(next, runnerKey) : null;
+        yield* Effect.uninterruptible(
+          Effect.gen(function* () {
+            yield* SubscriptionRef.set(stateRef, next);
+            if (wire !== null) {
+              yield* Ref.set(lastWireRef, wire);
+            }
+          }),
+        );
+        if (wire !== null) {
           yield* bridge.emit(wire);
         }
       });
