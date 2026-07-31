@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 0.11.3 - 2026-07-31
+
+### Changed
+
+- Migrated the desktop runtime to Effect v4, separating the per-webview service
+  graph from React and pinning the beta dependencies for reproducible builds.
+- Desktop CI now typechecks tests and verifies service-layer construction and
+  listener cleanup invariants.
+
+### Fixed
+
+- Desktop command responses, live events, and persisted profiles are now
+  validated at their runtime boundaries so malformed data becomes an explicit,
+  bounded compatibility failure instead of corrupting application state.
+- Live reconnects and preflight updates now commit state atomically and remain
+  safe when interrupted, avoiding partial updates and duplicate React writes.
+
 ## 0.11.2 - 2026-07-28
 
 ### Fixed
