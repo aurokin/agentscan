@@ -29,6 +29,7 @@ import {
   preflightStateAtom,
   profilesAtom,
   pruneActivationAtom,
+  reconnectAllAtom,
   reconnectAtom,
   reloadProfilesAtom,
   reorderProfileAtom,
@@ -208,6 +209,7 @@ function DockApp() {
   const configureLive = useAtomSet(configureAtom);
   const startLive = useAtomSet(startAtom);
   const reconnectLive = useAtomSet(reconnectAtom);
+  const reconnectAllLive = useAtomSet(reconnectAllAtom);
   // The summon hotkey (registration + in-use retry loop) is owned by the
   // SummonHotkey service; the dock arms it below and renders its standing
   // failure state as the global banner.
@@ -824,12 +826,11 @@ function DockApp() {
             // reconnecting only live sources would leave a stale "Unavailable"
             // strip until a settings edit or app restart re-ran the probe.
             configurePreflight(activePreflightTarget());
-            // Re-arm every open source; closed folders have no subscription.
-            for (const source of liveSources) {
-              if (source.isOpen) {
-                reconnectLive(source.runnerKey);
-              }
-            }
+            // Re-arm every open source through one Atom write; closed folders
+            // have no subscription.
+            reconnectAllLive(
+              liveSources.filter((source) => source.isOpen).map((source) => source.runnerKey),
+            );
           }}
         >
           <span className={isReconnecting ? "spin" : undefined}>{"↻"}</span>

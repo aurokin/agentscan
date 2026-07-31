@@ -562,23 +562,28 @@ export class LiveConnection extends Context.Service<LiveConnection>()(
           }),
         );
 
-      // Bump one source's target so its supervisor re-arms now. The autoStart latch
-      // applies only to the key it was issued for; an unconfigured key is a no-op
-      // (there is no subscription to re-arm).
-      const retarget = (runnerKey: string, autoStart: boolean) =>
+      // Bump the listed sources' targets so their supervisors re-arm now. The
+      // service mutex is acquired once for the whole batch; unconfigured keys are
+      // no-ops, and duplicate keys still re-arm their source only once.
+      const retargetAll = (runnerKeys: ReadonlyArray<string>, autoStart: boolean) =>
         mutex.withPermits(1)(
-          Effect.suspend(() => {
-            const entry = entries.get(runnerKey);
-            if (entry === undefined) {
-              return Effect.void;
+          Effect.gen(function* () {
+            for (const runnerKey of new Set(runnerKeys)) {
+              const entry = entries.get(runnerKey);
+              if (entry === undefined) {
+                continue;
+              }
+              yield* SubscriptionRef.update(entry.targetRef, (current) => ({
+                ...current,
+                gen: current.gen + 1,
+                autoStart,
+              }));
             }
-            return SubscriptionRef.update(entry.targetRef, (current) => ({
-              ...current,
-              gen: current.gen + 1,
-              autoStart,
-            }));
           }),
         );
+
+      const reconnectAll = (runnerKeys: ReadonlyArray<string>) =>
+        retargetAll(runnerKeys, false);
 
       return {
         states: statesRef,
@@ -586,11 +591,12 @@ export class LiveConnection extends Context.Service<LiveConnection>()(
         // runnerKey + enabled means an idempotent call leaves every running key
         // untouched.
         configure,
-        // Re-arm one source now (latch only) — used by the Refresh button and the
-        // fatal-state Reconnect action.
-        reconnect: (runnerKey: string) => retarget(runnerKey, false),
+        // Re-arm sources now (latch only). The single-source form backs row/strip
+        // actions; the batch form backs the dock header's bulk recovery action.
+        reconnect: (runnerKey: string) => reconnectAll([runnerKey]),
+        reconnectAll,
         // The only path that may spawn a daemon — the "Start agentscan" action.
-        start: (runnerKey: string) => retarget(runnerKey, true),
+        start: (runnerKey: string) => retargetAll([runnerKey], true),
       };
     }),
   },

@@ -56,6 +56,14 @@ export const reconnectAtom = runtime.fn(
   }),
 );
 
+// Re-arm multiple sources through one Atom write and one service-mutex acquisition.
+export const reconnectAllAtom = runtime.fn(
+  Effect.fnUntraced(function* (runnerKeys: ReadonlyArray<string>) {
+    const lc = yield* LiveConnection;
+    yield* lc.reconnectAll(runnerKeys);
+  }),
+);
+
 // Reconcile the live connections to the listed targets when the active
 // profile/preflight changes.
 export const configureAtom = runtime.fn(

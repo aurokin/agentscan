@@ -71,6 +71,7 @@ const makeHarness = (script: ReadonlyArray<Effect.Effect<void, IpcError>>) =>
       configure: () => Effect.void,
       reconnect: (runnerKey: string) =>
         Ref.update(reconnects, (keys) => [...keys, runnerKey]),
+      reconnectAll: () => Effect.void,
       start: () => Effect.void,
     });
 

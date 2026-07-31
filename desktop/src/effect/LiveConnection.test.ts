@@ -772,6 +772,129 @@ describe("LiveConnection", () => {
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
 
+  it("reconnectAll rearms every configured source latch-only and ignores missing keys", () =>
+    Effect.gen(function* () {
+      const startCalls = yield* Queue.unbounded<{
+        sourceKey: string;
+        epoch: number;
+        autoStart: boolean;
+      }>();
+      const MockTauri = Layer.succeed(TauriIpc, {
+        startLivePicker: ({ sourceKey, epoch, autoStart }) =>
+          Queue.offer(startCalls, { sourceKey, epoch, autoStart }).pipe(Effect.asVoid),
+        stopLivePicker: () => Effect.void,
+        loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
+        pollDaemonStatus: () => Effect.succeed({ reachable: true }),
+        liveEvents: () => Queue.unbounded<LivePickerEnvelope>(),
+      });
+
+      const program = Effect.gen(function* () {
+        const lc = yield* LiveConnection;
+        yield* lc.configure([
+          { settings: SETTINGS, runnerKey: "k1", enabled: true },
+          { settings: SETTINGS, runnerKey: "k2", enabled: true },
+        ]);
+        const firstA = yield* Queue.take(startCalls);
+        const firstB = yield* Queue.take(startCalls);
+        const firstByKey = new Map(
+          [firstA, firstB].map((call) => [call.sourceKey, call] as const),
+        );
+
+        yield* lc.reconnectAll(["k1", "missing", "k2"]);
+        const secondA = yield* Queue.take(startCalls);
+        const secondB = yield* Queue.take(startCalls);
+        const secondByKey = new Map(
+          [secondA, secondB].map((call) => [call.sourceKey, call] as const),
+        );
+
+        expect([...secondByKey.keys()].sort()).toEqual(["k1", "k2"]);
+        for (const key of ["k1", "k2"]) {
+          expect(secondByKey.get(key)?.epoch).toBeGreaterThan(
+            firstByKey.get(key)?.epoch ?? Number.MAX_SAFE_INTEGER,
+          );
+          expect(secondByKey.get(key)?.autoStart).toBe(false);
+        }
+      });
+
+      yield* program.pipe(
+        Effect.provide(
+          liveConnectionLayer.pipe(Layer.provide(Layer.merge(MockTauri, StableBackoff))),
+          { local: true },
+        ),
+      );
+    }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
+
+  it("single-source reconnect does not rearm a sibling", () =>
+    Effect.gen(function* () {
+      const startCalls = yield* Queue.unbounded<{
+        sourceKey: string;
+        epoch: number;
+        autoStart: boolean;
+      }>();
+      const eventQueues = yield* Ref.make(
+        new Map<string, Queue.Queue<LivePickerEnvelope>>(),
+      );
+      const MockTauri = Layer.succeed(TauriIpc, {
+        startLivePicker: ({ sourceKey, epoch, autoStart }) =>
+          Queue.offer(startCalls, { sourceKey, epoch, autoStart }).pipe(Effect.asVoid),
+        stopLivePicker: () => Effect.void,
+        loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
+        pollDaemonStatus: () => Effect.succeed({ reachable: true }),
+        liveEvents: (sourceKey) =>
+          Effect.gen(function* () {
+            const queue = yield* Queue.unbounded<LivePickerEnvelope>();
+            yield* Ref.update(eventQueues, (current) => {
+              const next = new Map(current);
+              next.set(sourceKey, queue);
+              return next;
+            });
+            return queue as Queue.Dequeue<LivePickerEnvelope>;
+          }),
+      });
+
+      const program = Effect.gen(function* () {
+        const lc = yield* LiveConnection;
+        yield* lc.configure([
+          { settings: SETTINGS, runnerKey: "k1", enabled: true },
+          { settings: SETTINGS, runnerKey: "k2", enabled: true },
+        ]);
+        const firstA = yield* Queue.take(startCalls);
+        const firstB = yield* Queue.take(startCalls);
+        const firstByKey = new Map(
+          [firstA, firstB].map((call) => [call.sourceKey, call] as const),
+        );
+        const k2Queue = (yield* Ref.get(eventQueues)).get("k2");
+        if (k2Queue === undefined) {
+          return yield* Effect.die("k2 event queue was not installed");
+        }
+
+        yield* lc.reconnect("k1");
+        const rearmed = yield* Queue.take(startCalls);
+        expect(rearmed.sourceKey).toBe("k1");
+        expect(rearmed.epoch).toBeGreaterThan(firstByKey.get("k1")?.epoch ?? 0);
+        expect(rearmed.autoStart).toBe(false);
+
+        const originalK2 = firstByKey.get("k2")!;
+        yield* Queue.offer(
+          k2Queue,
+          envelope("k2", originalK2.epoch, {
+            kind: "rows",
+            rows: [ROW],
+            snapshot: SNAPSHOT,
+          }),
+        );
+        const onlineK2 = yield* awaitKeyStatus(lc.states, "k2", "online");
+        expect(onlineK2.rowsRunnerKey).toBe("k2");
+      });
+
+      yield* program.pipe(
+        Effect.provide(
+          liveConnectionLayer.pipe(Layer.provide(Layer.merge(MockTauri, StableBackoff))),
+          { local: true },
+        ),
+      );
+    }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
+
   it("runs multiple sources concurrently, routing frames per key and stopping only removed keys", () =>
     Effect.gen(function* () {
       const startCalls = yield* Queue.unbounded<{ sourceKey: string; epoch: number }>();

@@ -102,6 +102,7 @@ const makeHarness = (input: {
       states: liveStates,
       configure: () => Effect.void,
       reconnect: () => Effect.void,
+      reconnectAll: () => Effect.void,
       start: () => Effect.void,
     });
 
