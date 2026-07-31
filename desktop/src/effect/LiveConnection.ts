@@ -498,88 +498,98 @@ export class LiveConnection extends Context.Service<LiveConnection>()(
       // Removal interrupts in the background (the interrupted run's release stops
       // its Rust worker), and the key's state entry is dropped once its supervisor
       // finishes dying — unless the key was re-added meanwhile, in which case the
-      // new entry owns the state.
+      // new entry owns the state. Once the mutex is acquired, the in-memory diff is
+      // uninterruptible so an Atom re-invocation cannot strand a forked supervisor
+      // before it is registered in `entries`.
       const configure = (inputs: ReadonlyArray<ConfigureInput>) =>
         mutex.withPermits(1)(
-          Effect.gen(function* () {
-            const next = new Map(inputs.map((input) => [input.runnerKey, input] as const));
-            for (const [key, entry] of [...entries]) {
-              if (next.has(key)) {
-                continue;
+          Effect.uninterruptible(
+            Effect.gen(function* () {
+              const next = new Map(inputs.map((input) => [input.runnerKey, input] as const));
+              for (const [key, entry] of [...entries]) {
+                if (next.has(key)) {
+                  continue;
+                }
+                entries.delete(key);
+                entry.fiber.interruptUnsafe();
               }
-              entries.delete(key);
-              entry.fiber.interruptUnsafe();
-            }
-            for (const [key, input] of next) {
-              const existing = entries.get(key);
-              if (existing) {
-                // "carry" resolves against the same current.enabled the diff
-                // below compares, inside this mutex, so the carried value is
-                // exactly what the service last armed — by construction a
-                // no-op update that re-arms nothing.
-                yield* SubscriptionRef.update(existing.targetRef, (current) => {
-                  const enabled =
-                    input.enabled === "carry" ? current.enabled : input.enabled;
-                  return current.enabled === enabled
-                    ? current
-                    : {
-                        gen: current.gen + 1,
-                        enabled,
-                        settings: input.settings,
-                        runnerKey: key,
-                        autoStart: false,
-                      };
+              for (const [key, input] of next) {
+                const existing = entries.get(key);
+                if (existing) {
+                  // "carry" resolves against the same current.enabled the diff
+                  // below compares, inside this mutex, so the carried value is
+                  // exactly what the service last armed — by construction a
+                  // no-op update that re-arms nothing.
+                  yield* SubscriptionRef.update(existing.targetRef, (current) => {
+                    const enabled =
+                      input.enabled === "carry" ? current.enabled : input.enabled;
+                    return current.enabled === enabled
+                      ? current
+                      : {
+                          gen: current.gen + 1,
+                          enabled,
+                          settings: input.settings,
+                          runnerKey: key,
+                          autoStart: false,
+                        };
+                  });
+                  continue;
+                }
+                // A re-added key may inherit the previous supervisor's state entry:
+                // removal interrupts in the background, and once this key is
+                // re-registered the dying fiber's dropKeyState defers to the new
+                // owner. Reset it here so a fast close-then-reopen can't present the
+                // prior session's rows as ready (and clickable) while the fresh
+                // subscription is still connecting. Same-supervisor re-arms
+                // (reconnect) keep their rows — that flicker-avoidance is per
+                // supervisor, not per re-add. Either interleaving with a pending
+                // drop ends clean: drop-after skips (entry owned), drop-before
+                // deletes and the supervisor recreates from INITIAL_STATE.
+                yield* setKeyState(key, INITIAL_STATE);
+                const targetRef = yield* SubscriptionRef.make<Target>({
+                  gen: 0,
+                  // A new key has no history to carry, so "carry" gates it off
+                  // until a real verdict arrives (launch, or an in-place edit
+                  // that moved the runnerKey).
+                  enabled: input.enabled === "carry" ? false : input.enabled,
+                  settings: input.settings,
+                  runnerKey: key,
+                  autoStart: false,
                 });
-                continue;
+                const fiber = yield* superviseKey(targetRef).pipe(
+                  Effect.ensuring(dropKeyState(key)),
+                  // The registration region is masked, but this long-lived child
+                  // must stay interruptible on key removal and scope shutdown.
+                  Effect.forkIn(scope, { uninterruptible: false }),
+                );
+                entries.set(key, { targetRef, fiber });
               }
-              // A re-added key may inherit the previous supervisor's state entry:
-              // removal interrupts in the background, and once this key is
-              // re-registered the dying fiber's dropKeyState defers to the new
-              // owner. Reset it here so a fast close-then-reopen can't present the
-              // prior session's rows as ready (and clickable) while the fresh
-              // subscription is still connecting. Same-supervisor re-arms
-              // (reconnect) keep their rows — that flicker-avoidance is per
-              // supervisor, not per re-add. Either interleaving with a pending
-              // drop ends clean: drop-after skips (entry owned), drop-before
-              // deletes and the supervisor recreates from INITIAL_STATE.
-              yield* setKeyState(key, INITIAL_STATE);
-              const targetRef = yield* SubscriptionRef.make<Target>({
-                gen: 0,
-                // A new key has no history to carry, so "carry" gates it off
-                // until a real verdict arrives (launch, or an in-place edit
-                // that moved the runnerKey).
-                enabled: input.enabled === "carry" ? false : input.enabled,
-                settings: input.settings,
-                runnerKey: key,
-                autoStart: false,
-              });
-              const fiber = yield* superviseKey(targetRef).pipe(
-                Effect.ensuring(dropKeyState(key)),
-                Effect.forkIn(scope),
-              );
-              entries.set(key, { targetRef, fiber });
-            }
-          }),
+            }),
+          ),
         );
 
       // Bump the listed sources' targets so their supervisors re-arm now. The
       // service mutex is acquired once for the whole batch; unconfigured keys are
-      // no-ops, and duplicate keys still re-arm their source only once.
+      // no-ops, and duplicate keys still re-arm their source only once. The short
+      // ref-only mutation is uninterruptible after acquisition so one Atom write
+      // cannot leave a bulk reconnect partially applied.
       const retargetAll = (runnerKeys: ReadonlyArray<string>, autoStart: boolean) =>
         mutex.withPermits(1)(
-          Effect.gen(function* () {
-            for (const runnerKey of new Set(runnerKeys)) {
-              const entry = entries.get(runnerKey);
-              if (entry === undefined) {
-                continue;
+          Effect.uninterruptible(
+            Effect.gen(function* () {
+              for (const runnerKey of new Set(runnerKeys)) {
+                const entry = entries.get(runnerKey);
+                if (entry === undefined) {
+                  continue;
+                }
+                yield* SubscriptionRef.update(entry.targetRef, (current) => ({
+                  ...current,
+                  gen: current.gen + 1,
+                  autoStart,
+                }));
               }
-              yield* SubscriptionRef.update(entry.targetRef, (current) => ({
-                ...current,
-                gen: current.gen + 1,
-                autoStart,
-              }));
-            }
-          }),
+            }),
+          ),
         );
 
       const reconnectAll = (runnerKeys: ReadonlyArray<string>) =>
