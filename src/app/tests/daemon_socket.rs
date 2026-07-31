@@ -191,14 +191,12 @@ fn serve_snapshot_responses(
                 socket_hello(ipc::ClientMode::Snapshot)
             );
             for frame in response {
-                if let Err(error) =
-                    stream.write_all(&ipc::encode_frame(&frame).expect("frame should encode"))
+                if stream
+                    .write_all(&ipc::encode_frame(&frame).expect("frame should encode"))
+                    .is_err()
                 {
-                    assert_eq!(
-                        error.kind(),
-                        std::io::ErrorKind::BrokenPipe,
-                        "daemon response should write or observe client disconnect"
-                    );
+                    // A client can close after receiving a terminal or incompatible frame;
+                    // the resulting Unix socket error kind is platform-dependent.
                     break;
                 }
             }
@@ -224,14 +222,12 @@ fn serve_lifecycle_responses(
             socket_hello(ipc::ClientMode::LifecycleStatus)
         );
         for frame in responses {
-            if let Err(error) =
-                stream.write_all(&ipc::encode_frame(&frame).expect("frame should encode"))
+            if stream
+                .write_all(&ipc::encode_frame(&frame).expect("frame should encode"))
+                .is_err()
             {
-                assert_eq!(
-                    error.kind(),
-                    std::io::ErrorKind::BrokenPipe,
-                    "daemon response should write or observe client disconnect"
-                );
+                // A client can close after receiving a terminal or incompatible frame;
+                // the resulting Unix socket error kind is platform-dependent.
                 break;
             }
         }

@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::{Stdout, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -190,8 +190,22 @@ fn write_tui_marker_from_env(env_name: &str, contents: &str) -> Result<()> {
         return Ok(());
     };
 
-    fs::write(&path, contents)
-        .with_context(|| format!("failed to write tui marker {}", Path::new(&path).display()))
+    write_tui_marker(Path::new(&path), contents)
+}
+
+fn write_tui_marker(path: &Path, contents: &str) -> Result<()> {
+    let mut temporary_path = path.as_os_str().to_os_string();
+    temporary_path.push(".tmp");
+    let temporary_path = PathBuf::from(temporary_path);
+
+    fs::write(&temporary_path, contents).with_context(|| {
+        format!(
+            "failed to write temporary tui marker {}",
+            temporary_path.display()
+        )
+    })?;
+    fs::rename(&temporary_path, path)
+        .with_context(|| format!("failed to publish tui marker {}", path.display()))
 }
 
 fn draw_tui_frame(stdout: &mut Stdout, state: &mut TuiState, icon_mode: IconMode) -> Result<()> {
@@ -203,4 +217,23 @@ fn draw_tui_frame(stdout: &mut Stdout, state: &mut TuiState, icon_mode: IconMode
 fn terminal_size() -> Result<TuiTerminalSize> {
     let (width, height) = terminal::size().context("failed to read tui terminal size")?;
     Ok(TuiTerminalSize { width, height })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tui_marker_is_published_complete_without_temporary_file() {
+        let tempdir = tempfile::tempdir().expect("tempdir should be created");
+        let marker_path = tempdir.path().join("done");
+
+        write_tui_marker(&marker_path, "0\n").expect("marker should be published");
+
+        assert_eq!(
+            fs::read_to_string(&marker_path).expect("marker should be readable"),
+            "0\n"
+        );
+        assert!(!tempdir.path().join("done.tmp").exists());
+    }
 }

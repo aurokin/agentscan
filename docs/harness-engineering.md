@@ -97,6 +97,11 @@ path. Unit tests inject the hint directly into `TuiState`; a live hint check
 needs the TUI to run *inside* a pane of the harness server (send-keys or a
 nested attach), where tmux sets `TMUX` itself.
 
+Display-popup TUI tests use ready and done marker paths to synchronize with the
+child process. The TUI publishes each marker by renaming a complete temporary
+file in the same directory, so the harness may treat marker existence as proof
+that the full value is readable.
+
 Harness commands that exercise implicit daemon auto-start on macOS must use a
 signed binary. Use foreground `agentscan daemon run`, direct `agentscan scan`,
 or refresh-capable command flags for local ad-hoc macOS harness work. Any

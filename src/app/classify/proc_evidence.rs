@@ -235,10 +235,9 @@ fn collapse_absolute_path_components(path: &str) -> Option<String> {
         [drive, b':', b'/', ..] if drive.is_ascii_alphabetic()
     ) {
         (&path[..3], &path[3..])
-    } else if let Some(rest) = path.strip_prefix('/') {
-        ("/", rest)
     } else {
-        return None;
+        let rest = path.strip_prefix('/')?;
+        ("/", rest)
     };
 
     let mut components = Vec::new();
