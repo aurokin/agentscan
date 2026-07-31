@@ -27,7 +27,7 @@ const mocks = vi.hoisted(() => {
     // caught by the Effect/promise paths and surfaced by the assertions below.
     return Promise.reject(new Error(`unexpected invoke from settings: ${cmd}`));
   });
-  const listen = vi.fn(async () => () => {});
+  const listen = vi.fn(async (_event: string) => () => {});
   const emitTo = vi.fn(async () => {});
   const register = vi.fn(async () => {});
   const unregister = vi.fn(async () => {});

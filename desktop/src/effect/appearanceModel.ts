@@ -1,7 +1,7 @@
 // Pure appearance model for the desktop shell (theme, dock-layout orientation, the macOS
 // glass toggle + tint, and the frameless-chrome toggle). No React, no Effect, no global
 // `window` access — persistence is
-// parameterized over a read/write pair so the Appearance Effect.Service (and its vitest
+// parameterized over a read/write pair so the Appearance Effect service (and its vitest
 // proof) can drive it over an injected storage boundary while App.tsx keeps using the
 // same parsers/serializers to seed its first paint.
 

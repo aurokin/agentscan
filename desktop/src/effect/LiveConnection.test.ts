@@ -10,7 +10,12 @@ import {
   SubscriptionRef,
 } from "effect";
 import { describe, expect, it } from "vitest";
-import { LiveConnection, LiveConnectionConfig, type LiveStates } from "./LiveConnection";
+import {
+  LiveConnection,
+  LiveConnectionConfig,
+  layerWithoutDependencies as liveConnectionLayer,
+  type LiveStates,
+} from "./LiveConnection";
 import { IpcError, TauriIpc } from "./TauriIpc";
 import type {
   ConnectionStatus,
@@ -77,7 +82,7 @@ const awaitKeyStatus = (
   key: string,
   status: ConnectionStatus["status"],
 ): Effect.Effect<LiveState> =>
-  states.changes.pipe(
+  SubscriptionRef.changes(states).pipe(
     Stream.filter((map) => map.get(key)?.connection.status === status),
     Stream.map((map) => map.get(key) as LiveState),
     Stream.runHead,
@@ -106,7 +111,7 @@ describe("LiveConnection", () => {
         stopLivePicker: () => Effect.void,
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
         pollDaemonStatus: () => Effect.succeed({ reachable: true }),
-        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+        liveEvents: () => Effect.succeed(events),
       });
 
       const program = Effect.gen(function* () {
@@ -152,9 +157,8 @@ describe("LiveConnection", () => {
 
       yield* program.pipe(
         Effect.provide(
-          LiveConnection.DefaultWithoutDependencies.pipe(
-            Layer.provide(Layer.merge(MockTauri, StableBackoff)),
-          ),
+          liveConnectionLayer.pipe(Layer.provide(Layer.merge(MockTauri, StableBackoff))),
+          { local: true },
         ),
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
@@ -177,7 +181,7 @@ describe("LiveConnection", () => {
         stopLivePicker: () => Effect.void,
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
         pollDaemonStatus: () => Effect.succeed({ reachable: true }),
-        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+        liveEvents: () => Effect.succeed(events),
       });
 
       const program = Effect.gen(function* () {
@@ -213,9 +217,8 @@ describe("LiveConnection", () => {
 
       yield* program.pipe(
         Effect.provide(
-          LiveConnection.DefaultWithoutDependencies.pipe(
-            Layer.provide(Layer.merge(MockTauri, StableBackoff)),
-          ),
+          liveConnectionLayer.pipe(Layer.provide(Layer.merge(MockTauri, StableBackoff))),
+          { local: true },
         ),
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
@@ -235,7 +238,7 @@ describe("LiveConnection", () => {
         stopLivePicker: () => Effect.void,
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
         pollDaemonStatus: () => Effect.succeed({ reachable: true }),
-        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+        liveEvents: () => Effect.succeed(events),
       });
 
       const program = Effect.gen(function* () {
@@ -269,9 +272,8 @@ describe("LiveConnection", () => {
 
       yield* program.pipe(
         Effect.provide(
-          LiveConnection.DefaultWithoutDependencies.pipe(
-            Layer.provide(Layer.merge(MockTauri, StableBackoff)),
-          ),
+          liveConnectionLayer.pipe(Layer.provide(Layer.merge(MockTauri, StableBackoff))),
+          { local: true },
         ),
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
@@ -290,7 +292,7 @@ describe("LiveConnection", () => {
         stopLivePicker: () => Effect.void,
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
         pollDaemonStatus: () => Effect.succeed({ reachable: true }),
-        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+        liveEvents: () => Effect.succeed(events),
       });
 
       const program = Effect.gen(function* () {
@@ -319,9 +321,8 @@ describe("LiveConnection", () => {
 
       yield* program.pipe(
         Effect.provide(
-          LiveConnection.DefaultWithoutDependencies.pipe(
-            Layer.provide(Layer.merge(MockTauri, StableBackoff)),
-          ),
+          liveConnectionLayer.pipe(Layer.provide(Layer.merge(MockTauri, StableBackoff))),
+          { local: true },
         ),
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
@@ -338,7 +339,7 @@ describe("LiveConnection", () => {
         stopLivePicker: () => Effect.void,
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
         pollDaemonStatus: () => Effect.succeed({ reachable: true }),
-        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+        liveEvents: () => Effect.succeed(events),
       });
 
       const program = Effect.gen(function* () {
@@ -352,9 +353,8 @@ describe("LiveConnection", () => {
 
       yield* program.pipe(
         Effect.provide(
-          LiveConnection.DefaultWithoutDependencies.pipe(
-            Layer.provide(Layer.merge(FailingTauri, StableBackoff)),
-          ),
+          liveConnectionLayer.pipe(Layer.provide(Layer.merge(FailingTauri, StableBackoff))),
+          { local: true },
         ),
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
@@ -378,7 +378,7 @@ describe("LiveConnection", () => {
           Effect.flatMap(Ref.getAndSet(failNextListen, false), (shouldFail) =>
             shouldFail
               ? Effect.fail(new IpcError({ op: "listen", message: "listener boom" }))
-              : Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+              : Effect.succeed(events),
           ),
       });
 
@@ -405,9 +405,10 @@ describe("LiveConnection", () => {
 
       yield* program.pipe(
         Effect.provide(
-          LiveConnection.DefaultWithoutDependencies.pipe(
+          liveConnectionLayer.pipe(
             Layer.provide(Layer.merge(FlakyListenerTauri, StableBackoff)),
           ),
+          { local: true },
         ),
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
@@ -422,7 +423,7 @@ describe("LiveConnection", () => {
         stopLivePicker: () => Effect.void,
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
         pollDaemonStatus: () => Effect.succeed({ reachable: true }),
-        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+        liveEvents: () => Effect.succeed(events),
       });
 
       const program = Effect.gen(function* () {
@@ -452,9 +453,8 @@ describe("LiveConnection", () => {
 
       yield* program.pipe(
         Effect.provide(
-          LiveConnection.DefaultWithoutDependencies.pipe(
-            Layer.provide(Layer.merge(MockTauri, StableBackoff)),
-          ),
+          liveConnectionLayer.pipe(Layer.provide(Layer.merge(MockTauri, StableBackoff))),
+          { local: true },
         ),
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
@@ -469,7 +469,7 @@ describe("LiveConnection", () => {
         stopLivePicker: () => Effect.void,
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
         pollDaemonStatus: () => Effect.succeed({ reachable: true }),
-        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+        liveEvents: () => Effect.succeed(events),
       });
 
       const program = Effect.gen(function* () {
@@ -513,9 +513,8 @@ describe("LiveConnection", () => {
 
       yield* program.pipe(
         Effect.provide(
-          LiveConnection.DefaultWithoutDependencies.pipe(
-            Layer.provide(Layer.merge(MockTauri, EagerBackoff)),
-          ),
+          liveConnectionLayer.pipe(Layer.provide(Layer.merge(MockTauri, EagerBackoff))),
+          { local: true },
         ),
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
@@ -540,7 +539,7 @@ describe("LiveConnection", () => {
           Ref.updateAndGet(pollCount, (n) => n + 1).pipe(
             Effect.map((n) => ({ reachable: n >= 3 })),
           ),
-        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+        liveEvents: () => Effect.succeed(events),
       });
 
       const program = Effect.gen(function* () {
@@ -572,9 +571,8 @@ describe("LiveConnection", () => {
 
       yield* program.pipe(
         Effect.provide(
-          LiveConnection.DefaultWithoutDependencies.pipe(
-            Layer.provide(Layer.merge(MockTauri, EagerBackoff)),
-          ),
+          liveConnectionLayer.pipe(Layer.provide(Layer.merge(MockTauri, EagerBackoff))),
+          { local: true },
         ),
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
@@ -593,7 +591,7 @@ describe("LiveConnection", () => {
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
         pollDaemonStatus: () =>
           Effect.fail(new IpcError({ op: "poll_daemon_status", message: "ssh: connection refused" })),
-        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+        liveEvents: () => Effect.succeed(events),
       });
 
       const program = Effect.gen(function* () {
@@ -619,9 +617,8 @@ describe("LiveConnection", () => {
 
       yield* program.pipe(
         Effect.provide(
-          LiveConnection.DefaultWithoutDependencies.pipe(
-            Layer.provide(Layer.merge(MockTauri, EagerBackoff)),
-          ),
+          liveConnectionLayer.pipe(Layer.provide(Layer.merge(MockTauri, EagerBackoff))),
+          { local: true },
         ),
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
@@ -637,12 +634,12 @@ describe("LiveConnection", () => {
 
       const MockTauri = Layer.succeed(TauriIpc, {
         startLivePicker: ({ epoch }) =>
-          Effect.zipRight(Queue.offer(startedEpochs, epoch), Deferred.await(releaseStart)),
+          Effect.andThen(Queue.offer(startedEpochs, epoch), Deferred.await(releaseStart)),
         stopLivePicker: ({ sourceKey, epoch }) =>
           Queue.offer(stoppedCalls, { sourceKey, epoch }).pipe(Effect.asVoid),
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
         pollDaemonStatus: () => Effect.succeed({ reachable: true }),
-        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+        liveEvents: () => Effect.succeed(events),
       });
 
       const program = Effect.gen(function* () {
@@ -662,9 +659,8 @@ describe("LiveConnection", () => {
 
       yield* program.pipe(
         Effect.provide(
-          LiveConnection.DefaultWithoutDependencies.pipe(
-            Layer.provide(Layer.merge(MockTauri, StableBackoff)),
-          ),
+          liveConnectionLayer.pipe(Layer.provide(Layer.merge(MockTauri, StableBackoff))),
+          { local: true },
         ),
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
@@ -683,7 +679,7 @@ describe("LiveConnection", () => {
         stopLivePicker: () => Effect.void,
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
         pollDaemonStatus: () => Effect.succeed({ reachable: true }),
-        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+        liveEvents: () => Effect.succeed(events),
       });
 
       const program = Effect.gen(function* () {
@@ -720,9 +716,8 @@ describe("LiveConnection", () => {
 
       yield* program.pipe(
         Effect.provide(
-          LiveConnection.DefaultWithoutDependencies.pipe(
-            Layer.provide(Layer.merge(MockTauri, StableBackoff)),
-          ),
+          liveConnectionLayer.pipe(Layer.provide(Layer.merge(MockTauri, StableBackoff))),
+          { local: true },
         ),
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
@@ -740,7 +735,7 @@ describe("LiveConnection", () => {
         stopLivePicker: () => Effect.void,
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
         pollDaemonStatus: () => Effect.succeed({ reachable: true }),
-        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+        liveEvents: () => Effect.succeed(events),
       });
 
       const program = Effect.gen(function* () {
@@ -749,7 +744,7 @@ describe("LiveConnection", () => {
         yield* lc.configure([{ settings: SETTINGS, runnerKey: "k1", enabled: "carry" }]);
         // The disabled-target state, not merely the INITIAL_STATE seed (both are
         // "connecting", so filter on the message).
-        yield* lc.states.changes.pipe(
+        yield* SubscriptionRef.changes(lc.states).pipe(
           Stream.filter(
             (map) => map.get("k1")?.connection.message === "Waiting for a source",
           ),
@@ -771,9 +766,131 @@ describe("LiveConnection", () => {
 
       yield* program.pipe(
         Effect.provide(
-          LiveConnection.DefaultWithoutDependencies.pipe(
-            Layer.provide(Layer.merge(MockTauri, StableBackoff)),
-          ),
+          liveConnectionLayer.pipe(Layer.provide(Layer.merge(MockTauri, StableBackoff))),
+          { local: true },
+        ),
+      );
+    }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
+
+  it("reconnectAll rearms every configured source latch-only and ignores missing keys", () =>
+    Effect.gen(function* () {
+      const startCalls = yield* Queue.unbounded<{
+        sourceKey: string;
+        epoch: number;
+        autoStart: boolean;
+      }>();
+      const MockTauri = Layer.succeed(TauriIpc, {
+        startLivePicker: ({ sourceKey, epoch, autoStart }) =>
+          Queue.offer(startCalls, { sourceKey, epoch, autoStart }).pipe(Effect.asVoid),
+        stopLivePicker: () => Effect.void,
+        loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
+        pollDaemonStatus: () => Effect.succeed({ reachable: true }),
+        liveEvents: () => Queue.unbounded<LivePickerEnvelope>(),
+      });
+
+      const program = Effect.gen(function* () {
+        const lc = yield* LiveConnection;
+        yield* lc.configure([
+          { settings: SETTINGS, runnerKey: "k1", enabled: true },
+          { settings: SETTINGS, runnerKey: "k2", enabled: true },
+        ]);
+        const firstA = yield* Queue.take(startCalls);
+        const firstB = yield* Queue.take(startCalls);
+        const firstByKey = new Map(
+          [firstA, firstB].map((call) => [call.sourceKey, call] as const),
+        );
+
+        yield* lc.reconnectAll(["k1", "missing", "k2"]);
+        const secondA = yield* Queue.take(startCalls);
+        const secondB = yield* Queue.take(startCalls);
+        const secondByKey = new Map(
+          [secondA, secondB].map((call) => [call.sourceKey, call] as const),
+        );
+
+        expect([...secondByKey.keys()].sort()).toEqual(["k1", "k2"]);
+        for (const key of ["k1", "k2"]) {
+          expect(secondByKey.get(key)?.epoch).toBeGreaterThan(
+            firstByKey.get(key)?.epoch ?? Number.MAX_SAFE_INTEGER,
+          );
+          expect(secondByKey.get(key)?.autoStart).toBe(false);
+        }
+      });
+
+      yield* program.pipe(
+        Effect.provide(
+          liveConnectionLayer.pipe(Layer.provide(Layer.merge(MockTauri, StableBackoff))),
+          { local: true },
+        ),
+      );
+    }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
+
+  it("single-source reconnect does not rearm a sibling", () =>
+    Effect.gen(function* () {
+      const startCalls = yield* Queue.unbounded<{
+        sourceKey: string;
+        epoch: number;
+        autoStart: boolean;
+      }>();
+      const eventQueues = yield* Ref.make(
+        new Map<string, Queue.Queue<LivePickerEnvelope>>(),
+      );
+      const MockTauri = Layer.succeed(TauriIpc, {
+        startLivePicker: ({ sourceKey, epoch, autoStart }) =>
+          Queue.offer(startCalls, { sourceKey, epoch, autoStart }).pipe(Effect.asVoid),
+        stopLivePicker: () => Effect.void,
+        loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
+        pollDaemonStatus: () => Effect.succeed({ reachable: true }),
+        liveEvents: (sourceKey) =>
+          Effect.gen(function* () {
+            const queue = yield* Queue.unbounded<LivePickerEnvelope>();
+            yield* Ref.update(eventQueues, (current) => {
+              const next = new Map(current);
+              next.set(sourceKey, queue);
+              return next;
+            });
+            return queue;
+          }),
+      });
+
+      const program = Effect.gen(function* () {
+        const lc = yield* LiveConnection;
+        yield* lc.configure([
+          { settings: SETTINGS, runnerKey: "k1", enabled: true },
+          { settings: SETTINGS, runnerKey: "k2", enabled: true },
+        ]);
+        const firstA = yield* Queue.take(startCalls);
+        const firstB = yield* Queue.take(startCalls);
+        const firstByKey = new Map(
+          [firstA, firstB].map((call) => [call.sourceKey, call] as const),
+        );
+        const k2Queue = (yield* Ref.get(eventQueues)).get("k2");
+        if (k2Queue === undefined) {
+          return yield* Effect.die("k2 event queue was not installed");
+        }
+
+        yield* lc.reconnect("k1");
+        const rearmed = yield* Queue.take(startCalls);
+        expect(rearmed.sourceKey).toBe("k1");
+        expect(rearmed.epoch).toBeGreaterThan(firstByKey.get("k1")?.epoch ?? 0);
+        expect(rearmed.autoStart).toBe(false);
+
+        const originalK2 = firstByKey.get("k2")!;
+        yield* Queue.offer(
+          k2Queue,
+          envelope("k2", originalK2.epoch, {
+            kind: "rows",
+            rows: [ROW],
+            snapshot: SNAPSHOT,
+          }),
+        );
+        const onlineK2 = yield* awaitKeyStatus(lc.states, "k2", "online");
+        expect(onlineK2.rowsRunnerKey).toBe("k2");
+      });
+
+      yield* program.pipe(
+        Effect.provide(
+          liveConnectionLayer.pipe(Layer.provide(Layer.merge(MockTauri, StableBackoff))),
+          { local: true },
         ),
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
@@ -804,7 +921,7 @@ describe("LiveConnection", () => {
           Effect.gen(function* () {
             const queue = yield* Queue.unbounded<LivePickerEnvelope>();
             yield* Ref.update(queues, (current) => [...current, queue]);
-            return queue as Queue.Dequeue<LivePickerEnvelope>;
+            return queue;
           }),
       });
 
@@ -842,7 +959,7 @@ describe("LiveConnection", () => {
         yield* lc.configure([{ settings: SETTINGS, runnerKey: "k1", enabled: true }]);
         const stopped = yield* Queue.take(stoppedCalls);
         expect(stopped).toEqual({ sourceKey: "k2", epoch: k2.epoch });
-        const dropped = yield* lc.states.changes.pipe(
+        const dropped = yield* SubscriptionRef.changes(lc.states).pipe(
           Stream.filter((map) => !map.has("k2")),
           Stream.runHead,
           Effect.flatMap(
@@ -858,9 +975,8 @@ describe("LiveConnection", () => {
 
       yield* program.pipe(
         Effect.provide(
-          LiveConnection.DefaultWithoutDependencies.pipe(
-            Layer.provide(Layer.merge(MockTauri, StableBackoff)),
-          ),
+          liveConnectionLayer.pipe(Layer.provide(Layer.merge(MockTauri, StableBackoff))),
+          { local: true },
         ),
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));

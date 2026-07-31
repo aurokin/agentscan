@@ -1,10 +1,16 @@
-// Pure profile/settings model for the desktop shell. No React, no Effect, no
+// Pure profile/settings model for the desktop shell. No React, Effect runtime, or
 // global `window` access — persistence is parameterized over a read/write pair so
-// the Profiles Effect.Service (and its vitest proof) can drive it over an injected
+// the Profiles Effect service (and its vitest proof) can drive it over an injected
 // storage boundary while App.tsx keeps using the same derivations for rendering.
 //
 // These types mirror the Rust contracts in src-tauri/src/lib.rs (DesktopRunnerSettings)
 // and were previously inlined in App.tsx.
+
+import { Result } from "effect";
+import {
+  decodePersistedProfileState,
+  decodePersistedRunnerSettings,
+} from "./persistedSchema";
 
 export type ProfileKind = "local" | "ssh";
 
@@ -90,14 +96,20 @@ export function emptyRunnerSettings(): RunnerSettings {
   return { binaryPath: "", env: [] };
 }
 
-export function normalizeRunnerSettings(settings: Partial<RunnerSettings>): RunnerSettings {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function normalizeRunnerSettings(value: unknown): RunnerSettings {
+  const settings = isRecord(value) ? value : {};
   const env = Array.isArray(settings.env)
-    ? settings.env
-        .map((variable) => ({
-          name: String(variable.name ?? "").trim(),
-          value: String(variable.value ?? ""),
-        }))
-        .filter((variable) => variable.name.length > 0)
+    ? settings.env.flatMap((variable) => {
+        if (!isRecord(variable)) {
+          return [];
+        }
+        const name = String(variable.name ?? "").trim();
+        return name ? [{ name, value: String(variable.value ?? "") }] : [];
+      })
     : [];
 
   return {
@@ -123,11 +135,14 @@ export function defaultProfileState(runner: RunnerSettings = emptyRunnerSettings
 // `fallbackRunner` seeds the implicit local profile when a persisted state has none
 // (previously read straight from localStorage; now passed in to keep this pure).
 export function normalizeProfileState(
-  value: Partial<ProfileState>,
+  value: unknown,
   fallbackRunner: RunnerSettings = emptyRunnerSettings(),
 ): ProfileState {
-  const mapped = Array.isArray(value.profiles)
-    ? value.profiles.map(normalizeProfile).filter((profile): profile is DesktopProfileConfig => profile !== null)
+  const persisted = isRecord(value) ? value : {};
+  const mapped = Array.isArray(persisted.profiles)
+    ? persisted.profiles
+        .map(normalizeProfile)
+        .filter((profile): profile is DesktopProfileConfig => profile !== null)
     : [];
 
   // A source's identity IS its connection, so a persisted state (possibly written by
@@ -172,8 +187,8 @@ export function normalizeProfileState(
 
   const fallbackProfile = profiles.find(isRunnableProfile) ?? profiles[0];
   const requestedActiveId =
-    typeof value.activeProfileId === "string"
-      ? (remap.get(value.activeProfileId) ?? value.activeProfileId)
+    typeof persisted.activeProfileId === "string"
+      ? (remap.get(persisted.activeProfileId) ?? persisted.activeProfileId)
       : undefined;
   const activeProfileId =
     requestedActiveId !== undefined &&
@@ -187,8 +202,8 @@ export function normalizeProfileState(
   // A state persisted before the folder UI has no openProfileIds: the previously-
   // active profile starts open so the upgrade keeps exactly the old
   // one-subscription behavior.
-  const openSource = Array.isArray(value.openProfileIds)
-    ? value.openProfileIds
+  const openSource = Array.isArray(persisted.openProfileIds)
+    ? persisted.openProfileIds
         .filter((id): id is string => typeof id === "string")
         .map((id) => remap.get(id) ?? id)
     : [activeProfileId];
@@ -204,13 +219,13 @@ export function normalizeProfileState(
 }
 
 export function normalizeProfile(value: unknown): DesktopProfileConfig | null {
-  if (!value || typeof value !== "object") {
+  if (!isRecord(value)) {
     return null;
   }
 
   // Rebuilding the profile field-by-field also strips the user-editable `name`
   // older versions persisted; labels are derived from the connection now.
-  const profile = value as Partial<DesktopProfileConfig>;
+  const profile = value;
   const id = typeof profile.id === "string" && profile.id.trim() ? profile.id.trim() : "";
   const runner = normalizeRunnerSettings(profile.runner ?? emptyRunnerSettings());
 
@@ -688,7 +703,10 @@ export function loadRunnerSettings(read: StorageRead): RunnerSettings {
       return emptyRunnerSettings();
     }
 
-    return normalizeRunnerSettings(JSON.parse(value) as Partial<RunnerSettings>);
+    const decoded = decodePersistedRunnerSettings(JSON.parse(value));
+    return Result.isSuccess(decoded)
+      ? normalizeRunnerSettings(decoded.success)
+      : emptyRunnerSettings();
   } catch {
     return emptyRunnerSettings();
   }
@@ -704,7 +722,10 @@ export function loadProfileState(read: StorageRead): ProfileState {
       return defaultProfileState(fallbackRunner);
     }
 
-    return normalizeProfileState(JSON.parse(value) as Partial<ProfileState>, fallbackRunner);
+    const decoded = decodePersistedProfileState(JSON.parse(value));
+    return Result.isSuccess(decoded)
+      ? normalizeProfileState(decoded.success, fallbackRunner)
+      : defaultProfileState(fallbackRunner);
   } catch {
     return defaultProfileState(fallbackRunner);
   }

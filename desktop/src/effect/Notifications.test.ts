@@ -1,6 +1,9 @@
 import { Duration, Effect, Layer, Option, Queue, Stream, SubscriptionRef } from "effect";
 import { describe, expect, it } from "vitest";
-import { Notifications } from "./Notifications";
+import {
+  Notifications,
+  layerWithoutDependencies as notificationsLayer,
+} from "./Notifications";
 import { PrefsBridge } from "./PrefsBridge";
 import { NOTIFY_ON_IDLE_STORAGE_KEY } from "./notificationsModel";
 import type { PrefsSync } from "./prefs";
@@ -30,7 +33,7 @@ describe("Notifications", () => {
         emit: (payload: PrefsSync) => Queue.offer(emitted, payload).pipe(Effect.asVoid),
         events: Stream.fromQueue(inbound),
       });
-      const layer = Notifications.DefaultWithoutDependencies.pipe(Layer.provide(bridge));
+      const layer = notificationsLayer.pipe(Layer.provide(bridge));
 
       yield* Effect.gen(function* () {
         const notifications = yield* Notifications;
@@ -43,9 +46,11 @@ describe("Notifications", () => {
         yield* notifications.setNotifyOnIdle(false);
         yield* Queue.take(emitted);
         yield* Queue.offer(inbound, { kind: "notifyOnIdle", enabled: true });
-        expect((yield* awaitEnabled(notifications.state.changes)).notifyOnIdle).toBe(true);
+        expect(
+          (yield* awaitEnabled(SubscriptionRef.changes(notifications.state))).notifyOnIdle,
+        ).toBe(true);
         expect(store.get(NOTIFY_ON_IDLE_STORAGE_KEY)).toBe("true");
         expect(yield* Queue.size(emitted)).toBe(0);
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(layer, { local: true }));
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
 });

@@ -1,6 +1,6 @@
-import { Duration, Effect, Layer, Queue, Stream, SubscriptionRef } from "effect";
+import { Context, Duration, Effect, Layer, Queue, Stream, SubscriptionRef } from "effect";
 import { describe, expect, it } from "vitest";
-import { Profiles } from "./Profiles";
+import { Profiles, layerWithoutDependencies as profilesLayer } from "./Profiles";
 import { PrefsBridge } from "./PrefsBridge";
 import { PROFILES_STORAGE_KEY, type ProfileState } from "./profileModel";
 import type { PrefsSync } from "./prefs";
@@ -63,7 +63,7 @@ const run = <A>(
   mode: ShellMode,
   initial: Record<string, string>,
   body: (ctx: {
-    profiles: Effect.Effect.Success<typeof Profiles>;
+    profiles: Context.Service.Shape<typeof Profiles>;
     store: Map<string, string>;
     emitted: Queue.Queue<PrefsSync>;
   }) => Effect.Effect<A>,
@@ -75,7 +75,7 @@ const run = <A>(
       return yield* body({ profiles, store: bridge.store, emitted: bridge.emitted });
     });
     return yield* program.pipe(
-      Effect.provide(Profiles.DefaultWithoutDependencies.pipe(Layer.provide(bridge.layer))),
+      Effect.provide(profilesLayer.pipe(Layer.provide(bridge.layer)), { local: true }),
     );
   }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise);
 

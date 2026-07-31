@@ -1,8 +1,9 @@
-import { Effect, PubSub, Runtime, Stream } from "effect";
+import { Context, Effect, Layer, PubSub, Result, Stream } from "effect";
 import { emitTo, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { PREFS_SYNC_EVENT, type PrefsSync, type ShellMode } from "./prefs";
 import type { StorageRead, StorageWrite } from "./profileModel";
+import { decodePrefsSync } from "./wireSchema";
 
 // One Vite entry serves both windows; the window label decides which UI/runtime
 // this is. Mirrors the resolution in main.tsx. Guarded so service construction
@@ -31,8 +32,8 @@ function resolveMode(): ShellMode {
 // Ref would observe with a lag (see the comment on that listener). It is a designed
 // residual, not a pending migration; the two listeners coexist because Tauri delivers
 // each event to every registered listener.
-export class PrefsBridge extends Effect.Service<PrefsBridge>()("desktop/PrefsBridge", {
-  scoped: Effect.gen(function* () {
+export class PrefsBridge extends Context.Service<PrefsBridge>()("desktop/PrefsBridge", {
+  make: Effect.gen(function* () {
     // resolveMode wraps getCurrentWebviewWindow() in try/catch (see above), so this never
     // throws on a non-Tauri host (no __TAURI_INTERNALS__) — it falls back to "dock" and
     // construction proceeds to the equally-guarded listener below. Safe to call eagerly here.
@@ -43,12 +44,14 @@ export class PrefsBridge extends Effect.Service<PrefsBridge>()("desktop/PrefsBri
     // failed `listen` (non-Tauri host) yields a no-op unlisten rather than failing the
     // layer and stranding every service that shares this bridge.
     const inbound = yield* PubSub.unbounded<PrefsSync>();
-    const runFork = Runtime.runFork(yield* Effect.runtime<never>());
     yield* Effect.acquireRelease(
       Effect.tryPromise({
         try: () =>
-          listen<PrefsSync>(PREFS_SYNC_EVENT, (event) => {
-            runFork(PubSub.publish(inbound, event.payload));
+          listen<unknown>(PREFS_SYNC_EVENT, (event) => {
+            const decoded = decodePrefsSync(event.payload);
+            if (Result.isSuccess(decoded)) {
+              PubSub.publishUnsafe(inbound, decoded.success);
+            }
           }),
         catch: (error) => error,
       }).pipe(Effect.orElseSucceed((): UnlistenFn => () => {})),
@@ -93,3 +96,5 @@ export class PrefsBridge extends Effect.Service<PrefsBridge>()("desktop/PrefsBri
     };
   }),
 }) {}
+
+export const layer = Layer.effect(PrefsBridge, PrefsBridge.make);

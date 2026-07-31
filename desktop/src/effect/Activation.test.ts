@@ -7,11 +7,17 @@ import {
   Ref,
   Stream,
   SubscriptionRef,
-  TestClock,
-  TestContext,
 } from "effect";
+import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
-import { Activation, ActivationConfig, FocusIpc, type ActivateInput } from "./Activation";
+import {
+  Activation,
+  ActivationConfig,
+  FocusIpc,
+  layerWithoutDependencies as activationLayer,
+  type ActivateInput,
+} from "./Activation";
+import { DebugLog, layer as debugLogLayer } from "./DebugLog";
 import { LiveConnection, type LiveStates } from "./LiveConnection";
 import type { PickerActivation } from "./pickerViewModel";
 import { IpcError } from "./TauriIpc";
@@ -66,13 +72,13 @@ const makeHarness = (script: ReadonlyArray<Effect.Effect<void, IpcError>>) =>
       configure: () => Effect.void,
       reconnect: (runnerKey: string) =>
         Ref.update(reconnects, (keys) => [...keys, runnerKey]),
+      reconnectAll: () => Effect.void,
       start: () => Effect.void,
     });
 
+    const deps = Layer.mergeAll(MockFocus, MockLive, Ttl, debugLogLayer);
     return {
-      layer: Activation.DefaultWithoutDependencies.pipe(
-        Layer.provide(Layer.mergeAll(MockFocus, MockLive, Ttl)),
-      ),
+      layer: Layer.fresh(Layer.mergeAll(activationLayer.pipe(Layer.provide(deps)), deps)),
       liveStates,
       reconnects: Ref.get(reconnects),
       focusCalls: Ref.get(focusCalls),
@@ -82,14 +88,13 @@ const makeHarness = (script: ReadonlyArray<Effect.Effect<void, IpcError>>) =>
 const input = (
   paneId: string,
   sourceKey: string,
-  log?: string[],
   isSourceOpen: () => boolean = () => true,
 ): ActivateInput => ({
   paneId,
   sourceKey,
   settings: SETTINGS,
   isSourceOpen,
-  onLog: (detail) => log?.push(detail),
+  logLabel: `focus ${paneId}`,
 });
 
 // Block until the activation reaches a given status (changes replays the
@@ -98,7 +103,7 @@ const awaitStatus = (
   state: SubscriptionRef.SubscriptionRef<PickerActivation>,
   status: PickerActivation["status"],
 ): Effect.Effect<PickerActivation> =>
-  state.changes.pipe(
+  SubscriptionRef.changes(state).pipe(
     Stream.filter((a) => a.status === status),
     Stream.runHead,
     Effect.flatMap(
@@ -112,7 +117,7 @@ const awaitStatus = (
 // Let the service's supervisor fibers process a state flip and (re)arm their
 // TestClock sleeps before the test adjusts the clock — every step in between is
 // scheduler-driven (no real timers), so yielding is sufficient and deterministic.
-const settle = Effect.yieldNow().pipe(Effect.repeatN(40));
+const settle = Effect.yieldNow.pipe(Effect.repeat({ times: 40 }));
 
 describe("Activation", () => {
   // THE pin for the TTL/recovery interplay, matching the old React effects:
@@ -162,30 +167,31 @@ describe("Activation", () => {
         // ...and the full window elapsing finally expires it.
         yield* TestClock.adjust("2 seconds");
         yield* awaitStatus(activation.state, "idle");
-      }).pipe(Effect.provide(harness.layer), Effect.provide(TestContext.TestContext));
+      }).pipe(
+        Effect.provide(harness.layer),
+        Effect.provide(TestClock.layer(), { local: true }),
+      );
     }).pipe(Effect.runPromise));
 
   it("runs one activation at a time, never expires a running one, and resets to idle on success", () =>
     Effect.gen(function* () {
       const gate = yield* Deferred.make<void>();
       const harness = yield* makeHarness([Deferred.await(gate)]);
-      const firstLog: string[] = [];
-      const secondLog: string[] = [];
 
       yield* Effect.gen(function* () {
         const activation = yield* Activation;
+        const debugLog = yield* DebugLog;
         yield* SubscriptionRef.set(harness.liveStates, new Map([["k1", ONLINE]]));
         yield* activation.prune(["k1"]);
 
-        yield* activation.activate(input("%1", "k1", firstLog));
+        yield* activation.activate(input("%1", "k1"));
         const running = yield* awaitStatus(activation.state, "running");
         expect(running).toEqual({ status: "running", paneId: "%1", sourceKey: "k1" });
 
         // A second click while one is in flight bails before reaching the IPC
         // (the double-click guard), leaving the first untouched.
-        yield* activation.activate(input("%2", "k1", secondLog));
+        yield* activation.activate(input("%2", "k1"));
         expect(yield* harness.focusCalls).toEqual(["%1"]);
-        expect(secondLog).toEqual([]);
 
         // Running is not one-shot feedback; only failures TTL out.
         yield* settle;
@@ -196,21 +202,33 @@ describe("Activation", () => {
         // Persistent-window model: success resets to idle (no hide).
         yield* Deferred.succeed(gate, undefined);
         yield* awaitStatus(activation.state, "idle");
-        expect(firstLog).toEqual(["started", "ok"]);
-      }).pipe(Effect.provide(harness.layer), Effect.provide(TestContext.TestContext));
+        expect(
+          (yield* SubscriptionRef.get(debugLog.state)).map(({ kind, label, detail }) => ({
+            kind,
+            label,
+            detail,
+          })),
+        ).toEqual([
+          { kind: "command", label: "focus %1", detail: "ok" },
+          { kind: "command", label: "focus %1", detail: "started" },
+        ]);
+      }).pipe(
+        Effect.provide(harness.layer),
+        Effect.provide(TestClock.layer(), { local: true }),
+      );
     }).pipe(Effect.runPromise));
 
   it("surfaces a failure on its open source, logs the detail, and re-arms that source's live client", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness([failWith("no server running")]);
-      const log: string[] = [];
 
       yield* Effect.gen(function* () {
         const activation = yield* Activation;
+        const debugLog = yield* DebugLog;
         yield* SubscriptionRef.set(harness.liveStates, new Map([["k1", ONLINE]]));
         yield* activation.prune(["k1"]);
 
-        yield* activation.activate(input("%1", "k1", log));
+        yield* activation.activate(input("%1", "k1"));
         const failed = yield* awaitStatus(activation.state, "failed");
         expect(failed).toEqual({
           status: "failed",
@@ -218,8 +236,20 @@ describe("Activation", () => {
           sourceKey: "k1",
         });
         expect(yield* harness.reconnects).toEqual(["k1"]);
-        expect(log).toEqual(["started", "no server running"]);
-      }).pipe(Effect.provide(harness.layer), Effect.provide(TestContext.TestContext));
+        expect(
+          (yield* SubscriptionRef.get(debugLog.state)).map(({ kind, label, detail }) => ({
+            kind,
+            label,
+            detail,
+          })),
+        ).toEqual([
+          { kind: "command", label: "focus %1", detail: "no server running" },
+          { kind: "command", label: "focus %1", detail: "started" },
+        ]);
+      }).pipe(
+        Effect.provide(harness.layer),
+        Effect.provide(TestClock.layer(), { local: true }),
+      );
     }).pipe(Effect.runPromise));
 
   it("closing the in-flight source frees the guard for other sources and drops the outcome", () =>
@@ -253,7 +283,10 @@ describe("Activation", () => {
         expect(yield* harness.focusCalls).toEqual(["%1", "%2"]);
         // The abandoned activation must not act on its source after the close.
         expect(yield* harness.reconnects).toEqual([]);
-      }).pipe(Effect.provide(harness.layer), Effect.provide(TestContext.TestContext));
+      }).pipe(
+        Effect.provide(harness.layer),
+        Effect.provide(TestClock.layer(), { local: true }),
+      );
     }).pipe(Effect.runPromise));
 
   it("drops a failure whose source is closed by the time it settles", () =>
@@ -271,7 +304,10 @@ describe("Activation", () => {
         // (there is no folder list left for it to describe).
         yield* activation.prune([]);
         yield* awaitStatus(activation.state, "idle");
-      }).pipe(Effect.provide(harness.layer), Effect.provide(TestContext.TestContext));
+      }).pipe(
+        Effect.provide(harness.layer),
+        Effect.provide(TestClock.layer(), { local: true }),
+      );
     }).pipe(Effect.runPromise));
 
   it("a failure settling after the source closed (before prune) is dropped without a reconnect", () =>
@@ -280,7 +316,7 @@ describe("Activation", () => {
       // settling — the render-synced probe flips before prune gets to run.
       const gate = yield* Deferred.make<void>();
       const harness = yield* makeHarness([
-        Deferred.await(gate).pipe(Effect.zipRight(failWith("late failure"))),
+        Deferred.await(gate).pipe(Effect.andThen(failWith("late failure"))),
       ]);
       let open = true;
 
@@ -288,7 +324,7 @@ describe("Activation", () => {
         const activation = yield* Activation;
         yield* SubscriptionRef.set(harness.liveStates, new Map([["k1", ONLINE]]));
         yield* activation.prune(["k1"]);
-        yield* activation.activate(input("%1", "k1", undefined, () => open));
+        yield* activation.activate(input("%1", "k1", () => open));
         yield* awaitStatus(activation.state, "running");
 
         open = false;
@@ -297,6 +333,9 @@ describe("Activation", () => {
         // No failure surfaced for the closed folder, and crucially no re-arm
         // of its live client (over SSH that would spawn a doomed subscribe).
         expect(yield* harness.reconnects).toEqual([]);
-      }).pipe(Effect.provide(harness.layer), Effect.provide(TestContext.TestContext));
+      }).pipe(
+        Effect.provide(harness.layer),
+        Effect.provide(TestClock.layer(), { local: true }),
+      );
     }).pipe(Effect.runPromise));
 });

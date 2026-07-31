@@ -3,7 +3,7 @@
 ## Package Manager
 - Use `cargo`: `cargo build`, `cargo test`, `cargo run -- --format text`
 - Bare `cargo run -- ...` examples use the default daemon-backed `list` flow; direct tmux snapshots use `cargo run -- scan ...`.
-- Desktop (`desktop/`) uses `pnpm` (never npm): `pnpm install`, `pnpm build`, `pnpm test`, `pnpm tauri dev`. The package is pnpm-locked (`pnpm-lock.yaml`, version pinned via the `packageManager` field); npm's `package-lock.json` is gitignored.
+- Desktop (`desktop/`) uses `pnpm` (never npm): `pnpm install`, `pnpm build`, `pnpm test:typecheck`, `pnpm test`, `pnpm tauri dev`. The package is pnpm-locked (`pnpm-lock.yaml`, version pinned via the `packageManager` field); npm's `package-lock.json` is gitignored.
 
 ## File-Scoped Commands
 | Task | Command |
@@ -13,6 +13,9 @@
 | Lint | `cargo clippy --all-targets --all-features -- -D warnings` |
 | Complexity check | `cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_arguments` |
 | Test | `cargo test` |
+| Desktop build | `cd desktop && pnpm build` |
+| Desktop test typecheck | `cd desktop && pnpm test:typecheck` |
+| Desktop test | `cd desktop && pnpm test` |
 | Daemon integration test | `cargo test --test daemon_integration` |
 | Benchmark | `cargo bench --bench core_paths -- --noplot` |
 | Run default list | `cargo run -- --format text` |
@@ -21,7 +24,7 @@
 | Run direct snapshot JSON | `cargo run -- scan --format json` |
 
 ## Quality Baseline
-- Keep `cargo fmt --all --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_arguments`, and `cargo test` passing.
+- Keep `cargo fmt --all --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_arguments`, `cargo test`, `cd desktop && pnpm build`, `cd desktop && pnpm test:typecheck`, and `cd desktop && pnpm test` passing.
 - Coverage tooling is not part of the baseline yet; add it intentionally rather than ad hoc.
 
 ## Key Conventions

@@ -4,6 +4,8 @@ import {
   defaultProfileState,
   keybindOwnerId,
   liveSourcesFor,
+  loadProfileState,
+  loadRunnerSettings,
   normalizeProfileState,
   profileDraftDirty,
   recordProbedHost,
@@ -12,6 +14,8 @@ import {
   setProfileEnabled,
   sourceLabel,
   toggleProfileOpen,
+  PROFILES_STORAGE_KEY,
+  SETTINGS_STORAGE_KEY,
   updateProfileSettings,
   validateProfileDraft,
   type DesktopProfileConfig,
@@ -171,6 +175,159 @@ const stateOf = (
   activeProfileId: profiles[0]?.id ?? "local",
   profiles,
   openProfileIds,
+});
+
+describe("persisted profile boundaries", () => {
+  const readValues = (values: Record<string, string>) => (key: string) => values[key] ?? null;
+
+  it("migrates profiles persisted before enabled and openProfileIds", () => {
+    const state = loadProfileState(
+      readValues({
+        [PROFILES_STORAGE_KEY]: JSON.stringify({
+          activeProfileId: "ssh-1",
+          profiles: [
+            { ...localProfile, name: "Default" },
+            {
+              id: "ssh-1",
+              kind: "ssh",
+              name: "My Box",
+              host: " box ",
+              clientTty: "",
+              runner: { binaryPath: " agentscan ", env: [] },
+            },
+          ],
+        }),
+      }),
+    );
+
+    expect(state.activeProfileId).toBe("ssh-1");
+    expect(state.openProfileIds).toEqual(["ssh-1"]);
+    expect(state.profiles[1]).toEqual({
+      id: "ssh-1",
+      kind: "ssh",
+      host: "box",
+      clientTty: "",
+      runner: { binaryPath: "agentscan", env: [] },
+      enabled: true,
+    });
+    expect(state.profiles.every((profile) => !("name" in profile))).toBe(true);
+  });
+
+  it("falls back on malformed JSON without losing the legacy local runner", () => {
+    const state = loadProfileState(
+      readValues({
+        [SETTINGS_STORAGE_KEY]: JSON.stringify({ binaryPath: " /opt/agentscan ", env: [] }),
+        [PROFILES_STORAGE_KEY]: "{not-json",
+      }),
+    );
+
+    expect(state).toEqual(
+      defaultProfileState({ binaryPath: "/opt/agentscan", env: [] }),
+    );
+    expect(loadRunnerSettings(readValues({ [SETTINGS_STORAGE_KEY]: "{not-json" }))).toEqual({
+      binaryPath: "",
+      env: [],
+    });
+  });
+
+  it.each(["null", "[]", '"profiles"', "42", "true"])(
+    "rejects a non-object profile root: %s",
+    (raw) => {
+      const state = loadProfileState(readValues({ [PROFILES_STORAGE_KEY]: raw }));
+      expect(state).toEqual(defaultProfileState());
+    },
+  );
+
+  it.each(["null", "[]", '"runner"', "42", "true"])(
+    "rejects a non-object runner root: %s",
+    (raw) => {
+      const runner = loadRunnerSettings(readValues({ [SETTINGS_STORAGE_KEY]: raw }));
+      expect(runner).toEqual({ binaryPath: "", env: [] });
+    },
+  );
+
+  it("filters malformed profile members without resetting valid profiles", () => {
+    const state = loadProfileState(
+      readValues({
+        [PROFILES_STORAGE_KEY]: JSON.stringify({
+          activeProfileId: "ssh-1",
+          profiles: [
+            null,
+            "bad",
+            { kind: "future", id: "future-1" },
+            localProfile,
+            sshProfile("ssh-1", "box"),
+          ],
+          openProfileIds: ["ssh-1", null, 4],
+        }),
+      }),
+    );
+
+    expect(state.profiles.map((profile) => profile.id)).toEqual(["local", "ssh-1"]);
+    expect(state.activeProfileId).toBe("ssh-1");
+    expect(state.openProfileIds).toEqual(["ssh-1"]);
+  });
+
+  it("filters malformed env members while preserving valid entries and profiles", () => {
+    const malformedEnv = [
+      null,
+      "bad",
+      3,
+      [],
+      {},
+      { name: "   ", value: "drop" },
+      { name: " KEEP ", value: null },
+      { name: "COUNT", value: 0 },
+    ];
+    const runner = loadRunnerSettings(
+      readValues({
+        [SETTINGS_STORAGE_KEY]: JSON.stringify({ binaryPath: " agentscan ", env: malformedEnv }),
+      }),
+    );
+    expect(runner).toEqual({
+      binaryPath: "agentscan",
+      env: [
+        { name: "KEEP", value: "" },
+        { name: "COUNT", value: "0" },
+      ],
+    });
+
+    const state = loadProfileState(
+      readValues({
+        [PROFILES_STORAGE_KEY]: JSON.stringify({
+          activeProfileId: "local",
+          profiles: [{ ...localProfile, runner: { binaryPath: " agentscan ", env: malformedEnv } }],
+          openProfileIds: ["local"],
+        }),
+      }),
+    );
+    expect(state.profiles[0]).toEqual({ id: "local", kind: "local", runner });
+  });
+
+  it("preserves canonical persisted state", () => {
+    const canonical: ProfileState = {
+      activeProfileId: "ssh-1",
+      profiles: [
+        {
+          id: "local",
+          kind: "local",
+          runner: { binaryPath: "/usr/local/bin/agentscan", env: [{ name: "A", value: "1" }] },
+        },
+        {
+          ...sshProfile("ssh-1", "user@box"),
+          clientTty: "/dev/ttys001",
+          probedHost: "box",
+          runner: { binaryPath: "agentscan", env: [{ name: "B", value: "two" }] },
+        },
+      ],
+      openProfileIds: ["local"],
+    };
+
+    const state = loadProfileState(
+      readValues({ [PROFILES_STORAGE_KEY]: JSON.stringify(canonical) }),
+    );
+    expect(state).toEqual(canonical);
+  });
 });
 
 describe("keybindOwnerId", () => {

@@ -1,5 +1,5 @@
-import { Effect, Stream, SubscriptionRef } from "effect";
-import { PrefsBridge } from "./PrefsBridge";
+import { Context, Effect, Layer, Stream, SubscriptionRef } from "effect";
+import { PrefsBridge, layer as prefsBridgeLayer } from "./PrefsBridge";
 import {
   NOTIFY_ON_IDLE_STORAGE_KEY,
   parseNotifyOnIdle,
@@ -10,9 +10,8 @@ export type NotificationsState = { readonly notifyOnIdle: boolean };
 
 // Owns the persisted notification preference and its cross-window mirror. Live status
 // stays dock-owned; this service deliberately depends only on the shared prefs bridge.
-export class Notifications extends Effect.Service<Notifications>()("desktop/Notifications", {
-  dependencies: [PrefsBridge.Default],
-  scoped: Effect.gen(function* () {
+export class Notifications extends Context.Service<Notifications>()("desktop/Notifications", {
+  make: Effect.gen(function* () {
     const bridge = yield* PrefsBridge;
     const stateRef = yield* SubscriptionRef.make<NotificationsState>({
       notifyOnIdle: parseNotifyOnIdle(bridge.loadRaw(NOTIFY_ON_IDLE_STORAGE_KEY)),
@@ -43,3 +42,6 @@ export class Notifications extends Effect.Service<Notifications>()("desktop/Noti
     return { state: stateRef, setNotifyOnIdle };
   }),
 }) {}
+
+export const layerWithoutDependencies = Layer.effect(Notifications, Notifications.make);
+export const layer = layerWithoutDependencies.pipe(Layer.provide(prefsBridgeLayer));

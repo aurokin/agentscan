@@ -1,7 +1,18 @@
-import { Data, Effect, Queue, Runtime, Scope } from "effect";
+import { Context, Data, Effect, Layer, Queue, Result, type SchemaError } from "effect";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { DesktopRunnerSettings, LivePickerEnvelope, PickerRow } from "./types";
+import type {
+  DaemonPollResult,
+  DesktopRunnerSettings,
+  LivePickerEnvelope,
+  PickerRow,
+} from "./types";
+import {
+  decodeDaemonPollResult,
+  decodeLivePickerEnvelope,
+  decodeLivePickerEnvelopeHeader,
+  decodePickerRows,
+} from "./wireSchema";
 
 // Keep in sync with LIVE_PICKER_EVENT in src-tauri/src/lib.rs.
 const LIVE_PICKER_EVENT = "agentscan-live-picker";
@@ -15,17 +26,26 @@ export class IpcError extends Data.TaggedError("IpcError")<{
   readonly message: string;
 }> {}
 
-const invokeEffect = <A>(op: string, args: Record<string, unknown>) =>
+const invokeEffect = (op: string, args: Record<string, unknown>) =>
   Effect.tryPromise({
-    try: () => invoke<A>(op, args),
+    try: () => invoke<unknown>(op, args),
     catch: (error) => new IpcError({ op, message: messageOf(error) }),
   });
+
+const decodeCommand = <A>(
+  op: string,
+  decode: (input: unknown) => Result.Result<A, SchemaError.SchemaError>,
+  input: unknown,
+): Effect.Effect<A, IpcError> =>
+  Effect.fromResult(decode(input)).pipe(
+    Effect.mapError((error) => new IpcError({ op, message: error.message })),
+  );
 
 // The IPC boundary. Every Tauri `invoke`/`listen` the live lifecycle needs is
 // wrapped here as an Effect/scoped resource, so LiveConnection is pure logic over
 // this interface and a test can swap in a scripted implementation.
-export class TauriIpc extends Effect.Service<TauriIpc>()("desktop/TauriIpc", {
-  succeed: {
+export class TauriIpc extends Context.Service<TauriIpc>()("desktop/TauriIpc", {
+  make: Effect.succeed({
     // Install the Rust live-picker worker. `autoStart` is the latch policy: false
     // (reconnect/launch) subscribes with `--no-auto-start` and only attaches to a
     // running daemon; true (explicit "Start agentscan") lets it spawn one.
@@ -41,28 +61,36 @@ export class TauriIpc extends Effect.Service<TauriIpc>()("desktop/TauriIpc", {
       epoch: number;
       autoStart: boolean;
     }) =>
-      invokeEffect<void>("start_live_picker", {
+      invokeEffect("start_live_picker", {
         settings: input.settings,
         sourceKey: input.sourceKey,
         epoch: input.epoch,
         autoStart: input.autoStart,
-      }),
+      }).pipe(Effect.asVoid),
 
     stopLivePicker: (input: { sourceKey: string; epoch: number }) =>
-      invokeEffect<void>("stop_live_picker", {
+      invokeEffect("stop_live_picker", {
         sourceKey: input.sourceKey,
         epoch: input.epoch,
-      }),
+      }).pipe(Effect.asVoid),
 
-    loadPickerRows: (settings: DesktopRunnerSettings) =>
-      invokeEffect<PickerRow[]>("load_picker_rows", { settings }),
+    loadPickerRows: (settings: DesktopRunnerSettings): Effect.Effect<PickerRow[], IpcError> =>
+      invokeEffect("load_picker_rows", { settings }).pipe(
+        Effect.flatMap((input) => decodeCommand("load_picker_rows", decodePickerRows, input)),
+      ),
 
     // Cheap, one-shot `agentscan daemon status --format json` probe used to detect a
     // daemon while latch-polling, instead of re-arming a full subscribe each tick
     // (expensive over SSH). `reachable` is true unless the daemon is confidently
     // absent (daemon_state == "not_running"); a probe error rejects as IpcError.
-    pollDaemonStatus: (settings: DesktopRunnerSettings) =>
-      invokeEffect<{ reachable: boolean }>("poll_daemon_status", { settings }),
+    pollDaemonStatus: (
+      settings: DesktopRunnerSettings,
+    ): Effect.Effect<DaemonPollResult, IpcError> =>
+      invokeEffect("poll_daemon_status", { settings }).pipe(
+        Effect.flatMap((input) =>
+          decodeCommand("poll_daemon_status", decodeDaemonPollResult, input),
+        ),
+      ),
 
     // A scoped queue of one source's live envelopes. Awaiting this registers the
     // Tauri listener BEFORE the caller starts a subscription (so no early frame is
@@ -74,24 +102,49 @@ export class TauriIpc extends Effect.Service<TauriIpc>()("desktop/TauriIpc", {
     liveEvents: (sourceKey: string) =>
       Effect.gen(function* () {
         const queue = yield* Queue.unbounded<LivePickerEnvelope>();
-        const runFork = Runtime.runFork(yield* Effect.runtime<never>());
         yield* Effect.acquireRelease(
           // tryPromise (not promise): a rejected `listen` is a typed IpcError the
           // LiveConnection supervisor can surface as a fatal connection state, not a
           // defect that would tear the supervisor fiber down with no UI feedback.
           Effect.tryPromise({
             try: () =>
-              listen<LivePickerEnvelope>(LIVE_PICKER_EVENT, (event) => {
-                if (event.payload.sourceKey === sourceKey) {
-                  runFork(Queue.offer(queue, event.payload));
+              listen<unknown>(LIVE_PICKER_EVENT, (event) => {
+                const header = decodeLivePickerEnvelopeHeader(event.payload);
+                if (Result.isFailure(header) || header.success.sourceKey !== sourceKey) {
+                  return;
                 }
+                switch (header.success.kind) {
+                  case "connecting":
+                  case "rows":
+                  case "offline":
+                  case "shutdown":
+                  case "fatal":
+                    break;
+                  default:
+                    return;
+                }
+                const decoded = decodeLivePickerEnvelope(event.payload);
+                const envelope: LivePickerEnvelope = Result.isSuccess(decoded)
+                  ? decoded.success
+                  : {
+                      sourceKey: header.success.sourceKey,
+                      epoch: header.success.epoch,
+                      kind: "fatal",
+                      // Keep the surfaced mismatch bounded and payload-free: Schema errors
+                      // can include the offending value, which may be large or sensitive.
+                      message: `Incompatible agentscan live event schema for ${header.success.kind}`,
+                      diagnostics: null,
+                    };
+                Queue.offerUnsafe(queue, envelope);
               }),
             catch: (error) =>
               new IpcError({ op: `listen:${LIVE_PICKER_EVENT}`, message: messageOf(error) }),
           }),
           (unlisten: UnlistenFn) => Effect.sync(() => unlisten()),
         );
-        return queue as Queue.Dequeue<LivePickerEnvelope>;
+        return queue;
       }),
-  },
+  }),
 }) {}
+
+export const layer = Layer.effect(TauriIpc, TauriIpc.make);

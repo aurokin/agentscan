@@ -1,4 +1,5 @@
 import {
+  Context,
   Deferred,
   Duration,
   Effect,
@@ -10,11 +11,15 @@ import {
   SubscriptionRef,
 } from "effect";
 import { describe, expect, it } from "vitest";
-import { HostnameEnrichment } from "./HostnameEnrichment";
+import {
+  HostnameEnrichment,
+  layerWithoutDependencies as hostnameEnrichmentLayer,
+} from "./HostnameEnrichment";
+import { DebugLog, layer as debugLogLayer } from "./DebugLog";
 import { LiveConnection, type LiveStates } from "./LiveConnection";
 import { Preflight, PreflightIpc, type PreflightState, type SyncedPreflight } from "./Preflight";
 import { PrefsBridge } from "./PrefsBridge";
-import { Profiles } from "./Profiles";
+import { Profiles, layerWithoutDependencies as profilesLayer } from "./Profiles";
 import { IpcError } from "./TauriIpc";
 import {
   PROFILES_STORAGE_KEY,
@@ -82,7 +87,7 @@ const makeHarness = (input: {
       emit: () => Effect.void,
       events: Stream.empty,
     });
-    const RealProfiles = Profiles.DefaultWithoutDependencies.pipe(Layer.provide(Bridge));
+    const RealProfiles = profilesLayer.pipe(Layer.provide(Bridge));
 
     const preflightState = yield* SubscriptionRef.make<PreflightState>({ status: "loading" });
     const syncedRef = yield* SubscriptionRef.make<SyncedPreflight | null>(null);
@@ -98,6 +103,7 @@ const makeHarness = (input: {
       states: liveStates,
       configure: () => Effect.void,
       reconnect: () => Effect.void,
+      reconnectAll: () => Effect.void,
       start: () => Effect.void,
     });
 
@@ -114,11 +120,10 @@ const makeHarness = (input: {
 
     // The same dep layer REFERENCE feeds the service and the test program, so
     // Effect's layer memoization yields one Profiles instance for both.
-    const deps = Layer.mergeAll(MockIpc, MockPreflight, MockLive, RealProfiles);
+    const deps = Layer.mergeAll(MockIpc, MockPreflight, MockLive, RealProfiles, debugLogLayer);
     return {
-      layer: Layer.mergeAll(
-        HostnameEnrichment.DefaultWithoutDependencies.pipe(Layer.provide(deps)),
-        deps,
+      layer: Layer.fresh(
+        Layer.mergeAll(hostnameEnrichmentLayer.pipe(Layer.provide(deps)), deps),
       ),
       store,
       preflightState,
@@ -136,7 +141,7 @@ const awaitProbedHost = (
   id: string,
   probedHost: string,
 ): Effect.Effect<void> =>
-  state.changes.pipe(
+  SubscriptionRef.changes(state).pipe(
     Stream.filter((s) =>
       s.profiles.some((p) => p.id === id && p.kind === "ssh" && p.probedHost === probedHost),
     ),
@@ -154,21 +159,30 @@ const probedHostOf = (state: ProfileState, id: string): string | undefined => {
   return profile?.kind === "ssh" ? profile.probedHost : undefined;
 };
 
+const commandEntries = (debugLog: Context.Service.Shape<typeof DebugLog>) =>
+  SubscriptionRef.get(debugLog.state).pipe(
+    Effect.map((entries) =>
+      entries.map(({ kind, label, detail }) => ({ kind, label, detail })),
+    ),
+  );
+
 // Let the supervisors and forked probe fibers process a tick — everything in
 // the harness is scheduler-driven (no real timers), so yielding is sufficient.
-const settle = Effect.yieldNow().pipe(Effect.repeatN(60));
+const settle = Effect.yieldNow.pipe(Effect.repeat({ times: 60 }));
 
 const run = <A>(
-  harness: Effect.Effect.Success<ReturnType<typeof makeHarness>>,
+  harness: Effect.Success<ReturnType<typeof makeHarness>>,
   body: (ctx: {
-    enrichment: Effect.Effect.Success<typeof HostnameEnrichment>;
-    profiles: Effect.Effect.Success<typeof Profiles>;
+    enrichment: Context.Service.Shape<typeof HostnameEnrichment>;
+    profiles: Context.Service.Shape<typeof Profiles>;
+    debugLog: Context.Service.Shape<typeof DebugLog>;
   }) => Effect.Effect<A>,
 ) =>
   Effect.gen(function* () {
     const enrichment = yield* HostnameEnrichment;
     const profiles = yield* Profiles;
-    return yield* body({ enrichment, profiles });
+    const debugLog = yield* DebugLog;
+    return yield* body({ enrichment, profiles, debugLog });
   }).pipe(Effect.provide(harness.layer));
 
 describe("HostnameEnrichment", () => {
@@ -180,18 +194,19 @@ describe("HostnameEnrichment", () => {
         initial,
         probes: [Effect.succeed(preflightOf("boxy"))],
       });
-      const log: string[] = [];
-
-      yield* run(harness, ({ enrichment, profiles }) =>
+      yield* run(harness, ({ enrichment, profiles, debugLog }) =>
         Effect.gen(function* () {
-          yield* enrichment.configure((label, detail) => log.push(`${label}|${detail}`));
+          yield* enrichment.configure();
           // Not a candidate until its channel comes ONLINE.
           yield* settle;
-          expect(log).toEqual([]);
+          expect(yield* commandEntries(debugLog)).toEqual([]);
 
           yield* SubscriptionRef.set(harness.liveStates, new Map([[k1, online(k1)]]));
           yield* awaitProbedHost(profiles.state, "s1", "boxy");
-          expect(log).toEqual(["hostname probe (box)|started", "hostname probe (box)|ok"]);
+          expect(yield* commandEntries(debugLog)).toEqual([
+            { kind: "command", label: "hostname probe (box)", detail: "ok" },
+            { kind: "command", label: "hostname probe (box)", detail: "started" },
+          ]);
 
           // Recording committed a profiles tick and the live map keeps
           // ticking; neither re-probes (probedHost + the attempt mark).
@@ -210,16 +225,18 @@ describe("HostnameEnrichment", () => {
         initial,
         probes: [failWith("ssh: connect refused"), Effect.succeed(preflightOf("boxy"))],
       });
-      const log: string[] = [];
-
-      yield* run(harness, ({ enrichment, profiles }) =>
+      yield* run(harness, ({ enrichment, profiles, debugLog }) =>
         Effect.gen(function* () {
-          yield* enrichment.configure((label, detail) => log.push(`${label}|${detail}`));
+          yield* enrichment.configure();
           yield* SubscriptionRef.set(harness.liveStates, new Map([[k1, online(k1)]]));
           yield* settle;
-          expect(log).toEqual([
-            "hostname probe (box)|started",
-            "hostname probe (box)|ssh: connect refused",
+          expect(yield* commandEntries(debugLog)).toEqual([
+            {
+              kind: "command",
+              label: "hostname probe (box)",
+              detail: "ssh: connect refused",
+            },
+            { kind: "command", label: "hostname probe (box)", detail: "started" },
           ]);
 
           // The failure stands: further live ticks don't re-probe...
@@ -247,12 +264,12 @@ describe("HostnameEnrichment", () => {
       const gate = yield* Deferred.make<void>();
       const harness = yield* makeHarness({
         initial,
-        probes: [Deferred.await(gate).pipe(Effect.zipRight(Effect.succeed(preflightOf("old-box"))))],
+        probes: [Deferred.await(gate).pipe(Effect.andThen(Effect.succeed(preflightOf("old-box"))))],
       });
 
       yield* run(harness, ({ enrichment, profiles }) =>
         Effect.gen(function* () {
-          yield* enrichment.configure(() => {});
+          yield* enrichment.configure();
           yield* SubscriptionRef.set(harness.liveStates, new Map([[k1, online(k1)]]));
           yield* Queue.take(harness.probeCalls); // probe armed, in flight
 
@@ -282,7 +299,7 @@ describe("HostnameEnrichment", () => {
 
       yield* run(harness, ({ enrichment, profiles }) =>
         Effect.gen(function* () {
-          yield* enrichment.configure(() => {});
+          yield* enrichment.configure();
           // A ready state for a runnerKey no profile owns is skipped — and must
           // not kill the recorder for the session.
           yield* SubscriptionRef.set(harness.preflightState, {
@@ -312,25 +329,27 @@ describe("HostnameEnrichment", () => {
       const gate = yield* Deferred.make<void>();
       const harness = yield* makeHarness({
         initial,
-        probes: [Deferred.await(gate).pipe(Effect.zipRight(Effect.succeed(preflightOf("boxy"))))],
+        probes: [Deferred.await(gate).pipe(Effect.andThen(Effect.succeed(preflightOf("boxy"))))],
       });
-      const log: string[] = [];
 
-      yield* run(harness, ({ enrichment, profiles }) =>
+      yield* run(harness, ({ enrichment, profiles, debugLog }) =>
         Effect.gen(function* () {
-          yield* enrichment.configure((label, detail) => log.push(`${label}|${detail}`));
+          yield* enrichment.configure();
           yield* SubscriptionRef.set(harness.liveStates, new Map([[k1, online(k1)]]));
           yield* Queue.take(harness.probeCalls); // in flight
 
           // StrictMode's second configure: the replayed tick must skip the
           // marked key, and the surviving probe fiber must still record.
-          yield* enrichment.configure((label, detail) => log.push(`${label}|${detail}`));
+          yield* enrichment.configure();
           yield* settle;
           expect(yield* Queue.size(harness.probeCalls)).toBe(0);
 
           yield* Deferred.succeed(gate, undefined);
           yield* awaitProbedHost(profiles.state, "s1", "boxy");
-          expect(log).toEqual(["hostname probe (box)|started", "hostname probe (box)|ok"]);
+          expect(yield* commandEntries(debugLog)).toEqual([
+            { kind: "command", label: "hostname probe (box)", detail: "ok" },
+            { kind: "command", label: "hostname probe (box)", detail: "started" },
+          ]);
         }),
       );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
@@ -343,14 +362,16 @@ describe("HostnameEnrichment", () => {
         initial,
         probes: [Effect.succeed(preflightOf(null))],
       });
-      const log: string[] = [];
 
-      yield* run(harness, ({ enrichment, profiles }) =>
+      yield* run(harness, ({ enrichment, profiles, debugLog }) =>
         Effect.gen(function* () {
-          yield* enrichment.configure((label, detail) => log.push(`${label}|${detail}`));
+          yield* enrichment.configure();
           yield* SubscriptionRef.set(harness.liveStates, new Map([[k1, online(k1)]]));
           yield* settle;
-          expect(log).toEqual(["hostname probe (box)|started", "hostname probe (box)|ok"]);
+          expect(yield* commandEntries(debugLog)).toEqual([
+            { kind: "command", label: "hostname probe (box)", detail: "ok" },
+            { kind: "command", label: "hostname probe (box)", detail: "started" },
+          ]);
           expect(probedHostOf(yield* SubscriptionRef.get(profiles.state), "s1")).toBeUndefined();
 
           yield* SubscriptionRef.set(harness.liveStates, new Map([[k1, online(k1)]]));

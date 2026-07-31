@@ -4,6 +4,7 @@ import {
   HotkeyIpc,
   SummonHotkey,
   SummonHotkeyConfig,
+  layerWithoutDependencies as summonHotkeyLayer,
   summonHotkeyFailureMessage,
   summonHotkeyInUse,
   type SummonHotkeyState,
@@ -89,8 +90,8 @@ const makeHarness = (script: ReadonlyArray<Outcome>) =>
     });
 
     return {
-      layer: SummonHotkey.DefaultWithoutDependencies.pipe(
-        Layer.provide(Layer.merge(layer, ZeroBackoff)),
+      layer: Layer.fresh(
+        summonHotkeyLayer.pipe(Layer.provide(Layer.merge(layer, ZeroBackoff))),
       ),
       ops: Ref.get(ops),
       press: (state: "Pressed" | "Released") => fire(state),
@@ -103,7 +104,7 @@ const awaitStatus = (
   state: SubscriptionRef.SubscriptionRef<SummonHotkeyState>,
   status: SummonHotkeyState["status"],
 ): Effect.Effect<SummonHotkeyState> =>
-  state.changes.pipe(
+  SubscriptionRef.changes(state).pipe(
     Stream.filter((s) => s.status === status),
     Stream.runHead,
     Effect.flatMap(
@@ -143,9 +144,9 @@ describe("SummonHotkey", () => {
       yield* Effect.gen(function* () {
         const hotkey = yield* SummonHotkey;
         const emissions = yield* Queue.unbounded<SummonHotkeyState>();
-        yield* hotkey.state.changes.pipe(
+        yield* SubscriptionRef.changes(hotkey.state).pipe(
           Stream.runForEach((state) => Queue.offer(emissions, state)),
-          Effect.fork,
+          Effect.forkChild,
         );
         expect(yield* Queue.take(emissions)).toEqual({ status: "inactive" });
 
@@ -188,7 +189,7 @@ describe("SummonHotkey", () => {
 
         // Give a (wrong) zero-backoff retry every chance to run, then confirm
         // the loop parked: one attempt, state still failed.
-        yield* Effect.yieldNow().pipe(Effect.repeatN(20));
+        yield* Effect.yieldNow.pipe(Effect.repeat({ times: 20 }));
         expect(yield* SubscriptionRef.get(hotkey.state)).toEqual(failed);
         expect(yield* harness.ops).toEqual(["register:fail"]);
       }).pipe(Effect.provide(harness.layer));

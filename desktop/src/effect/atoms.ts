@@ -1,45 +1,26 @@
-import { Atom } from "@effect-atom/atom-react";
-import { Effect, Layer } from "effect";
-import { LiveConnection, type ConfigureInput } from "./LiveConnection";
-import { Profiles, type ApplyRunnerSettingsInput } from "./Profiles";
-import { Preflight, type PreflightTarget } from "./Preflight";
-import { Appearance } from "./Appearance";
-import { Notifications } from "./Notifications";
-import { SummonHotkey } from "./SummonHotkey";
+import { Effect } from "effect";
+import { Atom } from "effect/unstable/reactivity";
 import { Activation, type ActivateInput } from "./Activation";
+import { Appearance } from "./Appearance";
 import { DebugLog, type DebugEntryInput } from "./DebugLog";
+import { desktopLayer } from "./desktopLayer";
 import { HostIpc } from "./HostIpc";
-import { HostnameEnrichment, type EnrichmentLog } from "./HostnameEnrichment";
+import { HostnameEnrichment } from "./HostnameEnrichment";
+import { LiveConnection, type ConfigureInput } from "./LiveConnection";
+import { Notifications } from "./Notifications";
+import { Preflight, type PreflightTarget } from "./Preflight";
+import { Profiles, type ApplyRunnerSettingsInput } from "./Profiles";
+import { SummonHotkey } from "./SummonHotkey";
 import type { OrientationPreference, ThemePreference } from "./prefs";
 
-// One runtime per webview window, providing the desktop Effect services. Profiles,
-// Preflight, and Appearance all pull in the shared PrefsBridge (the single
-// agentscan:prefs-sync channel), so they reuse one listener rather than opening their
-// own — Effect memoizes PrefsBridge.Default by reference across the merge. Both windows
-// instantiate this layer; LiveConnection's and Preflight's supervisors idle in the
-// settings window because the dock-only configure paths never enable a target (the
-// latch-only invariant is enforced there, not by withholding the layer).
-const runtime = Atom.runtime(
-  Layer.mergeAll(
-    LiveConnection.Default,
-    Profiles.Default,
-    Preflight.Default,
-    Appearance.Default,
-    Notifications.Default,
-    SummonHotkey.Default,
-    // Activation and HostnameEnrichment also depend on services merged above
-    // (LiveConnection; plus Profiles/Preflight for enrichment); layer
-    // memoization resolves each to the same instance.
-    Activation.Default,
-    HostnameEnrichment.Default,
-    DebugLog.Default,
-    HostIpc.Default,
-  ),
-);
+// The React boundary owns only adaptation: desktopLayer defines the service
+// graph, while this v4 Atom runtime turns service effects and SubscriptionRefs
+// into AsyncResult-backed UI state and commands.
+const runtime = Atom.runtime(desktopLayer);
 
 // The local machine's short hostname, fetched once per webview runtime and
 // shown as the local source's label (the way a remote source is keyed by its
-// SSH host). Read it with Result.getOrElse(..., () => ""): Initial AND Failure
+// SSH host). Read it with AsyncResult.getOrElse(..., () => ""): Initial AND Failure
 // both fall back to "", matching the old per-window fetch whose failure just
 // left the generic label in place (sourceLabel handles "").
 export const localHostLabelAtom = Atom.keepAlive(
@@ -48,7 +29,7 @@ export const localHostLabelAtom = Atom.keepAlive(
 
 // --- Live connection slice ---
 
-// The per-key live states the dock observes: Result<LiveStates> (connection
+// The per-key live states the dock observes: AsyncResult<LiveStates> (connection
 // status + rows per configured source, keyed by runnerKey; read entries through
 // liveStateFor). keepAlive so the supervised connection fibers persist across
 // re-renders/StrictMode remounts for the dock session rather than tearing down
@@ -75,6 +56,14 @@ export const reconnectAtom = runtime.fn(
   }),
 );
 
+// Re-arm multiple sources through one Atom write and one service-mutex acquisition.
+export const reconnectAllAtom = runtime.fn(
+  Effect.fnUntraced(function* (runnerKeys: ReadonlyArray<string>) {
+    const lc = yield* LiveConnection;
+    yield* lc.reconnectAll(runnerKeys);
+  }),
+);
+
 // Reconcile the live connections to the listed targets when the active
 // profile/preflight changes.
 export const configureAtom = runtime.fn(
@@ -86,7 +75,7 @@ export const configureAtom = runtime.fn(
 
 // --- Profiles / settings slice ---
 
-// The persisted profile state both windows observe: Result<ProfileState>. keepAlive
+// The persisted profile state both windows observe: AsyncResult<ProfileState>. keepAlive
 // so the Profiles supervisor (inbound cross-window adoption) and the shared
 // PrefsBridge persist across StrictMode remounts.
 export const profilesAtom = Atom.keepAlive(
@@ -158,14 +147,14 @@ export const reloadProfilesAtom = runtime.fn(
 
 // --- Preflight slice ---
 
-// The dock's resolved preflight (CLI reachability for the active runner): Result<
-// PreflightState>. keepAlive so the supervised probe fiber + the shared PrefsBridge
+// The dock's resolved preflight (CLI reachability for the active runner):
+// AsyncResult<PreflightState>. keepAlive so the supervised probe fiber + shared PrefsBridge
 // listener persist across StrictMode remounts for the dock session.
 export const preflightStateAtom = Atom.keepAlive(
   runtime.subscriptionRef(Effect.map(Preflight, (p) => p.state)),
 );
 
-// The settings window's mirror of the dock's preflight: Result<SyncedPreflight | null>.
+// The settings window's mirror of the dock's preflight: AsyncResult<SyncedPreflight | null>.
 // keepAlive so the inbound-adoption fiber persists across remounts.
 export const syncedPreflightAtom = Atom.keepAlive(
   runtime.subscriptionRef(Effect.map(Preflight, (p) => p.synced)),
@@ -191,7 +180,7 @@ export const requestPreflightSyncAtom = runtime.fn(
 // --- Activation slice ---
 
 // The pane-activation state the picker renders (idle / running pulse / failed
-// strip): Result<PickerActivation>. keepAlive so the TTL supervisor and any
+// strip): AsyncResult<PickerActivation>. keepAlive so the TTL supervisor and any
 // in-flight activation fiber persist across StrictMode remounts.
 export const activationAtom = Atom.keepAlive(
   runtime.subscriptionRef(Effect.map(Activation, (a) => a.state)),
@@ -218,23 +207,18 @@ export const pruneActivationAtom = runtime.fn(
 // --- Hostname enrichment slice ---
 
 // Dock-only: arm hostname enrichment (recording the driver's probed hostnames
-// + one-shot background probes for never-probed online remotes) with the
-// debug-log sink. Persistence goes through Profiles inside the service.
-//
-// The callback rides inside an object on purpose: useAtomSet invokes a BARE
-// function argument as an updater (value(registry.get(atom))) instead of
-// passing it through, which would run the callback once at configure time and
-// hand the service `undefined`. Same convention as configureSummonHotkeyAtom.
+// + one-shot background probes for never-probed online remotes). Persistence
+// and command lifecycle logging stay inside the service graph.
 export const configureHostnameEnrichmentAtom = runtime.fn(
-  Effect.fnUntraced(function* (input: { readonly onLog: EnrichmentLog }) {
+  Effect.fnUntraced(function* () {
     const enrichment = yield* HostnameEnrichment;
-    yield* enrichment.configure(input.onLog);
+    yield* enrichment.configure();
   }),
 );
 
 // --- Debug log slice ---
 
-// The per-window debug log (newest-first, capped): Result<ReadonlyArray<DebugEntry>>.
+// The per-window debug log (newest-first, capped): AsyncResult<ReadonlyArray<DebugEntry>>.
 // Each webview's runtime holds its own instance, matching the old per-window
 // useState; the settings window renders it, the dock only writes. keepAlive so
 // entries survive StrictMode remounts like the rest of the runtime state.
@@ -242,10 +226,9 @@ export const debugLogAtom = Atom.keepAlive(
   runtime.subscriptionRef(Effect.map(DebugLog, (d) => d.state)),
 );
 
-// Append one entry (the service stamps id/time). The setter is registry-stable,
-// so effects that log can list it in their dep arrays — the old App.tsx closure
-// was recreated every render and forced dep omissions. Known narrow deviation
-// from the old synchronous setState: appends fired before the runtime layer
+// Append one UI/native entry (the service stamps id/time). Lifecycle services
+// write their own entries directly. Known narrow deviation from the old
+// synchronous setState: appends fired before the runtime layer
 // finishes building are deferred by runtime.fn and collapse to the LATEST one
 // (same replay rule as every fn atom here); only boot-window native-call
 // failures can hit it.
@@ -267,7 +250,7 @@ export const clearDebugLogAtom = runtime.fn(
 // --- Summon hotkey slice ---
 
 // The summon-hotkey registration state the dock renders as its standing banner:
-// Result<SummonHotkeyState>. keepAlive so the registration fiber (and its in-use
+// AsyncResult<SummonHotkeyState>. keepAlive so the registration fiber (and its in-use
 // retry loop) persists across StrictMode remounts instead of churning the OS key.
 export const summonHotkeyAtom = Atom.keepAlive(
   runtime.subscriptionRef(Effect.map(SummonHotkey, (s) => s.state)),
@@ -291,7 +274,7 @@ export const configureSummonHotkeyAtom = runtime.fn(
 // --- Appearance slice ---
 
 // The persisted appearance prefs (theme + dock-layout orientation + glass + frameless)
-// both windows observe: Result<AppearanceState>. keepAlive so the inbound-adoption fiber + shared
+// both windows observe: AsyncResult<AppearanceState>. keepAlive so the inbound-adoption fiber + shared
 // PrefsBridge persist across StrictMode remounts. React keeps the DOM/Tauri apply effects.
 export const appearanceAtom = Atom.keepAlive(
   runtime.subscriptionRef(Effect.map(Appearance, (a) => a.state)),

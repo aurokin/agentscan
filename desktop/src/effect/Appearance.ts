@@ -1,5 +1,5 @@
-import { Effect, Stream, SubscriptionRef } from "effect";
-import { PrefsBridge } from "./PrefsBridge";
+import { Context, Effect, Layer, Stream, SubscriptionRef } from "effect";
+import { PrefsBridge, layer as prefsBridgeLayer } from "./PrefsBridge";
 import {
   appearanceEqual,
   loadAppearance,
@@ -32,9 +32,8 @@ import type { OrientationPreference, ThemePreference } from "./prefs";
 // healed by the receiver (and vice versa) instead of silently reverting on the next
 // reconcile/restart. Each field is updated independently (merge-onto-current), so a
 // concurrent change to a different field in the other window can't clobber this one.
-export class Appearance extends Effect.Service<Appearance>()("desktop/Appearance", {
-  dependencies: [PrefsBridge.Default],
-  scoped: Effect.gen(function* () {
+export class Appearance extends Context.Service<Appearance>()("desktop/Appearance", {
+  make: Effect.gen(function* () {
     const bridge = yield* PrefsBridge;
     const stateRef = yield* SubscriptionRef.make<AppearanceState>(loadAppearance(bridge.loadRaw));
 
@@ -148,3 +147,6 @@ export class Appearance extends Effect.Service<Appearance>()("desktop/Appearance
     };
   }),
 }) {}
+
+export const layerWithoutDependencies = Layer.effect(Appearance, Appearance.make);
+export const layer = layerWithoutDependencies.pipe(Layer.provide(prefsBridgeLayer));

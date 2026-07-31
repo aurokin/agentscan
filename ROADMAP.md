@@ -346,6 +346,22 @@ Implications:
 
 - desktop code owns host/profile selection, process supervision, stdout/stderr
   handling, reconnect policy, rendering, global hotkeys, and error presentation
+- the desktop runtime uses Effect v4's explicit service model: each lifecycle or
+  host boundary is a `Context.Service` with an explicit lowercase layer, simple
+  duration configuration uses `Context.Reference`, and `desktopLayer.ts` owns the
+  complete per-webview dependency graph. Scoped fibers and native listeners are
+  acquired in that layer lifetime; test layers replace service boundaries directly.
+- React is an adapter, not a second lifecycle owner: one v4 Atom runtime per
+  webview projects service `SubscriptionRef` state into `AsyncResult` values and
+  command atoms. The unstable reactivity API is isolated to
+  `desktop/src/effect/atoms.ts`; domain models and lifecycle services do not
+  depend on React atoms. Lifecycle services append their own command entries to
+  the per-webview `DebugLog`; React adapters log only UI/native work they own.
+- every inbound Tauri command response and event payload is decoded with Effect
+  Schema before entering domain state. Command decode failures become typed
+  `IpcError`s; malformed best-effort events are dropped. Persisted profile schemas
+  validate only the outer object boundary so historical field-level migration and
+  normalization remain backward compatible.
 - the desktop reconnect policy is **latch-only**: the dock attaches to an
   existing daemon (`subscribe --no-auto-start`) and auto-reconnects with backoff
   when a recoverable close (daemon restart / socket superseded) ends the stream,

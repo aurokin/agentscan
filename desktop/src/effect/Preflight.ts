@@ -1,10 +1,11 @@
-import { Effect, Ref, Stream, SubscriptionRef } from "effect";
+import { Context, Effect, Layer, Ref, Stream, SubscriptionRef } from "effect";
 import { invoke } from "@tauri-apps/api/core";
-import { PrefsBridge } from "./PrefsBridge";
+import { PrefsBridge, layer as prefsBridgeLayer } from "./PrefsBridge";
 import { IpcError } from "./TauriIpc";
 import type { PrefsSync, PreflightStatus } from "./prefs";
 import type { AgentscanPreflight } from "./profileModel";
 import type { DesktopRunnerSettings } from "./types";
+import { decodeAgentscanPreflight } from "./wireSchema";
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
@@ -13,15 +14,27 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
 // the Preflight logic stays pure over it and a vitest layer can script success/failure
 // without a real Tauri host. Kept separate from TauriIpc so the live-connection tests'
 // scripted boundary is unaffected.
-export class PreflightIpc extends Effect.Service<PreflightIpc>()("desktop/PreflightIpc", {
-  succeed: {
-    probe: (settings: DesktopRunnerSettings) =>
+export class PreflightIpc extends Context.Service<PreflightIpc>()("desktop/PreflightIpc", {
+  make: Effect.succeed({
+    probe: (
+      settings: DesktopRunnerSettings,
+    ): Effect.Effect<AgentscanPreflight, IpcError> =>
       Effect.tryPromise({
-        try: () => invoke<AgentscanPreflight>("preflight_agentscan", { settings }),
+        try: () => invoke<unknown>("preflight_agentscan", { settings }),
         catch: (error) => new IpcError({ op: "preflight_agentscan", message: messageOf(error) }),
-      }),
-  },
+      }).pipe(
+        Effect.flatMap((input) =>
+          Effect.fromResult(decodeAgentscanPreflight(input)).pipe(
+            Effect.mapError(
+              (error) => new IpcError({ op: "preflight_agentscan", message: error.message }),
+            ),
+          ),
+        ),
+      ),
+  }),
 }) {}
+
+export const ipcLayer = Layer.effect(PreflightIpc, PreflightIpc.make);
 
 // The dock's resolved preflight (CLI reachability for the active runner). Mirrors the
 // old App.tsx LoadState, minus its dead `profiles` field — the dock now reads the
@@ -41,11 +54,10 @@ export type PreflightState =
 // prefs channel. The card reproduces the dock's tones from `status` + `preflight`,
 // guarded by `runnerKey` against its own active runner. `preflight` is non-null only
 // when the dock status is "ready".
-export type SyncedPreflight = {
-  readonly status: PreflightStatus;
-  readonly runnerKey: string;
-  readonly preflight: AgentscanPreflight | null;
-};
+export type SyncedPreflight = { readonly runnerKey: string } & (
+  | { readonly status: "ready"; readonly preflight: AgentscanPreflight }
+  | { readonly status: Exclude<PreflightStatus, "ready">; readonly preflight: null }
+);
 
 // What the dock asks Preflight to resolve. The caller (React) precomputes the
 // synchronous profile validation: `invalid` non-null short-circuits the probe and
@@ -83,9 +95,8 @@ const IDLE: Armed = { gen: 0, target: null };
 // idle and just adopts the dock's broadcasts. A supervised fiber runs one probe per
 // target and is interrupted by the next configure, superseding an in-flight probe the
 // way the old `cancelled` flag did.
-export class Preflight extends Effect.Service<Preflight>()("desktop/Preflight", {
-  dependencies: [PreflightIpc.Default, PrefsBridge.Default],
-  scoped: Effect.gen(function* () {
+export class Preflight extends Context.Service<Preflight>()("desktop/Preflight", {
+  make: Effect.gen(function* () {
     const ipc = yield* PreflightIpc;
     const bridge = yield* PrefsBridge;
     const stateRef = yield* SubscriptionRef.make<PreflightState>(INITIAL_STATE);
@@ -97,13 +108,23 @@ export class Preflight extends Effect.Service<Preflight>()("desktop/Preflight", 
       wireOf(INITIAL_STATE, ""),
     );
 
-    // Set a resolved state and (dock only) mirror it to the settings window.
+    // Commit local and replay state atomically with respect to a target switch.
+    // Keep only these in-memory writes uninterruptible: the best-effort bridge is
+    // external and must remain interruptible so a stalled emit cannot block a newer
+    // target. If it is interrupted, settings can recover the committed wire through
+    // its replay request. Probes stay interruptible too.
     const publish = (next: PreflightState, runnerKey: string) =>
       Effect.gen(function* () {
-        yield* SubscriptionRef.set(stateRef, next);
-        if (bridge.mode === "dock") {
-          const wire = wireOf(next, runnerKey);
-          yield* Ref.set(lastWireRef, wire);
+        const wire = bridge.mode === "dock" ? wireOf(next, runnerKey) : null;
+        yield* Effect.uninterruptible(
+          Effect.gen(function* () {
+            yield* SubscriptionRef.set(stateRef, next);
+            if (wire !== null) {
+              yield* Ref.set(lastWireRef, wire);
+            }
+          }),
+        );
+        if (wire !== null) {
           yield* bridge.emit(wire);
         }
       });
@@ -147,7 +168,7 @@ export class Preflight extends Effect.Service<Preflight>()("desktop/Preflight", 
               ),
               // A probe failure is the old loadShellState catch → a failed state with the
               // IPC error message (Reconnect/Open settings is offered by the dock UI).
-              Effect.catchAll((error) =>
+              Effect.catch((error) =>
                 Effect.succeed<PreflightState>({ status: "failed", message: error.message }),
               ),
             );
@@ -160,9 +181,9 @@ export class Preflight extends Effect.Service<Preflight>()("desktop/Preflight", 
     // Supervisor: each new target interrupts the running probe and replaces it. A probe
     // interrupted mid-flight drops its result (the Tauri invoke can't be cancelled, but
     // its outcome is discarded) — exactly the old `cancelled` guard.
-    yield* targetRef.changes.pipe(
+    yield* SubscriptionRef.changes(targetRef).pipe(
       Stream.changes,
-      Stream.flatMap((armed) => Stream.fromEffect(runTarget(armed)), { switch: true }),
+      Stream.switchMap((armed) => Stream.fromEffect(runTarget(armed))),
       Stream.runDrain,
       Effect.forkScoped,
     );
@@ -175,11 +196,19 @@ export class Preflight extends Effect.Service<Preflight>()("desktop/Preflight", 
       Stream.runForEach((payload) =>
         Effect.gen(function* () {
           if (bridge.mode === "settings" && payload.kind === "preflight") {
-            yield* SubscriptionRef.set(syncedRef, {
-              status: payload.status,
-              runnerKey: payload.runnerKey,
-              preflight: payload.preflight,
-            });
+            const synced: SyncedPreflight =
+              payload.status === "ready"
+                ? {
+                    status: "ready",
+                    runnerKey: payload.runnerKey,
+                    preflight: payload.preflight,
+                  }
+                : {
+                    status: payload.status,
+                    runnerKey: payload.runnerKey,
+                    preflight: null,
+                  };
+            yield* SubscriptionRef.set(syncedRef, synced);
           } else if (bridge.mode === "dock" && payload.kind === "preflight-request") {
             const wire = yield* Ref.get(lastWireRef);
             yield* bridge.emit(wire);
@@ -204,3 +233,8 @@ export class Preflight extends Effect.Service<Preflight>()("desktop/Preflight", 
     };
   }),
 }) {}
+
+export const layerWithoutDependencies = Layer.effect(Preflight, Preflight.make);
+export const layer = layerWithoutDependencies.pipe(
+  Layer.provide(Layer.merge(ipcLayer, prefsBridgeLayer)),
+);

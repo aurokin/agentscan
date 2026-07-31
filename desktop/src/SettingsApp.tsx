@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Result, useAtomSet, useAtomValue } from "@effect-atom/atom-react";
+import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { Result } from "effect";
+import { AsyncResult } from "effect/unstable/reactivity";
 import { DebugLog } from "./components/DebugLog";
 import { SourceKindIcon } from "./components/SourceKindIcon";
 import { IS_MAC } from "./platform";
@@ -55,9 +57,9 @@ import {
 import {
   PREFS_SYNC_EVENT,
   type OrientationPreference,
-  type PrefsSync,
   type ThemePreference,
 } from "./effect/prefs";
+import { decodePrefsSync } from "./effect/wireSchema";
 import { settingsPreflightCard } from "./effect/settingsViewModel";
 import { readLocalStorage } from "./shared";
 import { isNewerVersion, resolveLatestVersion } from "./updateCheck";
@@ -88,7 +90,10 @@ function SettingsApp() {
   // Settings is opened, and keeps the card current even while the window is
   // visible-but-unfocused. requestPreflightSync asks the dock to re-emit on
   // focus (emitTo has no replay).
-  const syncedPreflight = Result.getOrElse(useAtomValue(syncedPreflightAtom), () => null);
+  const syncedPreflight = AsyncResult.getOrElse(
+    useAtomValue(syncedPreflightAtom),
+    () => null,
+  );
   const requestPreflightSync = useAtomSet(requestPreflightSyncAtom);
   // Profile/settings persistence + cross-window adoption are owned by the Profiles
   // Effect service; this window observes its state via an atom and drives changes
@@ -97,7 +102,7 @@ function SettingsApp() {
   // runnerKey / drafts are correct on the very first paint, matching the service seed.
   const initialProfileState = useMemo(() => loadProfileState(readLocalStorage), []);
   const profileStateResult = useAtomValue(profilesAtom);
-  const profileState = Result.getOrElse(profileStateResult, () => initialProfileState);
+  const profileState = AsyncResult.getOrElse(profileStateResult, () => initialProfileState);
   const selectProfileSet = useAtomSet(selectProfileAtom, { mode: "promise" });
   const addSshProfileSet = useAtomSet(addSshProfileAtom);
   const deleteActiveProfileSet = useAtomSet(deleteActiveProfileAtom);
@@ -117,14 +122,17 @@ function SettingsApp() {
   // window renders and clears its own log; the dock writes to its own). The
   // append setter is registry-stable, unlike the old per-render closure, so
   // logging effects can list it in their dep arrays.
-  const debugEntries = Result.getOrElse(useAtomValue(debugLogAtom), () => EMPTY_DEBUG_ENTRIES);
+  const debugEntries = AsyncResult.getOrElse(
+    useAtomValue(debugLogAtom),
+    () => EMPTY_DEBUG_ENTRIES,
+  );
   const appendDebugEntry = useAtomSet(appendDebugEntryAtom);
   const clearDebugLog = useAtomSet(clearDebugLogAtom);
   // The local machine's short hostname, resolved once per webview runtime by
   // the HostIpc-backed atom, shown as the local source's label (the way a
   // remote source is keyed by its SSH host). Empty while unresolved AND on
   // failure; sourceLabel falls back to a generic label for "".
-  const localHostLabel = Result.getOrElse(useAtomValue(localHostLabelAtom), () => "");
+  const localHostLabel = AsyncResult.getOrElse(useAtomValue(localHostLabelAtom), () => "");
   // The probed remote hostname as a label source: this window reuses the dock's
   // mirror. sourceLabel only honors it for the profile whose runnerKey matches,
   // so a stale probe can never label a source.
@@ -199,7 +207,10 @@ function SettingsApp() {
   // (before the runtime resolves the atom) falls back to a direct storage read so the
   // controls are right on the first paint.
   const initialAppearance = useMemo(() => loadAppearance(readLocalStorage), []);
-  const appearance = Result.getOrElse(useAtomValue(appearanceAtom), () => initialAppearance);
+  const appearance = AsyncResult.getOrElse(
+    useAtomValue(appearanceAtom),
+    () => initialAppearance,
+  );
   const { themePref, orientationPref, glassEnabled, surfaceAlpha, framelessEnabled } =
     appearance;
   const setThemePref = useAtomSet(setThemeAtom);
@@ -212,7 +223,7 @@ function SettingsApp() {
     () => ({ notifyOnIdle: parseNotifyOnIdle(readLocalStorage(NOTIFY_ON_IDLE_STORAGE_KEY)) }),
     [],
   );
-  const { notifyOnIdle } = Result.getOrElse(
+  const { notifyOnIdle } = AsyncResult.getOrElse(
     useAtomValue(notificationsAtom),
     () => initialNotifications,
   );
@@ -260,9 +271,9 @@ function SettingsApp() {
   useEffect(() => {
     let disposed = false;
     let unlisten: UnlistenFn | null = null;
-    void listen<PrefsSync>(PREFS_SYNC_EVENT, (event) => {
-      const payload = event.payload;
-      if (payload.kind === "profiles") {
+    void listen<unknown>(PREFS_SYNC_EVENT, (event) => {
+      const decoded = decodePrefsSync(event.payload);
+      if (Result.isSuccess(decoded) && decoded.success.kind === "profiles") {
         // The Profiles service owns persistence + the reload primitive, but the
         // adopt/skip DECISION stays here because it gates on the settings form's
         // unsaved-edit flag — React-synchronous state. Reading isSettingsDirtyRef in

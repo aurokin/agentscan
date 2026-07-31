@@ -43,12 +43,10 @@ export type PrefsSync =
   // `status` mirrors the dock's discriminant so the card can reproduce its tones:
   // "ready" carries `preflight`; "loading" reads as Checking; "failed" (dock IPC
   // error) reads as Unreachable. `preflight` is non-null only on "ready".
-  | {
-      kind: "preflight";
-      status: PreflightStatus;
-      runnerKey: string;
-      preflight: AgentscanPreflight | null;
-    }
+  | ({ kind: "preflight"; runnerKey: string } & (
+      | { status: "ready"; preflight: AgentscanPreflight }
+      | { status: Exclude<PreflightStatus, "ready">; preflight: null }
+    ))
   // Settings -> dock: ask the dock to re-emit its current preflight. emitTo has no
   // replay, so a settings window shown after the dock probed would otherwise miss
   // the result; it requests one on show to reconcile.

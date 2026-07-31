@@ -1,13 +1,11 @@
 // The debug log the settings window renders (and the dock writes), extracted
 // from App.tsx's per-window React state. Each webview's runtime builds its own
-// instance, preserving the old per-window useState isolation: the dock appends
-// its command-lifecycle entries to a log nothing renders there today
-// (pre-existing behavior, kept), while the settings window appends and renders
-// its own. The win over useState is a registry-stable append setter: the old
-// appendDebugEntry closure was recreated every render, forcing dep-list
-// omissions in every effect that logged.
+// instance, preserving the old per-window useState isolation: dock lifecycle
+// services append command entries to a log nothing renders there today
+// (pre-existing behavior, kept), while the settings window's UI adapters append
+// and render their own. Other UI/native logging still uses the atom adapter.
 
-import { Effect, SubscriptionRef } from "effect";
+import { Context, Effect, Layer, SubscriptionRef } from "effect";
 
 // Newest-first, capped: appends beyond the limit drop the oldest entries.
 export const DEBUG_LOG_LIMIT = 80;
@@ -23,8 +21,8 @@ export type DebugEntry = {
 // What call sites supply; the service stamps id + time at append.
 export type DebugEntryInput = Omit<DebugEntry, "id" | "time">;
 
-export class DebugLog extends Effect.Service<DebugLog>()("desktop/DebugLog", {
-  effect: Effect.gen(function* () {
+export class DebugLog extends Context.Service<DebugLog>()("desktop/DebugLog", {
+  make: Effect.gen(function* () {
     const stateRef = yield* SubscriptionRef.make<ReadonlyArray<DebugEntry>>([]);
     return {
       state: stateRef,
@@ -47,3 +45,5 @@ export class DebugLog extends Effect.Service<DebugLog>()("desktop/DebugLog", {
     };
   }),
 }) {}
+
+export const layer = Layer.effect(DebugLog, DebugLog.make);

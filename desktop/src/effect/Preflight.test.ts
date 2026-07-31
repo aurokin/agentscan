@@ -1,6 +1,21 @@
-import { Deferred, Duration, Effect, Layer, Option, Queue, Ref, Stream, SubscriptionRef } from "effect";
+import {
+  Context,
+  Deferred,
+  Duration,
+  Effect,
+  Layer,
+  Option,
+  Queue,
+  Ref,
+  Stream,
+  SubscriptionRef,
+} from "effect";
 import { describe, expect, it } from "vitest";
-import { Preflight, PreflightIpc } from "./Preflight";
+import {
+  Preflight,
+  PreflightIpc,
+  layerWithoutDependencies as preflightLayer,
+} from "./Preflight";
 import { PrefsBridge } from "./PrefsBridge";
 import { IpcError } from "./TauriIpc";
 import type { PrefsSync, ShellMode } from "./prefs";
@@ -27,27 +42,30 @@ const bridgeLayer = (
   mode: ShellMode,
   emitted: Queue.Queue<PrefsSync>,
   inbound: Queue.Dequeue<PrefsSync>,
+  beforeEmit: (payload: PrefsSync) => Effect.Effect<void> = () => Effect.void,
 ) =>
   Layer.succeed(PrefsBridge, {
     mode,
     loadRaw: () => null,
     storeRaw: () => {},
-    emit: (payload: PrefsSync) => Queue.offer(emitted, payload).pipe(Effect.asVoid),
+    emit: (payload: PrefsSync) =>
+      beforeEmit(payload).pipe(Effect.andThen(Queue.offer(emitted, payload)), Effect.asVoid),
     events: Stream.fromQueue(inbound),
   });
 
-const ipcLayer = (probe: PreflightIpc["probe"]) => Layer.succeed(PreflightIpc, { probe });
+type Probe = Context.Service.Shape<typeof PreflightIpc>["probe"];
+
+const ipcLayer = (probe: Probe) => Layer.succeed(PreflightIpc, { probe });
 
 const withDeps = <A, E, R>(
   program: Effect.Effect<A, E, R>,
   bridge: Layer.Layer<PrefsBridge>,
-  probe: PreflightIpc["probe"],
+  probe: Probe,
 ) =>
   program.pipe(
     Effect.provide(
-      Preflight.DefaultWithoutDependencies.pipe(
-        Layer.provide(Layer.merge(bridge, ipcLayer(probe))),
-      ),
+      preflightLayer.pipe(Layer.provide(Layer.merge(bridge, ipcLayer(probe)))),
+      { local: true },
     ),
   );
 
@@ -77,7 +95,10 @@ describe("Preflight", () => {
         const preflight = yield* Preflight;
         yield* preflight.configure({ settings: SETTINGS, runnerKey: "k1", invalid: null });
 
-        const ready = yield* awaitWhere(preflight.state.changes, (s) => s.status === "ready");
+        const ready = yield* awaitWhere(
+          SubscriptionRef.changes(preflight.state),
+          (s) => s.status === "ready",
+        );
         expect(ready).toEqual({ status: "ready", runnerKey: "k1", preflight: PREFLIGHT });
 
         // Mirrored to settings: a loading frame, then the resolved ready frame.
@@ -114,7 +135,10 @@ describe("Preflight", () => {
           invalid: { binary: "ssh box agentscan", error: "Host is required." },
         });
 
-        const ready = yield* awaitWhere(preflight.state.changes, (s) => s.status === "ready");
+        const ready = yield* awaitWhere(
+          SubscriptionRef.changes(preflight.state),
+          (s) => s.status === "ready",
+        );
         expect(ready).toEqual({
           status: "ready",
           runnerKey: "k1",
@@ -145,7 +169,10 @@ describe("Preflight", () => {
         const preflight = yield* Preflight;
         yield* preflight.configure({ settings: SETTINGS, runnerKey: "k1", invalid: null });
 
-        const failed = yield* awaitWhere(preflight.state.changes, (s) => s.status === "failed");
+        const failed = yield* awaitWhere(
+          SubscriptionRef.changes(preflight.state),
+          (s) => s.status === "failed",
+        );
         expect(failed).toEqual({ status: "failed", message: "boom: command failed" });
       });
 
@@ -164,7 +191,7 @@ describe("Preflight", () => {
       const started = yield* Queue.unbounded<number>();
       const gate = yield* Deferred.make<void>();
 
-      const probe: PreflightIpc["probe"] = () =>
+      const probe: Probe = () =>
         Effect.gen(function* () {
           const n = yield* Ref.updateAndGet(calls, (x) => x + 1);
           yield* Queue.offer(started, n);
@@ -180,7 +207,7 @@ describe("Preflight", () => {
         // Source k1 latches ready.
         yield* preflight.configure({ settings: SETTINGS, runnerKey: "k1", invalid: null });
         yield* Queue.take(started); // probe 1
-        yield* awaitWhere(preflight.state.changes, (s) => s.status === "ready");
+        yield* awaitWhere(SubscriptionRef.changes(preflight.state), (s) => s.status === "ready");
 
         // Switch to k2: its probe is gated. The service must KEEP k1's ready state (so
         // the dock doesn't flash its boot screen mid-switch; consumers treat the
@@ -196,13 +223,70 @@ describe("Preflight", () => {
         // Release k2's probe → it resolves and replaces the kept state.
         yield* Deferred.succeed(gate, undefined);
         const ready = yield* awaitWhere(
-          preflight.state.changes,
+          SubscriptionRef.changes(preflight.state),
           (s) => s.status === "ready" && s.runnerKey === "k2",
         );
         expect(ready).toEqual({ status: "ready", runnerKey: "k2", preflight: PREFLIGHT });
       });
 
       yield* withDeps(program, bridgeLayer("dock", emitted, inbound), probe);
+    }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
+
+  it("dock: a stalled emit stays interruptible and replay advances to the new target", () =>
+    Effect.gen(function* () {
+      const emitted = yield* Queue.unbounded<PrefsSync>();
+      const inbound = yield* Queue.unbounded<PrefsSync>();
+      const firstReadyEmitStarted = yield* Deferred.make<void>();
+      const releaseFirstReadyEmit = yield* Deferred.make<void>();
+
+      const program = Effect.gen(function* () {
+        const preflight = yield* Preflight;
+        yield* preflight.configure({
+          settings: SETTINGS,
+          runnerKey: "k1",
+          invalid: { binary: "k1", error: "k1 invalid" },
+        });
+        yield* Deferred.await(firstReadyEmitStarted);
+
+        // The k1 wire is committed, but its external emit is parked. Superseding it
+        // must interrupt only that emit so k2 can publish and become replayable.
+        yield* preflight.configure({
+          settings: SETTINGS,
+          runnerKey: "k2",
+          invalid: { binary: "k2", error: "k2 invalid" },
+        });
+        yield* awaitWhere(
+          SubscriptionRef.changes(preflight.state),
+          (state) => state.status === "ready" && state.runnerKey === "k2",
+        );
+        yield* Deferred.succeed(releaseFirstReadyEmit, undefined);
+
+        yield* Queue.offer(inbound, { kind: "preflight-request" });
+        const publications = yield* Effect.all(
+          Array.from({ length: 3 }, () => Queue.take(emitted)),
+          { concurrency: 1 },
+        );
+        expect(publications).toEqual([
+          { kind: "preflight", status: "loading", runnerKey: "k1", preflight: null },
+          expect.objectContaining({ kind: "preflight", status: "ready", runnerKey: "k2" }),
+          expect.objectContaining({ kind: "preflight", status: "ready", runnerKey: "k2" }),
+        ]);
+      });
+
+      yield* withDeps(
+        program,
+        bridgeLayer("dock", emitted, inbound, (payload) =>
+          payload.kind === "preflight" &&
+          payload.status === "ready" &&
+          payload.runnerKey === "k1"
+            ? Effect.andThen(
+                Deferred.succeed(firstReadyEmitStarted, undefined),
+                Deferred.await(releaseFirstReadyEmit),
+              )
+            : Effect.void,
+        ),
+        () => Effect.die("invalid targets must not probe"),
+      );
     }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise));
 
   it("settings: adopts the dock's broadcast preflight into `synced`", () =>
@@ -220,7 +304,10 @@ describe("Preflight", () => {
           preflight: PREFLIGHT,
         });
 
-        const synced = yield* awaitWhere(preflight.synced.changes, (s) => s !== null);
+        const synced = yield* awaitWhere(
+          SubscriptionRef.changes(preflight.synced),
+          (s) => s !== null,
+        );
         expect(synced).toEqual({ status: "ready", runnerKey: "k1", preflight: PREFLIGHT });
         // The settings window never probes; it stays at the initial loading state.
         expect(yield* SubscriptionRef.get(preflight.state)).toEqual({ status: "loading" });
@@ -239,7 +326,7 @@ describe("Preflight", () => {
       const program = Effect.gen(function* () {
         const preflight = yield* Preflight;
         yield* preflight.configure({ settings: SETTINGS, runnerKey: "k1", invalid: null });
-        yield* awaitWhere(preflight.state.changes, (s) => s.status === "ready");
+        yield* awaitWhere(SubscriptionRef.changes(preflight.state), (s) => s.status === "ready");
         // Drain the proactive loading + ready broadcasts.
         yield* Queue.take(emitted);
         yield* Queue.take(emitted);

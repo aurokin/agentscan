@@ -1,6 +1,6 @@
-import { Duration, Effect, Layer, Option, Queue, Stream, SubscriptionRef } from "effect";
+import { Context, Duration, Effect, Layer, Option, Queue, Stream, SubscriptionRef } from "effect";
 import { describe, expect, it } from "vitest";
-import { Appearance } from "./Appearance";
+import { Appearance, layerWithoutDependencies as appearanceLayer } from "./Appearance";
 import { PrefsBridge } from "./PrefsBridge";
 import {
   FRAMELESS_STORAGE_KEY,
@@ -44,7 +44,7 @@ const run = <A>(
   mode: ShellMode,
   initial: Record<string, string>,
   body: (ctx: {
-    appearance: Effect.Effect.Success<typeof Appearance>;
+    appearance: Context.Service.Shape<typeof Appearance>;
     store: Map<string, string>;
     emitted: Queue.Queue<PrefsSync>;
     inbound: Queue.Queue<PrefsSync>;
@@ -63,7 +63,7 @@ const run = <A>(
       });
     });
     return yield* program.pipe(
-      Effect.provide(Appearance.DefaultWithoutDependencies.pipe(Layer.provide(bridge.layer))),
+      Effect.provide(appearanceLayer.pipe(Layer.provide(bridge.layer)), { local: true }),
     );
   }).pipe(Effect.timeout(Duration.seconds(5)), Effect.runPromise);
 
@@ -172,7 +172,10 @@ describe("Appearance", () => {
     run("dock", {}, ({ appearance, store, emitted, inbound }) =>
       Effect.gen(function* () {
         yield* Queue.offer(inbound, { kind: "frameless", enabled: true });
-        const state = yield* awaitWhere(appearance.state.changes, (s) => s.framelessEnabled);
+        const state = yield* awaitWhere(
+          SubscriptionRef.changes(appearance.state),
+          (s) => s.framelessEnabled,
+        );
         expect(state.framelessEnabled).toBe(true);
         expect(store.get(FRAMELESS_STORAGE_KEY)).toBe("on");
         expect(yield* Queue.size(emitted)).toBe(0);
@@ -183,7 +186,10 @@ describe("Appearance", () => {
     run("dock", { [THEME_STORAGE_KEY]: "system" }, ({ appearance, store, emitted, inbound }) =>
       Effect.gen(function* () {
         yield* Queue.offer(inbound, { kind: "theme", theme: "light" });
-        const state = yield* awaitWhere(appearance.state.changes, (s) => s.themePref === "light");
+        const state = yield* awaitWhere(
+          SubscriptionRef.changes(appearance.state),
+          (s) => s.themePref === "light",
+        );
         expect(state.themePref).toBe("light");
         // The receiver re-persists the adopted value (heals a failed originator write,
         // matching the old receiving-window apply effects) but never re-emits.
@@ -197,7 +203,7 @@ describe("Appearance", () => {
       Effect.gen(function* () {
         yield* Queue.offer(inbound, { kind: "glass", enabled: false, alpha: 0.8 });
         const state = yield* awaitWhere(
-          appearance.state.changes,
+          SubscriptionRef.changes(appearance.state),
           (s) => s.glassEnabled === false && s.surfaceAlpha === 0.8,
         );
         expect(state.glassEnabled).toBe(false);

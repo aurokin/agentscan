@@ -38,6 +38,8 @@ export type LiveSnapshotSummary = {
   sourceKind: string | null;
 };
 
+export type DaemonPollResult = { reachable: boolean };
+
 // The raw event the Rust worker emits over the Tauri event bus, stamped with the
 // source key and epoch of the subscription that produced it (see
 // LivePickerEnvelope on the backend). The event channel is shared by all keyed
