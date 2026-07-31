@@ -37,7 +37,7 @@
   --accent: rgb(var(--accent-rgb));
   --on-accent: #1a1a1c;
   --dot-busy: #e3b341;
-  --dot-waiting: #f0883e;
+  --dot-waiting: #f85149;
   --dot-idle: #3fb950;
   --dot-unknown: #5a5a61;
   --dot-error: #f85149;
@@ -104,7 +104,7 @@
   --on-accent: #ffffff;
   /* Status dots stay yellow/green across themes (per request). */
   --dot-busy: #e3b341;
-  --dot-waiting: #e8590c;
+  --dot-waiting: #e5484d;
   --dot-idle: #3fb950;
   --dot-unknown: #a8a8ae;
   --dot-error: #e5484d;

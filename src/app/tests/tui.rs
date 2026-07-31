@@ -32,7 +32,7 @@ fn tui_render_rows_give_waiting_a_distinct_status_glyph() {
     super::tui::synchronize_key_targets(&mut key_targets, std::slice::from_ref(&pane));
 
     let lines = super::tui::render_rows(&[pane], &key_targets);
-    assert_eq!(lines, vec!["[1] 🟠 👾 notes:4.1 - Claude Code"]);
+    assert_eq!(lines, vec!["[1] 🔴 👾 notes:4.1 - Claude Code"]);
 }
 
 #[test]
