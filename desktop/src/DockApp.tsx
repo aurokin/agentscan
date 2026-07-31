@@ -173,10 +173,9 @@ function DockApp() {
         }),
     [liveSources, profileState.profiles],
   );
-  // The dock only WRITES its per-window debug log (command lifecycles, native
-  // apply failures); the settings window renders its own instance. The append
-  // setter is registry-stable, unlike the old per-render closure, so logging
-  // effects can list it in their dep arrays.
+  // The dock's lifecycle services write command entries directly to its
+  // per-window debug log; this adapter remains for UI/native apply failures.
+  // The settings window renders its own log instance.
   const appendDebugEntry = useAtomSet(appendDebugEntryAtom);
   // Live connection (status + rows) is owned by the LiveConnection service. The dock
   // observes liveStatesAtom — a per-source map — and drives the service via
@@ -336,16 +335,12 @@ function DockApp() {
 
   // Hostname-label enrichment (persisting the driver's probed hostnames and
   // one-shot background probes for never-probed online remotes) is owned by the
-  // HostnameEnrichment service; this effect only arms it with the debug-log
-  // sink. All deps are registry-stable setters, so this fires once per dock
-  // boot; StrictMode's double configure is absorbed by the service's mutex'd
-  // supervisor slot (in-flight probes live in the service scope and survive
-  // the swap).
+  // HostnameEnrichment service; this effect only arms it. StrictMode's double
+  // configure is absorbed by the service's mutex'd supervisor slot (in-flight
+  // probes live in the service scope and survive the swap).
   useEffect(() => {
-    configureHostnameEnrichment({
-      onLog: (label, detail) => appendDebugEntry({ kind: "command", label, detail }),
-    });
-  }, [configureHostnameEnrichment, appendDebugEntry]);
+    configureHostnameEnrichment();
+  }, [configureHostnameEnrichment]);
 
   const activeLiveOnline = liveStateFor(liveStates, runnerKey).connection.status === "online";
   // The configure inputs are derived + tested in effect/preflightViewModel
@@ -571,8 +566,7 @@ function DockApp() {
   // their source by the folder that renders them; keyboard paths pass the keybind
   // owner). The Activation service runs one activation at a time across all
   // sources, owns the failure surface/TTL, and re-arms the failed source's live
-  // client; this just shapes the request and routes the command lifecycle into
-  // the debug log.
+  // client; this just shapes the request, including its command-log label.
   function activateRow(row: PickerRow, profile: DesktopProfileConfig) {
     const label = focusCommandLabel(profile, row.pane_id);
     const sourceKey = runnerKeyForProfile(profile);
@@ -581,7 +575,7 @@ function DockApp() {
       sourceKey,
       settings: runnerSettingsForProfile(profile),
       isSourceOpen: () => openRunnerKeysRef.current.has(sourceKey),
-      onLog: (detail) => appendDebugEntry({ kind: "command", label, detail }),
+      logLabel: label,
     });
   }
 

@@ -1,11 +1,9 @@
 // The debug log the settings window renders (and the dock writes), extracted
 // from App.tsx's per-window React state. Each webview's runtime builds its own
-// instance, preserving the old per-window useState isolation: the dock appends
-// its command-lifecycle entries to a log nothing renders there today
-// (pre-existing behavior, kept), while the settings window appends and renders
-// its own. The win over useState is a registry-stable append setter: the old
-// appendDebugEntry closure was recreated every render, forcing dep-list
-// omissions in every effect that logged.
+// instance, preserving the old per-window useState isolation: dock lifecycle
+// services append command entries to a log nothing renders there today
+// (pre-existing behavior, kept), while the settings window's UI adapters append
+// and render their own. Other UI/native logging still uses the atom adapter.
 
 import { Context, Effect, Layer, SubscriptionRef } from "effect";
 

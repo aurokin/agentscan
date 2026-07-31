@@ -15,6 +15,7 @@ import {
   SubscriptionRef,
 } from "effect";
 import { invoke } from "@tauri-apps/api/core";
+import { DebugLog, layer as debugLogLayer } from "./DebugLog";
 import { LiveConnection, layer as liveConnectionLayer, liveStateFor } from "./LiveConnection";
 import type { PickerActivation } from "./pickerViewModel";
 import { IpcError } from "./TauriIpc";
@@ -64,10 +65,8 @@ export type ActivateInput = {
   // prune effect can reconcile it; without it a failure settling in that window
   // would surface (and re-arm a live client) for a folder that no longer exists.
   readonly isSourceOpen: () => boolean;
-  // Command-log sink ("started", then "ok" or the failure detail) — the debug
-  // panel is React state, so the caller routes entries, like SummonHotkey's
-  // configure-time press callback.
-  readonly onLog: (detail: string) => void;
+  // Label for the service-owned command lifecycle log.
+  readonly logLabel: string;
 };
 
 const IDLE: PickerActivation = { status: "idle" };
@@ -89,6 +88,7 @@ type Running = {
 export class Activation extends Context.Service<Activation>()("desktop/Activation", {
   make: Effect.gen(function* () {
     const ipc = yield* FocusIpc;
+    const debugLog = yield* DebugLog;
     const { failureTtl } = yield* ActivationConfig;
     const lc = yield* LiveConnection;
     const stateRef = yield* SubscriptionRef.make<PickerActivation>(IDLE);
@@ -115,19 +115,21 @@ export class Activation extends Context.Service<Activation>()("desktop/Activatio
     // always runs; an interrupted fiber's does not.
     const runActivation = (input: ActivateInput): Effect.Effect<void> =>
       Effect.gen(function* () {
-        yield* Effect.sync(() => input.onLog("started"));
+        const appendLog = (detail: string) =>
+          debugLog.append({ kind: "command", label: input.logLabel, detail });
+        yield* appendLog("started");
         const failure = yield* ipc.focusRow({ paneId: input.paneId, settings: input.settings }).pipe(
           Effect.as<string | null>(null),
           Effect.catch((error) => Effect.succeed<string | null>(error.message)),
         );
         if (failure === null) {
-          yield* Effect.sync(() => input.onLog("ok"));
+          yield* appendLog("ok");
           // Persistent-window model: focusing a pane must not hide the desktop.
           // Reset to idle and leave the window visible.
           yield* SubscriptionRef.set(stateRef, IDLE);
           return;
         }
-        yield* Effect.sync(() => input.onLog(failure));
+        yield* appendLog(failure);
         if (!input.isSourceOpen()) {
           // The source was closed/edited mid-flight; there is no list left to
           // recover, so the outcome is dropped instead of surfaced. (Prune
@@ -280,5 +282,5 @@ export class Activation extends Context.Service<Activation>()("desktop/Activatio
 // from the layer requirements; no separate scoped constructor is needed.
 export const layerWithoutDependencies = Layer.effect(Activation, Activation.make);
 export const layer = layerWithoutDependencies.pipe(
-  Layer.provide(Layer.merge(focusIpcLayer, liveConnectionLayer)),
+  Layer.provide(Layer.mergeAll(focusIpcLayer, liveConnectionLayer, debugLogLayer)),
 );

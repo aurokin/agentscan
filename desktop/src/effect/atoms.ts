@@ -5,7 +5,7 @@ import { Appearance } from "./Appearance";
 import { DebugLog, type DebugEntryInput } from "./DebugLog";
 import { desktopLayer } from "./desktopLayer";
 import { HostIpc } from "./HostIpc";
-import { HostnameEnrichment, type EnrichmentLog } from "./HostnameEnrichment";
+import { HostnameEnrichment } from "./HostnameEnrichment";
 import { LiveConnection, type ConfigureInput } from "./LiveConnection";
 import { Notifications } from "./Notifications";
 import { Preflight, type PreflightTarget } from "./Preflight";
@@ -207,17 +207,12 @@ export const pruneActivationAtom = runtime.fn(
 // --- Hostname enrichment slice ---
 
 // Dock-only: arm hostname enrichment (recording the driver's probed hostnames
-// + one-shot background probes for never-probed online remotes) with the
-// debug-log sink. Persistence goes through Profiles inside the service.
-//
-// The callback rides inside an object on purpose: useAtomSet invokes a BARE
-// function argument as an updater (value(registry.get(atom))) instead of
-// passing it through, which would run the callback once at configure time and
-// hand the service `undefined`. Same convention as configureSummonHotkeyAtom.
+// + one-shot background probes for never-probed online remotes). Persistence
+// and command lifecycle logging stay inside the service graph.
 export const configureHostnameEnrichmentAtom = runtime.fn(
-  Effect.fnUntraced(function* (input: { readonly onLog: EnrichmentLog }) {
+  Effect.fnUntraced(function* () {
     const enrichment = yield* HostnameEnrichment;
-    yield* enrichment.configure(input.onLog);
+    yield* enrichment.configure();
   }),
 );
 
@@ -231,10 +226,9 @@ export const debugLogAtom = Atom.keepAlive(
   runtime.subscriptionRef(Effect.map(DebugLog, (d) => d.state)),
 );
 
-// Append one entry (the service stamps id/time). The setter is registry-stable,
-// so effects that log can list it in their dep arrays — the old App.tsx closure
-// was recreated every render and forced dep omissions. Known narrow deviation
-// from the old synchronous setState: appends fired before the runtime layer
+// Append one UI/native entry (the service stamps id/time). Lifecycle services
+// write their own entries directly. Known narrow deviation from the old
+// synchronous setState: appends fired before the runtime layer
 // finishes building are deferred by runtime.fn and collapse to the LATEST one
 // (same replay rule as every fn atom here); only boot-window native-call
 // failures can hit it.

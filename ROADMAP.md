@@ -355,7 +355,8 @@ Implications:
   webview projects service `SubscriptionRef` state into `AsyncResult` values and
   command atoms. The unstable reactivity API is isolated to
   `desktop/src/effect/atoms.ts`; domain models and lifecycle services do not
-  depend on React atoms.
+  depend on React atoms. Lifecycle services append their own command entries to
+  the per-webview `DebugLog`; React adapters log only UI/native work they own.
 - every inbound Tauri command response and event payload is decoded with Effect
   Schema before entering domain state. Command decode failures become typed
   `IpcError`s; malformed best-effort events are dropped. Persisted profile schemas

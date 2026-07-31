@@ -33,6 +33,7 @@ import {
   Stream,
   SubscriptionRef,
 } from "effect";
+import { DebugLog, layer as debugLogLayer } from "./DebugLog";
 import { hostnameProbeCandidates, sourceRunnerKeys, type HostnameProbeCandidate } from "./enrichmentModel";
 import { LiveConnection, layer as liveConnectionLayer } from "./LiveConnection";
 import {
@@ -44,17 +45,12 @@ import {
 import { Profiles, layer as profilesLayer } from "./Profiles";
 import { runnerKeyForProfile } from "./profileModel";
 
-// Debug-log sink ("hostname probe (<host>)" + started/ok/error detail) — the
-// debug panel is React state, so the dock routes entries, like SummonHotkey's
-// configure-time press callback. The active recorder logs nothing (parity with
-// the old effect, whose driver probe is logged elsewhere).
-export type EnrichmentLog = (label: string, detail: string) => void;
-
 export class HostnameEnrichment extends Context.Service<HostnameEnrichment>()(
   "desktop/HostnameEnrichment",
   {
     make: Effect.gen(function* () {
       const ipc = yield* PreflightIpc;
+      const debugLog = yield* DebugLog;
       const profiles = yield* Profiles;
       const preflight = yield* Preflight;
       const lc = yield* LiveConnection;
@@ -120,10 +116,12 @@ export class HostnameEnrichment extends Context.Service<HostnameEnrichment>()(
       // "ok" (even when the preflight carries no hostname) or the raw error
       // detail; failures are swallowed beyond the log, and the attempt mark
       // stands until the key leaves the source list.
-      const runProbe = (candidate: HostnameProbeCandidate, onLog: EnrichmentLog) =>
+      const runProbe = (candidate: HostnameProbeCandidate) =>
         Effect.gen(function* () {
           const label = `hostname probe (${candidate.host})`;
-          yield* Effect.sync(() => onLog(label, "started"));
+          const appendLog = (detail: string) =>
+            debugLog.append({ kind: "command", label, detail });
+          yield* appendLog("started");
           const outcome = yield* ipc.probe(candidate.settings).pipe(
             Effect.map((result) => ({ ok: true as const, result })),
             // IpcError.message carries the raw Tauri rejection string, matching
@@ -131,10 +129,10 @@ export class HostnameEnrichment extends Context.Service<HostnameEnrichment>()(
             Effect.catch((error) => Effect.succeed({ ok: false as const, message: error.message })),
           );
           if (!outcome.ok) {
-            yield* Effect.sync(() => onLog(label, outcome.message));
+            yield* appendLog(outcome.message);
             return;
           }
-          yield* Effect.sync(() => onLog(label, "ok"));
+          yield* appendLog("ok");
           const probed = outcome.result.remoteHostLabel?.trim() ?? "";
           if (!probed) {
             return;
@@ -150,11 +148,10 @@ export class HostnameEnrichment extends Context.Service<HostnameEnrichment>()(
       // stale-side pairing can't exist. runForEach (NOT a switch): lc.states
       // ticks on every rows frame, and an in-flight probe (a full ssh
       // round-trip) must never be interrupted by the next frame.
-      const probeBackgroundSources = (onLog: EnrichmentLog) =>
-        Stream.merge(
-          SubscriptionRef.changes(profiles.state).pipe(Stream.map(() => undefined)),
-          SubscriptionRef.changes(lc.states).pipe(Stream.map(() => undefined)),
-        ).pipe(
+      const probeBackgroundSources = Stream.merge(
+        SubscriptionRef.changes(profiles.state).pipe(Stream.map(() => undefined)),
+        SubscriptionRef.changes(lc.states).pipe(Stream.map(() => undefined)),
+      ).pipe(
           Stream.runForEach(() =>
             Effect.gen(function* () {
               const profileState = yield* SubscriptionRef.get(profiles.state);
@@ -176,7 +173,7 @@ export class HostnameEnrichment extends Context.Service<HostnameEnrichment>()(
                 yield* Effect.uninterruptible(
                   Effect.suspend(() => {
                     attempted.add(candidate.runnerKey);
-                    return runProbe(candidate, onLog).pipe(Effect.forkIn(scope));
+                    return runProbe(candidate).pipe(Effect.forkIn(scope));
                   }),
                 );
               }
@@ -185,22 +182,22 @@ export class HostnameEnrichment extends Context.Service<HostnameEnrichment>()(
         );
 
       return {
-        // Arm both supervisors with the dock's debug-log sink. Only the dock
-        // configures (the settings window stays inert, belt-and-braces on top
-        // of its data inertness: its preflight never leaves loading and its
-        // live map stays empty). No disarm path: unlike the summon hotkey, no
-        // external resource is held, so the supervisors just die with the
+        // Arm both supervisors. Only the dock configures (the settings window
+        // stays inert, belt-and-braces on top of its data inertness: its
+        // preflight never leaves loading and its live map stays empty). Unlike
+        // the summon hotkey, no external resource is held, so the supervisors
+        // just die with the
         // runtime. A re-configure (StrictMode's double mount) swaps the
         // supervisors under the mutex; in-flight probe fibers live in the
         // service scope and are untouched.
-        configure: (onLog: EnrichmentLog) =>
+        configure: () =>
           mutex.withPermits(1)(
             Effect.gen(function* () {
               if (slot !== null) {
                 yield* Fiber.interrupt(slot);
                 slot = null;
               }
-              slot = yield* Effect.all([recordDriverProbes, probeBackgroundSources(onLog)], {
+              slot = yield* Effect.all([recordDriverProbes, probeBackgroundSources], {
                 concurrency: "unbounded",
                 discard: true,
               }).pipe(Effect.forkIn(scope));
@@ -217,6 +214,12 @@ export const layerWithoutDependencies = Layer.effect(
 );
 export const layer = layerWithoutDependencies.pipe(
   Layer.provide(
-    Layer.mergeAll(preflightIpcLayer, profilesLayer, preflightLayer, liveConnectionLayer),
+    Layer.mergeAll(
+      preflightIpcLayer,
+      profilesLayer,
+      preflightLayer,
+      liveConnectionLayer,
+      debugLogLayer,
+    ),
   ),
 );
