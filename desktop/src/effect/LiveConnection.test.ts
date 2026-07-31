@@ -111,7 +111,7 @@ describe("LiveConnection", () => {
         stopLivePicker: () => Effect.void,
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
         pollDaemonStatus: () => Effect.succeed({ reachable: true }),
-        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+        liveEvents: () => Effect.succeed(events),
       });
 
       const program = Effect.gen(function* () {
@@ -181,7 +181,7 @@ describe("LiveConnection", () => {
         stopLivePicker: () => Effect.void,
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
         pollDaemonStatus: () => Effect.succeed({ reachable: true }),
-        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+        liveEvents: () => Effect.succeed(events),
       });
 
       const program = Effect.gen(function* () {
@@ -238,7 +238,7 @@ describe("LiveConnection", () => {
         stopLivePicker: () => Effect.void,
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
         pollDaemonStatus: () => Effect.succeed({ reachable: true }),
-        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+        liveEvents: () => Effect.succeed(events),
       });
 
       const program = Effect.gen(function* () {
@@ -292,7 +292,7 @@ describe("LiveConnection", () => {
         stopLivePicker: () => Effect.void,
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
         pollDaemonStatus: () => Effect.succeed({ reachable: true }),
-        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+        liveEvents: () => Effect.succeed(events),
       });
 
       const program = Effect.gen(function* () {
@@ -339,7 +339,7 @@ describe("LiveConnection", () => {
         stopLivePicker: () => Effect.void,
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
         pollDaemonStatus: () => Effect.succeed({ reachable: true }),
-        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+        liveEvents: () => Effect.succeed(events),
       });
 
       const program = Effect.gen(function* () {
@@ -378,7 +378,7 @@ describe("LiveConnection", () => {
           Effect.flatMap(Ref.getAndSet(failNextListen, false), (shouldFail) =>
             shouldFail
               ? Effect.fail(new IpcError({ op: "listen", message: "listener boom" }))
-              : Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+              : Effect.succeed(events),
           ),
       });
 
@@ -423,7 +423,7 @@ describe("LiveConnection", () => {
         stopLivePicker: () => Effect.void,
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
         pollDaemonStatus: () => Effect.succeed({ reachable: true }),
-        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+        liveEvents: () => Effect.succeed(events),
       });
 
       const program = Effect.gen(function* () {
@@ -469,7 +469,7 @@ describe("LiveConnection", () => {
         stopLivePicker: () => Effect.void,
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
         pollDaemonStatus: () => Effect.succeed({ reachable: true }),
-        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+        liveEvents: () => Effect.succeed(events),
       });
 
       const program = Effect.gen(function* () {
@@ -539,7 +539,7 @@ describe("LiveConnection", () => {
           Ref.updateAndGet(pollCount, (n) => n + 1).pipe(
             Effect.map((n) => ({ reachable: n >= 3 })),
           ),
-        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+        liveEvents: () => Effect.succeed(events),
       });
 
       const program = Effect.gen(function* () {
@@ -591,7 +591,7 @@ describe("LiveConnection", () => {
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
         pollDaemonStatus: () =>
           Effect.fail(new IpcError({ op: "poll_daemon_status", message: "ssh: connection refused" })),
-        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+        liveEvents: () => Effect.succeed(events),
       });
 
       const program = Effect.gen(function* () {
@@ -639,7 +639,7 @@ describe("LiveConnection", () => {
           Queue.offer(stoppedCalls, { sourceKey, epoch }).pipe(Effect.asVoid),
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
         pollDaemonStatus: () => Effect.succeed({ reachable: true }),
-        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+        liveEvents: () => Effect.succeed(events),
       });
 
       const program = Effect.gen(function* () {
@@ -679,7 +679,7 @@ describe("LiveConnection", () => {
         stopLivePicker: () => Effect.void,
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
         pollDaemonStatus: () => Effect.succeed({ reachable: true }),
-        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+        liveEvents: () => Effect.succeed(events),
       });
 
       const program = Effect.gen(function* () {
@@ -735,7 +735,7 @@ describe("LiveConnection", () => {
         stopLivePicker: () => Effect.void,
         loadPickerRows: () => Effect.succeed<PickerRow[]>([]),
         pollDaemonStatus: () => Effect.succeed({ reachable: true }),
-        liveEvents: () => Effect.succeed(events as Queue.Dequeue<LivePickerEnvelope>),
+        liveEvents: () => Effect.succeed(events),
       });
 
       const program = Effect.gen(function* () {
@@ -848,7 +848,7 @@ describe("LiveConnection", () => {
               next.set(sourceKey, queue);
               return next;
             });
-            return queue as Queue.Dequeue<LivePickerEnvelope>;
+            return queue;
           }),
       });
 
@@ -921,7 +921,7 @@ describe("LiveConnection", () => {
           Effect.gen(function* () {
             const queue = yield* Queue.unbounded<LivePickerEnvelope>();
             yield* Ref.update(queues, (current) => [...current, queue]);
-            return queue as Queue.Dequeue<LivePickerEnvelope>;
+            return queue;
           }),
       });
 

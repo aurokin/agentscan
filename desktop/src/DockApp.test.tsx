@@ -47,7 +47,7 @@ const mocks = vi.hoisted(() => {
         return Promise.resolve(undefined);
     }
   });
-  const listen = vi.fn(async () => () => {});
+  const listen = vi.fn(async (_event: string) => () => {});
   const emitTo = vi.fn(async () => {});
   const register = vi.fn(async () => {});
   const unregister = vi.fn(async () => {});

@@ -117,8 +117,10 @@ function rect({
 }
 
 function mockSourceMenuRects() {
-  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function () {
-    const element = this as HTMLElement;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement,
+  ) {
+    const element = this;
     if (element.dataset.sourceId === "local") {
       return rect({ top: 100 });
     }

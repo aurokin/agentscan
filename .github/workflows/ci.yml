@@ -117,6 +117,10 @@ jobs:
         working-directory: desktop
         run: pnpm build
 
+      - name: Frontend test typecheck
+        working-directory: desktop
+        run: pnpm test:typecheck
+
       - name: Frontend tests
         working-directory: desktop
         run: pnpm test

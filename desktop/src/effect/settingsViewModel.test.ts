@@ -13,12 +13,24 @@ const preflight = (overrides: Partial<AgentscanPreflight> = {}): AgentscanPrefli
   ...overrides,
 });
 
-const synced = (overrides: Partial<SyncedPreflight> = {}): SyncedPreflight => ({
-  status: "ready",
-  runnerKey: "k1",
-  preflight: preflight(),
-  ...overrides,
-});
+type SyncedOverrides =
+  | { runnerKey?: string; status?: "ready"; preflight?: AgentscanPreflight }
+  | { runnerKey?: string; status: "loading" | "failed"; preflight: null };
+
+const synced = (overrides: SyncedOverrides = {}): SyncedPreflight => {
+  if (overrides.status === "loading" || overrides.status === "failed") {
+    return {
+      runnerKey: overrides.runnerKey ?? "k1",
+      status: overrides.status,
+      preflight: null,
+    };
+  }
+  return {
+    status: "ready",
+    runnerKey: overrides.runnerKey ?? "k1",
+    preflight: overrides.preflight ?? preflight(),
+  };
+};
 
 describe("settingsPreflightCard", () => {
   it("reads Checking before any mirror arrives", () => {

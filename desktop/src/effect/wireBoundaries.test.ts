@@ -31,7 +31,7 @@ import { IpcError, TauriIpc } from "./TauriIpc";
 
 const SETTINGS = { kind: "local" as const, binaryPath: "", env: [] };
 
-const malformedError = <A, E>(effect: Effect.Effect<A, E>) =>
+const malformedError = <E>(effect: Effect.Effect<unknown, E>) =>
   Effect.runPromise(effect.pipe(Effect.flip));
 
 describe("decoded command boundaries", () => {
@@ -69,15 +69,11 @@ describe("decoded command boundaries", () => {
   ] as const)("maps malformed %s responses to IpcError", async (method, op, response) => {
     mocks.invoke.mockResolvedValue(response);
 
-    const error = await malformedError(
-      TauriIpc.make.pipe(
-        Effect.flatMap((ipc) =>
-          method === "loadPickerRows"
-            ? ipc.loadPickerRows(SETTINGS)
-            : ipc.pollDaemonStatus(SETTINGS),
-        ),
-      ),
-    );
+    const malformedCommand =
+      method === "loadPickerRows"
+        ? TauriIpc.make.pipe(Effect.flatMap((ipc) => ipc.loadPickerRows(SETTINGS)))
+        : TauriIpc.make.pipe(Effect.flatMap((ipc) => ipc.pollDaemonStatus(SETTINGS)));
+    const error = await malformedError(malformedCommand);
 
     expect(error).toBeInstanceOf(IpcError);
     expect(error).toMatchObject({ op });
