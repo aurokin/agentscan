@@ -13,7 +13,9 @@
 | Lint | `cargo clippy --all-targets --all-features -- -D warnings` |
 | Complexity check | `cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_arguments` |
 | Test | `cargo test` |
+| Desktop build | `cd desktop && pnpm build` |
 | Desktop test typecheck | `cd desktop && pnpm test:typecheck` |
+| Desktop test | `cd desktop && pnpm test` |
 | Daemon integration test | `cargo test --test daemon_integration` |
 | Benchmark | `cargo bench --bench core_paths -- --noplot` |
 | Run default list | `cargo run -- --format text` |
@@ -22,7 +24,7 @@
 | Run direct snapshot JSON | `cargo run -- scan --format json` |
 
 ## Quality Baseline
-- Keep `cargo fmt --all --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_arguments`, `cargo test`, and `cd desktop && pnpm test:typecheck` passing.
+- Keep `cargo fmt --all --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_arguments`, `cargo test`, `cd desktop && pnpm build`, `cd desktop && pnpm test:typecheck`, and `cd desktop && pnpm test` passing.
 - Coverage tooling is not part of the baseline yet; add it intentionally rather than ad hoc.
 
 ## Key Conventions
