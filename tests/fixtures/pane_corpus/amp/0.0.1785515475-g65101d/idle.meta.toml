@@ -1,0 +1,10 @@
+provider = "amp"
+cli_version = "0.0.1785515475-g65101d"
+captured = "2026-07-31"
+cols = 68
+rows = 5
+expected_status = "idle"
+expected_source = "pane_output"
+origin = "1785517267_58540"
+corroborators = ["medium"]
+allow_other_providers = []

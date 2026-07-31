@@ -2357,6 +2357,7 @@ mod tests {
             vec![proc::ProcessEvidence {
                 pid: 901,
                 command: "node".to_string(),
+                executable_path: None,
                 argv: vec!["claude".to_string()],
                 env: Vec::new(),
             }],
@@ -2383,6 +2384,7 @@ mod tests {
             vec![proc::ProcessEvidence {
                 pid: 999,
                 command: "node".to_string(),
+                executable_path: None,
                 argv: vec!["claude".to_string()],
                 env: Vec::new(),
             }],

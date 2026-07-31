@@ -17,6 +17,7 @@ pub(crate) trait ProcessInspector {
 /// (argv/env via `KERN_PROCARGS2` on macOS, `/proc/<pid>/{cmdline,environ}` on
 /// Linux) stays lazy: it is fetched only for the PIDs a query actually matches.
 pub(crate) trait ProcessSnapshot {
+    /// Returns process evidence for `root_pid` itself and its live descendants.
     fn descendant_processes(&self, root_pid: u32) -> Result<Vec<ProcessEvidence>>;
 
     fn foreground_processes(&self, pane_tty: &str) -> Result<Vec<ProcessEvidence>> {
@@ -76,6 +77,9 @@ impl<'a, I: ProcessInspector> ProcessSnapshot for LazyProcessSnapshot<'a, I> {
 }
 
 const SELECTED_ENV_KEYS: &[&str] = &[
+    "AMP_HOME",
+    "HOME",
+    "USERPROFILE",
     "CLAUDECODE",
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",
     "CLAUDE_CODE_ENTRYPOINT",
@@ -248,6 +252,7 @@ impl ProcTableSnapshot {
 pub(crate) struct ProcessEvidence {
     pub(crate) pid: u32,
     pub(crate) command: String,
+    pub(crate) executable_path: Option<String>,
     pub(crate) argv: Vec<String>,
     pub(crate) env: Vec<(String, String)>,
 }
@@ -401,9 +406,22 @@ fn process_evidence_for_pid(pid: u32) -> Option<ProcessEvidence> {
     Some(ProcessEvidence {
         pid,
         command,
+        executable_path: linux_executable_path_for_pid(pid),
         argv,
         env: selected_env_for_pid(pid),
     })
+}
+
+#[cfg(target_os = "linux")]
+fn linux_executable_path_for_pid(pid: u32) -> Option<String> {
+    let path = fs::read_link(format!("/proc/{pid}/exe")).ok()?;
+    let path = path.to_string_lossy();
+    Some(strip_linux_deleted_executable_suffix(&path).to_string())
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn strip_linux_deleted_executable_suffix(path: &str) -> &str {
+    path.strip_suffix(" (deleted)").unwrap_or(path)
 }
 
 #[cfg(target_os = "linux")]
@@ -475,9 +493,29 @@ fn process_evidence_from_macos_info(process: MacProcessInfo) -> Option<ProcessEv
     Some(ProcessEvidence {
         pid: process.pid,
         command,
+        executable_path: macos_executable_path_for_pid(process.pid).or(procargs.executable_path),
         argv: procargs.argv,
         env: procargs.env,
     })
+}
+
+#[cfg(target_os = "macos")]
+fn macos_executable_path_for_pid(pid: u32) -> Option<String> {
+    let mut buffer = vec![0_u8; 4096];
+    let length = unsafe {
+        libc::proc_pidpath(
+            pid as libc::c_int,
+            buffer.as_mut_ptr().cast(),
+            u32::try_from(buffer.len()).ok()?,
+        )
+    };
+    if length <= 0 {
+        return None;
+    }
+
+    buffer.truncate(usize::try_from(length).ok()?);
+    let path = std::str::from_utf8(&buffer).ok()?.trim_end_matches('\0');
+    (!path.trim().is_empty()).then(|| path.to_string())
 }
 
 #[cfg(target_os = "macos")]
@@ -558,6 +596,7 @@ fn macos_pid_list(
 #[cfg(target_os = "macos")]
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct MacProcArgs {
+    executable_path: Option<String>,
     argv: Vec<String>,
     env: Vec<(String, String)>,
 }
@@ -610,8 +649,18 @@ fn macos_procargs2_from_buffer(buffer: &[u8]) -> MacProcArgs {
         return MacProcArgs::default();
     };
 
-    let mut offset = argc_size;
-    offset = skip_until_nul(buffer, offset);
+    let executable_end = buffer[argc_size..]
+        .iter()
+        .position(|byte| *byte == 0)
+        .map(|position| argc_size + position)
+        .unwrap_or(buffer.len());
+    let executable_path = std::str::from_utf8(&buffer[argc_size..executable_end])
+        .ok()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(str::to_string);
+
+    let mut offset = skip_until_nul(buffer, argc_size);
     offset = skip_nuls(buffer, offset);
 
     let mut argv = Vec::with_capacity(argc.min(64));
@@ -629,6 +678,7 @@ fn macos_procargs2_from_buffer(buffer: &[u8]) -> MacProcArgs {
     }
 
     MacProcArgs {
+        executable_path,
         argv,
         env: selected_env_from_nul_separated_bytes(&buffer[offset..]),
     }
@@ -676,6 +726,20 @@ fn c_char_array_to_string(bytes: &[libc::c_char]) -> String {
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selected_env_parser_retains_amp_install_provenance() {
+        assert_eq!(
+            selected_env_from_nul_separated_bytes(
+                b"PATH=/usr/bin\0HOME=/home/auro\0USERPROFILE=C:\\Users\\auro\0AMP_HOME=/srv/amp\0"
+            ),
+            vec![
+                ("HOME".to_string(), "/home/auro".to_string()),
+                ("USERPROFILE".to_string(), "C:\\Users\\auro".to_string()),
+                ("AMP_HOME".to_string(), "/srv/amp".to_string()),
+            ]
+        );
+    }
 
     #[test]
     fn process_tree_fallback_includes_root_process() {
@@ -749,6 +813,18 @@ mod tests {
         assert!(!other_tty.is_foreground_on_tty(34820));
     }
 
+    #[test]
+    fn linux_deleted_executable_suffix_is_removed_from_process_evidence() {
+        assert_eq!(
+            strip_linux_deleted_executable_suffix("/home/auro/.amp/bin/amp (deleted)"),
+            "/home/auro/.amp/bin/amp"
+        );
+        assert_eq!(
+            strip_linux_deleted_executable_suffix("/home/auro/.amp/bin/amp"),
+            "/home/auro/.amp/bin/amp"
+        );
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_stat_parser_handles_command_names_with_parentheses() {
@@ -812,6 +888,7 @@ mod tests {
         assert_eq!(
             macos_procargs2_from_buffer(&buffer),
             MacProcArgs {
+                executable_path: Some("/bin/zsh".to_string()),
                 argv: vec!["zsh".to_string(), "-l".to_string()],
                 env: vec![
                     ("PI_CODING_AGENT".to_string(), "true".to_string()),

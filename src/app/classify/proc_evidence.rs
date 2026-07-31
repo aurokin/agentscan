@@ -4,6 +4,15 @@ pub(super) fn provider_match_from_proc_evidence(
     process: &proc::ProcessEvidence,
     source_reason_prefix: &str,
 ) -> Option<ProviderMatch> {
+    if let Some(executable_path) = amp_code_executable_path(process) {
+        return Some(ProviderMatch::single_reason(
+            Provider::Amp,
+            ClassificationMatchKind::ProcProcessTree,
+            ClassificationConfidence::High,
+            format!("{source_reason_prefix}_executable={executable_path}"),
+        ));
+    }
+
     if let Some(provider_match) =
         provider_match_from_proc_command(&process.command, source_reason_prefix)
     {
@@ -98,6 +107,150 @@ pub(super) fn provider_match_from_proc_evidence(
     }
 
     None
+}
+
+fn amp_code_executable_path(process: &proc::ProcessEvidence) -> Option<&str> {
+    let executable_path = process.executable_path.as_deref()?;
+    let normalized = normalize_amp_executable_path(executable_path);
+    // A bare `/.amp/bin/amp` suffix is not provenance: a workspace can contain
+    // that path too. Anchor the official default root to the inspected process's home.
+    let default_install = ["HOME", "USERPROFILE"].iter().any(|key| {
+        process_env_value(process, key).is_some_and(|home| {
+            let amp_home = std::path::Path::new(home).join(".amp");
+            executable_matches_amp_home(&normalized, &amp_home.to_string_lossy())
+        })
+    });
+    let homebrew_install = amp_homebrew_executable_path(&normalized);
+    let npm_install = normalized.ends_with("/node_modules/@ampcode/cli/bin/amp.exe");
+    let npm_platform_install = [
+        "/node_modules/@ampcode/cli-darwin-arm64/amp",
+        "/node_modules/@ampcode/cli-darwin-x64/amp",
+        "/node_modules/@ampcode/cli-linux-arm64/amp",
+        "/node_modules/@ampcode/cli-linux-x64/amp",
+        "/node_modules/@ampcode/cli-win32-x64/amp.exe",
+    ]
+    .iter()
+    .any(|suffix| normalized.ends_with(suffix));
+    let custom_amp_home = process_env_value(process, "AMP_HOME")
+        .is_some_and(|amp_home| executable_matches_amp_home(&normalized, amp_home));
+
+    (default_install || homebrew_install || npm_install || npm_platform_install || custom_amp_home)
+        .then_some(executable_path)
+}
+
+fn amp_homebrew_executable_path(normalized_executable: &str) -> bool {
+    const PREFIXES: &[&str] = &["/opt/homebrew", "/usr/local", "/home/linuxbrew/.linuxbrew"];
+
+    PREFIXES.iter().any(|prefix| {
+        if normalized_executable == format!("{prefix}/opt/ampcode/bin/amp") {
+            return true;
+        }
+
+        let cellar_prefix = format!("{prefix}/Cellar/ampcode/");
+        normalized_executable
+            .strip_prefix(&cellar_prefix)
+            .and_then(|remainder| remainder.strip_suffix("/bin/amp"))
+            .is_some_and(|version| !version.is_empty() && !version.contains('/'))
+    })
+}
+
+fn executable_matches_amp_home(normalized_executable: &str, amp_home: &str) -> bool {
+    // Keep scans lexical and nonblocking: process-controlled home roots may be
+    // network mounts or FUSE paths. Beyond stable macOS aliases below, symlinked
+    // HOME/AMP_HOME roots intentionally remain unknown.
+    let normalized_home = normalize_amp_executable_path(amp_home);
+    let normalized_home = if normalized_home == "/" || is_windows_drive_root(&normalized_home) {
+        normalized_home
+    } else {
+        normalized_home.trim_end_matches('/').to_string()
+    };
+    if normalized_home.is_empty() {
+        return false;
+    }
+    executable_matches_amp_home_root(normalized_executable, &normalized_home)
+        || macos_private_path_alias(&normalized_home).is_some_and(|private_home| {
+            executable_matches_amp_home_root(normalized_executable, &private_home)
+        })
+}
+
+fn executable_matches_amp_home_root(normalized_executable: &str, normalized_home: &str) -> bool {
+    ["amp", "amp.exe"].iter().any(|binary| {
+        let separator = if normalized_home.ends_with('/') {
+            ""
+        } else {
+            "/"
+        };
+        normalized_executable == format!("{normalized_home}{separator}bin/{binary}")
+    })
+}
+
+fn macos_private_path_alias(path: &str) -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        ["/tmp", "/var", "/etc"].iter().find_map(|prefix| {
+            (path == *prefix
+                || path
+                    .strip_prefix(prefix)
+                    .is_some_and(|rest| rest.starts_with('/')))
+            .then(|| format!("/private{path}"))
+        })
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+fn normalize_amp_executable_path(path: &str) -> String {
+    let trimmed = path.trim();
+    let windows_drive_path = matches!(
+        trimmed.as_bytes(),
+        [drive, b':', b'/' | b'\\', ..] if drive.is_ascii_alphabetic()
+    );
+    let windows_unc_path = trimmed.starts_with("\\\\");
+
+    let normalized = if windows_drive_path || windows_unc_path {
+        trimmed.replace('\\', "/").to_ascii_lowercase()
+    } else {
+        trimmed.to_string()
+    };
+
+    collapse_absolute_path_components(&normalized).unwrap_or(normalized)
+}
+
+fn is_windows_drive_root(path: &str) -> bool {
+    matches!(
+        path.as_bytes(),
+        [drive, b':', b'/'] if drive.is_ascii_alphabetic()
+    )
+}
+
+fn collapse_absolute_path_components(path: &str) -> Option<String> {
+    let (prefix, rest) = if let Some(rest) = path.strip_prefix("//") {
+        ("//", rest)
+    } else if matches!(
+        path.as_bytes(),
+        [drive, b':', b'/', ..] if drive.is_ascii_alphabetic()
+    ) {
+        (&path[..3], &path[3..])
+    } else if let Some(rest) = path.strip_prefix('/') {
+        ("/", rest)
+    } else {
+        return None;
+    };
+
+    let mut components = Vec::new();
+    for component in rest.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => return None,
+            component => components.push(component),
+        }
+    }
+
+    Some(format!("{prefix}{}", components.join("/")))
 }
 
 /// Ordered tables of providers identified purely by an argv path pattern. The order is a
@@ -713,11 +866,202 @@ fn proc_arg_reason(process: &proc::ProcessEvidence) -> String {
 mod tests {
     use super::*;
 
+    fn amp_process(path: &str, amp_home: Option<&str>) -> proc::ProcessEvidence {
+        amp_process_with_command("amp", path, amp_home)
+    }
+
+    fn amp_process_with_command(
+        command: &str,
+        path: &str,
+        amp_home: Option<&str>,
+    ) -> proc::ProcessEvidence {
+        let env = amp_home
+            .map(|home| vec![("AMP_HOME".to_string(), home.to_string())])
+            .unwrap_or_default();
+        amp_process_with_env(command, path, env)
+    }
+
+    fn amp_process_with_env(
+        command: &str,
+        path: &str,
+        env: Vec<(String, String)>,
+    ) -> proc::ProcessEvidence {
+        proc::ProcessEvidence {
+            pid: 42,
+            command: command.to_string(),
+            executable_path: Some(path.to_string()),
+            argv: vec!["amp".to_string()],
+            env,
+        }
+    }
+
+    #[test]
+    fn amp_code_executable_accepts_official_install_paths() {
+        for process in [
+            amp_process_with_env(
+                "amp",
+                "/Users/auro/.amp/bin/amp",
+                vec![("HOME".to_string(), "/Users/auro".to_string())],
+            ),
+            amp_process_with_env(
+                "renamed-agent",
+                "/Users/auro/.amp/bin/amp",
+                vec![("HOME".to_string(), "/Users/auro".to_string())],
+            ),
+            amp_process("/opt/homebrew/Cellar/ampcode/1.2.3/bin/amp", None),
+            amp_process("/opt/homebrew/opt/ampcode/bin/amp", None),
+            amp_process("/usr/local/Cellar/ampcode/1.2.3/bin/amp", None),
+            amp_process("/usr/local/opt/ampcode/bin/amp", None),
+            amp_process(
+                "/home/linuxbrew/.linuxbrew/Cellar/ampcode/1.2.3/bin/amp",
+                None,
+            ),
+            amp_process("/usr/local/lib/node_modules/@ampcode/cli/bin/amp.exe", None),
+            amp_process(
+                "/usr/local/lib/node_modules/@ampcode/cli-darwin-arm64/amp",
+                None,
+            ),
+            amp_process(
+                "/usr/local/lib/node_modules/@ampcode/cli-darwin-x64/amp",
+                None,
+            ),
+            amp_process(
+                "/usr/local/lib/node_modules/@ampcode/cli-linux-arm64/amp",
+                None,
+            ),
+            amp_process(
+                "/usr/local/lib/node_modules/@ampcode/cli-linux-x64/amp",
+                None,
+            ),
+            amp_process_with_command(
+                "amp.exe",
+                "C:\\Users\\auro\\AppData\\Roaming\\npm\\node_modules\\@ampcode\\cli-win32-x64\\amp.exe",
+                None,
+            ),
+            amp_process_with_env(
+                "amp.exe",
+                "C:\\Users\\auro\\.amp\\bin\\amp.exe",
+                vec![("USERPROFILE".to_string(), "C:\\Users\\auro".to_string())],
+            ),
+            amp_process_with_command(
+                "amp.exe",
+                "D:\\agents\\amp-home\\bin\\amp.exe",
+                Some("D:\\agents\\amp-home"),
+            ),
+            amp_process("/srv/amp-code/bin/amp", Some("/srv/amp-code")),
+            amp_process("/bin/amp", Some("/")),
+            amp_process_with_command("amp.exe", "C:\\bin\\amp.exe", Some("C:\\")),
+        ] {
+            assert_eq!(
+                amp_code_executable_path(&process),
+                process.executable_path.as_deref()
+            );
+        }
+    }
+
+    #[test]
+    fn amp_code_executable_rejects_unrelated_amp_binaries() {
+        for process in [
+            amp_process("/opt/homebrew/Cellar/amp/0.7.1/bin/amp", None),
+            amp_process("/Users/auro/.cargo/bin/amp", None),
+            amp_process("/usr/local/bin/amp", None),
+            amp_process("/workspace/.amp/bin/amp", None),
+            amp_process_with_env(
+                "amp",
+                "/workspace/.amp/bin/amp",
+                vec![("HOME".to_string(), "/Users/auro".to_string())],
+            ),
+            amp_process_with_env(
+                "amp",
+                "/mnt/users/alice/.amp/bin/amp",
+                vec![("HOME".to_string(), "/home/alice".to_string())],
+            ),
+            amp_process("/mnt/agents/amp-home/bin/amp", Some("/srv/amp-home")),
+            amp_process("/srv/amp-home/bin/amp", Some("/srv/link/../amp-home")),
+            amp_process_with_command("amp.exe", "/usr/local/bin/amp.exe", None),
+            amp_process("/workspace/opt/ampcode/bin/amp", None),
+            amp_process("/workspace/Cellar/ampcode/1.2.3/bin/amp", None),
+            amp_process("/opt/homebrew/Cellar/ampcode/1.2.3/nested/bin/amp", None),
+            amp_process(
+                "/usr/local/lib/node_modules/@ampcode/cli-darwin-arm64-helper/amp",
+                None,
+            ),
+            amp_process("/tmp/node_modules/@AMPCODE/CLI-LINUX-X64/AMP", None),
+            amp_process("/tmp/node_modules\\@AMPCODE\\CLI-LINUX-X64\\AMP", None),
+        ] {
+            assert_eq!(amp_code_executable_path(&process), None);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn amp_code_executable_accepts_macos_private_path_alias() {
+        let process = amp_process(
+            "/private/tmp/agentscan-amp/bin/amp",
+            Some("/tmp/agentscan-amp"),
+        );
+
+        assert_eq!(
+            amp_code_executable_path(&process),
+            process.executable_path.as_deref()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn amp_code_executable_rejects_mutable_default_home_bin_symlink_target() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let versioned_bin = tempdir.path().join("versions/current");
+        let default_amp_home = tempdir.path().join(".amp");
+        std::fs::create_dir_all(&versioned_bin).expect("create versioned Amp directory");
+        std::fs::create_dir(&default_amp_home).expect("create default Amp home");
+        std::fs::write(versioned_bin.join("amp"), []).expect("create Amp executable");
+        std::os::unix::fs::symlink(&versioned_bin, default_amp_home.join("bin"))
+            .expect("link default Amp bin directory");
+
+        let executable = std::fs::canonicalize(default_amp_home.join("bin/amp"))
+            .expect("canonicalize default Amp executable");
+        let process = amp_process_with_env(
+            "amp",
+            &executable.to_string_lossy(),
+            vec![(
+                "HOME".to_string(),
+                tempdir.path().to_string_lossy().into_owned(),
+            )],
+        );
+
+        assert_eq!(amp_code_executable_path(&process), None);
+    }
+
     #[test]
     fn proc_arg_normalization_handles_case_whitespace_and_windows_separators() {
         assert_eq!(
             normalize_proc_arg("  C:\\Users\\Auro\\AppData\\Roaming\\npm\\opencode  "),
             "c:/users/auro/appdata/roaming/npm/opencode"
+        );
+        assert_eq!(
+            normalize_amp_executable_path("/Users/Auro/.amp/bin/amp"),
+            "/Users/Auro/.amp/bin/amp"
+        );
+        assert_eq!(
+            normalize_amp_executable_path("C:\\Users\\Auro\\.amp\\bin\\AMP.EXE"),
+            "c:/users/auro/.amp/bin/amp.exe"
+        );
+        assert_eq!(
+            normalize_amp_executable_path("/tmp/node_modules\\@AMPCODE\\CLI-LINUX-X64\\AMP"),
+            "/tmp/node_modules\\@AMPCODE\\CLI-LINUX-X64\\AMP"
+        );
+        assert_eq!(
+            normalize_amp_executable_path("/srv/amp-home/./bin/amp"),
+            "/srv/amp-home/bin/amp"
+        );
+        assert_eq!(
+            normalize_amp_executable_path("C:\\Users\\Alice\\.\\.amp\\bin\\AMP.EXE"),
+            "c:/users/alice/.amp/bin/amp.exe"
+        );
+        assert_eq!(
+            collapse_absolute_path_components("/srv/link/../amp-home"),
+            None
         );
     }
 

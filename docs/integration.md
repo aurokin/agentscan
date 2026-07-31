@@ -277,10 +277,10 @@ Field semantics:
 
 - `provider`: normalized provider identity. Canonical values are `codex`,
   `claude`, `aider`, `gemini`, `antigravity`, `opencode`, `copilot`,
-  `cursor_cli`, `pi`, `grok`, `hermes`, `droid`, and `kimi_code`. The metadata
-  helper also accepts useful aliases such as `aider-chat`, `agy`,
+  `cursor_cli`, `pi`, `grok`, `hermes`, `droid`, `kimi_code`, and `amp`. The
+  metadata helper also accepts useful aliases such as `aider-chat`, `agy`,
   `github-copilot`, `cursor-cli`, `cursor-agent`, `pi-coding-agent`,
-  `hermes-agent`, `factory-droid`, and `kimi-code`, then writes the
+  `hermes-agent`, `factory-droid`, `kimi-code`, and `amp-code`, then writes the
   canonical value.
 - `label`: short user-facing display text for list and TUI surfaces. It
   should describe the task or conversation only when the wrapper has that

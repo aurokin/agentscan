@@ -187,6 +187,12 @@ fn proc_fallback_uses_foreground(pane: &PaneRecord, title_analysis: &TitleAnalys
 fn proc_fallback_uses_descendants(pane: &PaneRecord, title_analysis: &TitleAnalysis<'_>) -> bool {
     let current_command = current_command_for_analysis(&pane.tmux.pane_current_command);
 
+    if is_ambiguous_amp_command(current_command) {
+        return false;
+    }
+
+    // `ProcessSnapshot::descendant_processes` includes the pane PID itself, so this
+    // path covers shell-launched children and direct launches for unambiguous providers.
     is_proc_fallback_launcher_command(current_command)
         || title_analysis.has_spinner_glyph
         || title_analysis.has_idle_glyph
@@ -197,6 +203,11 @@ fn is_proc_fallback_launcher_command(command: &str) -> bool {
     matches!(command, "node" | "bun")
         || proc_evidence::command_is_python(command)
         || command.eq_ignore_ascii_case("pi")
+        || is_ambiguous_amp_command(command)
+}
+
+fn is_ambiguous_amp_command(command: &str) -> bool {
+    command.eq_ignore_ascii_case("amp") || command.eq_ignore_ascii_case("amp.exe")
 }
 
 fn is_shell_or_wrapper_command(command: &str) -> bool {
@@ -286,6 +297,7 @@ mod tests {
             vec![proc::ProcessEvidence {
                 pid: 704,
                 command: "node".to_string(),
+                executable_path: None,
                 argv: vec!["codex".to_string(), "/tmp/wrapper.js".to_string()],
                 env: Vec::new(),
             }],
@@ -302,6 +314,151 @@ mod tests {
     }
 
     #[test]
+    fn proc_fallback_resolves_amp_from_native_process_command() {
+        let mut pane = tmux_pane_row(706)
+            .command("amp")
+            .title("custom wrapper")
+            .current_path("/tmp/amp-wrapper")
+            .pane();
+        let inspector = FakeProcessInspector::with_processes_and_foreground_evidence(
+            [],
+            [(
+                "/dev/pts/706".to_string(),
+                vec![proc::ProcessEvidence {
+                    pid: 707,
+                    command: "amp".to_string(),
+                    executable_path: Some("/Users/auro/.amp/bin/amp".to_string()),
+                    argv: vec!["/Users/auro/.amp/bin/amp".to_string()],
+                    env: vec![("HOME".to_string(), "/Users/auro".to_string())],
+                }],
+            )],
+        );
+
+        let snapshot = proc::LazyProcessSnapshot::new(&inspector);
+        super::apply_proc_fallback_with_options(&mut pane, &snapshot, false);
+
+        assert_eq!(pane.provider, Some(Provider::Amp));
+        assert_eq!(
+            pane.classification.matched_by,
+            Some(crate::app::ClassificationMatchKind::ProcProcessTree)
+        );
+        assert_eq!(
+            pane.classification.reasons,
+            vec!["proc_foreground_executable=/Users/auro/.amp/bin/amp"]
+        );
+    }
+
+    #[test]
+    fn proc_fallback_resolves_amp_when_pane_pid_is_the_agent_process() {
+        let mut pane = tmux_pane_row(706)
+            .command("amp")
+            .title("amp - ~/code/agentscan")
+            .current_path("/Users/auro/code/agentscan")
+            .pane();
+        let inspector = FakeProcessInspector::with_processes_and_foreground_evidence(
+            [],
+            [(
+                "/dev/pts/706".to_string(),
+                vec![proc::ProcessEvidence {
+                    pid: 706,
+                    command: "amp".to_string(),
+                    executable_path: Some("/Users/auro/.amp/bin/amp".to_string()),
+                    argv: vec!["/Users/auro/.amp/bin/amp".to_string()],
+                    env: vec![("HOME".to_string(), "/Users/auro".to_string())],
+                }],
+            )],
+        );
+
+        let snapshot = proc::LazyProcessSnapshot::new(&inspector);
+        super::apply_proc_fallback_with_options(&mut pane, &snapshot, false);
+
+        assert_eq!(pane.provider, Some(Provider::Amp));
+        assert_eq!(
+            pane.classification.reasons,
+            vec!["proc_foreground_executable=/Users/auro/.amp/bin/amp"]
+        );
+    }
+
+    #[test]
+    fn proc_fallback_resolves_amp_exe_from_official_npm_binary() {
+        let mut pane = tmux_pane_row(706)
+            .command("amp.exe")
+            .title("custom wrapper")
+            .current_path("/tmp/amp-wrapper")
+            .pane();
+        let path = "/workspace/node_modules/@ampcode/cli/bin/amp.exe";
+        let inspector = FakeProcessInspector::with_processes_and_foreground_evidence(
+            [],
+            [(
+                "/dev/pts/706".to_string(),
+                vec![proc::ProcessEvidence {
+                    pid: 707,
+                    command: "amp.exe".to_string(),
+                    executable_path: Some(path.to_string()),
+                    argv: vec![path.to_string()],
+                    env: Vec::new(),
+                }],
+            )],
+        );
+
+        let snapshot = proc::LazyProcessSnapshot::new(&inspector);
+        super::apply_proc_fallback_with_options(&mut pane, &snapshot, false);
+
+        assert_eq!(pane.provider, Some(Provider::Amp));
+        assert_eq!(
+            pane.classification.reasons,
+            vec![format!("proc_foreground_executable={path}")]
+        );
+    }
+
+    #[test]
+    fn proc_fallback_does_not_resolve_amp_editor_from_ambiguous_command() {
+        let mut pane = tmux_pane_row(706)
+            .command("amp")
+            .title("editing notes")
+            .current_path("/tmp/editor")
+            .pane();
+        let inspector = FakeProcessInspector::with_processes_and_foreground_evidence(
+            [(
+                706,
+                vec![proc::ProcessEvidence {
+                    pid: 708,
+                    command: "node".to_string(),
+                    executable_path: None,
+                    argv: vec![
+                        "node".to_string(),
+                        "/workspace/node_modules/@github/copilot/dist/cli.js".to_string(),
+                    ],
+                    env: Vec::new(),
+                }],
+            )],
+            [(
+                "/dev/pts/706".to_string(),
+                vec![proc::ProcessEvidence {
+                    pid: 707,
+                    command: "amp".to_string(),
+                    executable_path: Some("/opt/homebrew/Cellar/amp/0.7.1/bin/amp".to_string()),
+                    argv: vec!["amp".to_string()],
+                    env: Vec::new(),
+                }],
+            )],
+        );
+
+        let snapshot = proc::LazyProcessSnapshot::new(&inspector);
+        super::apply_proc_fallback_with_options(&mut pane, &snapshot, false);
+
+        assert_unresolved_ambiguous_pane(&pane, "editing notes");
+        assert_eq!(
+            pane.diagnostics.proc_fallback.outcome,
+            crate::app::ProcFallbackOutcome::NoMatch
+        );
+        assert!(
+            inspector.calls().is_empty(),
+            "ambiguous amp panes must not inspect editor descendants"
+        );
+    }
+
+    #[test]
     fn proc_fallback_resolves_claude_from_node_cli_path_and_title_status() {
         let mut pane = tmux_pane_row(704)
             .command("node")
@@ -313,6 +470,7 @@ mod tests {
             vec![proc::ProcessEvidence {
                 pid: 705,
                 command: "node".to_string(),
+                executable_path: None,
                 argv: vec![
                     "node".to_string(),
                     "/Users/auro/.claude/local/node_modules/@anthropic-ai/claude-code/cli.mjs"
@@ -350,6 +508,7 @@ mod tests {
             vec![proc::ProcessEvidence {
                 pid: 706,
                 command: "node".to_string(),
+                executable_path: None,
                 argv: vec![
                     "node".to_string(),
                     "/opt/homebrew/lib/node_modules/@google/gemini-cli/dist/index.js".to_string(),
@@ -384,6 +543,7 @@ mod tests {
             vec![proc::ProcessEvidence {
                 pid: 707,
                 command: "node".to_string(),
+                executable_path: None,
                 argv: vec!["node".to_string(), "/opt/homebrew/bin/gemini".to_string()],
                 env: Vec::new(),
             }],
@@ -411,6 +571,7 @@ mod tests {
             vec![proc::ProcessEvidence {
                 pid: 708,
                 command: "node".to_string(),
+                executable_path: None,
                 argv: vec!["node".to_string(), "/workspace/tools/gemini".to_string()],
                 env: Vec::new(),
             }],
@@ -434,6 +595,7 @@ mod tests {
             vec![proc::ProcessEvidence {
                 pid: 721,
                 command: "node".to_string(),
+                executable_path: None,
                 argv: vec![
                     "node".to_string(),
                     "/Users/auro/project/node_modules/opencode/bin/opencode".to_string(),
@@ -463,6 +625,7 @@ mod tests {
             vec![proc::ProcessEvidence {
                 pid: 729,
                 command: "node".to_string(),
+                executable_path: None,
                 argv: vec![
                     "node".to_string(),
                     "/Users/auro/project/node_modules/opencode-ai/bin/opencode".to_string(),
@@ -489,6 +652,7 @@ mod tests {
             vec![proc::ProcessEvidence {
                 pid: 722,
                 command: "node".to_string(),
+                executable_path: None,
                 argv: vec![
                     "node".to_string(),
                     "/Users/auro/project/node_modules/opencode-darwin-arm64/bin/opencode"
@@ -519,6 +683,7 @@ mod tests {
             vec![proc::ProcessEvidence {
                 pid: 723,
                 command: "bun".to_string(),
+                executable_path: None,
                 argv: vec![
                     "bun".to_string(),
                     "/Users/auro/code/upstream/opencode/packages/opencode/src/index.ts".to_string(),
@@ -550,6 +715,7 @@ mod tests {
             vec![proc::ProcessEvidence {
                 pid: 724,
                 command: "node".to_string(),
+                executable_path: None,
                 argv: vec!["node".to_string(), "/opt/homebrew/bin/opencode".to_string()],
                 env: Vec::new(),
             }],
@@ -573,6 +739,7 @@ mod tests {
             vec![proc::ProcessEvidence {
                 pid: 724,
                 command: "node".to_string(),
+                executable_path: None,
                 argv: vec!["node".to_string()],
                 env: vec![
                     ("OPENCODE".to_string(), "1".to_string()),
@@ -600,6 +767,7 @@ mod tests {
             vec![proc::ProcessEvidence {
                 pid: 761,
                 command: "node".to_string(),
+                executable_path: None,
                 argv: vec![
                     "node".to_string(),
                     loader_path.to_string(),
@@ -628,6 +796,7 @@ mod tests {
             vec![proc::ProcessEvidence {
                 pid: 762,
                 command: "/Users/auro/.loc".to_string(),
+                executable_path: None,
                 argv: vec![native_path.to_string(), "--yolo".to_string()],
                 env: Vec::new(),
             }],
@@ -651,6 +820,7 @@ mod tests {
             vec![proc::ProcessEvidence {
                 pid: 763,
                 command: "node".to_string(),
+                executable_path: None,
                 argv: vec![
                     "node".to_string(),
                     "/tmp/copilot-experiment/npm-loader.js".to_string(),
@@ -692,6 +862,7 @@ mod tests {
                 vec![proc::ProcessEvidence {
                     pid: pid + 100,
                     command: "node".to_string(),
+                    executable_path: None,
                     argv: vec!["node".to_string(), argv_path.to_string()],
                     env: Vec::new(),
                 }],
@@ -717,6 +888,7 @@ mod tests {
             vec![proc::ProcessEvidence {
                 pid: 727,
                 command: "node".to_string(),
+                executable_path: None,
                 argv: vec![
                     "node".to_string(),
                     "script.js".to_string(),
@@ -745,6 +917,7 @@ mod tests {
             vec![proc::ProcessEvidence {
                 pid: 728,
                 command: "node".to_string(),
+                executable_path: None,
                 argv: vec!["node".to_string()],
                 env: vec![
                     ("OPENCODE".to_string(), "1".to_string()),
@@ -771,6 +944,7 @@ mod tests {
             vec![proc::ProcessEvidence {
                 pid: 730,
                 command: "pi".to_string(),
+                executable_path: None,
                 argv: vec!["pi".to_string()],
                 env: vec![("PI_CODING_AGENT".to_string(), "true".to_string())],
             }],
@@ -795,6 +969,7 @@ mod tests {
             vec![proc::ProcessEvidence {
                 pid: 732,
                 command: "node".to_string(),
+                executable_path: None,
                 argv: vec![
                     "node".to_string(),
                     "/opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent/dist/cli.js"
@@ -826,6 +1001,7 @@ mod tests {
             vec![proc::ProcessEvidence {
                 pid: 733,
                 command: "bun".to_string(),
+                executable_path: None,
                 argv: vec![
                     "bun".to_string(),
                     "/Users/auro/code/upstream/pi-mono/packages/coding-agent/dist/pi".to_string(),
@@ -855,6 +1031,7 @@ mod tests {
             vec![proc::ProcessEvidence {
                 pid: 734,
                 command: "node".to_string(),
+                executable_path: None,
                 argv: vec!["node".to_string(), "/opt/homebrew/bin/pi".to_string()],
                 env: Vec::new(),
             }],
@@ -878,6 +1055,7 @@ mod tests {
             vec![proc::ProcessEvidence {
                 pid: 735,
                 command: "node".to_string(),
+                executable_path: None,
                 argv: vec!["node".to_string(), "/workspace/tools/pi".to_string()],
                 env: Vec::new(),
             }],
@@ -901,6 +1079,7 @@ mod tests {
             vec![proc::ProcessEvidence {
                 pid: 735,
                 command: "pi".to_string(),
+                executable_path: None,
                 argv: vec!["pi".to_string()],
                 env: Vec::new(),
             }],
@@ -924,6 +1103,7 @@ mod tests {
             vec![proc::ProcessEvidence {
                 pid: 737,
                 command: "node".to_string(),
+                executable_path: None,
                 argv: vec![
                     "node".to_string(),
                     "script.js".to_string(),
@@ -952,6 +1132,7 @@ mod tests {
             vec![proc::ProcessEvidence {
                 pid: 764,
                 command: "/Users/auro/.her".to_string(),
+                executable_path: None,
                 argv: vec![
                     "/Users/auro/.hermes/hermes-agent/venv/bin/python3".to_string(),
                     "/Users/auro/.local/bin/hermes".to_string(),
@@ -987,6 +1168,7 @@ mod tests {
             vec![proc::ProcessEvidence {
                 pid: 770,
                 command: "python3.12".to_string(),
+                executable_path: None,
                 argv: vec![
                     "/opt/python/bin/python3".to_string(),
                     "/Users/auro/.local/bin/hermes-agent".to_string(),
@@ -1322,6 +1504,7 @@ mod tests {
             vec![proc::ProcessEvidence {
                 pid: 706,
                 command: "node".to_string(),
+                executable_path: None,
                 argv: vec![
                     "node".to_string(),
                     "/tmp/cli.mjs".to_string(),
@@ -1359,6 +1542,7 @@ mod tests {
             vec![proc::ProcessEvidence {
                 pid: 708,
                 command: "sh".to_string(),
+                executable_path: None,
                 argv: vec![
                 "sh".to_string(),
                 "-c".to_string(),
@@ -1392,6 +1576,7 @@ mod tests {
             vec![proc::ProcessEvidence {
                 pid: 707,
                 command: "node".to_string(),
+                executable_path: None,
                 argv: vec![
                     "node".to_string(),
                     "/tmp/not-claude.js".to_string(),
@@ -1431,6 +1616,7 @@ mod tests {
                 vec![proc::ProcessEvidence {
                     pid: pid + 100,
                     command: "node".to_string(),
+                    executable_path: None,
                     argv: vec!["node".to_string(), argv_path.to_string()],
                     env: Vec::new(),
                 }],

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Added
+
+- Added Amp provider support: explicit metadata or canonical executable paths
+  from official direct, Homebrew, and npm installs establish identity without
+  confusing the unrelated `amp` terminal editor. Amp-owned thread titles are
+  normalized only after identity is known, and busy/idle status falls back to
+  the current composer border and observed activity glyphs while ignoring stale
+  scrollback. Includes emoji, stock Nerd Font, existing patched official-mark,
+  and desktop full-color icons. Evidence is documented in
+  `docs/notes/amp-support.md`.
+
 ## 0.11.3 - 2026-07-31
 
 ### Changed

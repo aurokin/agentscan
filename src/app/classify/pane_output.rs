@@ -1,5 +1,6 @@
 use super::{PaneRecord, PaneStatus, Provider, StatusKind, StatusSource, is_version_like_command};
 
+mod amp;
 mod antigravity;
 mod claude;
 mod codex;
@@ -111,6 +112,7 @@ fn classifier_for(provider: Provider) -> Option<PaneOutputClassifier> {
         Provider::Antigravity => Some(antigravity::status),
         Provider::Droid => Some(droid::status),
         Provider::KimiCode => Some(kimi_code::status),
+        Provider::Amp => Some(amp::status),
     }
 }
 

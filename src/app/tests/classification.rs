@@ -628,6 +628,53 @@ fn title_normalization_strips_droid_and_pi_prefixes() {
 }
 
 #[test]
+fn title_normalization_strips_amp_owned_suffix_after_identity() {
+    assert_eq!(
+        classify::normalize_title_for_display(
+            Some(Provider::Amp),
+            "Terminal state machines - amp - ~/code/agentscan"
+        ),
+        "Terminal state machines"
+    );
+    assert_eq!(
+        classify::normalize_title_for_display(Some(Provider::Amp), "amp - ~/code/agentscan"),
+        "amp"
+    );
+    assert_eq!(
+        classify::normalize_title_for_display(
+            Some(Provider::Amp),
+            "⠍ Terminal notation - amp - ~/project"
+        ),
+        "⠍ Terminal notation"
+    );
+    assert_eq!(
+        classify::normalize_title_for_display(
+            None,
+            "Terminal state machines - amp - ~/code/agentscan"
+        ),
+        "Terminal state machines - amp - ~/code/agentscan"
+    );
+    assert_eq!(
+        classify::normalize_title_for_display(
+            Some(Provider::Amp),
+            "Task - amp - /tmp/foo - amp - bar"
+        ),
+        "Task"
+    );
+    assert_eq!(
+        classify::normalize_title_for_display(
+            Some(Provider::Amp),
+            "Compare x - amp - y - amp - ~/code/agentscan"
+        ),
+        "Compare x - amp - y"
+    );
+    assert_eq!(
+        classify::normalize_title_for_display(Some(Provider::Amp), "Review parser - amp - notes"),
+        "Review parser - amp - notes"
+    );
+}
+
+#[test]
 fn title_normalization_strips_codex_wrapper_suffixes() {
     assert_eq!(
         classify::normalize_title_for_display(

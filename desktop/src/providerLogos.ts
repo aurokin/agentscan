@@ -5,7 +5,8 @@
 // Most marks are monochrome and vanish in one theme, so they ship per-theme
 // variants: `<name>-light.svg` is the dark/colored mark for the light background,
 // `<name>-dark.svg` is the light/colored mark for the dark background. Full-color
-// marks (gemini, antigravity, claude) read on both and stay a single file.
+// marks (amp, antigravity, claude, gemini) read on both and stay a single file.
+import amp from "./assets/providers/amp.svg";
 import antigravity from "./assets/providers/antigravity.svg";
 import claude from "./assets/providers/claude.svg";
 import gemini from "./assets/providers/gemini.svg";
@@ -37,6 +38,7 @@ export type LogoTheme = "light" | "dark";
 type LogoEntry = string | { light: string; dark: string };
 
 const PROVIDER_LOGOS: Record<string, LogoEntry> = {
+  amp,
   antigravity,
   claude,
   gemini,

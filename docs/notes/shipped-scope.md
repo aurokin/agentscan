@@ -91,6 +91,10 @@ It can:
   explicit metadata aliases, treat the `Kimi Code` startup title as a generic
   display label, and infer busy/idle from the current Kimi input box and
   moon-phase spinner only after identity is established
+- classify Amp panes from explicit metadata or canonical executable paths for
+  official direct, Homebrew, and npm installs without claiming the unrelated
+  `amp` terminal editor, normalize Amp titles only after identity is known, and
+  infer busy/idle from the current composer while ignoring stale scrollback
 - classify Grok and Hermes panes from provider-specific command/title/metadata
   evidence while keeping pane-output status fallback provider-scoped
 - resolve unresolved Claude Code launcher panes from targeted process evidence,

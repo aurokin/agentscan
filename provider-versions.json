@@ -58,5 +58,10 @@
     "source": "manual",
     "package": null,
     "version": "unknown"
+  },
+  "amp": {
+    "source": "manual",
+    "package": null,
+    "version": "0.0.1785515475-g65101d"
   }
 }

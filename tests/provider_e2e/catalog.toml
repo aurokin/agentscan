@@ -208,3 +208,17 @@ completion_timeout_ms = 240000
 wait_text = "Do you trust the contents of this project?"
 keys = ["Enter"]
 timeout_ms = 120000
+
+[providers.amp]
+command = "amp"
+args = []
+expected_provider = "amp"
+expected_match_kinds = ["proc_process_tree"]
+default_model = "default"
+default_effort = "default"
+prompt = "Write six concise numbered lines about terminal state detection. Then print exactly the marker formed by joining these parts with underscores and nothing else on its own final line: AGENTSCAN, E2E, DONE, {provider}, {run_id}"
+completion_marker = "AGENTSCAN_E2E_DONE_{provider}_{run_id}"
+startup_timeout_ms = 120000
+ready_timeout_ms = 120000
+busy_timeout_ms = 45000
+completion_timeout_ms = 240000

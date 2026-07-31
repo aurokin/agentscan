@@ -278,6 +278,12 @@ const PROVIDER_TITLE_SPECS: &[ProviderTitleSpec] = &[
         title_status: no_title_status,
         normalized_label: no_spec_label,
     },
+    ProviderTitleSpec {
+        provider: Provider::Amp,
+        detect_hint: no_hint,
+        title_status: no_title_status,
+        normalized_label: amp_spec_label,
+    },
 ];
 
 fn provider_title_spec(provider: Provider) -> Option<&'static ProviderTitleSpec> {
@@ -506,6 +512,44 @@ fn gemini_spec_label(analysis: &TitleAnalysis<'_>) -> Option<String> {
         .as_ref()
         .and_then(|title| title.label.clone())
 }
+
+fn amp_spec_label(analysis: &TitleAnalysis<'_>) -> Option<String> {
+    let title = analysis.stripped.trim();
+
+    if let Some(label) = amp_thread_label(title) {
+        return Some(label.to_string());
+    }
+
+    title
+        .strip_prefix("amp - ")
+        .filter(|cwd| !cwd.trim().is_empty())
+        .map(|_| "amp".to_string())
+}
+
+fn amp_thread_label(title: &str) -> Option<&str> {
+    const DELIMITER: &str = " - amp - ";
+
+    title
+        .match_indices(DELIMITER)
+        .filter_map(|(delimiter_index, _)| {
+            let label = title[..delimiter_index].trim();
+            let cwd = title[delimiter_index + DELIMITER.len()..].trim();
+            (!label.is_empty() && amp_title_cwd(cwd)).then_some(label)
+        })
+        .last()
+}
+
+fn amp_title_cwd(value: &str) -> bool {
+    value == "~"
+        || value.starts_with("~/")
+        || value.starts_with('/')
+        || value.starts_with("\\\\")
+        || matches!(
+            value.as_bytes(),
+            [drive, b':', b'/' | b'\\', ..] if drive.is_ascii_alphabetic()
+        )
+}
+
 fn provider_prefixed_title_label(provider: Provider, title: &str) -> Option<&str> {
     provider_title_prefixes(provider)
         .iter()

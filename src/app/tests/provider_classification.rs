@@ -185,6 +185,40 @@ fn kimi_code_title_text_alone_does_not_classify_provider() {
 }
 
 #[test]
+fn classifies_amp_from_metadata_aliases_but_not_ambiguous_command() {
+    assert!(
+        classify::classify_provider(None, "amp", "").is_none(),
+        "bare amp command is shared with the amp terminal editor"
+    );
+    for alias in ["amp", "amp-code", "amp code", "ampcode"] {
+        let metadata = classify::classify_provider(Some(alias), "zsh", "custom title")
+            .expect("metadata should match Amp");
+        assert_eq!(metadata.provider, Provider::Amp, "metadata alias: {alias}");
+        assert_eq!(
+            metadata.matched_by,
+            super::ClassificationMatchKind::PaneMetadata
+        );
+    }
+}
+
+#[test]
+fn amp_suffixes_and_titles_do_not_classify_provider() {
+    assert!(
+        classify::classify_provider(None, "amp-helper", "").is_none(),
+        "short generic command should not suffix-match"
+    );
+    assert!(
+        classify::classify_provider(
+            None,
+            "zsh",
+            "Terminal state machines - amp - ~/code/agentscan"
+        )
+        .is_none(),
+        "Amp-owned task titles are supporting display evidence only"
+    );
+}
+
+#[test]
 fn classifies_pi_from_specific_command_and_title() {
     let command = classify::classify_provider(None, "pi-coding-agent", "")
         .expect("should match pi coding agent");
@@ -489,6 +523,10 @@ fn provider_metadata_table_covers_aliases_commands_and_summary_order() {
         ("kimi-code", Provider::KimiCode),
         ("kimi code", Provider::KimiCode),
         ("kimi", Provider::KimiCode),
+        ("amp", Provider::Amp),
+        ("amp-code", Provider::Amp),
+        ("amp code", Provider::Amp),
+        ("ampcode", Provider::Amp),
     ] {
         assert_eq!(
             super::provider_from_metadata(Some(alias)),
@@ -543,6 +581,13 @@ fn provider_metadata_table_covers_aliases_commands_and_summary_order() {
         None,
         "kimi should not accept suffixed binaries"
     );
+    assert_eq!(super::provider_from_command("amp"), None);
+    assert_eq!(super::provider_from_command("amp.exe"), None);
+    assert_eq!(
+        super::provider_from_command("amp-helper"),
+        None,
+        "amp should not accept suffixed binaries"
+    );
     assert_eq!(
         super::provider_summary_order().collect::<Vec<_>>(),
         vec![
@@ -559,6 +604,7 @@ fn provider_metadata_table_covers_aliases_commands_and_summary_order() {
             Provider::Hermes,
             Provider::Droid,
             Provider::KimiCode,
+            Provider::Amp,
         ]
     );
 }
@@ -572,6 +618,7 @@ fn provider_summaries_expose_display_markers_and_aliases() {
     assert_aider_provider_summary(&summaries);
     assert_droid_provider_summary(&summaries);
     assert_kimi_code_provider_summary(&summaries);
+    assert_amp_provider_summary(&summaries);
 }
 
 fn assert_codex_provider_summary(summaries: &[super::ProviderSummary]) {
@@ -673,6 +720,30 @@ fn assert_kimi_code_provider_summary(summaries: &[super::ProviderSummary]) {
     );
 }
 
+fn assert_amp_provider_summary(summaries: &[super::ProviderSummary]) {
+    let amp = summaries
+        .iter()
+        .find(|summary| summary.provider == Provider::Amp)
+        .expect("Amp summary should be present");
+    assert_eq!(amp.name, "amp");
+    assert_eq!(amp.display_marker, "\u{f0e7}");
+    assert_eq!(amp.display_marker_codepoints, ["U+F0E7"]);
+    assert_eq!(amp.active_icon_mode, IconMode::Emoji);
+    assert_eq!(amp.active_marker, "⚡");
+    assert_eq!(amp.active_marker_codepoints, ["U+26A1"]);
+    assert_eq!(amp.icons.emoji.marker, "⚡");
+    assert_eq!(amp.icons.emoji.codepoints, ["U+26A1"]);
+    assert_eq!(amp.icons.nerd_font.marker, "\u{f0e7}");
+    assert_eq!(amp.icons.nerd_font.codepoints, ["U+F0E7"]);
+    assert_eq!(amp.icons.nerd_font_patched.marker, "\u{100046}");
+    assert_eq!(amp.icons.nerd_font_patched.codepoints, ["U+100046"]);
+    assert_eq!(
+        amp.metadata_aliases,
+        ["amp", "amp-code", "amp code", "ampcode"]
+    );
+    assert!(amp.command_aliases.is_empty());
+}
+
 #[test]
 fn patched_provider_icons_follow_agent_icons_v9_manifest() {
     let expected = [
@@ -690,6 +761,7 @@ fn patched_provider_icons_follow_agent_icons_v9_manifest() {
         (Provider::Droid, "\u{100056}", ["U+100056"]),
         // KimiCode intentionally reuses the manifest's `kimi` glyph — no distinct CLI mark.
         (Provider::KimiCode, "\u{100057}", ["U+100057"]),
+        (Provider::Amp, "\u{100046}", ["U+100046"]),
     ];
 
     let summaries = super::provider_summaries(IconMode::NerdFontPatched);

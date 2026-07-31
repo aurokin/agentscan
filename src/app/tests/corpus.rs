@@ -21,7 +21,7 @@ struct PaneCorpusFixture {
     expected: StatusKind,
 }
 
-const PANE_OUTPUT_PROVIDERS: [Provider; 12] = [
+const PANE_OUTPUT_PROVIDERS: [Provider; 13] = [
     Provider::Codex,
     Provider::Claude,
     Provider::Gemini,
@@ -34,6 +34,7 @@ const PANE_OUTPUT_PROVIDERS: [Provider; 12] = [
     Provider::Hermes,
     Provider::Droid,
     Provider::KimiCode,
+    Provider::Amp,
 ];
 
 #[test]

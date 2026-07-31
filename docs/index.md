@@ -85,6 +85,9 @@ This repo uses progressively disclosed documentation.
   - `docs/notes/kimi-code-support.md`
     Kimi Code (Moonshot Kimi CLI) probing evidence, accepted signals, and
     baseline detection/status behavior.
+  - `docs/notes/amp-support.md`
+    Amp native CLI probing evidence, accepted signals, conservative status
+    behavior, and icon provenance.
   - `docs/notes/daemon-redesign-brief.md`
     Prepared target shape, migration slices, and harness risks for the future
     daemon redesign.

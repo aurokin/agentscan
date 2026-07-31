@@ -263,6 +263,7 @@ impl FakeProcessInspector {
                             .map(|command| proc::ProcessEvidence {
                                 pid,
                                 command: command.clone(),
+                                executable_path: None,
                                 argv: vec![command],
                                 env: Vec::new(),
                             })
@@ -313,6 +314,7 @@ impl FakeProcessInspector {
                         .map(|command| proc::ProcessEvidence {
                             pid: 0,
                             command: command.clone(),
+                            executable_path: None,
                             argv: vec![command],
                             env: Vec::new(),
                         })
@@ -320,6 +322,15 @@ impl FakeProcessInspector {
                 )
             })
             .collect();
+        inspector
+    }
+
+    pub(crate) fn with_processes_and_foreground_evidence(
+        descendants: impl IntoIterator<Item = (u32, Vec<proc::ProcessEvidence>)>,
+        foreground: impl IntoIterator<Item = (String, Vec<proc::ProcessEvidence>)>,
+    ) -> Self {
+        let mut inspector = Self::with_processes(descendants);
+        inspector.foreground_by_tty = foreground.into_iter().collect();
         inspector
     }
 
@@ -340,6 +351,7 @@ fn process_evidence(pid: u32, command: &str, argv: &[&str]) -> proc::ProcessEvid
     proc::ProcessEvidence {
         pid,
         command: command.to_string(),
+        executable_path: None,
         argv: argv.iter().map(|arg| (*arg).to_string()).collect(),
         env: Vec::new(),
     }

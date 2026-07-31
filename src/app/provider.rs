@@ -29,6 +29,8 @@ pub(crate) enum Provider {
     Droid,
     #[value(name = "kimi_code", alias = "kimi-code", alias = "kimi")]
     KimiCode,
+    #[value(alias = "amp-code", alias = "ampcode")]
+    Amp,
 }
 
 impl fmt::Display for Provider {
@@ -268,6 +270,18 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
         title_prefixes: &[],
         title_aliases: &[],
         generic_display_labels: &["Kimi Code"],
+    },
+    ProviderInfo {
+        provider: Provider::Amp,
+        canonical_name: "amp",
+        icons: ProviderIconSet::new("⚡", "\u{f0e7}", "\u{100046}"),
+        metadata_aliases: &["amp", "amp-code", "amp code", "ampcode"],
+        // `amp` is also the established amp terminal editor. Process fallback
+        // resolves Amp Code only when its executable path proves the identity.
+        command_aliases: &[],
+        title_prefixes: &[],
+        title_aliases: &[],
+        generic_display_labels: &["Amp", "amp"],
     },
 ];
 

@@ -1,0 +1,6 @@
+┃ Write six concise numbered lines about terminal state detection.
+╭──────────────────────────────────────────────────────── medium ─╮
+│                                                                  │
+│                                                                  │
+│                                                                  │
+╰ ∼ Connecting ───────────────── ~/code/agentscan (main) ──────────╯
