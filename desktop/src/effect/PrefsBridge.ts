@@ -44,14 +44,13 @@ export class PrefsBridge extends Context.Service<PrefsBridge>()("desktop/PrefsBr
     // failed `listen` (non-Tauri host) yields a no-op unlisten rather than failing the
     // layer and stranding every service that shares this bridge.
     const inbound = yield* PubSub.unbounded<PrefsSync>();
-    const runFork = Effect.runForkWith(yield* Effect.context<never>());
     yield* Effect.acquireRelease(
       Effect.tryPromise({
         try: () =>
           listen<unknown>(PREFS_SYNC_EVENT, (event) => {
             const decoded = decodePrefsSync(event.payload);
             if (Result.isSuccess(decoded)) {
-              runFork(PubSub.publish(inbound, decoded.success));
+              PubSub.publishUnsafe(inbound, decoded.success);
             }
           }),
         catch: (error) => error,

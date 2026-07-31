@@ -91,7 +91,7 @@ describe("best-effort decoded listeners", () => {
     mocks.listeners.clear();
   });
 
-  it("drops malformed and unknown live events while keeping the source alive", () =>
+  it("ignores an unknown live event kind and delivers the next valid event", () =>
     Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
@@ -110,13 +110,91 @@ describe("best-effort decoded listeners", () => {
             },
           });
 
-          const event = yield* Queue.take(queue);
-          expect(event).toEqual({
+          expect(yield* Queue.take(queue)).toEqual({
             sourceKey: "local",
             epoch: 1,
             kind: "connecting",
             message: "Connecting",
           });
+        }),
+      ),
+    ));
+
+  it("turns a malformed known owning event into a synthetic incompatible fatal", () =>
+    Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const ipc = yield* TauriIpc.make;
+          const queue = yield* ipc.liveEvents("local");
+          const listener = mocks.listeners.get("agentscan-live-picker");
+
+          listener?.({
+            payload: {
+              sourceKey: "local",
+              epoch: 7,
+              kind: "connecting",
+              message: { privatePayload: "do-not-echo" },
+            },
+          });
+
+          const event = yield* Queue.take(queue);
+          expect(event).toEqual({
+            sourceKey: "local",
+            epoch: 7,
+            kind: "fatal",
+            message: "Incompatible agentscan live event schema for connecting",
+            diagnostics: null,
+          });
+          expect(event.kind === "fatal" && event.message).not.toContain("do-not-echo");
+        }),
+      ),
+    ));
+
+  it("ignores a malformed known sibling event before full decoding", () =>
+    Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const ipc = yield* TauriIpc.make;
+          const queue = yield* ipc.liveEvents("local");
+          const listener = mocks.listeners.get("agentscan-live-picker");
+
+          listener?.({ payload: { sourceKey: "sibling", epoch: 1, kind: "connecting" } });
+          listener?.({
+            payload: {
+              sourceKey: "local",
+              epoch: 2,
+              kind: "shutdown",
+              message: "Stopped",
+            },
+          });
+
+          expect(yield* Queue.take(queue)).toEqual({
+            sourceKey: "local",
+            epoch: 2,
+            kind: "shutdown",
+            message: "Stopped",
+          });
+        }),
+      ),
+    ));
+
+  it("delivers valid callback events in order", () =>
+    Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const ipc = yield* TauriIpc.make;
+          const queue = yield* ipc.liveEvents("local");
+          const listener = mocks.listeners.get("agentscan-live-picker");
+
+          for (const message of ["first", "second", "third"]) {
+            listener?.({
+              payload: { sourceKey: "local", epoch: 3, kind: "connecting", message },
+            });
+          }
+
+          expect(yield* Queue.take(queue)).toMatchObject({ message: "first" });
+          expect(yield* Queue.take(queue)).toMatchObject({ message: "second" });
+          expect(yield* Queue.take(queue)).toMatchObject({ message: "third" });
         }),
       ),
     ));

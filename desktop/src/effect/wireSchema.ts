@@ -45,8 +45,12 @@ const LiveEnvelopeFields = {
 
 // The shared Tauri event channel has one listener per configured source. Decode
 // this small routing header first so only the owning listener traverses and
-// rebuilds a potentially large rows payload.
-export const LivePickerEnvelopeHeaderWireSchema = Schema.Struct(LiveEnvelopeFields);
+// rebuilds a potentially large known-kind payload; unknown kinds can be ignored
+// without sacrificing forward compatibility.
+export const LivePickerEnvelopeHeaderWireSchema = Schema.Struct({
+  ...LiveEnvelopeFields,
+  kind: Schema.String,
+});
 
 export const LivePickerEnvelopeWireSchema = Schema.Union([
   Schema.Struct({

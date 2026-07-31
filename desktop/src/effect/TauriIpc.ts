@@ -102,7 +102,6 @@ export class TauriIpc extends Context.Service<TauriIpc>()("desktop/TauriIpc", {
     liveEvents: (sourceKey: string) =>
       Effect.gen(function* () {
         const queue = yield* Queue.unbounded<LivePickerEnvelope>();
-        const runFork = Effect.runForkWith(yield* Effect.context<never>());
         yield* Effect.acquireRelease(
           // tryPromise (not promise): a rejected `listen` is a typed IpcError the
           // LiveConnection supervisor can surface as a fatal connection state, not a
@@ -114,10 +113,29 @@ export class TauriIpc extends Context.Service<TauriIpc>()("desktop/TauriIpc", {
                 if (Result.isFailure(header) || header.success.sourceKey !== sourceKey) {
                   return;
                 }
-                const decoded = decodeLivePickerEnvelope(event.payload);
-                if (Result.isSuccess(decoded)) {
-                  runFork(Queue.offer(queue, decoded.success));
+                switch (header.success.kind) {
+                  case "connecting":
+                  case "rows":
+                  case "offline":
+                  case "shutdown":
+                  case "fatal":
+                    break;
+                  default:
+                    return;
                 }
+                const decoded = decodeLivePickerEnvelope(event.payload);
+                const envelope: LivePickerEnvelope = Result.isSuccess(decoded)
+                  ? decoded.success
+                  : {
+                      sourceKey: header.success.sourceKey,
+                      epoch: header.success.epoch,
+                      kind: "fatal",
+                      // Keep the surfaced mismatch bounded and payload-free: Schema errors
+                      // can include the offending value, which may be large or sensitive.
+                      message: `Incompatible agentscan live event schema for ${header.success.kind}`,
+                      diagnostics: null,
+                    };
+                Queue.offerUnsafe(queue, envelope);
               }),
             catch: (error) =>
               new IpcError({ op: `listen:${LIVE_PICKER_EVENT}`, message: messageOf(error) }),

@@ -113,18 +113,20 @@ describe("PickerRow wire schema", () => {
 });
 
 describe("live picker wire schemas", () => {
-  it("decodes only the routing fields from an envelope header", () => {
+  it("decodes only the routing fields and open kind from an envelope header", () => {
     expect(
       success(
         decodeLivePickerEnvelopeHeader({
           sourceKey: "local",
           epoch: 7,
-          kind: "rows",
+          kind: "future-event",
           rows: "not traversed by the header decoder",
         }),
       ),
-    ).toEqual({ sourceKey: "local", epoch: 7 });
-    expectFailure(decodeLivePickerEnvelopeHeader({ sourceKey: 1, epoch: 7 }));
+    ).toEqual({ sourceKey: "local", epoch: 7, kind: "future-event" });
+    expectFailure(decodeLivePickerEnvelopeHeader({ sourceKey: 1, epoch: 7, kind: "rows" }));
+    expectFailure(decodeLivePickerEnvelopeHeader({ sourceKey: "local", epoch: "7", kind: "rows" }));
+    expectFailure(decodeLivePickerEnvelopeHeader({ sourceKey: "local", epoch: 7, kind: 1 }));
   });
 
   it("validates snapshot summaries", () => {
