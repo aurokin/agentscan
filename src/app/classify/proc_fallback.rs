@@ -975,7 +975,8 @@ mod tests {
         // While Prime runs a shell tool, the tty foreground is the tool child, which
         // inherits Prime's leftover `PI_CODING_AGENT=true`. Foreground evidence is
         // evaluated first, so without suppression this pane would resolve as Pi.
-        let mut pane = proc_fallback_pane(741, "node", "prime-agent - agentscan");
+        // Neutral title: this test targets the proc rung, not the title spec.
+        let mut pane = proc_fallback_pane(741, "node", "Working");
         let inspector = FakeProcessInspector::with_processes_and_foreground_evidence(
             [(
                 741,
@@ -1016,7 +1017,8 @@ mod tests {
 
     #[test]
     fn proc_fallback_resolves_prime_when_prime_process_is_foreground() {
-        let mut pane = proc_fallback_pane(744, "node", "prime-agent - agentscan");
+        // Neutral title: this test targets the proc rung, not the title spec.
+        let mut pane = proc_fallback_pane(744, "node", "Working");
         let inspector = FakeProcessInspector::with_processes_and_foreground_evidence(
             [(
                 744,

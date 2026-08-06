@@ -264,6 +264,53 @@ fn classifies_prime_from_exact_command_only() {
 }
 
 #[test]
+fn classifies_prime_from_title_only_over_live_runtime_foreground() {
+    // A live Prime session under a node/bun foreground classifies by its
+    // `prime-agent - ` title without any process inspection.
+    let live = classify::classify_provider(None, "node", "prime-agent - agentscan")
+        .expect("live prime runtime under a prime title should classify as prime");
+    assert_eq!(live.provider, Provider::Prime);
+    assert_eq!(live.matched_by, super::ClassificationMatchKind::PaneTitle);
+
+    // The residual OSC title after Prime exits (bare shell foreground) or under a
+    // foreign program must not resurrect a ghost pane.
+    assert!(
+        classify::classify_provider(None, "zsh", "prime-agent - agentscan").is_none(),
+        "stale prime title over a bare shell must not classify as prime"
+    );
+    assert!(
+        classify::classify_provider(None, "vim", "prime-agent - agentscan").is_none(),
+        "stale prime title over a foreign program must not classify as prime"
+    );
+
+    // An empty remainder is not a session title.
+    assert!(
+        classify::classify_provider(None, "node", "prime-agent - ").is_none(),
+        "prime prefix with no remainder should not classify"
+    );
+
+    // A spinner glyph shows the title being actively repainted, mirroring pi.
+    let spinning = classify::classify_provider(None, "zsh", "⠋ prime-agent - agentscan")
+        .expect("spinner glyph over a prime title should classify as prime");
+    assert_eq!(spinning.provider, Provider::Prime);
+}
+
+#[test]
+fn pi_and_prime_titles_never_cross_claim() {
+    let prime = classify::classify_provider(None, "node", "prime-agent - agentscan")
+        .expect("prime title should classify");
+    assert_eq!(prime.provider, Provider::Prime);
+
+    let pi_glyph = classify::classify_provider(None, "node", "π - refactor - agentscan")
+        .expect("pi glyph title should classify");
+    assert_eq!(pi_glyph.provider, Provider::Pi);
+
+    let pi_ascii = classify::classify_provider(None, "pi", "pi - refactor - agentscan")
+        .expect("pi ascii title should classify");
+    assert_eq!(pi_ascii.provider, Provider::Pi);
+}
+
+#[test]
 fn does_not_classify_bare_pi_command_without_other_signal() {
     let bare = classify::classify_provider(None, "pi", "");
     let generic_title = classify::classify_provider(None, "pi", "pi - agentscan");
