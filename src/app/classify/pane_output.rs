@@ -113,6 +113,7 @@ fn classifier_for(provider: Provider) -> Option<PaneOutputClassifier> {
         Provider::Droid => Some(droid::status),
         Provider::KimiCode => Some(kimi_code::status),
         Provider::Amp => Some(amp::status),
+        Provider::Prime => None,
     }
 }
 

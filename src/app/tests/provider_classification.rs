@@ -238,6 +238,32 @@ fn classifies_pi_from_specific_command_and_title() {
 }
 
 #[test]
+fn classifies_prime_from_exact_command_only() {
+    let command =
+        classify::classify_provider(None, "prime-agent", "").expect("should match prime-agent");
+    assert_eq!(command.provider, Provider::Prime);
+    assert_eq!(
+        command.matched_by,
+        super::ClassificationMatchKind::PaneCurrentCommand
+    );
+
+    // Prime Agent is a Pi fork; near-miss commands must stay unclassified so
+    // Pi and Prime can never cross-claim each other.
+    assert!(
+        classify::classify_provider(None, "prime", "").is_none(),
+        "bare prime command should not classify as Prime"
+    );
+    assert!(
+        classify::classify_provider(None, "prime-agent-foo", "").is_none(),
+        "prime-agent suffix should not classify as Prime"
+    );
+    assert!(
+        classify::classify_provider(None, "prime-tool", "").is_none(),
+        "other prime-* binaries should not classify as Prime"
+    );
+}
+
+#[test]
 fn does_not_classify_bare_pi_command_without_other_signal() {
     let bare = classify::classify_provider(None, "pi", "");
     let generic_title = classify::classify_provider(None, "pi", "pi - agentscan");
@@ -527,6 +553,9 @@ fn provider_metadata_table_covers_aliases_commands_and_summary_order() {
         ("amp-code", Provider::Amp),
         ("amp code", Provider::Amp),
         ("ampcode", Provider::Amp),
+        ("prime", Provider::Prime),
+        ("prime-agent", Provider::Prime),
+        ("prime agent", Provider::Prime),
     ] {
         assert_eq!(
             super::provider_from_metadata(Some(alias)),
@@ -605,6 +634,7 @@ fn provider_metadata_table_covers_aliases_commands_and_summary_order() {
             Provider::Droid,
             Provider::KimiCode,
             Provider::Amp,
+            Provider::Prime,
         ]
     );
 }

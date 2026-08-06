@@ -31,6 +31,8 @@ pub(crate) enum Provider {
     KimiCode,
     #[value(alias = "amp-code", alias = "ampcode")]
     Amp,
+    #[value(alias = "prime-agent")]
+    Prime,
 }
 
 impl fmt::Display for Provider {
@@ -282,6 +284,18 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
         title_prefixes: &[],
         title_aliases: &[],
         generic_display_labels: &["Amp", "amp"],
+    },
+    ProviderInfo {
+        provider: Provider::Prime,
+        canonical_name: "prime",
+        icons: ProviderIconSet::new("🦋", "\u{f1589}", "\u{10005B}"),
+        metadata_aliases: &["prime", "prime-agent", "prime agent"],
+        // Prime Agent is a Pi fork; identity anchors stay lexically disjoint
+        // from Pi's (`pi`, `pi-coding-agent`, `π - `) in both directions.
+        command_aliases: &[ProviderCommandAlias::new("prime-agent", false)],
+        title_prefixes: &["prime-agent - "],
+        title_aliases: &[],
+        generic_display_labels: &["prime-agent"],
     },
 ];
 

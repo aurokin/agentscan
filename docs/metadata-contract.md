@@ -51,7 +51,7 @@ Rules for emitters:
 
 | Field | Value | What it eliminates |
 |---|---|---|
-| `@agent.provider` | canonical provider slug (`claude`, `codex`, `aider`, `gemini`, `antigravity`, `opencode`, `copilot`, `cursor_cli`, `pi`, `grok`, `hermes`, `droid`, `kimi_code`, `amp`) | all title/command/process-tree identity inference |
+| `@agent.provider` | canonical provider slug (`claude`, `codex`, `aider`, `gemini`, `antigravity`, `opencode`, `copilot`, `cursor_cli`, `pi`, `grok`, `hermes`, `droid`, `kimi_code`, `amp`, `prime`) | all title/command/process-tree identity inference |
 | `@agent.state` | `busy` \| `idle` \| `waiting` \| `unknown` | title glyph parsing and pane-output capture for this pane |
 | `@agent.pid` | PID of the publishing agent process | the stale-metadata/ghost-pane bug class (see Trust rule) |
 
