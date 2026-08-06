@@ -1,0 +1,10 @@
+
+
+ ✓ bash · sleep 15 · ↑ 1 lines · 15.0s · Ctrl+O to expand
+
+ done
+
+
+ >   Try "explain how @<filepath> works"
+
+← agents/resume  GPT-5.6 Sol • medium                                                      6.0k (2%)

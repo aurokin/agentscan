@@ -625,6 +625,13 @@ fn title_normalization_strips_droid_and_pi_prefixes() {
         classify::normalize_title_for_display(Some(Provider::Pi), "pi - agentscan"),
         "pi - agentscan"
     );
+    assert_eq!(
+        classify::normalize_title_for_display(
+            Some(Provider::Prime),
+            "prime-agent - fix flaky test - agentscan"
+        ),
+        "fix flaky test - agentscan"
+    );
 }
 
 #[test]

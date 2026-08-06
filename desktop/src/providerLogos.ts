@@ -29,6 +29,8 @@ import opencodeLight from "./assets/providers/opencode-light.svg";
 import opencodeDark from "./assets/providers/opencode-dark.svg";
 import piLight from "./assets/providers/pi-light.svg";
 import piDark from "./assets/providers/pi-dark.svg";
+import primeLight from "./assets/providers/prime-light.svg";
+import primeDark from "./assets/providers/prime-dark.svg";
 import kimiCodeLight from "./assets/providers/kimi_code-light.svg";
 import kimiCodeDark from "./assets/providers/kimi_code-dark.svg";
 
@@ -52,6 +54,7 @@ const PROVIDER_LOGOS: Record<string, LogoEntry> = {
   kimi_code: { light: kimiCodeLight, dark: kimiCodeDark },
   opencode: { light: opencodeLight, dark: opencodeDark },
   pi: { light: piLight, dark: piDark },
+  prime: { light: primeLight, dark: primeDark },
 };
 
 // Returns the bundled logo URL for a provider in the given theme, or undefined

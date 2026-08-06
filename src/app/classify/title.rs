@@ -33,6 +33,7 @@ pub(super) struct TitleAnalysis<'a> {
     pub(super) copilot_label: Option<&'a str>,
     pub(super) cursor_label: Option<&'a str>,
     pub(super) pi_label: Option<&'a str>,
+    pub(super) prime_label: Option<&'a str>,
     pub(super) grok_label: Option<&'a str>,
     pub(super) droid_label: Option<&'a str>,
     pub(super) cursor_title_shaped: bool,
@@ -58,6 +59,7 @@ struct TitleProviderSignals<'a> {
     copilot_label: Option<&'a str>,
     cursor_title_shaped: bool,
     pi_label: Option<&'a str>,
+    prime_label: Option<&'a str>,
     grok_label: Option<&'a str>,
     droid_label: Option<&'a str>,
     gemini_strong_provider_signal: bool,
@@ -132,6 +134,8 @@ pub(super) fn analyze_title(raw_title: &str) -> TitleAnalysis<'_> {
     let pi_label = looks_like_pi_title(stripped)
         .then_some(())
         .and_then(|_| provider_prefixed_title_label(Provider::Pi, stripped));
+    let prime_label = provider_prefixed_title_label(Provider::Prime, stripped)
+        .filter(|label| !label.trim().is_empty());
     let grok_label = grok_title_label(stripped);
     let droid_label = provider_prefixed_title_label(Provider::Droid, stripped);
     let gemini_title = parse_gemini_terminal_title(stripped);
@@ -144,6 +148,7 @@ pub(super) fn analyze_title(raw_title: &str) -> TitleAnalysis<'_> {
         copilot_label,
         cursor_title_shaped,
         pi_label,
+        prime_label,
         grok_label,
         droid_label,
         gemini_strong_provider_signal: gemini_title
@@ -164,6 +169,7 @@ pub(super) fn analyze_title(raw_title: &str) -> TitleAnalysis<'_> {
         copilot_label,
         cursor_label,
         pi_label,
+        prime_label,
         grok_label,
         droid_label,
         cursor_title_shaped,
@@ -247,6 +253,12 @@ const PROVIDER_TITLE_SPECS: &[ProviderTitleSpec] = &[
         detect_hint: detect_droid_hint,
         title_status: no_title_status,
         normalized_label: droid_spec_label,
+    },
+    ProviderTitleSpec {
+        provider: Provider::Prime,
+        detect_hint: detect_prime_hint,
+        title_status: no_title_status,
+        normalized_label: prime_spec_label,
     },
     ProviderTitleSpec {
         provider: Provider::Gemini,
@@ -362,6 +374,18 @@ fn detect_pi_hint(
         };
         (strength, TitleProviderHintKind::Explicit)
     })
+}
+
+fn detect_prime_hint(
+    signals: &TitleProviderSignals<'_>,
+) -> Option<(TitleHintStrength, TitleProviderHintKind)> {
+    // Strong is safe only because provider_match gates it on a live Prime runtime
+    // foreground (the stale-title guard) — the plain-ASCII prefix has no glyph
+    // anchor, and Prime's OSC title outlives the session just like Pi's does.
+    signals
+        .prime_label
+        .is_some()
+        .then_some((TitleHintStrength::Strong, TitleProviderHintKind::Explicit))
 }
 
 fn detect_grok_hint(
@@ -492,6 +516,10 @@ fn cursor_spec_label(analysis: &TitleAnalysis<'_>) -> Option<String> {
 
 fn pi_spec_label(analysis: &TitleAnalysis<'_>) -> Option<String> {
     analysis.pi_label.map(str::to_string)
+}
+
+fn prime_spec_label(analysis: &TitleAnalysis<'_>) -> Option<String> {
+    analysis.prime_label.map(str::to_string)
 }
 
 fn grok_spec_label(analysis: &TitleAnalysis<'_>) -> Option<String> {

@@ -56,7 +56,14 @@ pub(super) fn classify_provider_from_analysis(
         let stale_pi_title = provider == Provider::Pi
             && !command_is_pi_runtime(command)
             && !title_analysis.has_spinner_glyph;
-        if !stale_pi_title {
+        // Prime (a Pi fork) inherits the same failure mode: its plain-ASCII
+        // `prime-agent - ` OSC title persists after the session exits, so the title
+        // hint is only trusted over a live Prime runtime foreground or an actively
+        // repainted (spinner) title.
+        let stale_prime_title = provider == Provider::Prime
+            && !command_is_prime_runtime(command)
+            && !title_analysis.has_spinner_glyph;
+        if !stale_pi_title && !stale_prime_title {
             return Some(ProviderMatch::single_reason(
                 provider,
                 ClassificationMatchKind::PaneTitle,
@@ -90,6 +97,20 @@ fn command_is_pi_runtime(command: &str) -> bool {
     let command = command.trim();
     let command = command.strip_prefix('-').unwrap_or(command);
     matches!(command, "pi" | "node" | "bun")
+}
+
+/// Commands a live Prime Agent session presents as its pty foreground: the rebranded
+/// `prime-agent` process title or the `node`/`bun` runtime that hosts it. Same live-vs-stale
+/// reasoning as `command_is_pi_runtime`, including the same accepted residue: a stale
+/// `prime-agent - ` title over an *unrelated* node/bun program still reads as Prime, exactly
+/// as a stale `π - ` title does for Pi. tmux reports Prime's pty foreground as `node` on
+/// macOS, so excluding node/bun here would disable title identity for every real session;
+/// the guard's job is only to reject non-runtime foregrounds (shells, editors, other
+/// agents' interpreters), where residue is the common case.
+fn command_is_prime_runtime(command: &str) -> bool {
+    let command = command.trim();
+    let command = command.strip_prefix('-').unwrap_or(command);
+    matches!(command, "prime-agent" | "node" | "bun")
 }
 
 pub(super) fn current_command_for_analysis(command: &str) -> &str {

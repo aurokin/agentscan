@@ -37,6 +37,7 @@ optional enrichment, not prerequisites.
 | Factory Droid | metadata, exact `droid` command | current Droid prompt/footer fallback | `⛬ ...` titles are display labels only after identity is known. |
 | Kimi Code | metadata, exact `kimi` command | current input box and moon-phase spinner fallback | `Kimi Code` startup title is a generic display label, never identity; unprobed UI states stay unknown. |
 | Amp | metadata, canonical executable paths from official direct, Homebrew, and npm installs | current composer border and observed activity-glyph fallback | Bare `amp` is ambiguous with the terminal editor; titles are display-only after identity, and stale composers or unprobed dialogs stay unknown. |
+| Prime Agent | metadata, exact `prime-agent` command/argv0, `prime-agent - ` titles over a live runtime foreground | current footer context-pair gate with spinner-loader busy and prompt-row idle fallback | Pi fork: inherits Pi's `PI_CODING_AGENT` env marker, which is suppressed whenever Prime identity is present in the pane tree; unconfirmed spinner-led rows degrade to unknown. |
 
 ## Strictness Calibration
 

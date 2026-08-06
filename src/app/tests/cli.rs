@@ -619,6 +619,8 @@ fn tmux_set_metadata_accepts_provider_aliases() {
         ("amp", Provider::Amp),
         ("amp-code", Provider::Amp),
         ("ampcode", Provider::Amp),
+        ("prime", Provider::Prime),
+        ("prime-agent", Provider::Prime),
     ] {
         let cli = <Cli as clap::Parser>::parse_from([
             "agentscan",

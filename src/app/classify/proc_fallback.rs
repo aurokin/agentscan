@@ -44,10 +44,27 @@ pub(crate) fn apply_proc_fallback_with_options(
         .map(|evidence| evidence.process.command_for_diagnostics())
         .collect();
 
+    // Evidence is ordered foreground first, so while Prime runs a shell tool the
+    // first entry is the tool child carrying Pi's inherited `PI_CODING_AGENT`
+    // marker. Prime identity anywhere in the tree therefore suppresses the Pi env
+    // rung; every other provider's precedence is untouched.
+    //
+    // The suppression is deliberately pane-wide, not ancestry-scoped:
+    // `ProcessEvidence` carries no parent pids, so the env-carrying child cannot
+    // be tied to the agent that spawned it. The one tree this misreads — a live
+    // Pi session sharing a pane tree with a suspended Prime process — contains
+    // both agents, so classifying it as Prime is an accepted ambiguity, while
+    // the un-suppressed failure (every busy Prime pane reading as Pi) was
+    // deterministic.
+    let suppress_pi_env = evidence
+        .iter()
+        .any(|evidence| proc_evidence::process_has_prime_identity(&evidence.process));
+
     let Some(provider_match) = evidence.iter().find_map(|evidence| {
         proc_evidence::provider_match_from_proc_evidence(
             &evidence.process,
             evidence.source.reason_prefix(),
+            suppress_pi_env,
         )
     }) else {
         pane.diagnostics.proc_fallback = ProcFallbackDiagnostics {
@@ -959,6 +976,129 @@ mod tests {
             vec!["proc_descendant_env=PI_CODING_AGENT"]
         );
         assert_eq!(pane.status.kind, StatusKind::Unknown);
+    }
+
+    #[test]
+    fn proc_fallback_resolves_prime_over_inherited_pi_env_in_foreground_tool_child() {
+        // While Prime runs a shell tool, the tty foreground is the tool child, which
+        // inherits Prime's leftover `PI_CODING_AGENT=true`. Foreground evidence is
+        // evaluated first, so without suppression this pane would resolve as Pi.
+        // Neutral title: this test targets the proc rung, not the title spec.
+        let mut pane = proc_fallback_pane(741, "node", "Working");
+        let inspector = FakeProcessInspector::with_processes_and_foreground_evidence(
+            [(
+                741,
+                vec![proc::ProcessEvidence {
+                    pid: 742,
+                    command: "node".to_string(),
+                    executable_path: None,
+                    // Prime's title rewrite leaves argv as ["prime-agent", ""].
+                    argv: vec!["prime-agent".to_string(), String::new()],
+                    env: Vec::new(),
+                }],
+            )],
+            [(
+                "/dev/pts/741".to_string(),
+                vec![proc::ProcessEvidence {
+                    pid: 743,
+                    command: "zsh".to_string(),
+                    executable_path: None,
+                    argv: vec![
+                        "zsh".to_string(),
+                        "-c".to_string(),
+                        "cargo test".to_string(),
+                    ],
+                    env: vec![("PI_CODING_AGENT".to_string(), "true".to_string())],
+                }],
+            )],
+        );
+
+        let snapshot = proc::LazyProcessSnapshot::new(&inspector);
+        super::apply_proc_fallback_with_options(&mut pane, &snapshot, false);
+
+        assert_eq!(pane.provider, Some(Provider::Prime));
+        assert_eq!(
+            pane.classification.reasons,
+            vec!["proc_descendant_command=prime-agent"]
+        );
+    }
+
+    #[test]
+    fn proc_fallback_resolves_prime_when_prime_process_is_foreground() {
+        // Neutral title: this test targets the proc rung, not the title spec.
+        let mut pane = proc_fallback_pane(744, "node", "Working");
+        let inspector = FakeProcessInspector::with_processes_and_foreground_evidence(
+            [(
+                744,
+                vec![proc::ProcessEvidence {
+                    pid: 746,
+                    command: "zsh".to_string(),
+                    executable_path: None,
+                    argv: vec!["zsh".to_string()],
+                    env: vec![("PI_CODING_AGENT".to_string(), "true".to_string())],
+                }],
+            )],
+            [(
+                "/dev/pts/744".to_string(),
+                vec![proc::ProcessEvidence {
+                    pid: 745,
+                    command: "node".to_string(),
+                    executable_path: None,
+                    argv: vec!["prime-agent".to_string(), String::new()],
+                    env: Vec::new(),
+                }],
+            )],
+        );
+
+        let snapshot = proc::LazyProcessSnapshot::new(&inspector);
+        super::apply_proc_fallback_with_options(&mut pane, &snapshot, false);
+
+        assert_eq!(pane.provider, Some(Provider::Prime));
+        assert_eq!(
+            pane.classification.reasons,
+            vec!["proc_foreground_command=prime-agent"]
+        );
+    }
+
+    #[test]
+    fn proc_fallback_keeps_pi_env_match_for_genuine_pi_tree() {
+        // A busy Pi pane has the same foreground shape — an env-carrying tool child —
+        // but no Prime identity anywhere in the tree, so the env rung must keep
+        // resolving Pi exactly as before the suppression existed.
+        let mut pane = proc_fallback_pane(747, "node", "Working");
+        let inspector = FakeProcessInspector::with_processes_and_foreground_evidence(
+            [(
+                747,
+                vec![proc::ProcessEvidence {
+                    pid: 748,
+                    command: "node".to_string(),
+                    executable_path: None,
+                    // Pi upstream rewrites its title to "pi", which stays outside
+                    // Prime's exact `prime-agent` identity anchors.
+                    argv: vec!["pi".to_string(), String::new()],
+                    env: Vec::new(),
+                }],
+            )],
+            [(
+                "/dev/pts/747".to_string(),
+                vec![proc::ProcessEvidence {
+                    pid: 749,
+                    command: "zsh".to_string(),
+                    executable_path: None,
+                    argv: vec!["zsh".to_string()],
+                    env: vec![("PI_CODING_AGENT".to_string(), "true".to_string())],
+                }],
+            )],
+        );
+
+        let snapshot = proc::LazyProcessSnapshot::new(&inspector);
+        super::apply_proc_fallback_with_options(&mut pane, &snapshot, false);
+
+        assert_eq!(pane.provider, Some(Provider::Pi));
+        assert_eq!(
+            pane.classification.reasons,
+            vec!["proc_foreground_env=PI_CODING_AGENT"]
+        );
     }
 
     #[test]
