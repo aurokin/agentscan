@@ -132,7 +132,7 @@ const PROVIDER_INFOS: &[ProviderInfo] = &[
     ProviderInfo {
         provider: Provider::Codex,
         canonical_name: "codex",
-        // Patched glyphs vendor agent-font-patcher's `agent-icons-v9` manifest.
+        // Patched glyphs vendor agent-font-patcher's `agent-icons-v10` manifest.
         icons: ProviderIconSet::new("💭", "\u{f4ac}", "\u{100040}"),
         metadata_aliases: &["codex"],
         command_aliases: &[ProviderCommandAlias::new("codex", true)],
