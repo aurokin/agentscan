@@ -4,6 +4,18 @@
 
 ### Added
 
+- Added Prime Agent (Prime Intellect's Pi fork) provider support: the exact
+  `prime-agent` command/argv0 or a `prime-agent - ` title over a live runtime
+  foreground establishes identity with zero setup, with anchors chosen so Pi
+  and Prime can never cross-claim each other — including a scoped suppression
+  of Pi's `PI_CODING_AGENT` env marker (which the fork still exports and its
+  tool children inherit) whenever Prime identity is present in the pane tree.
+  Busy/idle status falls back to Prime's spinner activity loader and prompt
+  row gated on the current footer's context pair, degrading to unknown for
+  any spinner shape the matcher cannot confirm. Includes butterfly emoji,
+  stock `nf-md-butterfly`, and patched `U+10005B` icons. Evidence is
+  documented in `docs/notes/prime-support.md`.
+
 - Added Amp provider support: explicit metadata or canonical executable paths
   from official direct, Homebrew, and npm installs establish identity without
   confusing the unrelated `amp` terminal editor. Amp-owned thread titles are

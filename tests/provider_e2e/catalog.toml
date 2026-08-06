@@ -222,3 +222,17 @@ startup_timeout_ms = 120000
 ready_timeout_ms = 120000
 busy_timeout_ms = 45000
 completion_timeout_ms = 240000
+
+[providers.prime]
+command = "prime-agent"
+args = []
+expected_provider = "prime"
+expected_match_kinds = ["pane_current_command", "proc_process_tree", "pane_title"]
+default_model = "default"
+default_effort = "default"
+prompt = "Print exactly the marker formed by joining these parts with underscores and nothing else: AGENTSCAN, E2E, DONE, {provider}, {run_id}"
+completion_marker = "AGENTSCAN_E2E_DONE_{provider}_{run_id}"
+startup_timeout_ms = 120000
+ready_timeout_ms = 120000
+busy_timeout_ms = 45000
+completion_timeout_ms = 240000
