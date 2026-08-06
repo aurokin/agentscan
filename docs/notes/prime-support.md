@@ -105,6 +105,12 @@ Left `unknown` by design; probe before encoding richer signals:
 - whether future Prime releases keep the `PI_CODING_AGENT` leftover (the
   suppression stays as belt-and-suspenders either way)
 
+Known accepted ambiguity: the env suppression is pane-wide because process
+evidence carries no ancestry, so a pane tree hosting both a live Pi session and
+a suspended Prime process classifies as Prime. Both agents genuinely inhabit
+such a pane; the alternative (no suppression) misread every busy Prime pane as
+Pi deterministically.
+
 ## Icons
 
 - Emoji `🦋`; stock Nerd Font glyph `U+F1589` (`nf-md-butterfly`), verified

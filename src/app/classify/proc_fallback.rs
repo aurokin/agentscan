@@ -48,6 +48,14 @@ pub(crate) fn apply_proc_fallback_with_options(
     // first entry is the tool child carrying Pi's inherited `PI_CODING_AGENT`
     // marker. Prime identity anywhere in the tree therefore suppresses the Pi env
     // rung; every other provider's precedence is untouched.
+    //
+    // The suppression is deliberately pane-wide, not ancestry-scoped:
+    // `ProcessEvidence` carries no parent pids, so the env-carrying child cannot
+    // be tied to the agent that spawned it. The one tree this misreads — a live
+    // Pi session sharing a pane tree with a suspended Prime process — contains
+    // both agents, so classifying it as Prime is an accepted ambiguity, while
+    // the un-suppressed failure (every busy Prime pane reading as Pi) was
+    // deterministic.
     let suppress_pi_env = evidence
         .iter()
         .any(|evidence| proc_evidence::process_has_prime_identity(&evidence.process));
