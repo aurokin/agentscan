@@ -1,0 +1,12 @@
+
+
+ ◆ bash · sleep 15 · ↑ 1 lines · Ctrl+O to expand
+
+ ⠏ Executing · 5s · ↑ 34 tokens
+
+ Hint: Prime Agent automatically compacts long sessions before context fills up.
+
+
+ >   Try "explain how @<filepath> works"
+
+← agents/resume  GPT-5.6 Sol • medium                                                        34 (0%)

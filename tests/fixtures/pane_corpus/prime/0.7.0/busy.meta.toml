@@ -1,0 +1,10 @@
+provider = "prime"
+cli_version = "0.7.0"
+captured = "2026-08-06"
+cols = 100
+rows = 12
+expected_status = "busy"
+expected_source = "pane_output"
+origin = "harness-captured"
+corroborators = ["← agents/resume", "↑ 34 tokens"]
+allow_other_providers = []
