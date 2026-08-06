@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.12.0 - 2026-08-06
+
 ### Added
 
 - Added Prime Agent (Prime Intellect's Pi fork) provider support: the exact
