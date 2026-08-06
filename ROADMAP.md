@@ -238,6 +238,12 @@ Implications:
   scanning. It is limited to concrete ambiguous panes, checks the foreground
   process group for shell or wrapper panes, and checks root/descendant process
   command, argv, and selected environment markers for known launcher panes.
+- forks that inherit an upstream identity marker get a scoped suppression, not
+  a precedence refactor: Prime Agent (a Pi fork) still exports Pi's
+  `PI_CODING_AGENT` env marker, so Prime identity evidence anywhere in a pane's
+  process tree suppresses the Pi env rung for that pane. Every other provider's
+  cross-process precedence (foreground first, per-process ladder order) is
+  deliberately untouched.
 - the daemon runs this targeted fallback on its live event path too, not only on
   full snapshots: when a control-event refresh (re)builds a pane that is still
   unidentified but agent-shaped (version-like command, spinner/idle glyph, or a

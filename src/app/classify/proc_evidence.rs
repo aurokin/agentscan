@@ -3,6 +3,7 @@ use super::*;
 pub(super) fn provider_match_from_proc_evidence(
     process: &proc::ProcessEvidence,
     source_reason_prefix: &str,
+    suppress_pi_env: bool,
 ) -> Option<ProviderMatch> {
     if let Some(executable_path) = amp_code_executable_path(process) {
         return Some(ProviderMatch::single_reason(
@@ -98,7 +99,11 @@ pub(super) fn provider_match_from_proc_evidence(
         }
     }
 
-    if process_has_pi_env(process) {
+    // Prime Agent (a Pi fork) still exports Pi's `PI_CODING_AGENT` marker, and its
+    // tool children inherit it. When the pane tree carries Prime identity evidence
+    // the caller suppresses this rung, so the prime-agent process resolves the pane
+    // instead of an env-carrying tool child misclassifying it as Pi.
+    if !suppress_pi_env && process_has_pi_env(process) {
         return Some(proc_provider_env_match(
             Provider::Pi,
             source_reason_prefix,
@@ -107,6 +112,19 @@ pub(super) fn provider_match_from_proc_evidence(
     }
 
     None
+}
+
+pub(super) fn process_has_prime_identity(process: &proc::ProcessEvidence) -> bool {
+    let command_is_prime = |command: &str| {
+        provider_from_command(command.trim())
+            .is_some_and(|(provider, _exact)| provider == Provider::Prime)
+    };
+    command_is_prime(&process.command)
+        || process
+            .argv
+            .first()
+            .and_then(|argv0| command_basename(argv0))
+            .is_some_and(|command| command_is_prime(&command))
 }
 
 fn amp_code_executable_path(process: &proc::ProcessEvidence) -> Option<&str> {
