@@ -1,0 +1,13 @@
+←  ☒ Environment  ☒ Region  ✔ Submit  →
+
+Review your answers
+
+ ● Which environment?
+   → Staging
+ ● Which region?
+   → US
+
+Ready to submit your answers?
+
+❯ 1. Submit answers
+  2. Cancel

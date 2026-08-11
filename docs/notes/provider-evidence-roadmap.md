@@ -168,7 +168,17 @@ Completed source-analysis baselines:
   `❯` prompt to be near Claude footer/status text, mark busy from current
   interrupt or permission-wait markers, and preserve `unknown` for stale
   prompts, generic Claude mentions, or prompt lines without current footer
-  context.
+  context. Empirical tmux probing of Claude Code 2.1.228 on 2026-08-11 found
+  `◐`/`◑` working title frames and a shared `✳` static frame for both idle and
+  waiting states. Current AskUserQuestion choice views end with `Chat about
+  this` plus an `Enter to select` / `Esc to cancel` footer; multi-question
+  review ends with `Review your answers`, `Ready to submit your answers?`, and
+  `Submit answers` / `Cancel`. Current Bash and file permission dialogs use
+  `Do you want to proceed?` near an `Esc to cancel` footer rather than the
+  older `Waiting for permission…` row. These waiting shapes are accepted only
+  in a bounded current tail after Claude identity is established; wrapped
+  footer tokens are allowed, and stale dialogs above a live prompt are
+  rejected.
 - Codex: source analysis at `~/code/upstream/codex` commit
   `a27d3847b5` found the current idle composer and busy status shapes in the
   Rust TUI. `codex-rs/tui/src/keymap_setup.rs` configures the default composer

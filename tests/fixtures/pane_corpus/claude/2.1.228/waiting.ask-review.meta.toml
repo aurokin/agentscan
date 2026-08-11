@@ -1,0 +1,10 @@
+provider = "claude"
+cli_version = "2.1.228"
+captured = "2026-08-11"
+cols = 39
+rows = 13
+expected_status = "waiting"
+expected_source = "pane_output"
+origin = "tmux-probe-sanitized"
+corroborators = ["Review your answers", "Ready to submit your answers?", "Submit answers", "Cancel"]
+allow_other_providers = []

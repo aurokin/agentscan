@@ -1,0 +1,11 @@
+☐ Environment
+
+Which deployment environment should I use?
+
+❯ 1. Staging
+  2. Production
+  3. Type something.
+────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel

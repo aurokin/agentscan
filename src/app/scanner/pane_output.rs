@@ -192,14 +192,32 @@ struct PaneOutputStatusCacheKey {
 
 impl PaneOutputStatusCacheKey {
     fn from_pane(pane: &PaneRecord) -> Option<Self> {
+        let provider = pane.provider?;
         Some(Self {
-            provider: pane.provider?,
+            provider,
             pane_current_command: pane.tmux.pane_current_command.clone(),
-            pane_title_raw: pane.tmux.pane_title_raw.clone(),
+            pane_title_raw: pane_output_cache_title(provider, &pane.tmux.pane_title_raw),
             session_id: pane.tmux.session_id.clone(),
             window_id: pane.tmux.window_id.clone(),
         })
     }
+}
+
+fn pane_output_cache_title(provider: Provider, title: &str) -> String {
+    if provider != Provider::Claude {
+        return title.to_string();
+    }
+
+    let trimmed = title.trim_start();
+    let Some(glyph) = trimmed.chars().next() else {
+        return title.to_string();
+    };
+    if !(CLAUDE_SPINNER_GLYPHS.contains(&glyph) || CLAUDE_WORKING_GLYPHS.contains(&glyph)) {
+        return title.to_string();
+    }
+
+    let label = trimmed[glyph.len_utf8()..].trim_start();
+    format!("claude-working\u{1f}{label}")
 }
 
 #[cfg(test)]
@@ -303,6 +321,17 @@ mod tests {
          ? for shortcuts\n"
     }
 
+    fn claude_waiting_output() -> &'static str {
+        "Which deployment environment should I use?\n\
+         ❯ 1. Staging\n\
+           2. Production\n\
+           3. Type something.\n\
+         ────────────────────────────────────────\n\
+           4. Chat about this\n\
+         \n\
+         Enter to select · ↑/↓ to navigate · Esc to cancel\n"
+    }
+
     fn gemini_idle_output() -> &'static str {
         ">   Type your message or @path/to/file\n\
          Workspace   Sandbox    Model\n\
@@ -357,6 +386,11 @@ mod tests {
                 PaneStatus::title(StatusKind::Busy),
             ),
             pane("%11", Some(Provider::Aider), PaneStatus::not_checked()),
+            pane(
+                "%12",
+                Some(Provider::Claude),
+                PaneStatus::title(StatusKind::Idle),
+            ),
         ];
         let mut capture = FakePaneOutputCapture::default()
             .with_output("%2", codex_idle_output())
@@ -366,16 +400,18 @@ mod tests {
             .with_output("%7", opencode_idle_output())
             .with_output("%8", pi_idle_output())
             .with_output("%9", claude_idle_output())
-            .with_output("%10", claude_idle_output());
+            .with_output("%10", claude_idle_output())
+            .with_output("%12", claude_waiting_output());
 
         apply_pane_output_status_fallbacks_with_capture(&mut panes, &mut capture);
 
         // `%10` (claude, title-busy) is a waiting-refinement candidate and is
         // captured; its idle read must not displace the title-busy verdict.
-        // `%3` (copilot, title-busy) has no waiting markers and is skipped.
+        // `%12` (claude, title-idle) is captured and upgraded by the current
+        // AskUserQuestion dialog. `%3` (copilot, title-busy) is skipped.
         assert_eq!(
             capture.calls,
-            vec!["%2", "%4", "%5", "%6", "%7", "%8", "%9", "%10"]
+            vec!["%2", "%4", "%5", "%6", "%7", "%8", "%9", "%10", "%12"]
         );
         assert_eq!(panes[1].status, PaneStatus::pane_output(StatusKind::Idle));
         assert_eq!(panes[3].status, PaneStatus::pane_output(StatusKind::Busy));
@@ -386,6 +422,10 @@ mod tests {
         assert_eq!(panes[8].status, PaneStatus::pane_output(StatusKind::Idle));
         assert_eq!(panes[9].status, PaneStatus::title(StatusKind::Busy));
         assert_eq!(panes[10].status, PaneStatus::not_checked());
+        assert_eq!(
+            panes[11].status,
+            PaneStatus::pane_output(StatusKind::Waiting)
+        );
     }
 
     #[test]
@@ -425,6 +465,24 @@ mod tests {
         assert_eq!(capture.call_count(), 0);
         assert_eq!(stats.attempt_count, 0);
         assert_eq!(panes[0].status, PaneStatus::metadata(StatusKind::Busy));
+    }
+
+    #[test]
+    fn trusted_claude_idle_metadata_skips_waiting_refinement() {
+        let mut panes = vec![pane(
+            "%1",
+            Some(Provider::Claude),
+            PaneStatus::metadata(StatusKind::Idle),
+        )];
+        panes[0].agent_metadata.state = Some("idle".to_string());
+        let mut capture =
+            FakePaneOutputCapture::default().with_output("%1", claude_waiting_output());
+
+        let stats = apply_pane_output_status_fallbacks_with_capture(&mut panes, &mut capture);
+
+        assert_eq!(capture.call_count(), 0);
+        assert_eq!(stats.attempt_count, 0);
+        assert_eq!(panes[0].status, PaneStatus::metadata(StatusKind::Idle));
     }
 
     #[test]
@@ -553,6 +611,62 @@ mod tests {
         cache.apply(&mut second, &mut capture, now + Duration::from_millis(500));
 
         assert_eq!(capture.call_count(), 2);
+    }
+
+    #[test]
+    fn pane_output_cache_reuses_claude_animated_title_frames() {
+        let now = Instant::now();
+        let mut cache = PaneOutputStatusCache::new(Duration::from_secs(2));
+        let mut capture = FakePaneOutputCapture::default().with_output("%1", claude_idle_output());
+        let mut first = vec![pane(
+            "%1",
+            Some(Provider::Claude),
+            PaneStatus::title(StatusKind::Busy),
+        )];
+        first[0].tmux.pane_title_raw = "◐ Select deployment environment".to_string();
+        cache.apply(&mut first, &mut capture, now);
+
+        let mut second = vec![pane(
+            "%1",
+            Some(Provider::Claude),
+            PaneStatus::title(StatusKind::Busy),
+        )];
+        second[0].tmux.pane_title_raw = "◑ Select deployment environment".to_string();
+        cache.apply(&mut second, &mut capture, now + Duration::from_millis(100));
+
+        assert_eq!(capture.call_count(), 1);
+        assert_eq!(second[0].status, PaneStatus::title(StatusKind::Busy));
+    }
+
+    #[test]
+    fn pane_output_cache_keeps_claude_static_idle_distinct_from_working_frames() {
+        let now = Instant::now();
+        let mut cache = PaneOutputStatusCache::new(Duration::from_secs(2));
+        let mut capture = FakePaneOutputCapture::default().with_output("%1", claude_idle_output());
+        let mut working = vec![pane(
+            "%1",
+            Some(Provider::Claude),
+            PaneStatus::title(StatusKind::Busy),
+        )];
+        working[0].tmux.pane_title_raw = "◑ Select deployment environment".to_string();
+        cache.apply(&mut working, &mut capture, now);
+
+        capture
+            .outputs
+            .insert("%1".to_string(), Some(claude_waiting_output().to_string()));
+        let mut waiting = vec![pane(
+            "%1",
+            Some(Provider::Claude),
+            PaneStatus::title(StatusKind::Idle),
+        )];
+        waiting[0].tmux.pane_title_raw = "✳ Select deployment environment".to_string();
+        cache.apply(&mut waiting, &mut capture, now + Duration::from_millis(100));
+
+        assert_eq!(capture.call_count(), 2);
+        assert_eq!(
+            waiting[0].status,
+            PaneStatus::pane_output(StatusKind::Waiting)
+        );
     }
 
     #[test]

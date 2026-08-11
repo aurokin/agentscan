@@ -128,10 +128,11 @@ fn load_pane_corpus_fixture(corpus_root: &Path, path: std::path::PathBuf) -> Pan
         "{}: expected_source mismatch",
         path.display()
     );
+    let filename_status = state.split('.').next().unwrap_or(state);
     assert_eq!(
         meta.expected_status,
-        state,
-        "{}: expected_status must match the fixture filename",
+        filename_status,
+        "{}: expected_status must match the fixture filename prefix",
         path.display()
     );
     assert!(
@@ -145,7 +146,7 @@ fn load_pane_corpus_fixture(corpus_root: &Path, path: std::path::PathBuf) -> Pan
         path.display()
     );
 
-    let expected = parse_corpus_status(state, &path);
+    let expected = parse_corpus_status(&meta.expected_status, &path);
     let provider = parse_corpus_provider(&provider_dir, &path);
     let screen = std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("{}: {error}", path.display()));

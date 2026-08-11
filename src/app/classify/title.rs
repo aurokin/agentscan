@@ -26,7 +26,9 @@ struct TitleProviderHint {
 pub(super) struct TitleAnalysis<'a> {
     pub(super) raw: &'a str,
     pub(super) stripped: &'a str,
+    claude_stripped: &'a str,
     pub(super) has_spinner_glyph: bool,
+    has_claude_working_glyph: bool,
     pub(super) has_idle_glyph: bool,
     pub(super) claude_label: Option<&'a str>,
     pub(super) opencode_label: Option<&'a str>,
@@ -53,6 +55,7 @@ pub(super) struct GeminiTitle {
 
 struct TitleProviderSignals<'a> {
     stripped: &'a str,
+    claude_stripped: &'a str,
     has_spinner_glyph: bool,
     claude_label: Option<&'a str>,
     opencode_label: Option<&'a str>,
@@ -121,9 +124,11 @@ impl<'a> TitleAnalysis<'a> {
 pub(super) fn analyze_title(raw_title: &str) -> TitleAnalysis<'_> {
     let raw = raw_title.trim();
     let stripped = strip_known_status_glyph(raw).trim();
+    let claude_stripped = strip_claude_status_glyph(raw).trim();
     let has_spinner_glyph = has_spinner_glyph(raw);
+    let has_claude_working_glyph = has_claude_working_glyph(raw);
     let has_idle_glyph = has_idle_glyph(raw);
-    let claude_label = provider_prefixed_title_label(Provider::Claude, stripped);
+    let claude_label = provider_prefixed_title_label(Provider::Claude, claude_stripped);
     let opencode_label = provider_prefixed_title_label(Provider::Opencode, stripped);
     let copilot_label = provider_prefixed_title_label(Provider::Copilot, stripped);
     let cursor_label = provider_prefixed_title_label(Provider::CursorCli, stripped);
@@ -142,6 +147,7 @@ pub(super) fn analyze_title(raw_title: &str) -> TitleAnalysis<'_> {
 
     let provider_hint = provider_hint_from_title_signals(&TitleProviderSignals {
         stripped,
+        claude_stripped,
         has_spinner_glyph,
         claude_label,
         opencode_label,
@@ -162,7 +168,9 @@ pub(super) fn analyze_title(raw_title: &str) -> TitleAnalysis<'_> {
     TitleAnalysis {
         raw,
         stripped,
+        claude_stripped,
         has_spinner_glyph,
+        has_claude_working_glyph,
         has_idle_glyph,
         claude_label,
         opencode_label,
@@ -210,7 +218,7 @@ const PROVIDER_TITLE_SPECS: &[ProviderTitleSpec] = &[
         provider: Provider::Claude,
         detect_hint: detect_claude_hint,
         title_status: claude_title_status,
-        normalized_label: no_spec_label,
+        normalized_label: claude_spec_label,
     },
     ProviderTitleSpec {
         provider: Provider::Opencode,
@@ -330,8 +338,9 @@ fn no_hint(_: &TitleProviderSignals<'_>) -> Option<(TitleHintStrength, TitleProv
 fn detect_claude_hint(
     signals: &TitleProviderSignals<'_>,
 ) -> Option<(TitleHintStrength, TitleProviderHintKind)> {
-    (signals.claude_label.is_some() || title_matches_alias(Provider::Claude, signals.stripped))
-        .then_some((TitleHintStrength::Strong, TitleProviderHintKind::Explicit))
+    (signals.claude_label.is_some()
+        || title_matches_alias(Provider::Claude, signals.claude_stripped))
+    .then_some((TitleHintStrength::Strong, TitleProviderHintKind::Explicit))
 }
 
 fn detect_opencode_hint(
@@ -434,7 +443,7 @@ fn claude_title_status(analysis: &TitleAnalysis<'_>) -> Option<StatusKind> {
     if label_status == Some(StatusKind::Busy) {
         return label_status;
     }
-    if analysis.has_spinner_glyph {
+    if analysis.has_spinner_glyph || analysis.has_claude_working_glyph {
         return Some(StatusKind::Busy);
     }
     if analysis.has_idle_glyph {
@@ -504,6 +513,10 @@ fn copilot_title_has_working_indicator(title: &str) -> bool {
 
 fn no_spec_label(_: &TitleAnalysis<'_>) -> Option<String> {
     None
+}
+
+fn claude_spec_label(analysis: &TitleAnalysis<'_>) -> Option<String> {
+    Some(analysis.claude_stripped.to_string())
 }
 
 fn copilot_spec_label(analysis: &TitleAnalysis<'_>) -> Option<String> {
@@ -773,12 +786,36 @@ pub(crate) fn strip_known_status_glyph(title: &str) -> &str {
     rest.trim_start()
 }
 
+fn strip_claude_status_glyph(title: &str) -> &str {
+    let trimmed = title.trim_start();
+    let Some(first) = trimmed.chars().next() else {
+        return trimmed;
+    };
+
+    if !(CLAUDE_SPINNER_GLYPHS.contains(&first)
+        || CLAUDE_WORKING_GLYPHS.contains(&first)
+        || IDLE_GLYPHS.contains(&first))
+    {
+        return trimmed;
+    }
+
+    trimmed[first.len_utf8()..].trim_start()
+}
+
 fn has_spinner_glyph(title: &str) -> bool {
     title
         .trim_start()
         .chars()
         .next()
         .is_some_and(|glyph| CLAUDE_SPINNER_GLYPHS.contains(&glyph))
+}
+
+fn has_claude_working_glyph(title: &str) -> bool {
+    title
+        .trim_start()
+        .chars()
+        .next()
+        .is_some_and(|glyph| CLAUDE_WORKING_GLYPHS.contains(&glyph))
 }
 
 fn has_idle_glyph(title: &str) -> bool {
@@ -1021,6 +1058,36 @@ mod tests {
             provider_title_status(Provider::Claude, &analysis),
             Some(StatusKind::Busy)
         );
+    }
+
+    #[test]
+    fn claude_current_working_glyphs_are_busy_and_trimmed_from_labels() {
+        for title in ["◐ Claude Code", "◑ Select deployment environment"] {
+            let analysis = analyze_title(title);
+            assert_eq!(
+                provider_title_status(Provider::Claude, &analysis),
+                Some(StatusKind::Busy)
+            );
+            assert_eq!(
+                analysis.normalized_label(Some(Provider::Claude)),
+                Some(strip_claude_status_glyph(title).to_string())
+            );
+        }
+        assert_eq!(
+            provider_hint("◐ Claude Code"),
+            Some(TitleProviderHint {
+                provider: Provider::Claude,
+                strength: TitleHintStrength::Strong,
+                kind: TitleProviderHintKind::Explicit,
+            })
+        );
+    }
+
+    #[test]
+    fn claude_current_working_glyphs_do_not_widen_other_provider_status() {
+        let analysis = analyze_title("◐ π - agentscan - refactor");
+        assert_eq!(provider_title_status(Provider::Pi, &analysis), None);
+        assert_eq!(provider_title_status(Provider::Grok, &analysis), None);
     }
 
     #[test]

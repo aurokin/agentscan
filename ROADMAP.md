@@ -194,8 +194,10 @@ Implications:
 - schema 7 added the `waiting` status kind (agent blocked on human input) and
   the `agent_metadata` `pid`/`v`/`model` passthrough. `waiting` is emitted only
   from published `@agent.state=waiting` metadata or provider-scoped pane-output
-  waiting markers that were previously folded into busy; title heuristics never
-  emit it, and marker absence degrades to busy, never to idle.
+  waiting markers; title heuristics never emit it. A provider title may trigger
+  a bounded pane-output refinement when the provider uses the same static title
+  state for idle and waiting, but a missing or stale waiting marker preserves
+  the title verdict rather than inventing `waiting`.
 - focus actions from `agentscan focus`, `agentscan hotkey`, and the terminal TUI
   also emit a best-effort daemon client event after tmux confirms the switch. The
   daemon still re-reads tmux as the source of truth, but the client event forces

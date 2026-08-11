@@ -587,6 +587,21 @@ fn known_status_glyph_stripping_preserves_normal_prefixes() {
 #[test]
 fn title_normalization_strips_claude_and_opencode_prefixes() {
     assert_eq!(
+        classify::normalize_title_for_display(
+            Some(Provider::Claude),
+            "◑ Select deployment environment"
+        ),
+        "Select deployment environment"
+    );
+    assert_eq!(
+        classify::infer_title_status(
+            Some(Provider::Claude),
+            Some(crate::app::ClassificationMatchKind::ProcProcessTree),
+            "◑ Select deployment environment"
+        ),
+        PaneStatus::title(StatusKind::Busy)
+    );
+    assert_eq!(
         classify::normalize_title_for_display(Some(Provider::Claude), "Claude Code | Query"),
         "Query"
     );

@@ -1,0 +1,10 @@
+provider = "claude"
+cli_version = "2.1.228"
+captured = "2026-08-11"
+cols = 60
+rows = 11
+expected_status = "waiting"
+expected_source = "pane_output"
+origin = "tmux-probe-sanitized"
+corroborators = ["Chat about this", "Tab/Arrow keys to navigate", "Esc to cancel"]
+allow_other_providers = []

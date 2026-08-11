@@ -1,0 +1,11 @@
+←  ☒ Environment  ☐ Region  ✔ Submit  →
+
+Which region?
+
+❯ 1. US
+  2. Europe
+  3. Type something.
+────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel

@@ -60,6 +60,10 @@ const CLAUDE_SPINNER_GLYPHS: &[char] = &[
     '⠁', '⠂', '⠄', '⡀', '⢀', '⠠', '⠐', '⠈', '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏', '⣾',
     '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷',
 ];
+// Claude Code 2.1.228 uses these half-circle frames while working. Keep them
+// Claude-specific: the older braille set above is also used by proven Pi,
+// Grok, and Codex title shapes.
+const CLAUDE_WORKING_GLYPHS: &[char] = &['◐', '◑'];
 const IDLE_GLYPHS: &[char] = &['✳'];
 // `PANE_FORMAT` and `DAEMON_SUBSCRIPTION_FORMAT` are derived from the single
 // ordered pane-field table in `pane_field` and re-exported above.

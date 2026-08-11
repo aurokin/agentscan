@@ -23,7 +23,7 @@ optional enrichment, not prerequisites.
 
 | Provider | Identity evidence | Status evidence | Notes |
 |----------|-------------------|-----------------|-------|
-| Claude Code | metadata, title, command/path, targeted process evidence | title/metadata where available; provider-scoped current prompt/footer, interrupt hint, and permission-wait pane-output fallback | Targeted process evidence covers launcher and teammate-spawn shapes; pane-output status is only used after identity is known. |
+| Claude Code | metadata, title, command/path, targeted process evidence | title/metadata where available; provider-scoped current prompt/footer, interrupt hint, AskUserQuestion, review, and permission-wait pane-output fallback | Claude 2.1.228 working titles use `◐`/`◑`; its static `✳` title is refined from current pane output because both idle and waiting use that glyph. Targeted process evidence covers launcher and teammate-spawn shapes; pane-output status is only used after identity is known. |
 | Codex | metadata, command/title shapes | current prompt/footer/status pane-output fallback for supported layouts | Model/path and plan/goal footer shapes are accepted only as current status context. |
 | Gemini CLI | metadata, command/title/source-observed shapes | provider-scoped current prompt/action-required fallback | Deprecated maintenance status: support remains for existing and enterprise users, but Gemini CLI drift is not an active update target. Generic Gemini mentions in unrelated titles are not provider identity. |
 | Antigravity | metadata, exact `agy` command | provider-scoped current prompt/footer fallback | The live `? for shortcuts` footer reports idle and `esc to cancel` reports busy only after provider identity is known. |
