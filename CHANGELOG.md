@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 0.12.1 - 2026-08-11
+
+### Added
+
+- Claude Code 2.1.228 panes now report `waiting` for current AskUserQuestion
+  choices and review screens, current permission dialogs, and the shared static
+  title state when pane output confirms a live prompt. Current `◐` and `◑`
+  title glyphs report busy, while stale dialogs preserve the newer title or
+  pane-output verdict instead of overriding it.
+
+### Fixed
+
+- The macOS desktop app now shares Tauri's `window-vibrancy` 0.6 dependency
+  instead of linking a second copy that could register duplicate Objective-C
+  classes at runtime.
+
 ## 0.12.0 - 2026-08-06
 
 ### Added
