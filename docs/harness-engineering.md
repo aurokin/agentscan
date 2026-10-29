@@ -1,7 +1,7 @@
 # Progressively Disclosed Harness Engineering
 
-`agentscan` should keep stable contracts and engineering harnesses in the repo
-while using Linear for active milestone execution. This document explains that
+`agentscan` keeps stable contracts and engineering harnesses in the repo docs
+and tracks active work in GitHub issues. This document explains that
 documentation posture.
 
 ## Disclosure Layers
@@ -19,14 +19,14 @@ The repo should disclose information in layers:
 5. `docs/integration.md`
    Wrapper metadata contract, daemon-backed automation surfaces, shell boundary, and migration posture.
 6. `docs/harness-engineering.md`
-   Validation posture, harness categories, and rules for what belongs in repo docs versus Linear.
+   Validation posture, harness categories, and rules for what belongs in repo docs versus GitHub issues.
 7. `docs/notes/`
    Narrow follow-up or historical notes that are too specific for the primary docs.
-8. Linear
-   Active milestones, blockers, sequencing, and execution detail.
+8. GitHub issues
+   Active work, blockers, sequencing, and execution detail.
 
-When a Linear milestone completes, its stable outcomes should be folded back
-into the appropriate repo docs instead of leaving the repo full of stale plan
+When a body of work completes, its stable outcomes should be folded back into
+the appropriate repo docs instead of leaving the repo full of stale plan
 documents.
 
 ## Harness Categories
@@ -227,14 +227,14 @@ Performance spot checks currently use:
 
 ## Documentation Rules
 
-- Keep active task sequencing out of the repo once it moves to Linear.
+- Keep active task sequencing in GitHub issues, not in repo docs.
 - Keep stable contracts, guardrails, and operator guidance in repo docs.
 - Prefer narrow follow-up notes over large catch-all plan documents.
 - Promote behavior into the docs only after it is implemented or intentionally adopted as a durable boundary.
-- If a document exists only to mirror active milestone status, replace it with a redirect to the deeper stable docs and Linear.
+- If a document exists only to mirror active milestone status, replace it with a redirect to the deeper stable docs and the relevant GitHub issues.
 
 ## Practical Rule Of Thumb
 
 If a reader needs to know what the tool guarantees, the answer belongs in repo
 docs. If a reader needs to know what is next, blocked, or in progress, the
-answer belongs in Linear until it settles.
+answer belongs in a GitHub issue until it settles.

@@ -111,7 +111,7 @@ Remaining hardening areas:
 
 ## Follow-Up Issues
 
-The original follow-up Linear issues kept the desktop app out of scanner logic:
+The original follow-up issues kept the desktop app out of scanner logic:
 
 - AUR-414 SSH polish and diagnostics: harden remote profile validation, remote
   client-tty targeting, and failure presentation.
@@ -126,8 +126,8 @@ The original follow-up Linear issues kept the desktop app out of scanner logic:
 - AUR-419 cross-platform posture: document what macOS-first implementation
   choices must become platform adapters later.
 
-Use Linear for current status. This list is a historical split map, not the
-active source of truth.
+This list is a historical split map, not the active source of truth; use
+GitHub issues for current status.
 
 ## Guardrails
 

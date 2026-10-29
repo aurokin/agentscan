@@ -2,7 +2,7 @@
 
 This note captures the current direction for provider-specific detection work.
 It is intentionally planning-level: shipped contracts belong in
-`docs/integration.md`, while active sequencing and ownership live in Linear.
+`docs/integration.md`, while active sequencing and ownership live in GitHub issues.
 
 ## Product Principle
 

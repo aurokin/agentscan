@@ -2,8 +2,8 @@
 
 `agentscan` is a daemon-required tmux agent scanner with short-lived
 socket clients. This document captures the adopted engineering shape of the
-system. Active future sequencing lives in Linear and should be reflected
-back here only once behavior or contract decisions settle.
+system. Active future sequencing lives in GitHub issues and should be
+reflected back here only once behavior or contract decisions settle.
 
 ## Runtime Model
 

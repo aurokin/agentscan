@@ -35,7 +35,7 @@ These stay outside the core scanner unless explicitly justified later:
 
 This file records durable direction and architectural decisions.
 
-Active milestone sequencing, blockers, and execution detail live in Linear until
+Active sequencing, blockers, and execution detail live in GitHub issues until
 they settle. Stable implementation detail should be promoted back into:
 
 - `docs/index.md`
@@ -559,8 +559,8 @@ Definition of done for the current finish pass:
 - deferred work is limited to future migration sequencing and additional
   provider-scoped output parsing only if justified by concrete unresolved panes
 
-Further migration sequencing belongs in Linear until it becomes stable enough to
-document as a contract in the repo docs.
+Further migration sequencing belongs in GitHub issues until it becomes stable
+enough to document as a contract in the repo docs.
 
 ## Future Direction
 
@@ -575,5 +575,5 @@ Likely next classes of durable improvement:
   Pi detection works without integration
 - incremental output parsing only if later justified by concrete unresolved panes
 
-Those should move from Linear into the repo docs only when they become settled
-behavior or durable engineering policy.
+Those should move from GitHub issues into the repo docs only when they become
+settled behavior or durable engineering policy.

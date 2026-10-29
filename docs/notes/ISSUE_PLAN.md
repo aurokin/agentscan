@@ -1,5 +1,9 @@
 # AUR-181 Issue Plan: Human Review Breaking Surface And Rollout Posture
 
+Historical record of the completed review gate for the daemon socket migration
+(see `docs/notes/MILESTONE_PLAN.md`). Issue keys refer to the retired tracker.
+Current contracts live in `docs/architecture.md` and `docs/integration.md`.
+
 ## Goal
 
 Prepare and record the explicit human approval gate for the daemon socket
@@ -39,10 +43,10 @@ Confirm these decisions:
    - Ask for explicit approval or rejection of each decision criterion against
      the current local head.
    - If any criterion is rejected, keep AUR-181 open, create or name a follow-up
-     Linear issue with owner and acceptance criteria, and land no behavior/docs
+     issue with owner and acceptance criteria, and land no behavior/docs
      change under AUR-181 except recording the decision.
    - If approved, record the approver, timestamp, reviewed head, and per-criterion
-     decisions in Linear.
+     decisions on the issue.
 
 3. Close the milestone locally after approval.
    - Mark AUR-181 Done.
@@ -110,7 +114,7 @@ Plan review subagent: Euler the 17th.
 
 - Converted scope bullets into an explicit decision matrix.
 - Defined rejection handling: AUR-181 stays open, follow-up work gets a named
-  Linear issue with owner and acceptance criteria, and AUR-181 records only the
+  issue with owner and acceptance criteria, and AUR-181 records only the
   decision.
 - Defined final gates as a full baseline rerun at the reviewed local head.
 - Tightened no-push evidence to `git status -sb` and upstream ahead/behind

@@ -2,7 +2,7 @@
 
 This document covers the stable integration boundary for `agentscan`: wrapper
 metadata, machine-readable outputs, shell ownership, and migration posture.
-Active rollout sequencing lives in Linear.
+Active rollout sequencing lives in GitHub issues.
 
 ## Automation Contract
 
@@ -446,8 +446,8 @@ Shell should not remain responsible for:
 ## Migration Posture
 
 The repo should document only settled integration contracts. Active milestone
-work, rollout sequencing, and open execution detail live in Linear until they
-are stable enough to promote back into the docs.
+work, rollout sequencing, and open execution detail live in GitHub issues
+until they are stable enough to promote back into the docs.
 
 Host-specific dotfiles can migrate incrementally. During migration, shell code
 should switch parsing consumers to `agentscan list --format json` or `agentscan
