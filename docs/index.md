@@ -35,7 +35,8 @@ This repo uses progressively disclosed documentation.
   Entry point for contributors; points here and at the provider playbook and
   quality baseline.
 - `docs/harness-engineering.md`
-  Validation posture and the rule for what belongs in repo docs versus Linear.
+  Validation posture and the rule for what belongs in repo docs versus GitHub
+  issues.
 - `docs/macos-release-signing.md`
   Local and GitHub Actions Developer ID signing/notarization workflow for
   macOS release binaries.
@@ -105,11 +106,16 @@ This repo uses progressively disclosed documentation.
   - `docs/notes/desktop-spike-closeout.md`
     Stop/go decision, evidence, known gaps, and follow-up backlog map for the
     first macOS desktop spike.
-- Linear
-  Active milestones, blockers, sequencing, and execution detail.
+  - `docs/notes/desktop-effect-refactor.md`
+    Historical record of moving desktop runtime state onto Effect services.
+  - `docs/notes/incident-2026-05-macos-panic.md`
+    Forensic evidence from the 2026-05 macOS AppleSystemPolicy kernel panics
+    behind the macOS daemon auto-start ADR.
+- GitHub issues
+  Active work, blockers, sequencing, and execution detail.
 
 ## Documentation Rule
 
-If a document explains what `agentscan` guarantees, it belongs in the repo. If a
-document explains what is currently in progress or blocked, it belongs in
-Linear until the behavior settles.
+If a document explains what `agentscan` guarantees, it belongs in the repo docs.
+If it explains what is currently in progress or blocked, it belongs in a GitHub
+issue until the behavior settles.

@@ -197,4 +197,4 @@ Release decision:
 - The GitHub Release includes `agentscan-desktop-aarch64-apple-darwin.zip` and
   its checksum.
 - Any smoke failure is either fixed before release or recorded as a known
-  non-release-blocking issue in Linear.
+  non-release-blocking GitHub issue.
